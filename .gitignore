@@ -1,0 +1,54 @@
+# MacOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# uv / venv
+.venv/
+venv/
+env/
+.python-version
+
+# Project — experiment outputs and any exported analysis/results.
+# Everything here is regenerable: runs sync back via fetch-results, reports rebuild
+# via generate-report (see EXPERIMENT_REPORTS.md). Nothing in results/ is tracked —
+# animation-heavy reports are far too large for git. The vendored report libraries
+# live in scripts/assets/ (tracked), not here.
+results/
+
+# W&B offline run cache — regenerable from the run.db files via backfill
+wandb/
+
+# Local Claude Code harness settings (not project content)
+.claude/
+.codex/
+
+# Secrets — env file holding API keys (read via python-dotenv at import).
+# Never commit the real file; the .example template is safe to track.
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs — job output belongs in results/<id>/ (already ignored above); these are the safety net
+# for anything that lands elsewhere, e.g. a scheduler writing its default slurm-<jobid>.out
+*.log
+*.out
+logs/
