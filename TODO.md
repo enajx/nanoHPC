@@ -25,6 +25,7 @@ flowchart LR
 ### Design
 
 - [ ] The open design decisions listed in [PROJECT.md](PROJECT.md) (Notes) are agreed with the user and recorded.
+- [ ] How to test nanoHPC without real machines is decided (options in [testing-options.md](md/testing-options.md)).
 - [ ] A written example configuration file describes a small cluster (one front node, two GPU compute nodes) and is agreed as the target format.
 
 ### Configuration

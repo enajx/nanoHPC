@@ -133,4 +133,5 @@ flowchart LR
   - HTTPS for the website: Let's Encrypt, the administrator's own certificate, or plain HTTP on a private network.
   - Which extras from the source deployment to keep: automatic redeploy from Git, Slurm-web job browser, Slack alerts.
   - Language and packaging of the `nanoHPC` command.
+  - How to test without real machines: see [testing options](md/testing-options.md).
   - License.
