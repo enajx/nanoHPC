@@ -65,6 +65,7 @@ flowchart LR
 - [ ] A full setup is tested on fresh virtual machines, from an empty state to a job running on a compute node and visible on the website.
 - [ ] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems.
 - [ ] The repository is published under the chosen license.
+- [ ] A nice retro-style and/or ASCII animation of the project exists, to use as promo on LinkedIn when sharing the project in the open.
 
 ### Later
 
