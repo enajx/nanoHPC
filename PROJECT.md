@@ -116,6 +116,11 @@ flowchart LR
 
 ## Notes
 
+- **Source deployment**: the running implementation is the SLURM-REAL repository (`git@github.com:enajx/SLURM-REAL.git`, local checkout at `/Users/enaj/code/SLURM-REAL`). It runs a production cluster.
+  - **Treat it as read-only reference.** Never edit, commit to, or deploy from it while working on nanoHPC.
+  - Code and docs are copied from it and then made generic. Its site-specific names, hosts, and services must not come into nanoHPC.
+  - nanoHPC will diverge from it over time. After extraction, nanoHPC is its own project and does not have to stay in sync.
+  - Useful references there: `md/cluster-monitor-design.md` (monitoring and machine status rules), `md/cluster-usage.md` (job modes and queue policy), `md/cluster-filesystem.md` (home and scratch layout), `md/how-I-fucked-up-setup.md` (safety checks before changing accounts, homes, or SSH access), `tests/` (unit, integration, and browser tests), `reports/` (policy test results).
 - **Out of scope, in any form**: anything related to the forum software that shared the source deployment's front node. That was an accident of that site. The website runs on its own web server.
 - **Backup**: the source deployment has a backup of home directories to an institution's storage. nanoHPC may get a general, optional `backup` module that works with different storage services, including the kind universities provide. This comes much later.
 - **Open design decisions** (to agree with the user before building):
