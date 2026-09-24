@@ -25,6 +25,7 @@ flowchart LR
 ### Design
 
 - [ ] The open design decisions listed in [PROJECT.md](PROJECT.md) (Notes) are agreed with the user and recorded.
+- [ ] Discuss with the user where the cluster roles run, and how flexible the configuration should be about it. In the source deployment, the front node is also the storage server for all user files and the machine that runs monitoring (Prometheus, Grafana, their data). This works under some conditions, but it has costs: for example, if the front node goes down, monitoring goes down with it. Agree on the options (for example: all roles on one machine, or storage and monitoring on separate machines) and whether the administrator chooses them in the configuration.
 - [ ] How to test nanoHPC without real machines is decided (options in [testing-options.md](md/testing-options.md)).
 - [ ] A written example configuration file describes a small cluster (one front node, two GPU compute nodes) and is agreed as the target format.
 
