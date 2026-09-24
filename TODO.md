@@ -71,6 +71,7 @@ flowchart LR
 
 ### Later
 
+- [ ] Explore whether nanoHPC can be sold as a commercial product while it stays fully open source. Very exploratory. Ideas to look at: providing some of the infrastructure on the server side, or an app to see the cluster status (the current view is that the website is the best way to do this).
 - [ ] Optional `backup` module that copies home directories to a storage service chosen by the administrator.
 
 ## Uncategorized
