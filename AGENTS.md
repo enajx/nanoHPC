@@ -24,6 +24,7 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 ## Agent guidelines
 
 - CRITICAL: Write in simple English. In plain words. Say the thing directly. No metaphors, no figures of speech, no idiomatic expressions, no technobabble, no words chosen to sound clever. If a plainer word exists, use it. Use commas, colons, or full stops; no em dashes.
+- **Write as a peer answering a peer, with no AI slop.** Answer the question that was asked, at the size the question has: a simple thing gets a short plain answer. Let the subject give the answer its shape: each condition or exception goes with the thing it applies to, and the answer is complete when the subject is covered. No LLM verbal tics ("Claudisms"): no "one caveat" or "one thing to note" tacked on at the end, no "the key insight", "load-bearing", "genuinely", "honestly", "the short version", "not X, but Y" contrasts, or sentences whose job is to make the answer sound careful, candid, or thorough. The reader judges that for themselves.
 - **Design features with the user first.** When asked to implement a feature, start by interviewing the user to reach a shared understanding of a plan and specs *together*: present the available options and their trade-offs, then build from the chosen one. 
    - Scale planning effort to the feature size: the larger the feature, the more comprehensive the plan and specs; the more open-ended it is, the more the user should be involved in defining the features and specs. 
    - Ask **abundantly** the user to establish an aligned and fully defined plan. 
@@ -33,7 +34,7 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 - **Build only what was asked / what's in the plan. No feature creep.** If something unspecified seems necessary or useful, check with the user rather than just adding it.
 - **Don't make assumptions: when anything is ambiguous or underspecified, check in with the user**. Don't be shy to **ask clarifying questions** to identify ambiguities, edge cases, underspecified behaviors, design preferences, and performance needs.
   - **"Godspeed"**: the keyword for an overnight/over-weekend run where the user can't reply. The plan is already agreed; lean towards working things out yourself within its scope rather than blocking on a question, keep a record of the decisions you take, and surface them when the user comes back.
-- If you're waiting on me for something (a decision, or something only I know), put the question at the end, after a horizontal rule, starting with `> 🟡 NEED FROM YOU —`, so it doesn't get lost in the chat. If there are several, number them. When there are clear options, ask with your multiple-choice question tool if you have one (AskUserQuestion, request_user_input). There's no need for the marker otherwise, or to repeat what the reply already says.
+- If a task in progress is blocked on me (a decision, or information only I have), put the question at the end, after a horizontal rule, starting with `> 🟡 NEED FROM YOU —`, so it doesn't get lost in the chat. If there are several, number them. When there are clear options, ask with your multiple-choice question tool if you have one (AskUserQuestion, request_user_input). Don't use the marker to ask whether to go ahead with a proposal or a finished task, and don't repeat what the reply already says.
 - **Avoid over-engineering solutions; value simplicity and modularity.**
 - **Be extra careful to avoid silent failures.**
 - Use **subagents** whenever possible to delegate and parallelise work efficiently. Choose subagents modes based on task complexity: for trivial and simple tasks such as verifying if test pass, simple implementation, boilerplate, etc. use token-efficient models for the subagents: i.e., Claude's Sonnet or Codex's Terra / gpt-5.6-terra.
@@ -86,6 +87,7 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 - Split orthogonal changes into separate commits where possible.
 - Substantially large features go on their own branch and are PR'd into `main`. If unsure whether something needs its own branch or can go straight to `main`, ask.
 - When multiple features are developed concurrently and may modify shared files, propose a separate branch and Git worktree for each feature. Obtain user confirmation before creating them, and separate confirmation before merging each completed, tested feature into `main`.
+- **`AGENTS.md`, `PROJECT.md` and `md/instructions/` are edited only on `main`.** Feature branches receive changes to them by merging `main` (`git merge main`), never by repeating the edit. Anything that would otherwise go into `PROJECT.md` but is specific to one branch (its status, verification limits, codebase notes) goes in `md/branch-<name>.md`, which exists only on that branch. When the branch is merged into `main`, that content moves into `PROJECT.md` and the branch-specific file is deleted.
 
 ## Secrets
 
