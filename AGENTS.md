@@ -87,7 +87,7 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 - Split orthogonal changes into separate commits where possible.
 - Substantially large features go on their own branch and are PR'd into `main`. If unsure whether something needs its own branch or can go straight to `main`, ask.
 - When multiple features are developed concurrently and may modify shared files, propose a separate branch and Git worktree for each feature. Obtain user confirmation before creating them, and separate confirmation before merging each completed, tested feature into `main`.
-- **`AGENTS.md`, `PROJECT.md` and `md/instructions/` are edited only on `main`.** Feature branches receive changes to them by merging `main` (`git merge main`), never by repeating the edit. Anything that would otherwise go into `PROJECT.md` but is specific to one branch (its status, verification limits, codebase notes) goes in `md/branch-<name>.md`, which exists only on that branch. When the branch is merged into `main`, that content moves into `PROJECT.md` and the branch-specific file is deleted.
+- **`AGENTS.md` and `PROJECT.md` are edited only on `main`.** Feature branches receive changes to them by merging `main` (`git merge main`), never by repeating the edit. Anything that would otherwise go into `PROJECT.md` but is specific to one branch (its status, verification limits, codebase notes) goes in `md/branch-<name>.md`, which exists only on that branch. When the branch is merged into `main`, that content moves into `PROJECT.md` and the branch-specific file is deleted.
 
 ## Secrets
 
