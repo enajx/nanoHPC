@@ -1,0 +1,204 @@
+# Simulated large test cluster: a front node and 20 compute nodes of mixed kinds.
+# Checks that configuration, Slurm, dashboards, and the website handle more machines.
+
+cluster:
+  name: labcluster
+  admins: [alice]
+  website:
+    hostname: cluster.example.org
+    https: letsencrypt
+
+machines:
+  front:
+    address: 192.168.104.10
+    roles: [front, home]
+
+  gpu4-01:
+    address: 192.168.104.11
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [main, interactive]
+    scratch: {image_gb: 5}
+
+  gpu2-02:
+    address: 192.168.104.12
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: rtx6000ada, count: 2}
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  cpu-03:
+    address: 192.168.104.13
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  gpu4i-04:
+    address: 192.168.104.14
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [interactive]
+    scratch: {image_gb: 5}
+
+  gpu4-05:
+    address: 192.168.104.15
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [main, interactive]
+    scratch: {image_gb: 5}
+
+  gpu2-06:
+    address: 192.168.104.16
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: rtx6000ada, count: 2}
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  cpu-07:
+    address: 192.168.104.17
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  gpu4i-08:
+    address: 192.168.104.18
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [interactive]
+    scratch: {image_gb: 5}
+
+  gpu4-09:
+    address: 192.168.104.19
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [main, interactive]
+    scratch: {image_gb: 5}
+
+  gpu2-10:
+    address: 192.168.104.20
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: rtx6000ada, count: 2}
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  cpu-11:
+    address: 192.168.104.21
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  gpu4i-12:
+    address: 192.168.104.22
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [interactive]
+    scratch: {image_gb: 5}
+
+  gpu4-13:
+    address: 192.168.104.23
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [main, interactive]
+    scratch: {image_gb: 5}
+
+  gpu2-14:
+    address: 192.168.104.24
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: rtx6000ada, count: 2}
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  cpu-15:
+    address: 192.168.104.25
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  gpu4i-16:
+    address: 192.168.104.26
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [interactive]
+    scratch: {image_gb: 5}
+
+  gpu4-17:
+    address: 192.168.104.27
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [main, interactive]
+    scratch: {image_gb: 5}
+
+  gpu2-18:
+    address: 192.168.104.28
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: rtx6000ada, count: 2}
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  cpu-19:
+    address: 192.168.104.29
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    partitions: [main]
+    scratch: {image_gb: 5}
+
+  gpu4i-20:
+    address: 192.168.104.30
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [interactive]
+    scratch: {image_gb: 5}
+
+users:
+  - name: alice
+    uid: 2000
+    ssh_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithYourOwnPublicKey alice@laptop"]
+
+partitions:
+  main:
+    default: true
+    max_time: "24:00:00"
+  interactive:
+    max_time: "08:00:00"
+    max_gpus_per_user: 2
+policy:
+  default_memory_mb_per_cpu: 512

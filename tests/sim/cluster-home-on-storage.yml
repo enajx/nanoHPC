@@ -1,0 +1,103 @@
+# nanoHPC cluster configuration: the whole cluster in one file.
+# Simulated test cluster, second layout: the storage machine serves /home and there
+# is no backup. Otherwise the same as examples/cluster.yml.
+
+cluster:
+  name: labcluster              # shown in the website, dashboards, and Slurm
+  admins: [alice]               # users with sudo and SSH access to every machine
+  website:
+    hostname: cluster.example.org
+    https: letsencrypt          # letsencrypt | own
+    # certificate: /path/on/admin/machine/cert.pem   (https: own)
+    # certificate_key: /path/on/admin/machine/key.pem
+    logo: null                  # optional image file
+    login_address: cluster.example.org   # shown in the user guide
+
+machines:
+  front:
+    address: 192.168.104.10
+    aliases: [cluster.example.org]   # optional extra names, written to /etc/hosts
+    roles: [front]              # front: login, Slurm controller, monitoring, website
+
+  gpu4:
+    address: 192.168.104.11
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [main, interactive]
+    scratch: {device: /dev/vdb}  # a spare disk for scratch
+
+  gpu2:
+    address: 192.168.104.12
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: rtx6000ada, count: 2}
+    partitions: [main]
+    scratch: {image_gb: 20}     # no spare disk: scratch in a file on the root disk
+
+  cpu1:
+    address: 192.168.104.13
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 1}
+    memory_mb: 4096
+    partitions: [main]          # no gpu: CPU-only node
+    scratch: {image_gb: 20}
+
+  gpu4i:
+    address: 192.168.104.14
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
+    memory_mb: 4096
+    gpu: {type: a6000, count: 4}
+    partitions: [interactive]
+    scratch: {image_gb: 20}
+
+  store:
+    address: 192.168.104.20
+    roles: [home]               # serves /home, runs no jobs
+    home:
+      device: /dev/vdb
+
+users:
+  - name: alice
+    uid: 2000
+    ssh_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithYourOwnPublicKey alice@laptop"]
+  - name: bob
+    uid: 2001
+    ssh_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithYourOwnPublicKey bob@laptop"]
+
+partitions:
+  main:
+    default: true
+    max_time: "24:00:00"
+  interactive:
+    max_time: "08:00:00"
+    max_gpus_per_user: 2
+
+policy:
+  max_submit_jobs_per_user: 30
+  max_gpus_per_user: unlimited
+  default_cpus_per_gpu: 4
+  default_memory_mb_per_cpu: 1024
+  fairshare_weight: 10000       # recent GPU usage
+  fairshare_half_life: "7-00:00:00"
+  age_weight: 1000              # waiting time
+  age_max: "7-00:00:00"
+
+home:
+  quota_soft_gb: 300
+  quota_hard_gb: 400
+  quota_grace: 7days
+
+scratch:
+  cleanup_days: 14
+
+
+alerts:
+  slack: false                  # webhook read from a secret file on the front node
+
+auto_deploy:
+  enabled: false
+  repository: null              # git@github.com:lab/cluster-config.git
