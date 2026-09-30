@@ -1,0 +1,36 @@
+# nanoHPC cluster configuration: smallest useful cluster.
+# One front node that also serves /home, and one GPU compute node.
+# Everything not written here uses nanoHPC's defaults.
+
+cluster:
+  name: mylab
+  admins: [alice]
+  website:
+    hostname: cluster.mylab.example.org
+    https: letsencrypt
+
+machines:
+  front:
+    address: 10.0.0.10
+    roles: [front, home]
+    home:
+      device: /dev/nvme1n1
+
+  gpu1:
+    address: 10.0.0.11
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 16, threads_per_core: 2}
+    memory_mb: 128000
+    gpu: {type: rtx4090, count: 2}
+    partitions: [main]
+    scratch: {image_gb: 500}
+
+users:
+  - name: alice
+    uid: 2000
+    ssh_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithYourOwnPublicKey alice@laptop"]
+
+partitions:
+  main:
+    default: true
+    max_time: "24:00:00"
