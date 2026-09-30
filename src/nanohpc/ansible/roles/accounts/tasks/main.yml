@@ -1,0 +1,286 @@
+# Users with fixed UIDs, keys outside home directories, key-only SSH, and who may log in where.
+# Keys live in /etc/ssh/authorized_keys/<user> (0755 directory, 0644 files), readable by sshd even
+# before /home is mounted: the rule from SLURM-REAL's md/how-I-fucked-up-setup.md.
+
+- name: Create the Slurm service group with a fixed GID
+  ansible.builtin.group:
+    name: slurm
+    gid: "{{ nanohpc.slurm.uid }}"
+    system: true
+
+- name: Create the Slurm service user with a fixed UID
+  ansible.builtin.user:
+    name: slurm
+    uid: "{{ nanohpc.slurm.uid }}"
+    group: slurm
+    system: true
+    home: /var/lib/slurm
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create each user's group with GID equal to the UID
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    gid: "{{ item.uid }}"
+  loop: "{{ nanohpc.users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create the users with their fixed UIDs, without a password (SSH keys only)
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    uid: "{{ item.uid }}"
+    group: "{{ item.name }}"
+    shell: /bin/bash
+    home: "/home/{{ item.name }}"
+    create_home: false
+    password: "!"
+    update_password: on_create
+  loop: "{{ nanohpc.users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create private home directories on the home machine
+  ansible.builtin.file:
+    path: "/home/{{ item.name }}"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0700"
+  loop: "{{ nanohpc.users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: inventory_hostname in groups['role_home']
+
+# Administrators get sudo through their forwarded SSH key (ssh -A), never through a
+# passwordless rule: pam_ssh_agent_auth asks the forwarded agent to prove it holds one of the
+# administrator's keys from cluster.yml. No password is typed or stored.
+- name: Install sudo authentication by forwarded SSH key
+  ansible.builtin.apt:
+    name: libpam-ssh-agent-auth
+    state: present
+    install_recommends: false
+
+- name: Put administrators in the sudo group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: sudo
+    append: true
+  loop: "{{ nanohpc.admins }}"
+
+- name: Take the sudo group away from cluster users who are not administrators
+  ansible.builtin.command: "gpasswd -d {{ item }} sudo"
+  loop: "{{ nanohpc.users | map(attribute='name') | reject('in', nanohpc.admins) | list }}"
+  when: item in (ansible_facts.getent_group['sudo'][2] | default('')).split(',')
+
+- name: Create the folder of keys that unlock sudo
+  ansible.builtin.file:
+    path: /etc/security/nanohpc-sudo-keys
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install each administrator's keys for sudo
+  ansible.builtin.copy:
+    dest: "/etc/security/nanohpc-sudo-keys/{{ item.name }}"
+    content: "{{ item.ssh_keys | join('\n') }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nanohpc.users | selectattr('name', 'in', nanohpc.admins) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: List the sudo key files
+  ansible.builtin.find:
+    paths: /etc/security/nanohpc-sudo-keys
+  register: sudo_key_files
+
+- name: Remove sudo keys of people who are no longer administrators
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ sudo_key_files.files | rejectattr('path', 'search', '/(' ~ (nanohpc.admins | join('|')) ~ ')$') | list }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: Let sudo check the forwarded SSH key first
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/sudo
+    line: "auth sufficient pam_ssh_agent_auth.so file=/etc/security/nanohpc-sudo-keys/%u"
+    insertbefore: "^@include common-auth"
+    firstmatch: true
+
+- name: Read sudo's PAM setup
+  ansible.builtin.slurp:
+    src: /etc/pam.d/sudo
+  register: sudo_pam
+
+- name: Require the forwarded-key check before the password check in sudo's PAM setup
+  ansible.builtin.assert:
+    that: >-
+      (sudo_pam.content | b64decode).find('pam_ssh_agent_auth.so') != -1
+      and (sudo_pam.content | b64decode).find('@include common-auth') != -1
+      and (sudo_pam.content | b64decode).find('pam_ssh_agent_auth.so') < (sudo_pam.content | b64decode).find('@include common-auth')
+    fail_msg: >-
+      {{ inventory_hostname }}: /etc/pam.d/sudo does not have the usual '@include common-auth' line, so nanoHPC cannot put
+      the forwarded-key check before the password check. Administrators' sudo by key would not work here.
+    quiet: true
+
+- name: Keep the forwarded SSH agent visible to sudo
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/nanohpc-ssh-agent
+    content: "Defaults env_keep += \"SSH_AUTH_SOCK\"\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Remove the passwordless sudo rule of earlier nanoHPC versions
+  ansible.builtin.file:
+    path: /etc/sudoers.d/nanohpc-admins
+    state: absent
+
+- name: Create the directory for SSH keys outside home directories
+  ansible.builtin.file:
+    path: /etc/ssh/authorized_keys
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install each user's SSH keys
+  ansible.builtin.copy:
+    dest: "/etc/ssh/authorized_keys/{{ item.name }}"
+    content: "{{ item.ssh_keys | join('\n') }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nanohpc.users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: List the installed SSH key files
+  ansible.builtin.find:
+    paths: /etc/ssh/authorized_keys
+  register: ssh_key_files
+
+- name: Remove SSH keys of users no longer in cluster.yml
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ ssh_key_files.files | rejectattr('path', 'search', '/(' ~ (nanohpc.users | map(attribute='name') | join('|')) ~ ')$') | list }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+# Every account that has deployed to this machine stays allowed, so a deploy cannot lock out the
+# account it runs as, nor the one an earlier deploy ran as (for example `ubuntu` on first setup).
+# Users listed in cluster.yml are allowed through the list itself, and lose access when removed from it.
+- name: Record the account this deploy logs in with, if it is not a user from cluster.yml
+  ansible.builtin.lineinfile:
+    path: /etc/nanohpc/deploy-accounts
+    line: "{{ nanohpc_login_user }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: nanohpc_login_user not in (nanohpc.users | map(attribute='name'))
+
+- name: Make sure the list of deploy accounts exists
+  ansible.builtin.file:
+    path: /etc/nanohpc/deploy-accounts
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Read the accounts that have deployed to this machine
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/deploy-accounts
+  register: deploy_accounts
+
+- name: List who may log in on this machine
+  ansible.builtin.set_fact:
+    ssh_allowed: >-
+      {{ (((nanohpc.users | map(attribute='name') | list) if inventory_hostname in groups['role_front'] else nanohpc.admins)
+          + ((deploy_accounts.content | b64decode).split() | reject('in', nanohpc.users | map(attribute='name')) | list)
+          + [nanohpc_login_user]) | unique }}
+
+- name: Change SSH access, and put the old file back unless the effective settings are right
+  block:
+    - name: Allow all users on the front node, and only administrators on the other machines
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/10-nanohpc.conf
+        content: |
+          # Managed by nanoHPC. Earlier files win in sshd_config.d, so this file sorts first.
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys/%u
+          AllowUsers {{ ssh_allowed | join(' ') }}
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      register: ssh_access
+
+    # sshd -T prints the settings sshd would really use for this login, after every included file
+    # and Match block, so a setting overridden elsewhere is caught before sshd is reloaded.
+    - name: Read the effective SSH settings for the login account
+      ansible.builtin.command: >-
+        /usr/sbin/sshd -T -C user={{ nanohpc_login_user }},host={{ ansible_facts.hostname }},addr={{ nanohpc.machines[inventory_hostname].address }}
+      register: ssh_effective
+      changed_when: false
+
+    - name: Require key-only login and the allowed accounts in the effective settings
+      ansible.builtin.assert:
+        that:
+          - "'passwordauthentication no' in ssh_effective.stdout_lines"
+          - "'kbdinteractiveauthentication no' in ssh_effective.stdout_lines"
+          - "('allowusers ' ~ nanohpc_login_user) in ssh_effective.stdout_lines"
+          - ssh_effective.stdout_lines | select('match', '^allowgroups ') | list | length == 0
+          - "'pubkeyauthentication yes' in ssh_effective.stdout_lines"
+          - ssh_effective.stdout_lines | select('match', '^authorizedkeysfile .*/etc/ssh/authorized_keys/%u') | list | length == 1
+        fail_msg: >-
+          {{ inventory_hostname }}: another SSH setting overrides nanoHPC's (password login still on, key login off,
+          the login account '{{ nanohpc_login_user }}' not allowed, or an AllowGroups rule). Check /etc/ssh/sshd_config
+          and /etc/ssh/sshd_config.d/. The previous SSH settings were put back.
+        quiet: true
+
+    - name: Remove the backup of the previous SSH settings
+      ansible.builtin.file:
+        path: "{{ ssh_access.backup_file }}"
+        state: absent
+      when: ssh_access.backup_file is defined
+  rescue:
+    - name: Put the previous SSH settings back
+      ansible.builtin.copy:
+        src: "{{ ssh_access.backup_file }}"
+        dest: /etc/ssh/sshd_config.d/10-nanohpc.conf
+        remote_src: true
+        mode: "0644"
+      when: ssh_access.backup_file is defined
+
+    - name: Remove the new SSH settings file (there was none before)
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/10-nanohpc.conf
+        state: absent
+      when: ssh_access.changed | default(false) and ssh_access.backup_file is not defined
+
+    - name: Stop this machine
+      ansible.builtin.fail:
+        msg: "{{ ansible_failed_result.msg | default('The SSH change failed; the previous settings were put back.') }}"
+
+# Reloaded on every run, so an earlier run that stopped between writing and reloading is completed.
+# A reload keeps open sessions.
+- name: Apply the SSH access settings
+  ansible.builtin.command: systemctl try-reload-or-restart ssh
+  changed_when: ssh_access.changed
+
+- name: Drop the open connection so the next task logs in fresh
+  ansible.builtin.meta: reset_connection
+
+- name: Prove that a fresh login still works after the SSH change
+  ansible.builtin.ping:

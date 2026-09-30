@@ -75,8 +75,10 @@ users:
 partitions:
   main:
     default: true
+    jobs: batch                 # batch | interactive | any (default any)
     max_time: "24:00:00"
   interactive:
+    jobs: interactive           # only the shell: srun --partition=interactive --pty bash -l
     max_time: "08:00:00"
     max_gpus_per_user: 2
 

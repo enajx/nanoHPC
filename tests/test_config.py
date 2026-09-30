@@ -103,6 +103,16 @@ class HeterogeneousClusterTest(unittest.TestCase):
         _, errors = check_config(raw)
         self.assertEqual(errors, [])
 
+    def test_partition_job_types(self) -> None:
+        config, errors = check_config(example())
+        self.assertEqual(errors, [])
+        self.assertEqual(config["partitions"]["main"]["jobs"], "batch")
+        self.assertEqual(config["partitions"]["interactive"]["jobs"], "interactive")
+        errors = mutate(lambda raw: raw["partitions"]["main"].update(jobs="gpu"))
+        self.assertIn("partitions.main.jobs must be batch, interactive, or any", errors)
+        errors = mutate(lambda raw: raw["partitions"].update(normal={"max_time": "01:00:00"}))
+        self.assertIn("partitions.normal: the name normal is reserved by Slurm", errors)
+
     def test_minimal_gets_defaults(self) -> None:
         config, errors = check_config(yaml.safe_load(MINIMAL.read_text()))
         self.assertEqual(errors, [])
@@ -115,6 +125,7 @@ class HeterogeneousClusterTest(unittest.TestCase):
         self.assertEqual(config["auto_deploy"], {"enabled": False, "repository": None})
         self.assertEqual(config["cluster"]["website"]["login_address"], "cluster.mylab.example.org")
         self.assertEqual(config["machines"]["gpu1"]["aliases"], [])
+        self.assertEqual(config["partitions"]["main"]["jobs"], "any")
 
 
 def mutate(change: Callable[[dict[str, Any]], None]) -> list[str]:
