@@ -50,11 +50,12 @@ flowchart LR
 Tech stack. Most of it comes from the source deployment; changes from it are noted.
 
 - **Ubuntu 22.04, 24.04, and 26.04** on all machines (the source deployment is 22.04 only).
-- **Slurm** (`slurmctld`, `slurmdbd`, `slurmd`) with **Munge** authentication and GPU scheduling. nanoHPC builds Slurm from the official source, once per CPU type, and installs it on all machines (the source deployment used packages built by hand). The version is the newest stable one when the build role is written, then pinned.
+- **Slurm** 26.05.4 (`slurmctld`, `slurmdbd`, `slurmd`) with **Munge** authentication and GPU scheduling. nanoHPC builds Slurm from the official source, once per Ubuntu release and CPU type, caches the packages on the administrator's machine, and installs them on all machines (the source deployment used packages built by hand). Partitions, their job types (batch, interactive shell, or any), limits, and fair-share on GPU usage come from `cluster.yml`.
 - **NVIDIA GPUs** of any model, mixed across nodes, and CPU-only nodes. NVIDIA drivers must be installed beforehand; nanoHPC checks the GPU count.
 - **Ansible** for all machine configuration, as roles and playbooks. The administrator does not edit Ansible files: nanoHPC generates them from `cluster.yml`.
 - **`nanohpc` command** in **Python**, installed with `uv tool install`. It runs from any machine with SSH access to the cluster (the administrator's laptop or the front node).
-- **Local users** with fixed UIDs and SSH keys, created from `cluster.yml` on every machine.
+- **Local users** with fixed UIDs and SSH keys, created from `cluster.yml` on every machine. SSH is key-only; all users may log in to the front node, only administrators to the other machines.
+- **Root for deploys**: nanoHPC connects with `ssh <machine>` (the administrator's own SSH config) and adds no passwordless sudo rules. Administrators' forwarded SSH keys unlock sudo (`pam_ssh_agent_auth`); the first setup of a machine needs root the normal way.
 - **systemd** services and timers for the collector, quotas, scratch cleanup, backup, and health checks.
 - **NFS** for the shared `/home`, with **disk quotas**, served from the front node or from a separate storage machine.
 - **Local scratch** on each compute node, with automatic cleanup of old files.
@@ -119,7 +120,8 @@ flowchart LR
 - The design decisions were agreed on 2026-09-30 ([plan-port.md](md/plan-port.md)).
 - Built: the `cluster.yml` format ([examples/cluster.yml](examples/cluster.yml), [examples/minimal.yml](examples/minimal.yml)) and `nanohpc validate`, which checks a configuration and reports every error with its field path (`src/nanohpc/config.py`). Tests: `uv run python -m unittest discover -s tests`.
 - Built: the simulated test cluster, `nanohpc sim up/down` with Lima VMs ([testing.md](md/testing.md)). Checked on macOS (Apple Silicon) with the everyday, home-on-storage, and 20-node clusters, and on a Linux x86 host with the everyday cluster (GitHub Actions, run by hand only).
-- Next: the port of Slurm, accounts, and storage (M3), after a planning round with the user.
+- Built: `nanohpc deploy`: Slurm, users, SSH access, sudo by forwarded key, and Munge (M3a), checked end to end on the simulated cluster (Ubuntu 24.04, ARM64). See [DONE.md](md/DONE.md).
+- Next: `/home` over NFS with quotas and scratch (M3b), then job modes, uv, and health checks (M3c), each after a planning round with the user.
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
