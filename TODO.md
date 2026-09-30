@@ -14,7 +14,7 @@ flowchart LR
   classDef wip fill:#d4a72c,color:#000
   classDef queued fill:none,stroke-dasharray:4 3
 
-  D[Design decisions]:::done --> C[cluster.yml + validation]:::queued
+  D[Design decisions]:::done --> C[cluster.yml + validation]:::done
   C --> SIM[Simulated cluster]:::queued
   SIM --> S[Slurm + accounts + storage]:::queued
   S --> M[Monitoring]:::queued
@@ -36,17 +36,17 @@ flowchart LR
 
 ### Configuration
 
-- [ ] Written example `cluster.yml` files (the 6-node test cluster, and a minimal front node + one GPU node) are agreed with the user as the target format.
-- [ ] The administrator describes the whole cluster in one `cluster.yml`: front node, compute nodes (GPU or CPU-only, mixed NVIDIA models), optional storage and backup machines, users, partitions, and queue policy.
-- [ ] Partitions and their limits are defined by the administrator, not fixed to `main` and `interactive`.
-- [ ] An invalid configuration is rejected before any machine is changed, with a message that names the wrong field.
-- [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
+- [x] Written example `cluster.yml` files (the 6-node test cluster, and a minimal front node + one GPU node) are agreed with the user as the target format.
+- [x] The administrator describes the whole cluster in one `cluster.yml`: front node, compute nodes (GPU or CPU-only, mixed NVIDIA models), optional storage and backup machines, users, partitions, and queue policy.
+- [x] Partitions and their limits are defined by the administrator, not fixed to `main` and `interactive`.
+- [x] An invalid configuration is rejected before any machine is changed, with a message that names the wrong field.
 
 ### Simulated cluster
 
-- [ ] One command creates the everyday test cluster as Lima VMs from a `cluster.yml`: a front node and 5 compute nodes (4 GPUs, 2 GPUs, CPU-only, backup storage, 4 GPUs `interactive` only), and removes it again.
+- [ ] One command creates the everyday test cluster as Lima VMs from a `cluster.yml`: a front node, 4 compute nodes (4 GPUs, 2 GPUs, CPU-only, 4 GPUs `interactive` only), and a storage machine, and removes it again.
 - [ ] The same command works on macOS (Apple Silicon) and Linux (x86).
-- [ ] The test cluster can be run with `/home` on the front node and with `/home` on the storage node.
+- [ ] The test cluster can be run with `/home` on the front node (backup to the storage machine) and with `/home` on the storage machine (no backup).
+- [ ] Fake GPUs are set in a separate test-only file, not in `cluster.yml`.
 - [ ] The test cluster can be scaled up to 20 compute nodes.
 - [ ] Fake GPUs: Slurm schedules GPU jobs on the fake GPU nodes, and a fake exporter reports GPU metrics.
 - [ ] The tests only need a list of SSH machines and a `cluster.yml`, so they also run against other machines (cloud VMs, spare machines).
@@ -68,6 +68,7 @@ flowchart LR
 
 ### Monitoring and website
 
+- [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
 - [ ] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
 - [ ] Daily summaries are kept for 5 years and shown in the long-term history.
 - [ ] Grafana dashboards (queue, queue history, GPU usage, machines, long-term history) work for any number of nodes, GPU and CPU-only.
@@ -107,6 +108,7 @@ flowchart LR
 - [ ] AMD GPUs.
 - [ ] Test nanoHPC on non-Ubuntu machines.
 - [ ] Move the REAL cluster from SLURM-REAL to nanoHPC (maybe, not planned).
+- [ ] A link to a live demo in the GitHub repository, so people can see what it looks like on a simulated cluster.
 
 ## Uncategorized
 

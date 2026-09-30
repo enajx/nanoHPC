@@ -24,7 +24,7 @@ Other tools were considered and not chosen:
 
 ## Test clusters
 
-Everyday cluster: a front node and 5 compute nodes (about 7 to 8 GB of RAM in total):
+Everyday cluster: a front node, 4 compute nodes, and a storage machine (about 7 to 8 GB of RAM in total):
 
 | Node | Role |
 | --- | --- |
@@ -32,15 +32,15 @@ Everyday cluster: a front node and 5 compute nodes (about 7 to 8 GB of RAM in to
 | 4-GPU node | fake GPUs, all partitions |
 | 2-GPU node | fake GPUs |
 | CPU-only node | no GPUs |
-| backup storage node | `/home` server or backup target |
+| storage machine | backup target or `/home` server, runs no jobs |
 | 4-GPU interactive node | fake GPUs, `interactive` partition only |
 
-- It is run with both `/home` layouts: served from the front node, and served from the storage node.
+- It is run with both `/home` layouts: served from the front node with the backup going to the storage machine, and served from the storage machine with no backup.
 - An option scales it up to 20 compute nodes, for occasional checks that configuration, Slurm, dashboards, and the website handle more machines. With 1 GB per VM this needs about 22 GB of RAM.
 
 ## Fake GPUs
 
-A real NVIDIA GPU cannot be simulated. The two things nanoHPC depends on are faked:
+A real NVIDIA GPU cannot be simulated. The two things nanoHPC depends on are faked. Which machines have fake GPUs is set in a separate test-only file, so `cluster.yml` only describes real setups.
 
 - **Scheduling**: Slurm accepts GPUs defined only by a count, with no device files (`Gres=gpu:4` and a `gres.conf` line without `File=`). Jobs that request GPUs are scheduled, queued, and counted in fair-share like on real GPUs.
 - **Metrics**: a small fake GPU exporter reports made-up utilization and memory, so the collector, machine status rules, and Grafana GPU charts work the same.
