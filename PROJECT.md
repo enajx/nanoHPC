@@ -24,7 +24,7 @@ What a user of the finished cluster gets:
 The work moves from the source deployment to a released tool in phases. Task-level items are in [TODO.md](TODO.md). The agreed decisions for the port are in [plan-port.md](md/plan-port.md).
 
 1. **Define**: agree on the supported setups and the open design decisions. Done 2026-09-30.
-2. **Configuration**: the `cluster.yml` format, its validation, and example files.
+2. **Configuration**: the `cluster.yml` format, its validation, and example files. Done 2026-09-30.
 3. **Simulated cluster**: a test cluster of Lima VMs on macOS and Linux, so nanoHPC is tested without touching a real cluster.
 4. **Port and bootstrap**: bring Slurm, accounts, storage, monitoring, website, and backup over from the source deployment, made generic. One command sets up a new cluster from `cluster.yml`.
 5. **Wizard and operate**: a wizard writes `cluster.yml` by asking questions and probing the machines. Add a node and redeploy from the same file.
@@ -37,7 +37,7 @@ flowchart LR
   classDef wip fill:#d4a72c,color:#000
   classDef queued fill:none,stroke-dasharray:4 3
 
-  P1[Define scope and decisions]:::done --> P2[Configuration format]:::queued
+  P1[Define scope and decisions]:::done --> P2[Configuration format]:::done
   P2 --> P3[Simulated cluster]:::queued
   P3 --> P4[Port and bootstrap]:::queued
   P4 --> P5[Wizard and operate]:::queued
@@ -116,7 +116,9 @@ flowchart LR
 
 ## Status
 
-- Nothing is built in this repository yet. The design decisions were agreed on 2026-09-30 ([plan-port.md](md/plan-port.md)). Next: the `cluster.yml` format, then the simulated cluster.
+- The design decisions were agreed on 2026-09-30 ([plan-port.md](md/plan-port.md)).
+- Built: the `cluster.yml` format ([examples/cluster.yml](examples/cluster.yml), [examples/minimal.yml](examples/minimal.yml)) and `nanohpc validate`, which checks a configuration and reports every error with its field path (`src/nanohpc/config.py`). Tests: `uv run python -m unittest discover -s tests`.
+- Next: the simulated cluster (`nanohpc sim up/down`, Lima VMs).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
