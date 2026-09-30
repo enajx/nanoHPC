@@ -28,6 +28,14 @@ nanoHPC is a ready-made Slurm + monitoring tool for small heterogeneous lab clus
 - **License**: MIT.
 - **Moving the REAL cluster to nanoHPC**: maybe later, no plan now.
 
+## Agreed for M3 (Slurm, accounts, storage), 2026-09-30
+
+- Commands: `nanohpc deploy` runs everything. Separate commands with their own checks: `add-node NAME`, `check` (read-only), `users`, `policy`, `partitions`.
+- nanoHPC never formats a disk. Home and scratch disks must already have a filesystem; nanoHPC checks the type and mounts it. The wizard (M7) guides the administrator through preparing machines, with the option to skip. The simulated cluster formats its test disks itself, standing in for the administrator.
+- A listed user with a different UID on a machine, or a local `/home` with data: the deploy stops on that machine and says what to do next. `nanohpc fix-uid USER MACHINE` harmonises a UID safely when the administrator runs it. The wizard (M7) finds UID conflicts while probing and guides the administrator to harmonise them before the first deploy, so the deploy's stop is only a safety net.
+- Login by SSH key only.
+- M3 is done in three steps, each on its own branch and tested on the simulated cluster: (a) Ansible base, users, Munge, Slurm build and install, fake GPUs; (b) `/home` over NFS with quotas (both layouts) and scratch; (c) job modes (`cluster-submit`), uv, health checks.
+
 ## Simulated cluster
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).

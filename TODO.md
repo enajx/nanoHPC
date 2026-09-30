@@ -55,10 +55,13 @@ flowchart LR
 
 - [ ] Slurm is built from the official source (newest stable version, then pinned) for each CPU type and installed on all machines.
 - [ ] Ubuntu 22.04, 24.04, and 26.04 are supported.
-- [ ] Users listed in the configuration are created on every machine with the same UID and their SSH keys.
+- [ ] Users listed in the configuration are created on every machine with the same UID and their SSH keys. Login is by SSH key only; password login is off.
+- [ ] If a machine already has a listed user with a different UID, or a local `/home` with data, the deploy stops on that machine without changing it, and says what conflicts and what to do next.
+- [ ] `nanohpc fix-uid USER MACHINE` harmonises a user's UID on one machine safely, only when the administrator runs it: it refuses while the user has running processes, and lists the files it will re-own before changing anything.
 - [ ] Users can log in to the front node. Only administrators can log in to the other machines directly.
 - [ ] The Munge key and metrics certificates are created and copied to all machines automatically.
 - [ ] GPU nodes are checked for the GPU count in the configuration, with a clear message if the NVIDIA driver is missing or the count differs.
+- [ ] nanoHPC never formats a disk. The home and scratch disks named in the configuration must already have a filesystem; nanoHPC checks its type and mounts it, and stops with the command to run if the disk has no filesystem.
 - [ ] `/home` is shared from the front node, or from a separate storage machine, to all machines, with the per-user quotas from the configuration.
 - [ ] Each compute node has local scratch, and old scratch files are cleaned up automatically.
 - [ ] Partitions work with the GPU fair-share priority and per-user limits from the configuration.
@@ -89,9 +92,12 @@ flowchart LR
 
 - [ ] `nanohpc` is installed with `uv tool install` and runs from any machine with SSH access to the cluster.
 - [ ] `nanohpc init` is a wizard that writes a whole `cluster.yml` with simple defaults, and probes the machines over SSH for CPUs, memory, and GPU type and count.
-- [ ] One command sets up a new cluster on fresh machines from `cluster.yml`.
-- [ ] One command adds a new compute node listed in the configuration.
-- [ ] Rerunning the setup after a configuration change applies only that change and does not break a running cluster.
+- [ ] The wizard guides the administrator through preparing the machines (for example making the filesystems on the home and scratch disks), with hints for each step and the option to skip and do it themselves.
+- [ ] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid`. The deploy's stop on a UID conflict stays as a safety net.
+- [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
+- [ ] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster.
+- [ ] Separate commands, each with its own checks: `nanohpc add-node NAME` (a new machine listed in the configuration), `nanohpc users` (users, keys, quotas), `nanohpc policy` (queue policy), `nanohpc partitions` (partitions and their machines).
+- [ ] `nanohpc check` connects to every machine and reports what differs from `cluster.yml` (services, users, mounts, GPU count), without changing anything.
 
 ### Release
 
