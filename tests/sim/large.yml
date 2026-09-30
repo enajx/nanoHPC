@@ -1,0 +1,9 @@
+# Simulated test cluster: test-only file, never used on a real cluster (see md/testing.md).
+# A front node and 20 compute nodes (about 22 GB of RAM).
+cluster: cluster-large.yml
+ubuntu: "24.04"
+fake_gpus: [gpu4-01, gpu2-02, gpu4i-04, gpu4-05, gpu2-06, gpu4i-08, gpu4-09, gpu2-10, gpu4i-12, gpu4-13, gpu2-14, gpu4i-16, gpu4-17, gpu2-18, gpu4i-20]
+vms:
+  default: {cpus: 1, memory_gb: 1, disk_gb: 10}
+  front: {cpus: 2, memory_gb: 2, disk_gb: 20}
+extra_disk_gb: 10

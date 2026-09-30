@@ -52,3 +52,6 @@ wandb/
 *.log
 *.out
 logs/
+
+# nanohpc sim state (generated VM addresses and SSH config)
+.nanohpc-sim/
