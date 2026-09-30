@@ -83,7 +83,7 @@ Not covered: the NVIDIA driver, CUDA, and binding a job to a specific GPU. These
 
 ## Linux host: GitHub Actions
 
-The workflow [sim-linux.yml](../.github/workflows/sim-linux.yml) (at the repo root) runs the unit tests and the real-VM test on GitHub's Linux x86 runner, which has KVM. It runs on pushes to `main` that change code or tests, and by hand (`workflow_dispatch`). This checks that `nanohpc sim up/down` works on a Linux host with x86 VMs. The repository is private, so the runner has 2 CPUs and about 7 GB of memory, and the run uses Actions minutes.
+The workflow [sim-linux.yml](../.github/workflows/sim-linux.yml) (at the repo root) runs the unit tests and the real-VM test on GitHub's Linux x86 runner, which has KVM. It runs only when started by hand (`gh workflow run sim-linux.yml`), because free Actions minutes are limited: run it when the Linux check is needed, for example after changes to the sim code or before a release, not on every push. This checks that `nanohpc sim up/down` works on a Linux host with x86 VMs. The repository is private, so the runner has 2 CPUs and about 7 GB of memory, and the run uses Actions minutes.
 
 ## CPU types
 

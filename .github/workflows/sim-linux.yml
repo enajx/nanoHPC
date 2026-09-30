@@ -1,16 +1,11 @@
 # Runs the simulated test cluster on a Linux x86 host (GitHub's runner, with KVM), to check that
 # `nanohpc sim up/down` works on Linux as well as on macOS. See md/testing.md.
+# Started by hand only (`gh workflow run sim-linux.yml`): free Actions minutes are limited,
+# so it runs only when the Linux check is needed, e.g. after changes to the sim code or before a release.
 name: sim-linux
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "src/nanohpc/**"
-      - "tests/**"
-      - "examples/**"
-      - ".github/workflows/sim-linux.yml"
 
 jobs:
   sim:
@@ -31,7 +26,7 @@ jobs:
       - name: Install QEMU and Lima
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf
           curl -fsSL "https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/lima-${LIMA_VERSION}-Linux-x86_64.tar.gz" | sudo tar Cxz /usr/local
           limactl --version
 
