@@ -15,7 +15,7 @@ flowchart LR
   classDef queued fill:none,stroke-dasharray:4 3
 
   D[Design decisions]:::done --> C[cluster.yml + validation]:::done
-  C --> SIM[Simulated cluster]:::queued
+  C --> SIM[Simulated cluster]:::done
   SIM --> S[Slurm + accounts + storage]:::queued
   S --> M[Monitoring]:::queued
   M --> W[Website from config]:::queued
@@ -45,7 +45,7 @@ flowchart LR
 
 - [x] One command creates the everyday test cluster as Lima VMs from a `cluster.yml`: a front node, 4 compute nodes (4 GPUs, 2 GPUs, CPU-only, 4 GPUs `interactive` only), and a storage machine, and removes it again.
 - [x] The same command works on macOS (Apple Silicon).
-- [ ] The same command works on Linux (x86), checked on GitHub Actions.
+- [x] The same command works on Linux (x86), checked on GitHub Actions.
 - [x] The test cluster can be run with `/home` on the front node (backup to the storage machine) and with `/home` on the storage machine (no backup).
 - [x] Fake GPUs are set in a separate test-only file, not in `cluster.yml`.
 - [x] The test cluster can be scaled up to 20 compute nodes.

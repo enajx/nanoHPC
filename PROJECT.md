@@ -25,7 +25,7 @@ The work moves from the source deployment to a released tool in phases. Task-lev
 
 1. **Define**: agree on the supported setups and the open design decisions. Done 2026-09-30.
 2. **Configuration**: the `cluster.yml` format, its validation, and example files. Done 2026-09-30.
-3. **Simulated cluster**: a test cluster of Lima VMs on macOS and Linux, so nanoHPC is tested without touching a real cluster.
+3. **Simulated cluster**: a test cluster of Lima VMs on macOS and Linux, so nanoHPC is tested without touching a real cluster. Done 2026-09-30.
 4. **Port and bootstrap**: bring Slurm, accounts, storage, monitoring, website, and backup over from the source deployment, made generic. One command sets up a new cluster from `cluster.yml`.
 5. **Wizard and operate**: a wizard writes `cluster.yml` by asking questions and probing the machines. Add a node and redeploy from the same file.
 6. **Release v0.1**: tested on the simulated cluster and on real x86 machines, documented, published.
@@ -38,7 +38,7 @@ flowchart LR
   classDef queued fill:none,stroke-dasharray:4 3
 
   P1[Define scope and decisions]:::done --> P2[Configuration format]:::done
-  P2 --> P3[Simulated cluster]:::queued
+  P2 --> P3[Simulated cluster]:::done
   P3 --> P4[Port and bootstrap]:::queued
   P4 --> P5[Wizard and operate]:::queued
   P5 --> P6[Release v0.1]:::queued
@@ -118,8 +118,8 @@ flowchart LR
 
 - The design decisions were agreed on 2026-09-30 ([plan-port.md](md/plan-port.md)).
 - Built: the `cluster.yml` format ([examples/cluster.yml](examples/cluster.yml), [examples/minimal.yml](examples/minimal.yml)) and `nanohpc validate`, which checks a configuration and reports every error with its field path (`src/nanohpc/config.py`). Tests: `uv run python -m unittest discover -s tests`.
-- Built: the simulated test cluster, `nanohpc sim up/down` with Lima VMs ([testing.md](md/testing.md)). Checked on macOS (Apple Silicon) with the everyday, home-on-storage, and 20-node clusters. The Linux x86 check runs on GitHub Actions and has not passed yet.
-- Next: the Linux check on GitHub Actions, then the port of Slurm, accounts, and storage.
+- Built: the simulated test cluster, `nanohpc sim up/down` with Lima VMs ([testing.md](md/testing.md)). Checked on macOS (Apple Silicon) with the everyday, home-on-storage, and 20-node clusters, and on a Linux x86 host with the everyday cluster (GitHub Actions, run by hand only).
+- Next: the port of Slurm, accounts, and storage (M3), after a planning round with the user.
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
