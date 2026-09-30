@@ -1,0 +1,144 @@
+# Slurm is built from the official source once per Ubuntu release and CPU type, on the first
+# machine of that kind. The packages are cached on the administrator's machine
+# (nanohpc.slurm.cache/<release>-<arch>/) and installed from there on every Slurm machine.
+
+- name: Group the Slurm machines by Ubuntu release and CPU type
+  ansible.builtin.group_by:
+    key: "slurm_build_{{ ansible_facts.distribution_release }}_{{ ansible_facts.architecture }}"
+  changed_when: false
+
+- name: Name this machine's package folder and its builder
+  ansible.builtin.set_fact:
+    slurm_kind: "{{ ansible_facts.distribution_release }}-{{ ansible_facts.architecture }}"
+    slurm_builder: "{{ groups['slurm_build_' ~ ansible_facts.distribution_release ~ '_' ~ ansible_facts.architecture] | first }}"
+
+- name: Check for cached packages
+  ansible.builtin.stat:
+    path: "{{ nanohpc.slurm.cache }}/{{ slurm_kind }}/complete"
+  register: slurm_cache
+  delegate_to: localhost
+  become: false
+
+- name: Build Slurm packages
+  when: not slurm_cache.stat.exists and inventory_hostname == slurm_builder
+  block:
+    - name: Install the build tools
+      ansible.builtin.apt:
+        name: [build-essential, fakeroot, devscripts, equivs]
+        state: present
+        install_recommends: false
+
+    - name: Create the build folder
+      ansible.builtin.file:
+        path: /var/tmp/nanohpc-slurm
+        state: directory
+        mode: "0755"
+
+    - name: Download the Slurm source
+      ansible.builtin.get_url:
+        url: "{{ nanohpc.slurm.url }}"
+        dest: "/var/tmp/nanohpc-slurm/slurm-{{ nanohpc.slurm.version }}.tar.bz2"
+        checksum: "sha256:{{ nanohpc.slurm.sha256 }}"
+        mode: "0644"
+
+    - name: Unpack the Slurm source
+      ansible.builtin.unarchive:
+        src: "/var/tmp/nanohpc-slurm/slurm-{{ nanohpc.slurm.version }}.tar.bz2"
+        dest: /var/tmp/nanohpc-slurm
+        remote_src: true
+        creates: "/var/tmp/nanohpc-slurm/slurm-{{ nanohpc.slurm.version }}/debian/control"
+
+    - name: Install Slurm's build dependencies
+      ansible.builtin.command:
+        cmd: mk-build-deps --install --remove --tool "apt-get -y --no-install-recommends" debian/control
+        chdir: "/var/tmp/nanohpc-slurm/slurm-{{ nanohpc.slurm.version }}"
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      changed_when: true
+
+    - name: Build the Slurm packages (takes 10 to 30 minutes)
+      ansible.builtin.command:
+        cmd: "debuild --no-lintian -b -uc -us -j{{ ansible_facts.processor_nproc }}"
+        chdir: "/var/tmp/nanohpc-slurm/slurm-{{ nanohpc.slurm.version }}"
+      async: 5400
+      poll: 30
+      changed_when: true
+
+    - name: List the built packages
+      ansible.builtin.find:
+        paths: /var/tmp/nanohpc-slurm
+        patterns: "slurm-smd*_{{ nanohpc.slurm.version }}-*.deb"
+      register: built_packages
+
+    - name: Require the packages nanoHPC installs
+      ansible.builtin.assert:
+        that: >-
+          built_packages.files | map(attribute='path') | map('basename')
+          | select('match', item ~ '_') | list | length == 1
+        fail_msg: "The Slurm build did not produce {{ item }}. See the build output in /var/tmp/nanohpc-slurm on {{ inventory_hostname }}."
+        quiet: true
+      loop: "{{ nanohpc.slurm.packages.common + nanohpc.slurm.packages.front + nanohpc.slurm.packages.compute }}"
+
+    - name: Copy the packages to the administrator's machine
+      ansible.builtin.fetch:
+        src: "{{ item.path }}"
+        dest: "{{ nanohpc.slurm.cache }}/{{ slurm_kind }}/"
+        flat: true
+      loop: "{{ built_packages.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: Mark the cached packages as complete
+      ansible.builtin.copy:
+        dest: "{{ nanohpc.slurm.cache }}/{{ slurm_kind }}/complete"
+        content: "Slurm {{ nanohpc.slurm.version }} built on {{ inventory_hostname }}\n"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+# Tasks run on all machines step by step, so the build above has finished before this check.
+- name: Check that the packages for this kind of machine are cached
+  ansible.builtin.stat:
+    path: "{{ nanohpc.slurm.cache }}/{{ slurm_kind }}/complete"
+  register: slurm_cache_ready
+  delegate_to: localhost
+  become: false
+
+- name: Require the cached packages
+  ansible.builtin.assert:
+    that: slurm_cache_ready.stat.exists
+    fail_msg: "No Slurm packages for {{ slurm_kind }}: the build on {{ slurm_builder }} did not finish. See its errors above."
+    quiet: true
+
+- name: Choose the packages for this machine
+  ansible.builtin.set_fact:
+    slurm_wanted: >-
+      {{ nanohpc.slurm.packages.common
+         + (nanohpc.slurm.packages.front if inventory_hostname in groups['role_front'] else [])
+         + (nanohpc.slurm.packages.compute if inventory_hostname in groups['role_compute'] else []) }}
+
+- name: Create the package folder
+  ansible.builtin.file:
+    path: /var/cache/nanohpc/slurm
+    state: directory
+    mode: "0755"
+
+- name: Copy the Slurm packages
+  ansible.builtin.copy:
+    src: "{{ lookup('ansible.builtin.fileglob', nanohpc.slurm.cache ~ '/' ~ slurm_kind ~ '/' ~ item ~ '_*.deb') }}"
+    dest: /var/cache/nanohpc/slurm/
+    mode: "0644"
+  loop: "{{ slurm_wanted }}"
+
+- name: Install the Slurm packages
+  ansible.builtin.apt:
+    deb: "/var/cache/nanohpc/slurm/{{ lookup('ansible.builtin.fileglob', nanohpc.slurm.cache ~ '/' ~ slurm_kind ~ '/' ~ item ~ '_*.deb') | basename }}"
+    state: present
+  loop: "{{ slurm_wanted }}"
+
+# Slurm's MPI plugin loads libpmix.so, which Ubuntu ships only in the -dev package.
+- name: Install the PMIx library for Slurm's MPI support
+  ansible.builtin.apt:
+    name: libpmix-dev
+    state: present
+    install_recommends: false

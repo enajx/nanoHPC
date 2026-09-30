@@ -5,5 +5,5 @@ ubuntu: "24.04"
 fake_gpus: [gpu4, gpu2, gpu4i]
 vms:
   default: {cpus: 1, memory_gb: 1, disk_gb: 10}
-  front: {cpus: 2, memory_gb: 2, disk_gb: 20}
+  front: {cpus: 2, memory_gb: 3, disk_gb: 20}   # builds Slurm, runs MariaDB
 extra_disk_gb: 10

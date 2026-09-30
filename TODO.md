@@ -39,6 +39,7 @@ flowchart LR
 - [x] Written example `cluster.yml` files (the 6-node test cluster, and a minimal front node + one GPU node) are agreed with the user as the target format.
 - [x] The administrator describes the whole cluster in one `cluster.yml`: front node, compute nodes (GPU or CPU-only, mixed NVIDIA models), optional storage and backup machines, users, partitions, and queue policy.
 - [x] Partitions and their limits are defined by the administrator, not fixed to `main` and `interactive`.
+- [x] Each partition can accept only batch jobs, only the interactive shell, or any job (`jobs: batch | interactive | any`), with clear messages when a job is refused.
 - [x] An invalid configuration is rejected before any machine is changed, with a message that names the wrong field.
 
 ### Simulated cluster
@@ -53,22 +54,28 @@ flowchart LR
 
 ### Cluster setup
 
-- [ ] Slurm is built from the official source (newest stable version, then pinned) for each CPU type and installed on all machines.
-- [ ] Ubuntu 22.04, 24.04, and 26.04 are supported.
-- [ ] Users listed in the configuration are created on every machine with the same UID and their SSH keys. Login is by SSH key only; password login is off.
-- [ ] If a machine already has a listed user with a different UID, or a local `/home` with data, the deploy stops on that machine without changing it, and says what conflicts and what to do next.
+- [x] Slurm is built from the official source (newest stable version, then pinned: 26.05.4) for each CPU type and installed on all machines. Checked on ARM64 (simulated cluster).
+- [ ] The Slurm build is checked on x86 (a deploy on the GitHub Actions Linux runner, run by hand once before the release).
+- [ ] Ubuntu 22.04, 24.04, and 26.04 are supported, checked with a deploy on the simulated cluster for each. Only 24.04 is tested so far. 26.04 ships `sudo-rs` instead of `sudo`: check that sudo by forwarded key (PAM, `env_keep`, `visudo`) works there.
+- [x] Users listed in the configuration are created on every machine with the same UID and their SSH keys. Login is by SSH key only; password login is off.
+- [x] If a machine already has a listed user with a different UID or group ID, the deploy stops on that machine without changing it, and says what conflicts and what to do next.
+- [ ] If a machine has a local `/home` with data, the deploy stops on that machine without changing it, and says what to do next.
 - [ ] `nanohpc fix-uid USER MACHINE` harmonises a user's UID on one machine safely, only when the administrator runs it: it refuses while the user has running processes, and lists the files it will re-own before changing anything.
-- [ ] Users can log in to the front node. Only administrators can log in to the other machines directly.
-- [ ] The Munge key and metrics certificates are created and copied to all machines automatically.
-- [ ] GPU nodes are checked for the GPU count in the configuration, with a clear message if the NVIDIA driver is missing or the count differs.
+- [x] Users can log in to the front node. Only administrators can log in to the other machines directly.
+- [x] nanoHPC never adds passwordless sudo rules. Administrators listed in `cluster.yml` use `sudo` through their forwarded SSH key (`ssh -A`, `pam_ssh_agent_auth`), by hand and for later deploys, so no password is typed or stored.
+- [x] `nanohpc deploy` checks sudo on every machine before changing anything. The first setup of a machine needs root the normal way: if sudo needs a password and someone is at a terminal, it asks once and keeps it in memory for that run only; if no one can type it (for example an agent), it stops and explains the options (such as running that one command by hand with `! nanohpc deploy` in Claude Code).
+- [x] The Munge key is created and copied to all machines automatically.
+- [ ] The metrics certificates are created and copied to all machines automatically.
+- [x] GPU nodes are checked for the GPU count in the configuration, with a clear message if the NVIDIA driver is missing or the count differs.
 - [ ] nanoHPC never formats a disk. The home and scratch disks named in the configuration must already have a filesystem; nanoHPC checks its type and mounts it, and stops with the command to run if the disk has no filesystem.
 - [ ] `/home` is shared from the front node, or from a separate storage machine, to all machines, with the per-user quotas from the configuration.
 - [ ] Each compute node has local scratch, and old scratch files are cleaned up automatically.
-- [ ] Partitions work with the GPU fair-share priority and per-user limits from the configuration.
+- [x] Partitions work with the GPU fair-share priority and per-user limits from the configuration.
 - [ ] `cluster-submit` runs a job on a private scratch copy of the project and copies declared outputs back.
 - [ ] uv is available to users on all machines.
 - [ ] Health checks report broken Slurm services, full disks, and stale GPU readings.
-- [ ] On the simulated cluster, Slurm schedules GPU jobs on the fake GPU nodes, and a fake exporter reports GPU metrics.
+- [x] On the simulated cluster, Slurm schedules GPU jobs on the fake GPU nodes.
+- [ ] On the simulated cluster, a fake exporter reports GPU metrics.
 
 ### Monitoring and website
 
@@ -92,7 +99,7 @@ flowchart LR
 
 - [ ] `nanohpc` is installed with `uv tool install` and runs from any machine with SSH access to the cluster.
 - [ ] `nanohpc init` is a wizard that writes a whole `cluster.yml` with simple defaults, and probes the machines over SSH for CPUs, memory, and GPU type and count.
-- [ ] The wizard guides the administrator through preparing the machines (for example making the filesystems on the home and scratch disks), with hints for each step and the option to skip and do it themselves.
+- [ ] The wizard guides the administrator through preparing the machines (for example making the filesystems on the home and scratch disks), with hints for each step and the option to skip and do it themselves. It mentions `ssh-add -c` (confirm each use of the key, for example to watch an agent) as an option, not the default, and says that a deploy uses the key for every sudo call, so `-c` asks many times during a deploy.
 - [ ] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid`. The deploy's stop on a UID conflict stays as a safety net.
 - [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
 - [ ] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster.
@@ -103,7 +110,7 @@ flowchart LR
 
 - [ ] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website.
 - [ ] A full setup is tested on real x86 machines, and once on a real GPU machine for the NVIDIA driver and CUDA.
-- [ ] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems.
+- [ ] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option.
 - [ ] The repository is published under the MIT license.
 - [ ] A nice retro-style and/or ASCII animation of the project exists, to use as promo on LinkedIn when sharing the project in the open.
 

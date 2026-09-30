@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -58,7 +59,7 @@ class SimPlanTest(unittest.TestCase):
     def test_vm_sizes_and_disks(self) -> None:
         plan = plan_of(SIM / "everyday.yml")
         vms = {vm.machine: vm for vm in plan.vms}
-        self.assertEqual((vms["front"].cpus, vms["front"].memory_gb, vms["front"].disk_gb), (2, 2, 20))
+        self.assertEqual((vms["front"].cpus, vms["front"].memory_gb, vms["front"].disk_gb), (2, 3, 20))
         self.assertEqual((vms["cpu1"].cpus, vms["cpu1"].memory_gb), (1, 1))
         self.assertEqual(vms["front"].instance, "nanohpc-everyday-front")
         # One extra disk per device path, attached in device order (/dev/vdb, /dev/vdc, ...).
@@ -147,10 +148,11 @@ class SimClusterTest(unittest.TestCase):
         sim_name = os.environ.get("NANOHPC_SIM_FILE", "everyday")
         sim = SIM / f"{sim_name}.yml"
         state = ROOT / ".nanohpc-sim" / sim_name
+        try_down = True
+        # Registered first, so VMs are removed even when `sim up` itself fails.
+        self.addCleanup(lambda: try_down and self.run_command("uv", "run", "nanohpc", "sim", "down", str(sim)))
         result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(sim))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        try_down = True
-        self.addCleanup(lambda: try_down and self.run_command("uv", "run", "nanohpc", "sim", "down", str(sim)))
 
         # The generated cluster.yml is valid and holds the VMs' real addresses.
         result = self.run_command("uv", "run", "nanohpc", "validate", str(state / "cluster.yml"))
@@ -198,6 +200,212 @@ class SimClusterTest(unittest.TestCase):
         disks = self.run_command("limactl", "disk", "ls", "--json").stdout
         self.assertNotIn(f"nanohpc-{sim_name}-", disks)
         self.assertFalse(state.exists())
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimDeployTest(unittest.TestCase):
+    """End to end: `nanohpc sim deploy` sets up Slurm, users, SSH access, sudo, and Munge on the everyday
+    cluster. Real Lima VMs. The first run builds Slurm on the front VM (tens of minutes); later runs use the
+    cached packages. The users get a key generated for the test, so real logins can be tried."""
+
+    sim = SIM / "everyday.yml"
+    state = ROOT / ".nanohpc-sim" / "everyday"
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.keys = Path(temporary.name)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(self.keys / "id")], check=True)
+        # A private SSH agent holding the test key, like an administrator's own agent.
+        self.agent_socket = str(self.keys / "agent.sock")
+        agent = subprocess.Popen(["ssh-agent", "-D", "-a", self.agent_socket], stdout=subprocess.DEVNULL)
+        self.addCleanup(agent.wait)
+        self.addCleanup(agent.terminate)
+        for _ in range(50):
+            if Path(self.agent_socket).exists():
+                break
+            time.sleep(0.1)
+        subprocess.run(
+            ["ssh-add", "-q", str(self.keys / "id")], env={**os.environ, "SSH_AUTH_SOCK": self.agent_socket}, check=True
+        )
+
+    def run_command(
+        self, *arguments: str, stdin: str | None = None, agent: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a command in the repository; with `agent`, the test SSH agent is the only one visible."""
+        environment = {key: value for key, value in os.environ.items() if key != "SSH_AUTH_SOCK"}
+        if agent:
+            environment["SSH_AUTH_SOCK"] = self.agent_socket
+        return subprocess.run(
+            arguments, cwd=ROOT, input=stdin, capture_output=True, text=True, check=False, env=environment
+        )
+
+    def ssh(self, machine: str, command: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+        """Run a command on a simulated machine as the VM's default user."""
+        return self.run_command("ssh", "-F", str(self.state / "ssh_config"), machine, command, stdin=stdin)
+
+    def ssh_config_for(self, user: str) -> Path:
+        """Write an SSH config that logs in to every machine as `user` with the test key and agent forwarding."""
+        text = (self.state / "ssh_config").read_text()
+        lines = []
+        for line in text.splitlines():
+            if line.strip().startswith("User "):
+                line = f"  User {user}"
+            elif line.strip().startswith("IdentityFile "):
+                line = f"  IdentityFile {self.keys / 'id'}\n  ForwardAgent yes"
+            lines.append(line)
+        path = self.keys / f"ssh_config_{user}"
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def as_user(self, user: str, machine: str, command: str, agent: bool) -> subprocess.CompletedProcess[str]:
+        """Log in as a cluster user with the test key and run a command."""
+        config = self.ssh_config_for(user)
+        return self.run_command("ssh", "-F", str(config), "-o", "BatchMode=yes", machine, command, agent=agent)
+
+    def on_front(self, command: str) -> str:
+        """Run a command on the front node, require success, and return its output."""
+        result = self.ssh("front", command)
+        self.assertEqual(result.returncode, 0, f"{command}\n{result.stdout}{result.stderr}")
+        return result.stdout
+
+    def deploy(self, ssh_config: Path, agent: bool) -> subprocess.CompletedProcess[str]:
+        """Run `nanohpc sim deploy` (it knows the fake GPUs) through a given SSH config."""
+        return self.run_command(
+            "uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--ssh-config", str(ssh_config), agent=agent
+        )  # fmt: skip
+
+    def test_deploy(self) -> None:
+        # Registered first, so VMs are removed even when `sim up` itself fails.
+        self.addCleanup(self.run_command, "uv", "run", "nanohpc", "sim", "down", str(self.sim))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(self.sim))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # Give the users the test key, in the generated cluster.yml that `sim deploy` reads.
+        cluster = self.state / "cluster.yml"
+        config = yaml.safe_load(cluster.read_text())
+        public_key = (self.keys / "id.pub").read_text().strip()
+        for user in config["users"]:
+            user["ssh_keys"] = [public_key]
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr)
+        machines = config["machines"]
+
+        with self.subTest("users and UIDs on every machine"):
+            for machine in machines:
+                passwd = self.ssh(machine, "getent passwd alice bob").stdout
+                self.assertIn("alice:x:2000:2000:", passwd, machine)
+                self.assertIn("bob:x:2001:2001:", passwd, machine)
+
+        with self.subTest("key-only login: users on the front node, only administrators elsewhere"):
+            for machine in machines:
+                settings = self.ssh(machine, "sudo sshd -T").stdout.lower()
+                self.assertIn("passwordauthentication no", settings, machine)
+                self.assertEqual(self.as_user("alice", machine, "true", agent=False).returncode, 0, machine)
+                bob = self.as_user("bob", machine, "true", agent=False)
+                self.assertEqual(bob.returncode == 0, machine == "front", f"{machine}: {bob.stderr}")
+
+        with self.subTest("administrators' forwarded key unlocks sudo, nobody else's"):
+            # An empty stdin makes sudo fail at once if it would ask for a password.
+            sudo = "sudo -S -p '' true </dev/null"
+            self.assertEqual(self.as_user("alice", "gpu4", sudo, agent=True).returncode, 0)
+            self.assertNotEqual(self.as_user("alice", "gpu4", sudo, agent=False).returncode, 0)
+            self.assertNotEqual(self.as_user("bob", "front", sudo, agent=True).returncode, 0)
+            self.assertEqual(self.ssh("gpu4", "test -e /etc/sudoers.d/nanohpc-admins").returncode, 1)
+
+        with self.subTest("one Munge key across machines"):
+            credential = self.ssh("front", "munge -n").stdout
+            for machine in ("gpu4", "cpu1"):
+                self.assertEqual(self.ssh(machine, "unmunge", stdin=credential).returncode, 0, machine)
+
+        with self.subTest("Slurm nodes and partitions"):
+            nodes = sorted(line for line in self.on_front("sinfo -h -N -o '%N %P %T'").split("\n") if line)
+            expected = ["cpu1 main* idle", "gpu2 main* idle", "gpu4 interactive idle", "gpu4 main* idle"]
+            self.assertEqual(nodes, sorted([*expected, "gpu4i interactive idle"]))
+            self.assertIn("Gres=gpu:a6000:4", self.on_front("scontrol show node gpu4"))
+            self.assertIn("26.05.4", self.on_front("sinfo --version"))
+
+        with self.subTest("jobs run where they fit, with equal fair-share"):
+            submit = "cd /tmp && sudo -u alice sbatch --parsable --wait -o /dev/null"
+            gpu_job = self.on_front(f"{submit} -p main --gpus=1 --wrap hostname").strip()
+            cpu_job = self.on_front(f"{submit} -p main -w cpu1 --wrap hostname").strip()
+            for job, allowed in ((gpu_job, {"gpu4", "gpu2"}), (cpu_job, {"cpu1"})):
+                # Accounting records a finished job a moment after `sbatch --wait` returns.
+                command = (
+                    f"for i in $(seq 20); do sacct -X -n -P -j {job} -o State | grep -q COMPLETED && break; sleep 1; done;"
+                    f" sacct -X -n -P -j {job} -o State,NodeList"
+                )
+                state, node = self.on_front(command).strip().split("|")
+                self.assertEqual(state, "COMPLETED", job)
+                self.assertIn(node, allowed, job)
+            shares = self.on_front("sshare -n -P -A labcluster -a -o User,RawShares")
+            self.assertIn("alice|1", shares.split())
+            self.assertIn("bob|1", shares.split())
+
+        with self.subTest("partition rules and limits"):
+            shell = self.run_command(
+                "ssh", "-tt", "-F", str(self.state / "ssh_config"), "front",
+                "cd /tmp && sudo -u alice srun -p interactive --pty bash -l", stdin="exit\n",
+            )  # fmt: skip
+            self.assertEqual(shell.returncode, 0, shell.stdout + shell.stderr)
+            refused = self.ssh("front", "cd /tmp && sudo -u alice srun -p main hostname")
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("main accepts submitted background jobs only", refused.stderr)
+            refused = self.ssh("front", "cd /tmp && sudo -u alice srun -p interactive hostname")
+            self.assertIn("interactive accepts only the interactive shell", refused.stderr)
+            refused = self.ssh("front", "cd /tmp && sudo -u alice sbatch -p main --gpus=7 --wrap hostname")
+            self.assertIn("main allows at most 6 GPUs", refused.stderr)
+            self.assertEqual(
+                self.on_front("sacctmgr -n -P show qos interactive format=MaxTRESPU").strip(), "gres/gpu=2"
+            )
+
+        with self.subTest("a second deploy changes nothing"):
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            recap = [line for line in result.stdout.splitlines() if " : ok=" in line]
+            self.assertEqual(len(recap), len(machines), result.stdout[-4000:])
+            for line in recap:
+                self.assertIn("changed=0 ", line)
+
+        with self.subTest("a later deploy by an administrator through the forwarded key, without a password"):
+            result = self.deploy(self.ssh_config_for("alice"), agent=True)
+            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            # The VM's default account that deployed first is still allowed.
+            self.assertEqual(self.ssh("gpu4", "true").returncode, 0)
+
+        with self.subTest("with no key for sudo and no terminal, deploy stops before any change"):
+            result = self.deploy(self.ssh_config_for("alice"), agent=False)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("Nothing was changed: sudo needs a password on", result.stderr)
+            self.assertNotIn("PLAY", result.stdout)
+
+        with self.subTest("removing a user from cluster.yml takes away their login"):
+            self.assertEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
+            without_bob = yaml.safe_load(cluster.read_text())
+            without_bob["users"] = [user for user in without_bob["users"] if user["name"] != "bob"]
+            cluster.write_text(yaml.safe_dump(without_bob))
+            result = self.deploy(self.state / "ssh_config", agent=False)
+            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            self.assertNotEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
+            self.assertEqual(self.ssh("front", "test -e /etc/ssh/authorized_keys/bob").returncode, 1)
+
+        with self.subTest("a UID conflict stops that machine only"):
+            self.assertEqual(self.ssh("gpu2", "sudo useradd -u 3005 carol").returncode, 0)
+            changed = yaml.safe_load(cluster.read_text())
+            changed["users"] += [
+                {"name": "carol", "uid": 2005, "ssh_keys": [public_key]},
+                {"name": "dave", "uid": 2006, "ssh_keys": [public_key]},
+            ]
+            cluster.write_text(yaml.safe_dump(changed))
+            result = self.deploy(self.state / "ssh_config", agent=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "gpu2: user carol has UID 3005 and primary group ID 3005, but cluster.yml says 2005", result.stdout
+            )
+            self.assertIn("carol:x:3005:", self.ssh("gpu2", "getent passwd carol").stdout)
+            # gpu2 was left unchanged: the other new user was not created there, but was elsewhere.
+            self.assertEqual(self.ssh("gpu2", "getent passwd dave").returncode, 2)
+            self.assertIn("dave:x:2006:", self.ssh("gpu4", "getent passwd dave").stdout)
 
 
 if __name__ == "__main__":

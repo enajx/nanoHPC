@@ -5,7 +5,10 @@ description = "Slurm cluster with monitoring and a user website for small lab cl
 readme = "PROJECT.md"
 license = "MIT"
 requires-python = ">=3.12"
-dependencies = ["pyyaml>=6"]
+dependencies = [
+    "ansible-core>=2.21.4",
+    "pyyaml>=6",
+]
 
 [project.scripts]
 nanohpc = "nanohpc.cli:main"

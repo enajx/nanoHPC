@@ -36,7 +36,7 @@ Everyday cluster: a front node, 4 compute nodes, and a storage machine (about 7 
 | 4-GPU interactive node | fake GPUs, `interactive` partition only |
 
 - It is run with both `/home` layouts: served from the front node with the backup going to the storage machine, and served from the storage machine with no backup.
-- A separate sim file (`tests/sim/large.yml`) scales it up to 20 compute nodes, for occasional checks that configuration, Slurm, dashboards, and the website handle more machines. With 1 GB per VM this needs about 22 GB of RAM.
+- A separate sim file (`tests/sim/large.yml`) scales it up to 20 compute nodes, for occasional checks that configuration, Slurm, dashboards, and the website handle more machines. With 1 GB per compute VM and 3 GB for the front node this needs about 24 GB of RAM.
 
 ## Using the simulated cluster
 
@@ -51,6 +51,8 @@ Requires [Lima](https://lima-vm.io) (`brew install lima` on macOS). Each test cl
 ```
 uv run nanohpc sim up tests/sim/everyday.yml     # create and start the VMs (reuses running or stopped ones)
 ssh -F .nanohpc-sim/everyday/ssh_config gpu4     # log in to a machine by its name
+uv run nanohpc sim deploy tests/sim/everyday.yml # set it up with nanoHPC (first run builds Slurm, then cached)
+# --ssh-config FILE deploys through another SSH config, e.g. as a cluster administrator with a forwarded key
 uv run nanohpc sim down tests/sim/everyday.yml   # delete the VMs, their disks, and .nanohpc-sim/everyday/
 ```
 
@@ -68,15 +70,18 @@ How the VMs are made:
 
 - One Lima VM per machine, on Lima's user-v2 network: the VMs reach each other, and no sudo is needed on the host.
 - Extra disks: each device path in the configuration (`home.device`, `scratch.device`) becomes an extra Lima disk. A VM's extra disks appear as `/dev/vdb`, `/dev/vdc`, ... in the order they are attached, so a simulated `cluster.yml` must use those names in that order. The validator of the sim file checks this.
-- The VM's CPUs and memory are set in the sim file and are smaller than the hardware written in `cluster.yml`. Slurm must be told to accept the configured values on simulated machines.
+- The VM's CPUs and memory are set in the sim file and are smaller than the hardware written in `cluster.yml`. `nanohpc sim deploy` sets `SlurmdParameters=config_overrides` so Slurm accepts the configured values.
 
-Real-VM test (slow, off by default): `NANOHPC_SIM=1 uv run python -m unittest tests.test_sim.SimClusterTest`. It brings a cluster up, checks SSH, sudo, the cluster network, and the disks on every machine, then brings it down. `NANOHPC_SIM_FILE=large` picks another sim file.
+Real-VM tests (slow, off by default, `NANOHPC_SIM=1`):
+
+- `uv run python -m unittest tests.test_sim.SimClusterTest`: brings a cluster up, checks SSH, sudo, the cluster network, and the disks on every machine, then brings it down. `NANOHPC_SIM_FILE=large` picks another sim file.
+- `uv run python -m unittest tests.test_sim.SimDeployTest`: deploys the everyday cluster with a key generated for the test, and checks users, real SSH logins (users on the front node, administrators everywhere), sudo by forwarded key through a test SSH agent, Munge, Slurm nodes, jobs, partition rules, fair-share, a repeat deploy with no changes, a later deploy as an administrator with no password, the stop when sudo needs a password and no one can type it, and a UID conflict.
 
 ## Fake GPUs
 
 A real NVIDIA GPU cannot be simulated. The two things nanoHPC depends on are faked. Which machines have fake GPUs is set in a separate test-only file, so `cluster.yml` only describes real setups.
 
-- **Scheduling**: Slurm accepts GPUs defined only by a count, with no device files (`Gres=gpu:4` and a `gres.conf` line without `File=`). Jobs that request GPUs are scheduled, queued, and counted in fair-share like on real GPUs.
+- **Scheduling**: Slurm ignores GPUs without device files ("Ignoring file-less GPU"), so a `gres.conf` with only a count does not work. On machines with fake GPUs, nanoHPC creates placeholder device files `/dev/nvidia0`, `/dev/nvidia1`, ... with NVIDIA's device number (195), through `/etc/tmpfiles.d/nanohpc-fake-gpus.conf`, and `gres.conf` is the same as on real GPU machines. With no driver loaded, nothing can open these files, but Slurm schedules, queues, and counts GPU jobs in fair-share like on real GPUs. The NVIDIA driver check is skipped on these machines.
 - **Metrics**: a small fake GPU exporter reports made-up utilization and memory, so the collector, machine status rules, and Grafana GPU charts work the same.
 
 Not covered: the NVIDIA driver, CUDA, and binding a job to a specific GPU. These need real hardware.
