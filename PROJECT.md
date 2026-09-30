@@ -118,7 +118,8 @@ flowchart LR
 
 - The design decisions were agreed on 2026-09-30 ([plan-port.md](md/plan-port.md)).
 - Built: the `cluster.yml` format ([examples/cluster.yml](examples/cluster.yml), [examples/minimal.yml](examples/minimal.yml)) and `nanohpc validate`, which checks a configuration and reports every error with its field path (`src/nanohpc/config.py`). Tests: `uv run python -m unittest discover -s tests`.
-- Next: the simulated cluster (`nanohpc sim up/down`, Lima VMs).
+- Built: the simulated test cluster, `nanohpc sim up/down` with Lima VMs ([testing.md](md/testing.md)). Checked on macOS (Apple Silicon) with the everyday, home-on-storage, and 20-node clusters. The Linux x86 check runs on GitHub Actions and has not passed yet.
+- Next: the Linux check on GitHub Actions, then the port of Slurm, accounts, and storage.
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
