@@ -71,8 +71,10 @@ users:
 partitions:
   main:
     default: true
+    jobs: batch
     max_time: "24:00:00"
   interactive:
+    jobs: interactive
     max_time: "08:00:00"
     max_gpus_per_user: 2
 

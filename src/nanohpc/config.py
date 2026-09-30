@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 ROLES = ("front", "home", "backup", "compute")
+JOB_TYPES = ("batch", "interactive", "any")  # batch: sbatch only; interactive: only the documented shell
 COMPUTE_FIELDS = ("cpu", "memory_mb", "gpu", "partitions", "scratch")
 MACHINE_FIELDS = ("address", "aliases", "roles", "home", "backup", *COMPUTE_FIELDS)
 TOP_FIELDS = (
@@ -292,7 +293,10 @@ def check_partitions(checker: Checker, value: Any) -> dict[str, dict[str, Any]]:
         if not isinstance(name, str) or not PARTITION_NAME.fullmatch(name):
             checker.fail(f"{path}:", "the name must be lowercase letters, digits, _ or -, starting with a letter")
             continue
-        partition = checker.mapping(item, path, ("max_time",), ("default", "max_gpus_per_user"))
+        if name == "normal":
+            checker.fail(f"{path}:", "the name normal is reserved by Slurm")
+            continue
+        partition = checker.mapping(item, path, ("max_time",), ("default", "jobs", "max_gpus_per_user"))
         if partition is None:
             continue
         if "max_time" in partition:
@@ -302,6 +306,9 @@ def check_partitions(checker: Checker, value: Any) -> dict[str, dict[str, Any]]:
                 f"{path}.max_time",
                 'a Slurm time in quotes, like "24:00:00" or "7-00:00:00"',
             )
+        partition.setdefault("jobs", "any")
+        if partition["jobs"] not in JOB_TYPES:
+            checker.fail(f"{path}.jobs", "must be batch, interactive, or any")
         partition.setdefault("default", False)
         checker.boolean(partition["default"], f"{path}.default")
         partition.setdefault("max_gpus_per_user", "unlimited")

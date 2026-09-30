@@ -1,0 +1,26 @@
+- name: Resolve every cluster machine by name, without depending on outside DNS
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} nanoHPC cluster machines"
+    block: "{{ lookup('file', nanohpc.files + '/hosts') }}"
+
+- name: Create the nanoHPC configuration directory
+  ansible.builtin.file:
+    path: /etc/nanohpc
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Refresh the package lists
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Require synchronized time (Munge refuses credentials across clock differences)
+  ansible.builtin.command: timedatectl show -p NTPSynchronized --value
+  register: clock_sync
+  changed_when: false
+  until: clock_sync.stdout | trim == 'yes'
+  retries: 12
+  delay: 5

@@ -1,0 +1,134 @@
+# Stop on a machine before any change when it cannot be set up safely.
+# Every check here only reads; a machine that fails one is left exactly as it was.
+
+- name: Require a supported Ubuntu release
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version in ['22.04', '24.04', '26.04']
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
+      nanoHPC supports Ubuntu 22.04, 24.04, and 26.04. Nothing was changed on this machine.
+    quiet: true
+
+- name: Read the existing user accounts
+  ansible.builtin.getent:
+    database: passwd
+
+- name: Read the existing groups
+  ansible.builtin.getent:
+    database: group
+
+- name: List the accounts nanoHPC manages (users from cluster.yml, and the slurm service account)
+  ansible.builtin.set_fact:
+    managed_accounts: "{{ nanohpc.users + [{'name': 'slurm', 'uid': nanohpc.slurm.uid}] }}"
+
+- name: Stop if a listed user exists with a different UID or primary group
+  ansible.builtin.assert:
+    that: >-
+      item.name not in ansible_facts.getent_passwd
+      or ((ansible_facts.getent_passwd[item.name][1] | int) == item.uid
+          and (ansible_facts.getent_passwd[item.name][2] | int) == item.uid)
+    fail_msg: >-
+      {{ inventory_hostname }}: user {{ item.name }} has UID {{ ansible_facts.getent_passwd[item.name][1] | default('?') }}
+      and primary group ID {{ ansible_facts.getent_passwd[item.name][2] | default('?') }}, but cluster.yml says {{ item.uid }} for both.
+      Nothing was changed on this machine. Harmonise the account on this machine first
+      (change its UID and group ID and re-own its files), then run deploy again.
+    quiet: true
+  loop: "{{ managed_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Stop if a listed UID belongs to another user
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.getent_passwd | dict2items
+      | selectattr('value.1', 'equalto', item.uid | string)
+      | rejectattr('key', 'equalto', item.name) | list | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: UID {{ item.uid }} (for {{ item.name }} in cluster.yml) already belongs to
+      {{ ansible_facts.getent_passwd | dict2items | selectattr('value.1', 'equalto', item.uid | string) | map(attribute='key') | join(', ') }}.
+      Nothing was changed on this machine. Choose another UID in cluster.yml or harmonise the accounts first.
+    quiet: true
+  loop: "{{ managed_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Stop if a listed user's group exists with another group ID
+  ansible.builtin.assert:
+    that: >-
+      item.name not in ansible_facts.getent_group
+      or (ansible_facts.getent_group[item.name][1] | int) == item.uid
+    fail_msg: >-
+      {{ inventory_hostname }}: group {{ item.name }} has group ID {{ ansible_facts.getent_group[item.name][1] | default('?') }},
+      but nanoHPC gives it {{ item.uid }} (the same as the user's UID). Nothing was changed on this machine.
+    quiet: true
+  loop: "{{ managed_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Stop if a listed group ID belongs to another group
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.getent_group | dict2items
+      | selectattr('value.1', 'equalto', item.uid | string)
+      | rejectattr('key', 'equalto', item.name) | list | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: group ID {{ item.uid }} (for {{ item.name }}) already belongs to group
+      {{ ansible_facts.getent_group | dict2items | selectattr('value.1', 'equalto', item.uid | string) | map(attribute='key') | join(', ') }}.
+      Nothing was changed on this machine. Choose another UID in cluster.yml or harmonise the groups first.
+    quiet: true
+  loop: "{{ managed_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Read the NVIDIA GPUs on machines with real GPUs
+  ansible.builtin.shell: |
+    if ! command -v nvidia-smi >/dev/null 2>&1; then echo "no-driver"; exit 0; fi
+    if ! output=$(nvidia-smi -L 2>&1); then echo "driver-error: $output"; exit 0; fi
+    printf '%s\n' "$output" | grep -c '^GPU ' || true
+  args:
+    executable: /bin/bash
+  register: gpu_check
+  changed_when: false
+  when: inventory_hostname in nanohpc.real_gpus
+
+- name: Require the NVIDIA driver and the GPU count from cluster.yml
+  ansible.builtin.assert:
+    that: gpu_check.stdout | trim == nanohpc.real_gpus[inventory_hostname] | string
+    fail_msg: >-
+      {{ inventory_hostname }}:
+      {% if gpu_check.stdout == 'no-driver' %}the NVIDIA driver is not installed (nvidia-smi not found). Install it first; nanoHPC does not install GPU drivers.
+      {% elif gpu_check.stdout.startswith('driver-error') %}nvidia-smi fails, so the NVIDIA driver is not working ({{ gpu_check.stdout[14:] | trim }}). Fix the driver first.
+      {% else %}nvidia-smi sees {{ gpu_check.stdout | trim }} GPUs, but cluster.yml says {{ nanohpc.real_gpus[inventory_hostname] }}.{% endif %}
+      Nothing was changed on this machine.
+    quiet: true
+  when: inventory_hostname in nanohpc.real_gpus
+
+# Facts are gathered through sudo, so they name root. The account nanoHPC logs in with must stay
+# allowed by SSH, so read it without sudo.
+- name: Read the account nanoHPC logs in with
+  ansible.builtin.command: id -un
+  become: false
+  register: login_account
+  changed_when: false
+
+- name: Remember the login account
+  ansible.builtin.set_fact:
+    nanohpc_login_user: "{{ login_account.stdout | trim }}"
+
+# An administrator's sudo comes from their key file, which this deploy removes when they are no longer
+# an administrator. Deploying as such an account would lose sudo halfway through, so stop first.
+- name: Look for a sudo key file of the login account
+  ansible.builtin.stat:
+    path: "/etc/security/nanohpc-sudo-keys/{{ nanohpc_login_user }}"
+  register: login_sudo_keys
+
+- name: Stop if the login account is a former administrator
+  ansible.builtin.assert:
+    that: not login_sudo_keys.stat.exists or nanohpc_login_user in nanohpc.admins
+    fail_msg: >-
+      {{ inventory_hostname }}: you are deploying as {{ nanohpc_login_user }}, who is no longer an administrator in
+      cluster.yml, so their sudo would be removed during this deploy. Nothing was changed on this machine.
+      Deploy as a current administrator.
+    quiet: true

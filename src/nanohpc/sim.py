@@ -253,7 +253,7 @@ def up(plan: SimPlan) -> Path:
             )  # fmt: skip
     print(f"starting {len(plan.vms)} VMs")
     starts = [
-        (vm, subprocess.Popen(["limactl", "start", "--tty=false", vm.instance], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True))
+        (vm, subprocess.Popen(["limactl", "start", "--tty=false", "--timeout=20m", vm.instance], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True))
         for vm in plan.vms
     ]  # fmt: skip
     failed = [(vm, process.communicate()[1]) for vm, process in starts if process.wait() != 0]

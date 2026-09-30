@@ -1,0 +1,62 @@
+# slurmd, GPUs, and resource limits on the compute machines.
+# Ported from SLURM-REAL's roles/slurm_compute.
+
+- name: Create the Slurm folders
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: slurm
+    mode: "0755"
+  loop:
+    - {path: /etc/slurm, owner: root}
+    - {path: /var/lib/slurm, owner: slurm}
+    - {path: /var/lib/slurm/slurmd, owner: slurm}
+    - {path: /var/log/slurm, owner: slurm}
+
+# The NVIDIA driver and GPU count are checked in the preflight role, before any change.
+
+# Simulated machines only: Slurm needs a device file per GPU, so placeholder files with NVIDIA's
+# device number stand in for the driver's. With no driver, nothing can open them.
+- name: Create placeholder GPU device files on machines with fake GPUs
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/nanohpc-fake-gpus.conf
+    content: |
+      # Managed by nanoHPC: placeholder GPU devices for a simulated cluster.
+      {% for index in range(nanohpc.fake_gpus[inventory_hostname]) %}
+      c /dev/nvidia{{ index }} 0666 root root - 195:{{ index }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  register: fake_gpu_devices
+  when: inventory_hostname in nanohpc.fake_gpus
+
+- name: Make the placeholder GPU device files now
+  ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/nanohpc-fake-gpus.conf
+  when: fake_gpu_devices.changed
+
+- name: Install slurm.conf and cgroup.conf
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/{{ item }}"
+    dest: "/etc/slurm/{{ item }}"
+    owner: root
+    group: slurm
+    mode: "0644"
+  loop: [slurm.conf, cgroup.conf]
+  notify: Restart slurmd
+
+- name: Install gres.conf
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/gres/{{ inventory_hostname }}.conf"
+    dest: /etc/slurm/gres.conf
+    owner: root
+    group: slurm
+    mode: "0644"
+  notify: Restart slurmd
+
+- name: Run slurmd
+  ansible.builtin.service:
+    name: slurmd
+    enabled: true
+    state: started

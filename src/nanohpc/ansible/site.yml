@@ -1,0 +1,33 @@
+# nanoHPC deploy playbook. `nanohpc deploy` generates the inventory, the `nanohpc` variables,
+# and the configuration files, then runs this playbook. Machines that fail a check are dropped
+# from the rest of the run without further changes; the others continue.
+
+- name: Check every machine before changing anything
+  hosts: all
+  become: true
+  roles: [preflight]
+
+- name: Base setup, users, and SSH access
+  hosts: all
+  become: true
+  roles: [base, accounts]
+
+- name: Munge authentication between Slurm machines
+  hosts: role_slurm
+  become: true
+  roles: [munge]
+
+- name: Build (once per Ubuntu release and CPU type) and install Slurm
+  hosts: role_slurm
+  become: true
+  roles: [slurm_packages]
+
+- name: Slurm controller and accounting on the front node
+  hosts: role_front
+  become: true
+  roles: [slurm_controller]
+
+- name: Slurm on the compute machines
+  hosts: role_compute
+  become: true
+  roles: [slurm_compute]

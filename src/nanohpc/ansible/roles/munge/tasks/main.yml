@@ -1,0 +1,52 @@
+# One Munge key for the whole cluster: the front node's key is copied to every Slurm machine.
+
+- name: Require the front node, which holds the cluster's Munge key
+  ansible.builtin.assert:
+    that: groups['role_front'][0] in ansible_play_hosts
+    fail_msg: "The front node {{ groups['role_front'][0] }} failed an earlier step, so the Munge key cannot be shared. Fix the front node first; see its errors above."
+    quiet: true
+
+- name: Install Munge
+  ansible.builtin.apt:
+    name: munge
+    state: present
+    install_recommends: false
+
+- name: Create the Munge key on the front node if there is none
+  ansible.builtin.command: mungekey --create --keyfile /etc/munge/munge.key
+  args:
+    creates: /etc/munge/munge.key
+  when: inventory_hostname in groups['role_front']
+
+- name: Read the front node's Munge key
+  ansible.builtin.slurp:
+    src: /etc/munge/munge.key
+  register: front_munge_key
+  delegate_to: "{{ groups['role_front'][0] }}"
+  run_once: true
+  no_log: true
+
+# The key is binary, so it travels base64-encoded and is decoded on the machine.
+- name: Install the cluster's Munge key
+  ansible.builtin.shell: |
+    set -eu
+    if printf '%s' "$KEY" | base64 -d | cmp -s - /etc/munge/munge.key; then exit 0; fi
+    printf '%s' "$KEY" | base64 -d > /etc/munge/munge.key.new
+    install -o munge -g munge -m 0400 /etc/munge/munge.key.new /etc/munge/munge.key
+    rm -f /etc/munge/munge.key.new
+    echo changed
+  environment:
+    KEY: "{{ front_munge_key.content }}"
+  register: munge_key
+  changed_when: "'changed' in munge_key.stdout"
+  no_log: true
+
+- name: Run Munge
+  ansible.builtin.service:
+    name: munge
+    enabled: true
+    state: "{{ 'restarted' if munge_key.changed else 'started' }}"
+
+- name: Check that Munge works on this machine
+  ansible.builtin.shell: munge -n | unmunge
+  changed_when: false
