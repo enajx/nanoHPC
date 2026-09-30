@@ -16,7 +16,9 @@ nanoHPC is a ready-made Slurm + monitoring tool for small heterogeneous lab clus
 - **GPU drivers**: installed beforehand by the administrator. nanoHPC checks the GPU count and stops with a clear message if it does not match.
 - **Configuration**: one `cluster.yml`. nanoHPC validates it and generates the Ansible files. The administrator does not need to know Ansible. Reuse SLURM-REAL's `filter_plugins/cluster_machine_config.py`.
 - **Wizard**: `nanohpc init` writes a whole `cluster.yml` with simple defaults, and probes the machines over SSH (CPUs, memory, GPU type and count). Example YAML files are provided too.
-- **Partitions**: defined by the administrator in `cluster.yml`, not fixed to `main` and `interactive`. The wizard and example files give simple defaults.
+- **Partitions**: defined by the administrator in `cluster.yml`, not fixed to `main` and `interactive`. The wizard and example files give simple defaults. Every partition has a time limit.
+- **Storage roles**: the `/home` machine and the backup machine do not run jobs (they cannot also have the compute role).
+- **Validation**: limits that no compute machine can meet (GPUs per user, memory per CPU, CPUs per GPU) are rejected. YAML syntax errors show Python's own error output (no `try`/`except`).
 - **Command**: `nanohpc` runs from any machine with SSH access to the cluster (the administrator's laptop or the front node), installed with `uv tool install`.
 - **Paths**: fixed `nanohpc` paths (`/etc/nanohpc`, `/var/lib/nanohpc`, ...). The cluster name only appears in the website, dashboards, and Slurm.
 - **Extras kept**: 5-year history, auto-deploy from Git (watching the administrator's configuration repository), Slack alerts.
@@ -30,13 +32,13 @@ nanoHPC is a ready-made Slurm + monitoring tool for small heterogeneous lab clus
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).
 - The tests only need a list of SSH machines, so other machines (cloud VMs, spare machines) can be used too.
-- Everyday test cluster: a front node and 5 compute nodes:
+- Everyday test cluster: a front node, 4 compute nodes, and a storage machine that runs no jobs:
   - 4 GPUs;
   - 2 GPUs;
   - CPU-only;
-  - backup storage;
   - 4 GPUs, `interactive` partition only.
-- Run with `/home` both on the front node and on a separate storage machine.
+- Run with `/home` on the front node (backup to the storage machine), and with `/home` on the storage machine (no backup).
+- Fake GPUs are set in a separate test-only file, not in `cluster.yml`.
 - An option scales it up to 20 compute nodes.
 - Fake GPUs: Slurm GPUs defined by count only, plus a fake GPU metrics exporter.
 
