@@ -1,0 +1,52 @@
+# Runs the simulated test cluster on a Linux x86 host (GitHub's runner, with KVM), to check that
+# `nanohpc sim up/down` works on Linux as well as on macOS. See md/testing.md.
+name: sim-linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/nanohpc/**"
+      - "tests/**"
+      - "examples/**"
+      - ".github/workflows/sim-linux.yml"
+
+jobs:
+  sim:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LIMA_VERSION: "2.2.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Allow KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install QEMU and Lima
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils
+          curl -fsSL "https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/lima-${LIMA_VERSION}-Linux-x86_64.tar.gz" | sudo tar Cxz /usr/local
+          limactl --version
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Unit tests
+        run: uv run python -m unittest discover -s tests
+
+      - name: Simulated cluster (real VMs)
+        env:
+          NANOHPC_SIM: "1"
+        run: uv run python -m unittest tests.test_sim.SimClusterTest
+
+      - name: Lima logs on failure
+        if: failure()
+        run: |
+          limactl list || true
+          for log in ~/.lima/*/ha.stderr.log; do echo "== $log"; tail -50 "$log"; done

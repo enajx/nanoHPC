@@ -43,13 +43,13 @@ flowchart LR
 
 ### Simulated cluster
 
-- [ ] One command creates the everyday test cluster as Lima VMs from a `cluster.yml`: a front node, 4 compute nodes (4 GPUs, 2 GPUs, CPU-only, 4 GPUs `interactive` only), and a storage machine, and removes it again.
-- [ ] The same command works on macOS (Apple Silicon) and Linux (x86).
-- [ ] The test cluster can be run with `/home` on the front node (backup to the storage machine) and with `/home` on the storage machine (no backup).
-- [ ] Fake GPUs are set in a separate test-only file, not in `cluster.yml`.
-- [ ] The test cluster can be scaled up to 20 compute nodes.
-- [ ] Fake GPUs: Slurm schedules GPU jobs on the fake GPU nodes, and a fake exporter reports GPU metrics.
-- [ ] The tests only need a list of SSH machines and a `cluster.yml`, so they also run against other machines (cloud VMs, spare machines).
+- [x] One command creates the everyday test cluster as Lima VMs from a `cluster.yml`: a front node, 4 compute nodes (4 GPUs, 2 GPUs, CPU-only, 4 GPUs `interactive` only), and a storage machine, and removes it again.
+- [x] The same command works on macOS (Apple Silicon).
+- [ ] The same command works on Linux (x86), checked on GitHub Actions.
+- [x] The test cluster can be run with `/home` on the front node (backup to the storage machine) and with `/home` on the storage machine (no backup).
+- [x] Fake GPUs are set in a separate test-only file, not in `cluster.yml`.
+- [x] The test cluster can be scaled up to 20 compute nodes.
+- [x] The tests only need a list of SSH machines and a `cluster.yml`, so they also run against other machines (cloud VMs, spare machines).
 
 ### Cluster setup
 
@@ -65,6 +65,7 @@ flowchart LR
 - [ ] `cluster-submit` runs a job on a private scratch copy of the project and copies declared outputs back.
 - [ ] uv is available to users on all machines.
 - [ ] Health checks report broken Slurm services, full disks, and stale GPU readings.
+- [ ] On the simulated cluster, Slurm schedules GPU jobs on the fake GPU nodes, and a fake exporter reports GPU metrics.
 
 ### Monitoring and website
 

@@ -1,0 +1,9 @@
+# Simulated test cluster: test-only file, never used on a real cluster (see md/testing.md).
+# Everyday cluster with /home on the storage machine and no backup.
+cluster: cluster-home-on-storage.yml
+ubuntu: "24.04"
+fake_gpus: [gpu4, gpu2, gpu4i]
+vms:
+  default: {cpus: 1, memory_gb: 1, disk_gb: 10}
+  front: {cpus: 2, memory_gb: 2, disk_gb: 20}
+extra_disk_gb: 10

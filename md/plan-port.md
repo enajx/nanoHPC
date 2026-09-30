@@ -41,6 +41,7 @@ nanoHPC is a ready-made Slurm + monitoring tool for small heterogeneous lab clus
 - Fake GPUs are set in a separate test-only file, not in `cluster.yml`.
 - An option scales it up to 20 compute nodes.
 - Fake GPUs: Slurm GPUs defined by count only, plus a fake GPU metrics exporter.
+- The Linux x86 host is checked on a GitHub Actions runner (the M1 Mac cannot run VMs inside a VM).
 
 ## Work order
 

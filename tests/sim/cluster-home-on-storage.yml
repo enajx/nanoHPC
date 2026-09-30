@@ -1,8 +1,6 @@
 # nanoHPC cluster configuration: the whole cluster in one file.
-# This example is the everyday simulated test cluster: a front node,
-# four compute nodes (4 GPUs, 2 GPUs, CPU-only, 4 GPUs interactive only),
-# and one storage machine that receives the backup. In the other test layout
-# the storage machine serves /home instead (roles: [home]) and there is no backup.
+# Simulated test cluster, second layout: the storage machine serves /home and there
+# is no backup. Otherwise the same as examples/cluster.yml.
 
 cluster:
   name: labcluster              # shown in the website, dashboards, and Slurm
@@ -19,9 +17,7 @@ machines:
   front:
     address: 192.168.104.10
     aliases: [cluster.example.org]   # optional extra names, written to /etc/hosts
-    roles: [front, home]        # front: login, Slurm controller, monitoring, website
-    home:
-      device: /dev/vdb          # optional: disk for /home; without it /home stays on the root disk
+    roles: [front]              # front: login, Slurm controller, monitoring, website
 
   gpu4:
     address: 192.168.104.11
@@ -60,9 +56,9 @@ machines:
 
   store:
     address: 192.168.104.20
-    roles: [backup]             # storage only, runs no jobs
-    backup:
-      path: /srv/nanohpc-backup
+    roles: [home]               # serves /home, runs no jobs
+    home:
+      device: /dev/vdb
 
 users:
   - name: alice
@@ -98,10 +94,6 @@ home:
 scratch:
   cleanup_days: 14
 
-backup:
-  to: store                     # a machine with the backup role, or user@host:/path
-  time: "03:00"
-  exclude: [.cache/, .venv/, __pycache__/]
 
 alerts:
   slack: false                  # webhook read from a secret file on the front node
