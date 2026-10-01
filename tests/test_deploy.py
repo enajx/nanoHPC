@@ -71,6 +71,16 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(scratch["machines"]["gpu2"], {"device": None, "image_gb": 2})
         self.assertEqual(scratch["cleanup_days"], 14)
         self.assertIn("/home 192.168.104.11(rw", (self.work / "files" / "exports").read_text())
+        self.assertIn("node-store", (self.work / "files" / "prometheus.yml").read_text())
+
+    def test_metrics_variables(self) -> None:
+        prepare(self.config, self.hostnames, None, True, ["gpu2"], self.work)
+        metrics = json.loads((self.work / "vars.json").read_text())["nanohpc"]["metrics"]
+        self.assertEqual(metrics["front_address"], "192.168.104.10")
+        self.assertEqual(metrics["gpus"]["gpu2"], {"count": 2, "type": "rtx6000ada", "fake": True})
+        self.assertEqual(metrics["gpus"]["gpu4"], {"count": 4, "type": "a6000", "fake": False})
+        self.assertNotIn("cpu1", metrics["gpus"])
+        self.assertEqual(set(metrics["prometheus"]["sha256"]), {"amd64", "arm64"})
 
     def test_files_are_written(self) -> None:
         prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], self.work)

@@ -1,0 +1,118 @@
+# Collectors that write node_exporter textfiles in /var/lib/nanohpc/metrics-textfile:
+# - machine specs (OS, kernel, CPU, GPU model and memory, driver and CUDA versions, pending updates,
+#   restart needed) on every machine, every 5 minutes;
+# - GPU readings every 30 seconds on machines with GPUs: from nvidia-smi for real GPUs, made-up values
+#   for the fake GPUs of a simulated machine.
+
+- name: Install what the machine spec collector reads
+  ansible.builtin.apt:
+    name: [python3, python3-apt]
+    state: present
+    install_recommends: false
+
+- name: Install the collectors
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [cluster-machine-specs, cluster-gpu-metrics, cluster-fake-gpu-metrics]
+
+- name: Name this machine's GPU collector
+  ansible.builtin.set_fact:
+    gpu: "{{ nanohpc.metrics.gpus[inventory_hostname] | default(none) }}"
+
+- name: Choose the collector commands
+  ansible.builtin.set_fact:
+    specs_command: >-
+      /usr/local/bin/cluster-machine-specs --root / --output /var/lib/nanohpc/metrics-textfile/specs.prom
+      {%- if gpu is not none and gpu.fake %} --fake-gpu-count {{ gpu.count }} --fake-gpu-type {{ gpu.type }}{% endif %}
+    gpu_command: >-
+      {%- if gpu is none %}{%- elif gpu.fake -%}
+      /usr/local/bin/cluster-fake-gpu-metrics --count {{ gpu.count }} --type {{ gpu.type }} --output /var/lib/nanohpc/metrics-textfile/gpu.prom
+      {%- else -%}
+      /usr/local/bin/cluster-gpu-metrics --output /var/lib/nanohpc/metrics-textfile/gpu.prom
+      {%- endif %}
+
+- name: Install the collector services and timers
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.0 }}.{{ item.1 }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if item.1 == 'service' %}
+      [Unit]
+      Description={{ 'Machine specs' if item.0 == 'nanohpc-machine-specs' else 'GPU readings' }} for metrics (nanoHPC)
+
+      [Service]
+      Type=oneshot
+      ExecStart={{ specs_command if item.0 == 'nanohpc-machine-specs' else gpu_command }}
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      ReadWritePaths=/var/lib/nanohpc/metrics-textfile
+      {% else %}
+      [Unit]
+      Description=Run {{ item.0 }} regularly (nanoHPC)
+
+      [Timer]
+      OnBootSec=30s
+      OnUnitActiveSec={{ '5min' if item.0 == 'nanohpc-machine-specs' else '30s' }}
+      AccuracySec=1s
+
+      [Install]
+      WantedBy=timers.target
+      {% endif %}
+  loop: "{{ (['nanohpc-machine-specs'] + (['nanohpc-gpu-metrics'] if gpu is not none else [])) | product(['service', 'timer']) | list }}"
+  loop_control:
+    label: "{{ item.0 }}.{{ item.1 }}"
+  register: collector_units
+
+- name: Run the collectors once now (a failure here shows the collector's error)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}.service"
+    state: started
+    daemon_reload: "{{ collector_units.changed }}"
+  loop: "{{ ['nanohpc-machine-specs'] + (['nanohpc-gpu-metrics'] if gpu is not none else []) }}"
+  changed_when: false  # a one-off run of a collector, not a change to the machine
+
+- name: Run the collector timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}.timer"
+    enabled: true
+    state: started
+  loop: "{{ ['nanohpc-machine-specs'] + (['nanohpc-gpu-metrics'] if gpu is not none else []) }}"
+
+- name: Check that the collectors wrote their metrics
+  ansible.builtin.stat:
+    path: "/var/lib/nanohpc/metrics-textfile/{{ item }}"
+  register: collector_output
+  failed_when: not collector_output.stat.exists
+  loop: "{{ ['specs.prom'] + (['gpu.prom'] if gpu is not none else []) }}"
+
+# A machine whose GPUs were removed from cluster.yml loses its GPU collector and its last readings.
+- name: Look for an old GPU collector
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-gpu-metrics.timer
+  register: old_gpu_timer
+  when: gpu is none
+
+- name: Stop the old GPU collector
+  ansible.builtin.systemd_service:
+    name: nanohpc-gpu-metrics.timer
+    enabled: false
+    state: stopped
+  when: gpu is none and old_gpu_timer.stat.exists
+
+- name: Remove the GPU collector and its last readings
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/nanohpc-gpu-metrics.timer
+    - /etc/systemd/system/nanohpc-gpu-metrics.service
+    - /var/lib/nanohpc/metrics-textfile/gpu.prom
+  when: gpu is none

@@ -68,7 +68,7 @@ flowchart LR
 - [x] Administrators' sudo by forwarded key also works on Ubuntu 26.04+ machines that mount `/home` (OpenSSH 10.1+ keeps the agent socket in the home folder): `/home` is exported with `no_root_squash` and mounted `nosuid,nodev` on every machine, so no program in `/home` can gain root.
 - [x] `nanohpc deploy` checks sudo on every machine before changing anything. The first setup of a machine needs root the normal way: if sudo needs a password and someone is at a terminal, it asks once and keeps it in memory for that run only; if no one can type it (for example an agent), it stops and explains the options (such as running that one command by hand with `! nanohpc deploy` in Claude Code).
 - [x] The Munge key is created and copied to all machines automatically.
-- [ ] The metrics certificates are created and copied to all machines automatically.
+- [x] The metrics certificates are created, copied to all machines, and renewed before they expire, by each deploy (a cluster must be deployed at least once a year until automatic redeploy exists; `cluster-health` on the front node warns 30 days before any certificate expires).
 - [x] GPU nodes are checked for the GPU count in the configuration, with a clear message if the NVIDIA driver is missing or the count differs.
 - [x] nanoHPC never formats a disk. The home and scratch disks named in the configuration must already have a filesystem; nanoHPC checks its type and mounts it, and stops with the command to run if the disk has no filesystem.
 - [x] `/home` is shared from the front node, or from a separate storage machine, to all machines, with the per-user quotas from the configuration.
@@ -79,11 +79,11 @@ flowchart LR
 - [x] `stage-dataset --private` stages a user's data on a compute machine's scratch for reuse across jobs.
 - [x] Health checks report broken Slurm services and full disks (`cluster-health`, run at the end of every deploy).
 - [x] On the simulated cluster, Slurm schedules GPU jobs on the fake GPU nodes.
-- [ ] On the simulated cluster, a fake exporter reports GPU metrics.
+- [x] On the simulated cluster, a fake exporter reports GPU metrics.
 
 ### Cluster setup follow-ups
 
-- [ ] Health checks report stale GPU readings (needs monitoring, M4).
+- [x] Health checks report stale GPU readings, stale machine specs, missing metrics, and failing daily rules (`cluster-health` on the front node).
 - [ ] `stage-dataset --shared` stages datasets from a shared datasets area (needs that area first).
 - [ ] Scratch copies that `cluster-submit` keeps after a failed job (`/scratch/<user>/cluster-jobs/job-*`, kept so the user can look at them) are cleaned up after some days; today only the user can remove them, and the daily cleanup only handles staged data.
 - [ ] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on the simulated cluster; no test reboots a machine yet).
@@ -93,8 +93,9 @@ flowchart LR
 ### Monitoring and website
 
 - [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
-- [ ] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
-- [ ] Daily summaries are kept for 5 years and shown in the long-term history.
+- [x] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
+- [x] Daily summaries are kept for 5 years (the history Prometheus).
+- [ ] The daily summaries are shown in the long-term history (Grafana and the website).
 - [ ] Grafana dashboards (queue, queue history, GPU usage, machines, long-term history) work for any number of nodes, GPU and CPU-only.
 - [ ] The status collector writes the website snapshot every 30 seconds.
 - [ ] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.

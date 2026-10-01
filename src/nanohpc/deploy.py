@@ -20,7 +20,7 @@ from typing import Any
 
 import yaml
 
-from nanohpc.render import compute_machines, home_clients, home_server, render
+from nanohpc.render import compute_machines, front_machine, home_clients, home_server, render
 
 SLURM: dict[str, Any] = {
     "version": "26.05.4",
@@ -38,6 +38,22 @@ UV: dict[str, Any] = {
     "sha256": {
         "x86_64": "23f02075b652bb1df64178cfae41b5caf160822e720e2663568f3f5d63bc52c0",
         "aarch64": "030b69227b40af8c1981b7301793dc66e71ed3c796ea8688209dd268bd91ec51",
+    },
+}
+METRICS: dict[str, Any] = {
+    "prometheus": {
+        "version": "3.15.0",
+        "sha256": {
+            "amd64": "2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0",
+            "arm64": "f1f90ec08e849d494ca66c611470afc50192f0355f1a61c33f2cbde02d067823",
+        },
+    },
+    "node_exporter": {
+        "version": "1.12.1",
+        "sha256": {
+            "amd64": "b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63",
+            "arm64": "ad35b605f9954b9f1ffddf5ba054bdc5a98d790b9eae5291e1eeb83f1ecbd0e7",
+        },
     },
 }
 CACHE = Path.home() / ".cache" / "nanohpc"
@@ -138,6 +154,7 @@ def variables(config: dict[str, Any], work: Path, fake_gpus: list[str], qos: lis
     """Return the `nanohpc` variables the roles read."""
     policy_limit = config["policy"]["max_gpus_per_user"]
     gpus = {name: machine["gpu"]["count"] for name, machine in compute_machines(config).items() if machine.get("gpu")}
+    _, front_values = front_machine(config)
     return {
         "nanohpc": {
             "cluster_name": config["cluster"]["name"],
@@ -160,6 +177,15 @@ def variables(config: dict[str, Any], work: Path, fake_gpus: list[str], qos: lis
             "package_files": str(resources.files("nanohpc").joinpath("files")),
             "slurm": {**SLURM, "cache": str(CACHE / "slurm" / SLURM["version"])},
             "uv": UV,
+            "metrics": {
+                **METRICS,
+                "front_address": front_values["address"],
+                "gpus": {
+                    name: {"count": m["gpu"]["count"], "type": m["gpu"]["type"], "fake": name in fake_gpus}
+                    for name, m in compute_machines(config).items()
+                    if m.get("gpu")
+                },
+            },
         }
     }
 
@@ -202,6 +228,7 @@ def prepare(
     (files / "job_submit.lua").write_text(rendered.job_submit_lua)
     (files / "hosts").write_text(rendered.hosts)
     (files / "exports").write_text(rendered.home_exports)
+    (files / "prometheus.yml").write_text(rendered.prometheus_yml)
     for name, text in rendered.gres_conf.items():
         (files / "gres" / f"{name}.conf").write_text(text)
     (work / "vars.json").write_text(json.dumps(variables(config, work, fake_gpus, rendered.qos), indent=2))

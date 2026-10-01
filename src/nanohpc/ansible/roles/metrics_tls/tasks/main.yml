@@ -1,0 +1,161 @@
+# Certificates for metrics over mutually authenticated TLS. The front node holds the cluster's metrics
+# certificate authority (its key never leaves the front node) and signs one certificate per machine:
+# a client certificate for Prometheus on the front node, a server certificate for each other machine's
+# node exporter. A certificate is (re)issued when missing, signed by another authority, issued for
+# another address, or within 30 days of expiry.
+
+- name: Create the metrics service accounts
+  ansible.builtin.user:
+    name: "{{ item }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+  loop: "{{ ['cluster-node-exporter'] + (['cluster-prometheus', 'cluster-history'] if inventory_hostname in groups['role_front'] else []) }}"
+
+- name: Create the metrics certificate folder
+  ansible.builtin.file:
+    path: /etc/nanohpc/metrics-tls
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the metrics certificate authority on the front node
+  when: inventory_hostname in groups['role_front']
+  block:
+    - name: Create the authority's private folder
+      ansible.builtin.file:
+        path: /etc/nanohpc/metrics-ca
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Create the folder of issued certificates (read by cluster-health for expiry warnings)
+      ansible.builtin.file:
+        path: /etc/nanohpc/metrics-ca/issued
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # Valid for 10 years and renewed once less than a year is left; every machine's certificate then
+    # fails its check below and is issued again under the new authority.
+    - name: Check the authority
+      ansible.builtin.command: openssl x509 -noout -checkend 31536000 -in /etc/nanohpc/metrics-ca/ca.crt
+      register: ca_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create the authority
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+          -subj "/CN=nanoHPC metrics authority $CLUSTER" \
+          -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign \
+          -keyout /etc/nanohpc/metrics-ca/ca.key.new -out /etc/nanohpc/metrics-ca/ca.crt.new
+        mv /etc/nanohpc/metrics-ca/ca.key.new /etc/nanohpc/metrics-ca/ca.key
+        mv /etc/nanohpc/metrics-ca/ca.crt.new /etc/nanohpc/metrics-ca/ca.crt
+      environment:
+        CLUSTER: "{{ nanohpc.cluster_name }}"
+      when: ca_check.rc != 0
+
+- name: Read the authority's certificate
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/metrics-ca/ca.crt
+  register: metrics_ca
+  delegate_to: "{{ groups['role_front'][0] }}"
+  run_once: true
+
+- name: Install the authority's certificate on every machine
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/metrics-tls/ca.crt
+    content: "{{ metrics_ca.content | b64decode }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Name this machine's certificate
+  ansible.builtin.set_fact:
+    tls_name: "{{ 'prometheus' if inventory_hostname in groups['role_front'] else 'node' }}"
+    tls_group: "{{ 'cluster-prometheus' if inventory_hostname in groups['role_front'] else 'cluster-node-exporter' }}"
+    tls_usage: "{{ 'clientAuth' if inventory_hostname in groups['role_front'] else 'serverAuth' }}"
+    tls_address: "{{ nanohpc.machines[inventory_hostname].address }}"
+
+- name: Create this machine's private key (once, private from the start)
+  ansible.builtin.shell: "umask 077 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out /etc/nanohpc/metrics-tls/{{ tls_name }}.key"
+  args:
+    creates: "/etc/nanohpc/metrics-tls/{{ tls_name }}.key"
+
+- name: Let only the metrics service read the key
+  ansible.builtin.file:
+    path: "/etc/nanohpc/metrics-tls/{{ tls_name }}.key"
+    owner: root
+    group: "{{ tls_group }}"
+    mode: "0640"
+
+- name: Check this machine's certificate
+  ansible.builtin.shell: |
+    set -eu
+    cert=/etc/nanohpc/metrics-tls/$NAME.crt
+    test -f "$cert"
+    openssl verify -CAfile /etc/nanohpc/metrics-tls/ca.crt "$cert" >/dev/null
+    openssl x509 -in "$cert" -noout -checkend 2592000 >/dev/null
+    openssl x509 -in "$cert" -noout -ext subjectAltName | tr ',' '\n' | sed 's/^ *//' | grep -qxF "IP Address:$ADDRESS"
+    test "$(openssl x509 -in "$cert" -noout -pubkey)" = "$(openssl pkey -in /etc/nanohpc/metrics-tls/$NAME.key -pubout)"
+  environment:
+    NAME: "{{ tls_name }}"
+    ADDRESS: "{{ tls_address }}"
+  register: tls_check
+  changed_when: false
+  failed_when: false
+
+- name: Issue a new certificate
+  when: tls_check.rc != 0
+  block:
+    - name: Make a signing request
+      ansible.builtin.command: >-
+        openssl req -new -key /etc/nanohpc/metrics-tls/{{ tls_name }}.key
+        -subj "/CN=nanohpc-metrics-{{ inventory_hostname }}"
+      register: tls_request
+      changed_when: false
+
+    - name: Sign it on the front node (valid for one year)
+      ansible.builtin.shell: |
+        set -eu
+        extensions=$(mktemp)
+        trap 'rm -f "$extensions"' EXIT
+        printf 'basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=%s\nsubjectAltName=IP:%s\n' "$USAGE" "$ADDRESS" > "$extensions"
+        openssl x509 -req -in /dev/stdin -CA /etc/nanohpc/metrics-ca/ca.crt -CAkey /etc/nanohpc/metrics-ca/ca.key \
+          -set_serial "0x$(openssl rand -hex 16)" -days 365 -extfile "$extensions"
+      args:
+        stdin: "{{ tls_request.stdout }}"
+      environment:
+        USAGE: "{{ tls_usage }}"
+        ADDRESS: "{{ tls_address }}"
+      register: tls_signed
+      delegate_to: "{{ groups['role_front'][0] }}"
+
+    - name: Keep a copy on the front node, for expiry warnings
+      ansible.builtin.copy:
+        dest: "/etc/nanohpc/metrics-ca/issued/{{ inventory_hostname }}.crt"
+        content: "{{ tls_signed.stdout }}\n"
+        owner: root
+        group: root
+        mode: "0600"
+      delegate_to: "{{ groups['role_front'][0] }}"
+
+    - name: Install the new certificate
+      ansible.builtin.copy:
+        dest: "/etc/nanohpc/metrics-tls/{{ tls_name }}.crt"
+        content: "{{ tls_signed.stdout }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      register: tls_installed
+
+# Read by the node_metrics and prometheus roles, which restart their service when this is true.
+- name: Remember whether this machine's certificate changed
+  ansible.builtin.set_fact:
+    metrics_tls_changed: "{{ tls_installed.changed | default(false) }}"
