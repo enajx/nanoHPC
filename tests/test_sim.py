@@ -4,6 +4,7 @@ The unit tests need no VMs. `SimClusterTest` starts real Lima VMs and runs only 
 because it takes minutes and several GB of memory.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -11,6 +12,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -509,6 +511,49 @@ class SimDeployTest(SimUsersBase):
             # The private scratch copy is removed after a successful job.
             self.assertEqual(self.ssh("gpu2", "sudo ls /scratch/alice/cluster-jobs").stdout.split(), [])
 
+        with self.subTest("metrics from every machine over TLS, fake GPU readings, daily rules, history"):
+
+            def query(expression: str) -> list[dict[str, Any]]:
+                encoded = urllib.parse.quote(expression)
+                answer = self.on_front(f"curl -sf 'http://127.0.0.1:9090/api/v1/query?query={encoded}'")
+                return json.loads(answer)["data"]["result"]
+
+            up = {series["metric"]["machine"]: series["value"][1] for series in query('up{job=~"node.*"}')}
+            self.assertEqual(up, {machine: "1" for machine in machines})
+            gpus = query("cluster_gpu_utilization_percent")
+            self.assertEqual(sorted({series["metric"]["machine"] for series in gpus}), ["gpu2", "gpu4", "gpu4i"])
+            self.assertEqual(len(gpus), 10)
+            specs = {series["metric"]["machine"]: series["value"][1] for series in query("cluster_machine_gpu_count")}
+            self.assertEqual(specs, {"front": "0", "gpu4": "4", "gpu2": "2", "cpu1": "0", "gpu4i": "4", "store": "0"})
+            self.assertEqual(self.on_front("curl -sf http://127.0.0.1:9091/-/ready").strip() != "", True)
+            # node_exporter's sandbox must not make filesystems look read-only.
+            readonly = {
+                series["metric"]["machine"]: series["value"][1]
+                for series in query('node_filesystem_readonly{mountpoint="/"}')
+            }
+            self.assertEqual(readonly, {machine: "0" for machine in machines})
+            # Right after a deploy the front node's health report has no warnings.
+            report = self.ssh("front", "sudo cluster-health").stdout
+            self.assertNotIn("WARN", report, report)
+            # GPU readings that stop arriving are reported as stale.
+            self.assertEqual(self.ssh("gpu2", "sudo systemctl stop nanohpc-gpu-metrics.timer").returncode, 0)
+            time.sleep(130)
+            report = self.ssh("front", "sudo cluster-health").stdout
+            self.assertIn("WARN  GPU readings are fresh (under 2 minutes old) (gpu2)", report, report)
+            self.assertEqual(self.ssh("gpu2", "sudo systemctl start nanohpc-gpu-metrics.timer").returncode, 0)
+            # Without the front node's client certificate, a machine's exporter refuses the connection.
+            gpu4 = machines["gpu4"]["address"]
+            self.assertNotEqual(self.ssh("front", f"curl -sk --max-time 5 https://{gpu4}:9100/metrics").returncode, 0)
+            # The daily summary rules pass their promtool tests (promtool is installed on the front node).
+            # Copied with the repository's layout, since the test file names the rules file by a relative path.
+            for relative in ("src/nanohpc/files/prometheus-daily-rules.yml", "tests/prometheus_daily_rules_test.yml"):
+                copied = self.ssh("front", f"mkdir -p /tmp/rules/$(dirname {relative}) && cat > /tmp/rules/{relative}",
+                                  stdin=(ROOT / relative).read_text())  # fmt: skip
+                self.assertEqual(copied.returncode, 0, copied.stderr)
+            promtool = self.on_front("ls -d /opt/nanohpc-metrics/prometheus-*/promtool").strip()
+            rules = self.ssh("front", f"cd /tmp/rules/tests && {promtool} test rules prometheus_daily_rules_test.yml")
+            self.assertEqual(rules.returncode, 0, rules.stdout + rules.stderr)
+
         with self.subTest("partition rules and limits"):
             shell = self.run_command(
                 "ssh", "-tt", "-F", str(self.state / "ssh_config"), "front",
@@ -533,6 +578,12 @@ class SimDeployTest(SimUsersBase):
             self.assertEqual(len(recap), len(machines), result.stdout[-4000:])
             for line in recap:
                 self.assertIn("changed=0 ", line)
+
+        with self.subTest("a missing metrics certificate is issued again by the next deploy"):
+            self.assertEqual(self.ssh("gpu2", "sudo rm /etc/nanohpc/metrics-tls/node.crt").returncode, 0)
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            self.assertEqual(self.ssh("gpu2", "test -s /etc/nanohpc/metrics-tls/node.crt").returncode, 0)
 
         with self.subTest("a drained node is a warning in the health report, not a failed deploy"):
             self.on_front("sudo scontrol update nodename=cpu1 state=drain reason=maintenance-test")

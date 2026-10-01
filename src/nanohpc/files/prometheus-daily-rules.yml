@@ -1,0 +1,45 @@
+groups:
+  # Per-machine and per-GPU values recorded once a minute, so the daily summaries below average stored
+  # series instead of re-running a 24-hour subquery every minute (which does not scale to large clusters).
+  - name: cluster-minute-values
+    interval: 1m
+    rules:
+      - record: cluster:machine_cpu_busy_ratio
+        expr: 1 - avg by(machine) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+      - record: cluster:machine_memory_used_ratio
+        expr: 1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+      # GPU readings only while the collector is fresh (written in the last 90 seconds).
+      - record: cluster:gpu_utilization_percent_fresh
+        expr: cluster_gpu_utilization_percent and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)
+      - record: cluster:gpu_temperature_celsius_fresh
+        expr: cluster_gpu_temperature_celsius and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)
+      - record: cluster:gpu_power_watts_fresh
+        expr: cluster_gpu_power_watts and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)
+  - name: cluster-daily-summaries
+    interval: 1m
+    rules:
+      - record: cluster_daily_cpu_busy_ratio
+        expr: avg_over_time(cluster:machine_cpu_busy_ratio[24h])
+      - record: cluster_daily_memory_used_ratio
+        expr: avg_over_time(cluster:machine_memory_used_ratio[24h])
+      - record: cluster_daily_filesystem_available_bytes_min
+        expr: min_over_time(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}[24h])
+      - record: cluster_daily_gpu_utilization_percent
+        expr: avg_over_time(cluster:gpu_utilization_percent_fresh[24h])
+      - record: cluster_daily_gpu_temperature_celsius_max
+        expr: max_over_time(cluster:gpu_temperature_celsius_fresh[24h])
+      - record: cluster_daily_gpu_power_watts
+        expr: avg_over_time(cluster:gpu_power_watts_fresh[24h])
+      - record: cluster_daily_allocated_gpu_hours_total
+        expr: last_over_time(cluster_allocated_gpu_hours[24h])
+      - record: cluster_daily_decayed_gpu_hours
+        expr: last_over_time(cluster_decayed_gpu_hours[24h])
+      - record: cluster_daily_fairshare_factor
+        expr: last_over_time(cluster_fairshare_factor[24h])
+      - record: cluster_daily_pending_jobs_max
+        expr: max_over_time(cluster_pending_jobs[24h])
+      - record: cluster_daily_running_jobs_max
+        expr: max_over_time(cluster_running_jobs[24h])
+      # Successful scrapes over the day, out of the 2880 expected at the 30-second scrape interval.
+      - record: cluster_daily_scrape_coverage_ratio
+        expr: clamp_max(sum_over_time(up{job=~"node|node-.+"}[24h]) / 2880, 1)

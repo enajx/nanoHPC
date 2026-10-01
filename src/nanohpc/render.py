@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Any
 
+import yaml
+
 
 @dataclass(frozen=True)
 class Rendered:
@@ -21,6 +23,7 @@ class Rendered:
     hosts: str
     qos: list[dict[str, Any]]  # one per partition, applied with sacctmgr
     home_exports: str  # /etc/exports.d line per machine that mounts /home
+    prometheus_yml: str  # the front node's Prometheus configuration
 
 
 CGROUP_CONF = """CgroupPlugin=autodetect
@@ -214,6 +217,42 @@ def render_home_exports(config: dict[str, Any]) -> str:
     )
 
 
+METRICS_TLS = "/etc/nanohpc/metrics-tls"
+
+
+def render_prometheus(config: dict[str, Any]) -> str:
+    """Return prometheus.yml: the front node's own exporter on localhost, and every other machine's
+    exporter over mutually authenticated TLS (certificates signed by the cluster's metrics CA)."""
+    front, _ = front_machine(config)
+
+    def job(name: str, target: str, machine: str) -> dict[str, Any]:
+        return {
+            "job_name": name,
+            "static_configs": [{"targets": [target], "labels": {"machine": machine}}],
+            "sample_limit": 20000,
+        }
+
+    jobs = [job("node", "127.0.0.1:9100", front)]
+    for name, machine in config["machines"].items():
+        if name == front:
+            continue
+        remote = job(f"node-{name}", f"{machine['address']}:9100", name)
+        remote["scheme"] = "https"
+        remote["tls_config"] = {
+            "ca_file": f"{METRICS_TLS}/ca.crt",
+            "cert_file": f"{METRICS_TLS}/prometheus.crt",
+            "key_file": f"{METRICS_TLS}/prometheus.key",
+        }
+        jobs.append(remote)
+    jobs.append(job("prometheus", "127.0.0.1:9090", front))
+    prometheus = {
+        "global": {"scrape_interval": "30s", "scrape_timeout": "10s", "evaluation_interval": "30s"},
+        "rule_files": ["/etc/nanohpc/prometheus/daily-rules.yml"],
+        "scrape_configs": jobs,
+    }
+    return yaml.safe_dump(prometheus, sort_keys=False)
+
+
 def render_hosts(config: dict[str, Any]) -> str:
     """Return the /etc/hosts block naming every machine and its aliases."""
     return "".join(
@@ -232,4 +271,5 @@ def render(config: dict[str, Any], hostnames: dict[str, str], simulated: bool) -
         hosts=render_hosts(config),
         qos=render_qos(config),
         home_exports=render_home_exports(config),
+        prometheus_yml=render_prometheus(config),
     )

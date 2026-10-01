@@ -185,3 +185,25 @@ class HomeExportsTest(unittest.TestCase):
         lines = render(config, names(config), False).home_exports.splitlines()
         self.assertIn("/home 192.168.104.10(rw,sync,no_root_squash,no_subtree_check)", lines)
         self.assertEqual(len(lines), 5)
+
+
+class PrometheusTest(unittest.TestCase):
+    """Prometheus scrapes the front node locally and every other machine over mutual TLS."""
+
+    def test_scrape_jobs(self) -> None:
+        config = config_of()
+        prometheus = yaml.safe_load(render(config, names(config), False).prometheus_yml)
+        jobs = {job["job_name"]: job for job in prometheus["scrape_configs"]}
+        self.assertEqual(
+            sorted(jobs), ["node", "node-cpu1", "node-gpu2", "node-gpu4", "node-gpu4i", "node-store", "prometheus"]
+        )
+        self.assertEqual(jobs["node"]["static_configs"][0]["targets"], ["127.0.0.1:9100"])
+        self.assertEqual(jobs["node"]["static_configs"][0]["labels"], {"machine": "front"})
+        store = jobs["node-store"]
+        self.assertEqual(store["scheme"], "https")
+        self.assertEqual(store["static_configs"][0]["targets"], ["192.168.104.20:9100"])
+        self.assertEqual(store["static_configs"][0]["labels"], {"machine": "store"})
+        self.assertEqual(store["tls_config"]["ca_file"], "/etc/nanohpc/metrics-tls/ca.crt")
+        self.assertEqual(store["tls_config"]["cert_file"], "/etc/nanohpc/metrics-tls/prometheus.crt")
+        self.assertEqual(prometheus["global"]["scrape_interval"], "30s")
+        self.assertEqual(prometheus["rule_files"], ["/etc/nanohpc/prometheus/daily-rules.yml"])

@@ -1,0 +1,151 @@
+#!/usr/bin/python3
+"""Publish read-only compute inventory; never refresh packages or change the machine.
+
+Works on machines with or without NVIDIA GPUs:
+- nvidia-smi on PATH: GPU count, memory, and driver/CUDA versions come from it; if it fails or reports no GPUs,
+  nothing is written.
+- no nvidia-smi: cluster_machine_gpu_count is 0, the driver and cuda_driver labels are "none",
+  and there are no cluster_machine_gpu_memory_bytes series.
+- --fake-gpu-count N --fake-gpu-type TYPE (both together, for simulated machines with fake GPUs):
+  nvidia-smi is not called, the driver labels are "none", the GPU count is N, and each fake GPU reports
+  FAKE_MEMORY_MIB of memory with model TYPE (the same memory as cluster-fake-gpu-metrics).
+The cuda_toolkits label is "none" when no CUDA toolkit is installed.
+"""
+
+import argparse
+import json
+import os
+import platform
+import re
+import shlex
+import shutil
+import subprocess
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+FAKE_MEMORY_MIB = 24576
+
+
+def read(arguments: list[str]) -> str:
+    """Run a fixed local probe, surfacing errors without publishing partial inventory."""
+    return subprocess.run(
+        arguments, check=True, capture_output=True, text=True, timeout=25, env=dict(os.environ, LC_ALL="C")
+    ).stdout
+
+
+def labels(values: dict[str, str]) -> str:
+    """Escape the allowlisted inventory fields for Prometheus labels."""
+    return ",".join(f"{name}={json.dumps(value)}" for name, value in values.items())
+
+
+def positive(text: str) -> int:
+    """Parse a fake GPU count, which must be a whole number above zero."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
+def nvidia_gpus() -> tuple[str, str, list[tuple[str, str, int]]]:
+    """Return the driver version, CUDA driver version, and (index, model, memory bytes) per GPU from nvidia-smi."""
+    xml = ET.fromstring(read(["nvidia-smi", "-q", "-x"]))
+    driver, cuda_driver = xml.findtext("driver_version", ""), xml.findtext("cuda_version", "")
+    if not driver or not cuda_driver:
+        raise ValueError("Missing NVIDIA software versions")
+    gpus: list[tuple[str, str, int]] = []
+    # Numbered by position, which is nvidia-smi's GPU index: the same "gpu" label as cluster-gpu-metrics.
+    # (The device minor number can differ from the index, for example with MIG.)
+    for index, gpu in enumerate(xml.findall("gpu")):
+        model = gpu.findtext("product_name")
+        memory = re.fullmatch(r"(\d+) MiB", gpu.findtext("fb_memory_usage/total", ""))
+        if model is None or memory is None:
+            raise ValueError("Incomplete GPU inventory")
+        gpus.append((str(index), model, int(memory[1]) * 1048576))
+    if not gpus:
+        raise ValueError("nvidia-smi is installed but reports no GPUs")
+    return driver, cuda_driver, gpus
+
+
+def collect(root: Path, fake_count: int | None, fake_type: str | None) -> str:
+    """Read OS, CPU, GPU, toolkit metadata, and the existing OS package cache."""
+    os_fields = dict(
+        line.split("=", 1)
+        for line in (root / "etc/os-release").read_text().splitlines()
+        if "=" in line and not line.startswith("#")
+    )
+    os_name = shlex.split(os_fields["PRETTY_NAME"])[0]
+    cpu = {row["field"].rstrip(":"): row["data"] for row in json.loads(read(["lscpu", "--json"]))["lscpu"]}
+    if fake_count is not None and fake_type is not None:
+        driver, cuda_driver = "none", "none"
+        gpus = [(str(index), fake_type, FAKE_MEMORY_MIB * 1048576) for index in range(fake_count)]
+    elif shutil.which("nvidia-smi") is not None:
+        driver, cuda_driver, gpus = nvidia_gpus()
+    else:
+        driver, cuda_driver, gpus = "none", "none", []
+    toolkits: set[str] = set()
+    for path in sorted((root / "usr/local").glob("cuda*/version.json")):
+        toolkits.add(json.loads(path.read_text())["cuda"]["version"])
+    for path in sorted((root / "usr/local").glob("cuda*/version.txt")):
+        match = re.search(r"CUDA Version\s+([\d.]+)", path.read_text())
+        if match:
+            toolkits.add(match[1])
+    # The distribution toolkit may be installed outside /usr/local/cuda*.
+    distribution = root / "usr/lib/cuda/version.json"
+    if distribution.is_file():
+        toolkits.add(json.loads(distribution.read_text())["cuda"]["version"])
+    info = {
+        "os": os_name,
+        "kernel": platform.release(),
+        # ARM machines may report no model name ("-"); the vendor is the best name left.
+        "cpu_model": cpu["Model name"] if cpu.get("Model name", "-") != "-" else cpu.get("Vendor ID", "unknown"),
+        "driver": driver,
+        "cuda_driver": cuda_driver,
+        "cuda_toolkits": ",".join(sorted(toolkits)) or "none",
+    }
+    metrics = [
+        f"cluster_machine_spec_info{{{labels(info)}}} 1",
+        # CPUs divided by threads per core: the same on x86 (sockets x cores) and on ARM (clusters).
+        f"cluster_machine_cpu_cores {int(cpu['CPU(s)']) // int(cpu.get('Thread(s) per core', '1'))}",
+        f"cluster_machine_cpu_threads {int(cpu['CPU(s)'])}",
+        f"cluster_machine_gpu_count {len(gpus)}",
+    ]
+    for index, model, memory in gpus:
+        metrics.append(f"cluster_machine_gpu_memory_bytes{{{labels({'gpu': index, 'model': model})}}} {memory}")
+    stamp = root / "var/lib/apt/periodic/update-success-stamp"
+    checked = stamp.stat().st_mtime if stamp.is_file() else None
+    if checked is not None:
+        metrics.append(f"cluster_machine_updates_checked_timestamp_seconds {checked}")
+        if 0 <= time.time() - checked < 48 * 3600:
+            # python3-apt is an Ubuntu system package; it is only needed when the package lists are recent.
+            import apt
+
+            metrics.append(f"cluster_machine_pending_updates {sum(package.is_upgradable for package in apt.Cache())}")
+    if shlex.split(os_fields["ID"])[0] in ("ubuntu", "debian"):
+        metrics.append(f"cluster_machine_needs_restart {int((root / 'run/reboot-required').exists())}")
+    metrics.append(f"cluster_machine_specs_timestamp_seconds {time.time()}")
+    return "\n".join(metrics) + "\n"
+
+
+def main() -> None:
+    """Atomically replace the exporter file only after successful collection."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--fake-gpu-count", type=positive, help="number of fake GPUs on a simulated machine")
+    parser.add_argument("--fake-gpu-type", help="type of the fake GPUs, as in the cluster configuration")
+    args = parser.parse_args()
+    if (args.fake_gpu_count is None) != (args.fake_gpu_type is None):
+        parser.error("--fake-gpu-count and --fake-gpu-type must be given together")
+    content = collect(args.root, args.fake_gpu_count, args.fake_gpu_type)
+    temporary = args.output.with_name("." + args.output.name + ".tmp")
+    with temporary.open("w") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.chmod(0o644)
+    temporary.replace(args.output)
+
+
+if __name__ == "__main__":
+    main()

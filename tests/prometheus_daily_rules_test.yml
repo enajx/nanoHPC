@@ -1,0 +1,37 @@
+rule_files:
+  - ../src/nanohpc/files/prometheus-daily-rules.yml
+evaluation_interval: 1m
+tests:
+  - interval: 30s
+    input_series:
+      - series: 'up{job="node",machine="head"}'
+        values: '1+0x10'
+      - series: 'cluster_gpu_utilization_percent{machine="gpu1",gpu="0"}'
+        values: '20+0x10'
+      - series: 'cluster_gpu_collection_timestamp_seconds{machine="gpu1"}'
+        values: '0+30x10'
+      - series: 'cluster_allocated_gpu_hours{user="alice"}'
+        values: '2+1x10'
+      - series: 'cluster_pending_jobs'
+        values: '0 2 4 2 0 1 0 0 0 0 0'
+    promql_expr_test:
+      - expr: cluster_daily_gpu_utilization_percent
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster_daily_gpu_utilization_percent{machine="gpu1",gpu="0"}'
+            value: 20
+      - expr: cluster_daily_allocated_gpu_hours_total
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster_daily_allocated_gpu_hours_total{user="alice"}'
+            value: 12
+      - expr: cluster_daily_pending_jobs_max
+        eval_time: 5m
+        exp_samples:
+          - labels: cluster_daily_pending_jobs_max
+            value: 4
+      - expr: cluster_daily_scrape_coverage_ratio
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster_daily_scrape_coverage_ratio{job="node",machine="head"}'
+            value: 0.0038194444444444443

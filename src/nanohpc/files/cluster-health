@@ -42,6 +42,10 @@ disk() {
 
 check "nanoHPC roles are recorded" test -s /etc/nanohpc/roles
 disk /
+check "service nanohpc-node-exporter (metrics)" systemctl is-active --quiet nanohpc-node-exporter
+note "metrics certificate valid for at least 30 more days" sh -c \
+  'openssl x509 -noout -checkend 2592000 -in /etc/nanohpc/metrics-tls/$(test -f /etc/nanohpc/metrics-tls/prometheus.crt && echo prometheus || echo node).crt'
+
 
 if has front || has compute; then
   check "service munge" systemctl is-active --quiet munge
@@ -58,10 +62,52 @@ elif ! has backup; then
 fi
 
 if has front; then
-  for service in mariadb slurmdbd slurmctld; do
+  for service in mariadb slurmdbd slurmctld nanohpc-prometheus nanohpc-history; do
     check "service $service" systemctl is-active --quiet "$service"
   done
   check "the Slurm controller answers" scontrol ping
+  # Ask the front node's Prometheus which machines have a metrics problem. If Prometheus does not answer,
+  # say so rather than reporting no problems.
+  problem_machines() {
+    local answer
+    answer=$(curl -sf --max-time 10 -G "http://127.0.0.1:${2:-9090}/api/v1/query" --data-urlencode "query=$1") || return 1
+    printf '%s' "$answer" | python3 -c '
+import json, sys
+answer = json.load(sys.stdin)
+if answer.get("status") != "success":
+    sys.exit(1)
+print(",".join(sorted({r["metric"].get("machine", r["metric"].get("rule_group", "cluster")) for r in answer["data"]["result"]})))
+'
+  }
+  metric_check() {
+    local label=$1 query=$2 machines
+    if machines=$(problem_machines "$query"); then
+      note "$label${machines:+ ($machines)}" test -z "$machines"
+    else
+      echo "WARN  $label (Prometheus did not answer)"
+    fi
+  }
+  # Only the node_exporter collectors nanoHPC relies on; others can fail harmlessly on some machines.
+  metric_check "metrics arrive from every machine" 'up{job=~"node.*"} == 0 or node_textfile_scrape_error == 1 or node_scrape_collector_success{collector=~"cpu|meminfo|filesystem|systemd|textfile"} == 0'
+  metric_check "GPU readings are fresh (under 2 minutes old)" 'time() - cluster_gpu_collection_timestamp_seconds > 120'
+  metric_check "machine specs are fresh (under 15 minutes old)" 'time() - cluster_machine_specs_timestamp_seconds > 900'
+  metric_check "the daily summary rules evaluate" 'increase(prometheus_rule_evaluation_failures_total[10m]) > 0'
+  # The history instance collects once a day; after its first two days it must hold daily summaries.
+  history_age=$(( $(date +%s) - $(stat -c %Y /etc/nanohpc/prometheus/history-started 2>/dev/null || date +%s) ))
+  if test "$history_age" -gt 172800; then
+    if summaries=$(problem_machines 'count(cluster_daily_scrape_coverage_ratio) > 0' 9091); then
+      note "the 5-year history holds daily summaries" test -n "$summaries"
+    else
+      echo "WARN  the 5-year history holds daily summaries (history Prometheus did not answer)"
+    fi
+  fi
+  # Every metrics certificate the front node issued, so an expiry shows up even without a deploy.
+  expiring=""
+  for cert in /etc/nanohpc/metrics-ca/issued/*.crt; do
+    test -f "$cert" || continue
+    openssl x509 -noout -checkend 2592000 -in "$cert" >/dev/null 2>&1 || expiring="$expiring $(basename "$cert" .crt)"
+  done
+  note "metrics certificates valid for at least 30 more days${expiring:+ (expiring:$expiring; run nanohpc deploy)}" test -z "$expiring"
   if nodes=$(sinfo -h -N -t down,drain,fail,unknown,no_respond,maint -o '%N %T' 2>/dev/null); then
     nodes=$(printf '%s\n' "$nodes" | sed '/^$/d' | sort -u | paste -sd ',' -)
     note "no Slurm node is down, drained, not responding, or in maintenance${nodes:+ ($nodes)}" test -z "$nodes"
