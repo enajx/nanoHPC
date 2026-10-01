@@ -1,0 +1,33 @@
+# Check a disk named in cluster.yml before nanoHPC mounts it at `disk_use`. nanoHPC never formats
+# a disk, so it only gives a mkfs hint when the disk is truly empty. Sets `disk_fs` (blkid fields).
+# Variables: disk (device path), disk_use (/home or /scratch), mkfs_hint (command for an empty disk).
+
+- name: "Read {{ disk }}"
+  ansible.builtin.shell: |
+    if [ ! -b "$DISK" ]; then echo "STATE=missing"; exit 0; fi
+    blkid -p -o export "$DISK" || true
+    echo "MOUNTED=$(findmnt -n -o TARGET --source "$DISK" | tr '\n' ' ')"
+  environment:
+    DISK: "{{ disk }}"
+  register: disk_probe
+  changed_when: false
+
+- name: "Keep {{ disk }}'s details"
+  ansible.builtin.set_fact:
+    disk_fs: "{{ dict(disk_probe.stdout_lines | select('search', '=') | map('split', '=', 1)) }}"
+
+- name: "Require an ext4 or XFS filesystem on {{ disk }}, not in use elsewhere"
+  ansible.builtin.assert:
+    that:
+      - disk_fs.STATE is not defined
+      - disk_fs.TYPE | default('') in ['ext4', 'xfs']
+      - (disk_fs.MOUNTED | default('')).split() | reject('equalto', disk_use) | list | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: {{ disk }}
+      {%- if disk_fs.STATE is defined %} is not a block device on this machine. Check the device name in cluster.yml.
+      {%- elif disk_fs.PTTYPE is defined and disk_fs.TYPE is not defined %} has a partition table. Give a partition (for example {{ disk }}1) with a filesystem in cluster.yml.
+      {%- elif disk_fs.TYPE is defined and disk_fs.TYPE not in ['ext4', 'xfs'] %} holds {{ disk_fs.TYPE }}, not ext4 or XFS. nanoHPC does not change it; check that this is the right disk.
+      {%- elif disk_fs.TYPE is defined %} is already mounted at {{ disk_fs.MOUNTED | trim }}. Give a disk that is not in use.
+      {%- else %} has no filesystem. nanoHPC never formats a disk. If this is the right, empty disk, make one yourself: {{ mkfs_hint }} {{ disk }}
+      {%- endif %} Nothing on it was changed.
+    quiet: true

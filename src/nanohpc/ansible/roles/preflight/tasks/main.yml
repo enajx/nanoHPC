@@ -132,3 +132,120 @@
       cluster.yml, so their sudo would be removed during this deploy. Nothing was changed on this machine.
       Deploy as a current administrator.
     quiet: true
+
+# /home: the shared /home (NFS) or the home disk is mounted over the local /home folder. Stop if that
+# would hide anything other than the home folders of the accounts nanoHPC deploys with.
+- name: Read where /home comes from now
+  ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /home
+  register: home_mount
+  changed_when: false
+  failed_when: false
+
+- name: Read the home disk's ID
+  ansible.builtin.command: "blkid -s UUID -o value {{ nanohpc.home.device }}"
+  register: home_disk_uuid
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname == nanohpc.home.server and nanohpc.home.device is not none
+
+- name: Read the ID of the disk mounted at /home
+  ansible.builtin.command: findmnt -n -o UUID --mountpoint /home
+  register: home_mounted_uuid
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname == nanohpc.home.server and nanohpc.home.device is not none
+
+- name: Stop if /home is already mounted from another disk
+  ansible.builtin.assert:
+    that: home_mount.stdout == '' or home_mounted_uuid.stdout | trim == home_disk_uuid.stdout | trim
+    fail_msg: >-
+      {{ inventory_hostname }}: /home is already mounted from {{ home_mount.stdout.split()[0] | default('?') }}, not from
+      {{ nanohpc.home.device }} (home.device in cluster.yml). Nothing was changed on this machine.
+    quiet: true
+  when: inventory_hostname == nanohpc.home.server and nanohpc.home.device is not none
+
+- name: Decide whether this deploy mounts something over the local /home
+  ansible.builtin.set_fact:
+    home_will_mount: >-
+      {{ (inventory_hostname in nanohpc.home.clients
+          and home_mount.stdout.split() != [nanohpc.home.server_address ~ ':/home', 'nfs4'])
+         or (inventory_hostname == nanohpc.home.server and nanohpc.home.device is not none and home_mount.stdout == '') }}
+
+- name: Look for the list of deploy accounts
+  ansible.builtin.stat:
+    path: /etc/nanohpc/deploy-accounts
+  register: deploy_accounts_file
+  when: home_will_mount | bool
+
+- name: Read the list of deploy accounts
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/deploy-accounts
+  register: deploy_accounts_now
+  when: home_will_mount | bool and deploy_accounts_file.stat.exists
+
+- name: Name the home folders that may stay hidden (the deploy accounts', whose keys are kept)
+  ansible.builtin.set_fact:
+    hideable_homes: >-
+      {{ ['lost+found']
+         + ((((deploy_accounts_now.content | default('') | b64decode).split() + [nanohpc_login_user]) | unique)
+            | reject('in', nanohpc.users | map(attribute='name'))
+            | select('in', ansible_facts.getent_passwd)
+            | map('extract', ansible_facts.getent_passwd) | map(attribute=4)
+            | select('match', '^/home/[^/]+$') | map('basename') | list) }}
+  when: home_will_mount | bool
+
+- name: List what is in the local /home, with where each link points
+  ansible.builtin.command: find /home -mindepth 1 -maxdepth 1 -printf '%f\t%l\n'
+  register: local_home
+  changed_when: false
+  when: home_will_mount | bool
+
+- name: Stop if the mount would hide anything else in /home
+  ansible.builtin.assert:
+    that: unexpected | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: /home holds {{ unexpected | join(', ') }}.
+      {% if inventory_hostname == nanohpc.home.server %}Mounting the home disk ({{ nanohpc.home.device }}) at /home would hide
+      {{ 'it' if unexpected | length == 1 else 'them' }}. Nothing was changed on this machine. Copy it onto the home disk or
+      remove it, then run deploy again.{% else %}Mounting the shared /home would hide {{ 'it' if unexpected | length == 1 else 'them' }}.
+      Nothing was changed on this machine. Move it to the home machine ({{ nanohpc.home.server }}) or remove it, then run
+      deploy again.{% endif %}
+    quiet: true
+  vars:
+    # An entry may stay hidden if it is a deploy account's home folder, or a link to one.
+    unexpected: >-
+      {%- set found = [] -%}
+      {%- for line in local_home.stdout_lines -%}
+        {%- set name, target = (line ~ '\t').split('\t')[:2] -%}
+        {%- if name not in hideable_homes and (target == '' or (target | basename) not in hideable_homes) -%}
+          {%- set _ = found.append(name) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ found }}
+  when: home_will_mount | bool
+
+- name: Check the home disk
+  ansible.builtin.include_tasks: check_disk.yml
+  vars:
+    disk: "{{ nanohpc.home.device }}"
+    disk_use: /home
+    mkfs_hint: "mkfs.ext4 -O quota"
+  when: inventory_hostname == nanohpc.home.server and nanohpc.home.device is not none
+
+- name: Keep the home disk's details
+  ansible.builtin.set_fact:
+    home_fs: "{{ disk_fs }}"
+  when: inventory_hostname == nanohpc.home.server and nanohpc.home.device is not none
+
+- name: Check the scratch disk
+  ansible.builtin.include_tasks: check_disk.yml
+  vars:
+    disk: "{{ nanohpc.scratch.machines[inventory_hostname].device }}"
+    disk_use: /scratch
+    mkfs_hint: mkfs.ext4
+  when: inventory_hostname in nanohpc.scratch.machines and nanohpc.scratch.machines[inventory_hostname].device is not none
+
+- name: Keep the scratch disk's details
+  ansible.builtin.set_fact:
+    scratch_fs: "{{ disk_fs }}"
+  when: inventory_hostname in nanohpc.scratch.machines and nanohpc.scratch.machines[inventory_hostname].device is not none

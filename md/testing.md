@@ -70,11 +70,18 @@ How the VMs are made:
 
 - One Lima VM per machine, on Lima's user-v2 network: the VMs reach each other, and no sudo is needed on the host.
 - Extra disks: each device path in the configuration (`home.device`, `scratch.device`) becomes an extra Lima disk. A VM's extra disks appear as `/dev/vdb`, `/dev/vdc`, ... in the order they are attached, so a simulated `cluster.yml` must use those names in that order. The validator of the sim file checks this.
+- `sim up` makes the filesystems on the test disks, standing in for the administrator (nanoHPC never formats a disk): ext4, with quota support on the home disk.
+- Lima's template installs containerd in each VM at boot; `sim up` turns that off (`.containerd.system/user = false`). On a busy host its setup outlasted Lima's boot wait and left `systemd-logind` stuck, so every fresh login waited 120 seconds.
+- Lima's disk script tries to mount `/dev/vdb1` even for disks it does not format, so machines with an extra disk report `cloud-init status: error` and `systemctl is-system-running: degraded`. This is harmless for the tests.
+- Ubuntu 26.04 VMs: Lima logs in over vsock through systemd's per-connection sshd, which sets its own `AuthorizedKeysFile` and so ignores `/etc/ssh/authorized_keys/<user>`. Real machines have no such path. `sim up` adds that folder to it with a systemd drop-in, so test logins behave as on a real machine.
+- A VM whose first start fails (for example a slow boot on a busy host) is started once more.
 - The VM's CPUs and memory are set in the sim file and are smaller than the hardware written in `cluster.yml`. `nanohpc sim deploy` sets `SlurmdParameters=config_overrides` so Slurm accepts the configured values.
 
 Real-VM tests (slow, off by default, `NANOHPC_SIM=1`):
 
 - `uv run python -m unittest tests.test_sim.SimClusterTest`: brings a cluster up, checks SSH, sudo, the cluster network, and the disks on every machine, then brings it down. `NANOHPC_SIM_FILE=large` picks another sim file.
+- `uv run python -m unittest tests.test_sim.SimReleaseTest` with `NANOHPC_SIM_FILE=ubuntu-2204` or `ubuntu-2604`: deploys a small cluster (front node, one fake-GPU node, one CPU node) on that Ubuntu release and checks the stop for a scratch disk with no filesystem, Slurm nodes, jobs, sudo by forwarded key on every machine, the shared `/home` and quotas, scratch, a repeat deploy with no changes, and a later deploy as an administrator. The 22.04 cluster keeps `/home` on the root disk (no `home.device`). Each release builds its own Slurm packages the first time.
+- `uv run python -m unittest tests.test_sim.SimHomeOnStorageTest`: `/home` served by the storage machine; checks that a machine whose local `/home` holds data stops, then the NFS mounts, shared files, and a repeat deploy with no changes.
 - `uv run python -m unittest tests.test_sim.SimDeployTest`: deploys the everyday cluster with a key generated for the test, and checks users, real SSH logins (users on the front node, administrators everywhere), sudo by forwarded key through a test SSH agent, Munge, Slurm nodes, jobs, partition rules, fair-share, a repeat deploy with no changes, a later deploy as an administrator with no password, the stop when sudo needs a password and no one can type it, and a UID conflict.
 
 ## Fake GPUs

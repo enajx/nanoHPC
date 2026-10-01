@@ -12,6 +12,16 @@
   become: true
   roles: [base, accounts]
 
+- name: /home with quotas on the home machine
+  hosts: role_home
+  become: true
+  roles: [home_server]
+
+- name: The shared /home on the other machines (not the backup machine)
+  hosts: all:!role_home:!role_backup
+  become: true
+  roles: [home_client]
+
 - name: Munge authentication between Slurm machines
   hosts: role_slurm
   become: true
@@ -31,3 +41,8 @@
   hosts: role_compute
   become: true
   roles: [slurm_compute]
+
+- name: Local scratch on the compute machines
+  hosts: role_compute
+  become: true
+  roles: [scratch]

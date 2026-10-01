@@ -1,0 +1,87 @@
+# Small simulated cluster with /home on the front node's root disk (no home.device):
+# checks quotas on the root filesystem. Otherwise the same as cluster-small.yml.
+cluster:
+  name: labcluster
+  admins:
+  - alice
+  website:
+    hostname: cluster.example.org
+    https: letsencrypt
+    logo: null
+    login_address: cluster.example.org
+machines:
+  front:
+    address: 192.168.104.10
+    aliases:
+    - cluster.example.org
+    roles:
+    - front
+    - home
+  gpu4:
+    address: 192.168.104.11
+    roles:
+    - compute
+    cpu:
+      sockets: 1
+      cores_per_socket: 4
+      threads_per_core: 2
+    memory_mb: 4096
+    gpu:
+      type: a6000
+      count: 4
+    partitions:
+    - main
+    - interactive
+    scratch:
+      device: /dev/vdb
+  cpu1:
+    address: 192.168.104.13
+    roles:
+    - compute
+    cpu:
+      sockets: 1
+      cores_per_socket: 4
+      threads_per_core: 1
+    memory_mb: 4096
+    partitions:
+    - main
+    scratch:
+      image_gb: 2
+users:
+- name: alice
+  uid: 2000
+  ssh_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithYourOwnPublicKey alice@laptop
+- name: bob
+  uid: 2001
+  ssh_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithYourOwnPublicKey bob@laptop
+partitions:
+  main:
+    default: true
+    jobs: batch
+    max_time: '24:00:00'
+  interactive:
+    jobs: interactive
+    max_time: 08:00:00
+    max_gpus_per_user: 2
+policy:
+  max_submit_jobs_per_user: 30
+  max_gpus_per_user: unlimited
+  default_cpus_per_gpu: 4
+  default_memory_mb_per_cpu: 1024
+  fairshare_weight: 10000
+  fairshare_half_life: 7-00:00:00
+  age_weight: 1000
+  age_max: 7-00:00:00
+home:
+  quota_soft_gb: 300
+  quota_hard_gb: 400
+  quota_grace: 7days
+scratch:
+  cleanup_days: 14
+alerts:
+  slack: false
+auto_deploy:
+  enabled: false
+  repository: null

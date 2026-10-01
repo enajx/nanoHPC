@@ -1,8 +1,7 @@
 """Generate the cluster's configuration files from a validated cluster.yml.
 
 Ansible only copies these files and runs services, so every generated file can be tested here.
-Ported from SLURM-REAL's templates (slurm.conf.j2, gres.conf.j2, job_submit.lua.j2, hosts.j2),
-generalized to admin-defined partitions and CPU-only nodes.
+Partitions are defined by the administrator, and compute nodes may be CPU-only.
 """
 
 import json
@@ -21,6 +20,7 @@ class Rendered:
     job_submit_lua: str
     hosts: str
     qos: list[dict[str, Any]]  # one per partition, applied with sacctmgr
+    home_exports: str  # /etc/exports.d line per machine that mounts /home
 
 
 CGROUP_CONF = """CgroupPlugin=autodetect
@@ -190,6 +190,30 @@ def render_qos(config: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
+def home_server(config: dict[str, Any]) -> str:
+    """Return the name of the machine that serves /home."""
+    return next(name for name, machine in config["machines"].items() if "home" in machine["roles"])
+
+
+def home_clients(config: dict[str, Any]) -> list[str]:
+    """Return the machines that mount /home: all but the home machine and the backup machine."""
+    server = home_server(config)
+    return [name for name, m in config["machines"].items() if name != server and "backup" not in m["roles"]]
+
+
+def render_home_exports(config: dict[str, Any]) -> str:
+    """Return the NFS exports of /home, one line per client address.
+
+    no_root_squash: on Ubuntu 26.04+ the forwarded SSH agent socket that unlocks an
+    administrator's sudo is in their home, and root must reach it. /home is mounted nosuid on every machine,
+    so no program in /home can gain root (agreed with the user, 2026-10-01).
+    """
+    return "".join(
+        f"/home {config['machines'][name]['address']}(rw,sync,no_root_squash,no_subtree_check)\n"
+        for name in home_clients(config)
+    )
+
+
 def render_hosts(config: dict[str, Any]) -> str:
     """Return the /etc/hosts block naming every machine and its aliases."""
     return "".join(
@@ -207,4 +231,5 @@ def render(config: dict[str, Any], hostnames: dict[str, str], simulated: bool) -
         job_submit_lua=render_job_submit(config),
         hosts=render_hosts(config),
         qos=render_qos(config),
+        home_exports=render_home_exports(config),
     )
