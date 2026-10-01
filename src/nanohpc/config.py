@@ -2,7 +2,6 @@
 
 `check_config` collects every error it finds, each naming the field path, so the
 administrator can fix them all in one pass. Nothing is changed on any machine here.
-Ported and generalized from SLURM-REAL's `filter_plugins/cluster_machine_config.py`.
 """
 
 import re

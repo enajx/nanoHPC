@@ -64,7 +64,7 @@ class ValidateCommandTest(unittest.TestCase):
 
 
 class HeterogeneousClusterTest(unittest.TestCase):
-    """Valid setups beyond SLURM-REAL's fixed shape."""
+    """Valid heterogeneous setups: CPU-only nodes, admin-defined partitions, separate storage machines."""
 
     def test_example_has_no_errors(self) -> None:
         _, errors = check_config(example())

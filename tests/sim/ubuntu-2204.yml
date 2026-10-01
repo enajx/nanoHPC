@@ -1,0 +1,9 @@
+# Simulated test cluster: test-only file, never used on a real cluster (see md/testing.md).
+# The small cluster on Ubuntu 22.04, to check that release.
+cluster: cluster-small-roothome.yml   # also checks /home on the root disk
+ubuntu: "22.04"
+fake_gpus: [gpu4]
+vms:
+  default: {cpus: 1, memory_gb: 1, disk_gb: 10}
+  front: {cpus: 2, memory_gb: 3, disk_gb: 20}   # builds Slurm, runs MariaDB
+extra_disk_gb: 10

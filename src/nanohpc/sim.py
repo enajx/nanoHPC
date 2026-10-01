@@ -43,6 +43,7 @@ class Vm:
     memory_gb: float
     disk_gb: int
     disks: list[str]  # Lima disk names, attached in order as /dev/vdb, /dev/vdc, ...
+    home_device: str | None  # the disk that holds /home, formatted with quota support
 
 
 @dataclass(frozen=True)
@@ -144,7 +145,15 @@ def plan_vm(checker: Checker, sim: str, machine: str, values: dict[str, Any], si
             f"a simulated machine's extra disks are /dev/vdb, /dev/vdc, ... in order, found {found}",
         )
     disks = [f"{instance}-{Path(device).name}" for device in devices]
-    return Vm(machine, instance, size.get("cpus", 0), size.get("memory_gb", 0), size.get("disk_gb", 0), disks)
+    return Vm(
+        machine,
+        instance,
+        size.get("cpus", 0),
+        size.get("memory_gb", 0),
+        size.get("disk_gb", 0),
+        disks,
+        home.get("device"),
+    )
 
 
 def render_cluster(plan: SimPlan, addresses: dict[str, str]) -> str:
@@ -215,6 +224,37 @@ def cluster_network() -> ipaddress.IPv4Network:
     return ipaddress.IPv4Network(f"{networks['gateway']}/{networks['netmask']}", strict=False)
 
 
+# Ubuntu 26.04 VMs: Lima connects over vsock to systemd's per-connection sshd, which sets its own
+# AuthorizedKeysFile on the command line. Real machines have no such path. Adding nanoHPC's key
+# folder there makes test logins behave as on a real machine.
+VSOCK_SSHD_DROPIN = r"""
+if systemctl cat sshd@.service >/dev/null 2>&1; then
+  mkdir -p /etc/systemd/system/sshd@.service.d
+  cat > /etc/systemd/system/sshd@.service.d/nanohpc-sim.conf <<'UNIT'
+[Service]
+ExecStart=
+ExecStart=-/usr/sbin/sshd -i $SSHD_OPTS -o "AuthorizedKeysFile ${CREDENTIALS_DIRECTORY}/ssh.ephemeral-authorized_keys-all .ssh/authorized_keys /etc/ssh/authorized_keys/%%u"
+UNIT
+  systemctl daemon-reload
+fi
+"""
+
+
+# nanoHPC never formats a disk: the administrator makes the filesystems. For a simulated machine,
+# `sim up` does it, on a test disk that has none yet: ext4, with quota support on the home disk.
+FORMAT_TEST_DISK = "blkid {device} >/dev/null || mkfs.ext4 -q {options} {device}"
+
+
+def prepare_vm(vm: Vm) -> None:
+    """Make a started VM behave like a real machine where Lima differs, and format its test disks."""
+    lima("shell", "--workdir", "/", vm.instance, "sudo", "sh", "-c", VSOCK_SSHD_DROPIN)
+    for disk in vm.disks:
+        device = "/dev/" + disk.rsplit("-", 1)[1]
+        options = "-O quota" if device == vm.home_device else ""
+        command = FORMAT_TEST_DISK.format(device=device, options=options)
+        lima("shell", "--workdir", "/", vm.instance, "sudo", "sh", "-c", command)
+
+
 def vm_address(instance: str, network: ipaddress.IPv4Network) -> str:
     """Return the VM's address on the cluster network, waiting up to 60 seconds for DHCP."""
     output = ""
@@ -249,6 +289,9 @@ def up(plan: SimPlan) -> Path:
             lima(
                 "create", "--tty=false", f"--name={vm.instance}", f"--cpus={vm.cpus}", f"--memory={vm.memory_gb}",
                 f"--disk={vm.disk_gb}", "--network=lima:user-v2", "--set", ".mounts = []",
+                # Lima's template also installs containerd at boot; nanoHPC does not need it, and on a busy
+                # host its setup can outlast Lima's boot wait and leave the VM degraded.
+                "--set", ".containerd.system = false", "--set", ".containerd.user = false",
                 "--set", f".additionalDisks = [{attached}]", f"template:ubuntu-{plan.ubuntu}",
             )  # fmt: skip
     print(f"starting {len(plan.vms)} VMs")
@@ -256,9 +299,17 @@ def up(plan: SimPlan) -> Path:
         (vm, subprocess.Popen(["limactl", "start", "--tty=false", "--timeout=20m", vm.instance], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True))
         for vm in plan.vms
     ]  # fmt: skip
-    failed = [(vm, process.communicate()[1]) for vm, process in starts if process.wait() != 0]
-    if failed:
-        sys.exit("\n".join(f"{vm.instance} did not start:\n{error.strip()}" for vm, error in failed))
+    failed = [vm for vm, process in starts if process.wait() != 0]
+    # On a busy host a VM's boot scripts can take longer than Lima waits; a second start then succeeds.
+    start = ["limactl", "start", "--tty=false", "--timeout=20m"]
+    retries = [
+        (vm, subprocess.run([*start, vm.instance], capture_output=True, text=True, check=False)) for vm in failed
+    ]
+    still_failed = [(vm, result.stderr) for vm, result in retries if result.returncode != 0]
+    if still_failed:
+        sys.exit("\n".join(f"{vm.instance} did not start:\n{error.strip()}" for vm, error in still_failed))
+    for vm in plan.vms:
+        prepare_vm(vm)
     network = cluster_network()
     addresses = {vm.machine: vm_address(vm.instance, network) for vm in plan.vms}
     listing = lima("list", "--format", "{{.Name}} {{.SSHLocalPort}}")

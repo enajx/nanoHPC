@@ -39,7 +39,7 @@ machines:
     memory_mb: 4096
     gpu: {type: rtx6000ada, count: 2}
     partitions: [main]
-    scratch: {image_gb: 20}     # no spare disk: scratch in a file on the root disk
+    scratch: {image_gb: 2}     # no spare disk: scratch in a file on the root disk
 
   cpu1:
     address: 192.168.104.13
@@ -47,7 +47,7 @@ machines:
     cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 1}
     memory_mb: 4096
     partitions: [main]          # no gpu: CPU-only node
-    scratch: {image_gb: 20}
+    scratch: {image_gb: 2}
 
   gpu4i:
     address: 192.168.104.14
@@ -56,7 +56,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [interactive]
-    scratch: {image_gb: 20}
+    scratch: {image_gb: 2}
 
   store:
     address: 192.168.104.20

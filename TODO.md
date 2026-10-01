@@ -56,20 +56,24 @@ flowchart LR
 
 - [x] Slurm is built from the official source (newest stable version, then pinned: 26.05.4) for each CPU type and installed on all machines. Checked on ARM64 (simulated cluster).
 - [ ] The Slurm build is checked on x86 (a deploy on the GitHub Actions Linux runner, run by hand once before the release).
-- [ ] Ubuntu 22.04, 24.04, and 26.04 are supported, checked with a deploy on the simulated cluster for each. Only 24.04 is tested so far. 26.04 ships `sudo-rs` instead of `sudo`: check that sudo by forwarded key (PAM, `env_keep`, `visudo`) works there.
+- [x] Ubuntu 22.04, 24.04, and 26.04 are supported, checked with a deploy on the simulated cluster for each (ARM64), including sudo by forwarded key with 26.04's `sudo-rs`.
 - [x] Users listed in the configuration are created on every machine with the same UID and their SSH keys. Login is by SSH key only; password login is off.
 - [x] If a machine already has a listed user with a different UID or group ID, the deploy stops on that machine without changing it, and says what conflicts and what to do next.
-- [ ] If a machine has a local `/home` with data, the deploy stops on that machine without changing it, and says what to do next.
+- [x] If a machine has a local `/home` with data, the deploy stops on that machine without changing it, and says what to do next.
 - [ ] `nanohpc fix-uid USER MACHINE` harmonises a user's UID on one machine safely, only when the administrator runs it: it refuses while the user has running processes, and lists the files it will re-own before changing anything.
 - [x] Users can log in to the front node. Only administrators can log in to the other machines directly.
 - [x] nanoHPC never adds passwordless sudo rules. Administrators listed in `cluster.yml` use `sudo` through their forwarded SSH key (`ssh -A`, `pam_ssh_agent_auth`), by hand and for later deploys, so no password is typed or stored.
+- [x] Administrators' sudo by forwarded key also works on Ubuntu 26.04+ machines that mount `/home` (OpenSSH 10.1+ keeps the agent socket in the home folder): `/home` is exported with `no_root_squash` and mounted `nosuid,nodev` on every machine, so no program in `/home` can gain root.
 - [x] `nanohpc deploy` checks sudo on every machine before changing anything. The first setup of a machine needs root the normal way: if sudo needs a password and someone is at a terminal, it asks once and keeps it in memory for that run only; if no one can type it (for example an agent), it stops and explains the options (such as running that one command by hand with `! nanohpc deploy` in Claude Code).
 - [x] The Munge key is created and copied to all machines automatically.
 - [ ] The metrics certificates are created and copied to all machines automatically.
 - [x] GPU nodes are checked for the GPU count in the configuration, with a clear message if the NVIDIA driver is missing or the count differs.
-- [ ] nanoHPC never formats a disk. The home and scratch disks named in the configuration must already have a filesystem; nanoHPC checks its type and mounts it, and stops with the command to run if the disk has no filesystem.
-- [ ] `/home` is shared from the front node, or from a separate storage machine, to all machines, with the per-user quotas from the configuration.
-- [ ] Each compute node has local scratch, and old scratch files are cleaned up automatically.
+- [x] nanoHPC never formats a disk. The home and scratch disks named in the configuration must already have a filesystem; nanoHPC checks its type and mounts it, and stops with the command to run if the disk has no filesystem.
+- [x] `/home` is shared from the front node, or from a separate storage machine, to all machines, with the per-user quotas from the configuration.
+- [x] Each compute node has local scratch (a disk, or an image file nanoHPC creates), and staged scratch data unused for `scratch.cleanup_days` is cleaned up daily. Per-user caches in `/scratch/<user>` are not cleaned.
+- [ ] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on the simulated cluster; no test reboots a machine yet).
+- [ ] XFS home and scratch disks, and quota enforcement over NFS (a user over the hard limit cannot write), are checked on the simulated cluster.
+- [ ] Quotas survive kernel upgrades: on Ubuntu cloud kernels the quota modules come from `linux-modules-extra-<kernel>`, which nanoHPC installs for the running kernel only. After a kernel upgrade the `/home` mount with quotas could fail at boot until the next deploy.
 - [x] Partitions work with the GPU fair-share priority and per-user limits from the configuration.
 - [ ] `cluster-submit` runs a job on a private scratch copy of the project and copies declared outputs back.
 - [ ] uv is available to users on all machines.

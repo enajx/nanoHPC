@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Remove staged scratch data not used for SCRATCH_CLEANUP_DAYS days, unless a running job uses it.
+# Runs with each user's own permissions (see scratch-cleanup-users).
+set -euo pipefail
+
+scratch_root=${SCRATCH_ROOT:-/scratch/staged}
+days=${SCRATCH_CLEANUP_DAYS:-14}
+lock_file=${SCRATCH_CLEANUP_LOCK:-/scratch/locks/cleanup.lock}
+test "$scratch_root" = /scratch/staged || case "$scratch_root" in /scratch/*) ;; *) echo "unsafe scratch root" >&2; exit 64 ;; esac
+mountpoint -q /scratch || { echo "scratch filesystem is not mounted" >&2; exit 69; }
+test -d "$scratch_root" || exit 0
+exec 9<"$lock_file"
+flock -n -x 9 || exit 0
+# An unavailable scheduler must stop cleanup, not make every job appear inactive.
+active_jobs=$(squeue --noheader --states=RUNNING,COMPLETING,SUSPENDED,CONFIGURING --format=%A)
+find "$scratch_root" -type f -name .last-used -mtime "+$days" -print0 |
+while IFS= read -r -d '' marker; do
+  data_dir=$(dirname "$marker")
+  in_use=false
+  if test -d "$data_dir/.jobs"; then
+    while IFS= read -r job_id; do
+      if printf '%s\n' "$active_jobs" | grep -Fxq "$job_id"; then
+        in_use=true
+      fi
+    done < <(find "$data_dir/.jobs" -maxdepth 1 -type f -printf '%f\n')
+  fi
+  if test "$in_use" = true; then
+    continue
+  fi
+  rm -rf -- "$data_dir"
+done
