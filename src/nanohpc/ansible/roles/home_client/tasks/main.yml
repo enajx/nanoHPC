@@ -1,0 +1,40 @@
+# Mount the shared /home over NFSv4 on every machine that is not the home machine or the backup
+# machine. The preflight role has already checked that
+# the local /home holds nothing the mount would hide, except the deploy accounts' homes, whose SSH
+# keys the accounts role keeps in /etc/ssh/authorized_keys.
+
+- name: Require the home machine, which serves /home
+  ansible.builtin.assert:
+    that: hostvars[nanohpc.home.server].home_server_ready | default(false)
+    fail_msg: >-
+      The home machine {{ nanohpc.home.server }} did not finish setting up /home (see its errors above), so
+      {{ inventory_hostname }} cannot mount it. Nothing about /home was changed on this machine.
+    quiet: true
+
+- name: Install the NFS client
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+    install_recommends: false
+
+- name: Mount the shared /home at boot
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\S+\s+/home\s'
+    # nosuid,nodev: no program or device file in /home gives root (the export is no_root_squash).
+    line: "{{ nanohpc.home.server_address }}:/home /home nfs4 rw,nosuid,nodev,_netdev,hard,timeo=600,retrans=2 0 0"
+    backup: true
+  register: home_fstab
+
+- name: Mount the shared /home now
+  ansible.builtin.command: mount /home
+  when: home_fstab.changed or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'
+  register: home_mounted
+  changed_when: true
+  failed_when: home_mounted.rc != 0 and 'already mounted' not in home_mounted.stderr
+
+- name: Check that /home is the shared one
+  ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /home
+  register: home_now
+  changed_when: false
+  failed_when: home_now.stdout.split() != [nanohpc.home.server_address ~ ':/home', 'nfs4']

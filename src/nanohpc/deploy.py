@@ -20,7 +20,7 @@ from typing import Any
 
 import yaml
 
-from nanohpc.render import compute_machines, render
+from nanohpc.render import compute_machines, home_clients, home_server, render
 
 SLURM: dict[str, Any] = {
     "version": "26.05.4",
@@ -87,14 +87,44 @@ def probe(machines: list[str], ssh_config: Path | None) -> Probe:
 
 def inventory(config: dict[str, Any]) -> dict[str, Any]:
     """Return the Ansible inventory: one group per role (role_front, ...), and role_slurm for front and compute."""
+    # Ansible's temporary files on the cluster machines go to the login session's private runtime folder:
+    # not the home folder (the shared /home or the home disk can hide it), and not a predictable /tmp path
+    # another user could create first. Set on the role groups, which every machine is in, and not on `all`,
+    # whose variables the administrator's own machine (localhost) also takes.
+    machine_vars = {"ansible_remote_tmp": "$XDG_RUNTIME_DIR/ansible-tmp"}
     groups: dict[str, Any] = {
         f"role_{role}": {
-            "hosts": {name: None for name, machine in config["machines"].items() if role in machine["roles"]}
+            "hosts": {name: None for name, machine in config["machines"].items() if role in machine["roles"]},
+            "vars": machine_vars,
         }
         for role in ("front", "home", "backup", "compute")
     }
     groups["role_slurm"] = {"children": {"role_front": None, "role_compute": None}}
     return {"all": {"children": groups}}
+
+
+def home_variables(config: dict[str, Any]) -> dict[str, Any]:
+    """Return where /home is served, who mounts it, and each user's quota in setquota's 1 KiB blocks."""
+    server = home_server(config)
+    home = config["home"]
+    seconds = {"days": 86400, "hours": 3600, "minutes": 60}  # the units the validator accepts
+    unit = next(unit for unit in seconds if home["quota_grace"].endswith(unit))
+    grace = int(home["quota_grace"].removesuffix(unit)) * seconds[unit]
+    return {
+        "server": server,
+        "server_address": config["machines"][server]["address"],
+        "device": config["machines"][server]["home"]["device"],
+        "clients": home_clients(config),
+        "quotas": [
+            {
+                "name": user["name"],
+                "soft_kib": home["quota_soft_gb"] * 1024 * 1024,
+                "hard_kib": home["quota_hard_gb"] * 1024 * 1024,
+            }
+            for user in config["users"]
+        ],
+        "grace_seconds": grace,
+    }
 
 
 def variables(config: dict[str, Any], work: Path, fake_gpus: list[str], qos: list[dict[str, Any]]) -> dict[str, Any]:
@@ -114,7 +144,13 @@ def variables(config: dict[str, Any], work: Path, fake_gpus: list[str], qos: lis
             "qos": qos,
             "max_submit_jobs_per_user": config["policy"]["max_submit_jobs_per_user"],
             "max_gpus_per_user": -1 if policy_limit == "unlimited" else policy_limit,
+            "home": home_variables(config),
+            "scratch": {
+                "machines": {name: machine["scratch"] for name, machine in compute_machines(config).items()},
+                "cleanup_days": config["scratch"]["cleanup_days"],
+            },
             "files": str(work / "files"),
+            "package_files": str(resources.files("nanohpc").joinpath("files")),
             "slurm": {**SLURM, "cache": str(CACHE / "slurm" / SLURM["version"])},
         }
     }
@@ -157,6 +193,7 @@ def prepare(
     (files / "cgroup.conf").write_text(rendered.cgroup_conf)
     (files / "job_submit.lua").write_text(rendered.job_submit_lua)
     (files / "hosts").write_text(rendered.hosts)
+    (files / "exports").write_text(rendered.home_exports)
     for name, text in rendered.gres_conf.items():
         (files / "gres" / f"{name}.conf").write_text(text)
     (work / "vars.json").write_text(json.dumps(variables(config, work, fake_gpus, rendered.qos), indent=2))

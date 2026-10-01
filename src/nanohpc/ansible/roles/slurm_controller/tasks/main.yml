@@ -1,5 +1,5 @@
 # Slurm controller, accounting database, partitions' QoS, and users' fair-share on the front node.
-# Ported from SLURM-REAL's roles/slurm_controller, generalized to admin-defined partitions.
+# Partitions are defined by the administrator in cluster.yml.
 
 - name: Create the Slurm folders
   ansible.builtin.file:

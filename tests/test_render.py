@@ -160,3 +160,28 @@ class HostsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomeExportsTest(unittest.TestCase):
+    """The home machine exports /home to every other machine that uses it."""
+
+    def test_home_on_front(self) -> None:
+        exports = render(config_of(), names(config_of()), False).home_exports
+        # The front node serves /home; the compute machines mount it; the backup machine does not.
+        lines = exports.splitlines()
+        self.assertEqual(
+            lines,
+            [f"/home 192.168.104.{n}(rw,sync,no_root_squash,no_subtree_check)" for n in (11, 12, 13, 14)],
+        )
+
+    def test_home_on_storage_machine(self) -> None:
+        def move_home(raw: dict[str, Any]) -> None:
+            raw["machines"]["front"]["roles"] = ["front"]
+            del raw["machines"]["front"]["home"]
+            raw["machines"]["store"] = {"address": "192.168.104.20", "roles": ["home"]}
+            del raw["backup"]
+
+        config = config_of(move_home)
+        lines = render(config, names(config), False).home_exports.splitlines()
+        self.assertIn("/home 192.168.104.10(rw,sync,no_root_squash,no_subtree_check)", lines)
+        self.assertEqual(len(lines), 5)

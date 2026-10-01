@@ -35,6 +35,9 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(sorted(groups["role_backup"]["hosts"]), ["store"])
         self.assertEqual(sorted(groups["role_compute"]["hosts"]), ["cpu1", "gpu2", "gpu4", "gpu4i"])
         self.assertEqual(sorted(groups["role_slurm"]["children"]), ["role_compute", "role_front"])
+        for role in ("role_front", "role_home", "role_backup", "role_compute"):
+            self.assertEqual(groups[role]["vars"]["ansible_remote_tmp"], "$XDG_RUNTIME_DIR/ansible-tmp")
+        self.assertNotIn("vars", yaml.safe_load((self.work / "inventory.yml").read_text())["all"])
 
     def test_variables(self) -> None:
         prepare(self.config, self.hostnames, None, True, ["gpu2"], self.work)
@@ -49,6 +52,25 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(variables["max_gpus_per_user"], -1)
         self.assertEqual(variables["slurm"]["version"], SLURM["version"])
         self.assertEqual(variables["files"], str(self.work / "files"))
+
+    def test_home_and_scratch_variables(self) -> None:
+        prepare(self.config, self.hostnames, None, True, [], self.work)
+        variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
+        home = variables["home"]
+        self.assertEqual(home["server"], "front")
+        self.assertEqual(home["server_address"], "192.168.104.10")
+        self.assertEqual(home["device"], "/dev/vdb")
+        self.assertEqual(home["clients"], ["gpu4", "gpu2", "cpu1", "gpu4i"])
+        # setquota counts 1 KiB blocks; the example asks for 300 and 400 GB.
+        self.assertEqual(
+            home["quotas"][0], {"name": "alice", "soft_kib": 300 * 1024 * 1024, "hard_kib": 400 * 1024 * 1024}
+        )
+        self.assertEqual(home["grace_seconds"], 7 * 86400)
+        scratch = variables["scratch"]
+        self.assertEqual(scratch["machines"]["gpu4"], {"device": "/dev/vdb", "image_gb": None})
+        self.assertEqual(scratch["machines"]["gpu2"], {"device": None, "image_gb": 2})
+        self.assertEqual(scratch["cleanup_days"], 14)
+        self.assertIn("/home 192.168.104.11(rw", (self.work / "files" / "exports").read_text())
 
     def test_files_are_written(self) -> None:
         prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], self.work)

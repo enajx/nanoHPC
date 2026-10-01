@@ -202,11 +202,8 @@ class SimClusterTest(unittest.TestCase):
         self.assertFalse(state.exists())
 
 
-@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
-class SimDeployTest(unittest.TestCase):
-    """End to end: `nanohpc sim deploy` sets up Slurm, users, SSH access, sudo, and Munge on the everyday
-    cluster. Real Lima VMs. The first run builds Slurm on the front VM (tens of minutes); later runs use the
-    cached packages. The users get a key generated for the test, so real logins can be tried."""
+class SimUsersBase(unittest.TestCase):
+    """Helpers for real-VM tests that log in as cluster users with a key generated for the test."""
 
     sim = SIM / "everyday.yml"
     state = ROOT / ".nanohpc-sim" / "everyday"
@@ -275,7 +272,9 @@ class SimDeployTest(unittest.TestCase):
             "uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--ssh-config", str(ssh_config), agent=agent
         )  # fmt: skip
 
-    def test_deploy(self) -> None:
+    def up_with_test_key(self) -> tuple[Path, dict[str, Any], str]:
+        """Bring the sim cluster up and give its users the test key. Return the cluster file, its config,
+        and the test public key. The VMs are removed when the test ends."""
         # Registered first, so VMs are removed even when `sim up` itself fails.
         self.addCleanup(self.run_command, "uv", "run", "nanohpc", "sim", "down", str(self.sim))
         result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(self.sim))
@@ -287,8 +286,98 @@ class SimDeployTest(unittest.TestCase):
         for user in config["users"]:
             user["ssh_keys"] = [public_key]
         cluster.write_text(yaml.safe_dump(config))
+        return cluster, config, public_key
+
+    def up_and_deploy(self) -> tuple[Path, dict[str, Any], str]:
+        """Bring the sim cluster up with the test key and deploy it."""
+        cluster, config, public_key = self.up_with_test_key()
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr)
+        return cluster, config, public_key
+
+    def finished_job(self, job: str) -> tuple[str, str]:
+        """Return the state and node of a job, once accounting has recorded it."""
+        command = (
+            f"for i in $(seq 20); do sacct -X -n -P -j {job} -o State | grep -q COMPLETED && break; sleep 1; done;"
+            f" sacct -X -n -P -j {job} -o State,NodeList"
+        )
+        state, node = self.on_front(command).strip().split("|")
+        return state, node
+
+    def assert_no_changes(self, result: subprocess.CompletedProcess[str], machines: int) -> None:
+        """Require a successful deploy that changed nothing on any machine."""
+        self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+        recap = [line for line in result.stdout.splitlines() if " : ok=" in line]
+        self.assertEqual(len(recap), machines, result.stdout[-4000:])
+        for line in recap:
+            self.assertIn("changed=0 ", line)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimReleaseTest(SimUsersBase):
+    """A deploy on one Ubuntu release, with the small cluster. Real Lima VMs.
+    NANOHPC_SIM_FILE picks the sim file (default ubuntu-2604; also ubuntu-2204)."""
+
+    def setUp(self) -> None:
+        name = os.environ.get("NANOHPC_SIM_FILE", "ubuntu-2604")
+        self.sim = SIM / f"{name}.yml"
+        self.state = ROOT / ".nanohpc-sim" / name
+        super().setUp()
+
+    def test_deploy_on_release(self) -> None:
+        _, config, _ = self.up_with_test_key()
+        # A scratch disk without a filesystem stops that machine with the command to run; nanoHPC never formats it.
+        self.assertEqual(self.ssh("gpu4", "sudo wipefs -q -a /dev/vdb").returncode, 0)
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gpu4: /dev/vdb has no filesystem. nanoHPC never formats a disk.", result.stdout)
+        self.assertIn("mkfs.ext4 /dev/vdb", result.stdout)
+        self.assertEqual(self.ssh("gpu4", "sudo blkid /dev/vdb").returncode, 2)
+        self.assertEqual(self.ssh("gpu4", "sudo mkfs.ext4 -q /dev/vdb").returncode, 0)
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr)
+        version = yaml.safe_load(self.sim.read_text())["ubuntu"]
+        self.assertIn(version, self.ssh("front", "cat /etc/os-release").stdout)
+        nodes = sorted(line for line in self.on_front("sinfo -h -N -o '%N %P %T'").split("\n") if line)
+        self.assertEqual(nodes, ["cpu1 main* idle", "gpu4 interactive idle", "gpu4 main* idle"])
+        submit = "cd /tmp && sudo -u alice sbatch --parsable --wait -o /dev/null"
+        for options, node in (("--gpus=1", "gpu4"), ("-w cpu1", "cpu1")):
+            job = self.on_front(f"{submit} -p main {options} --wrap hostname").strip()
+            self.assertEqual(self.finished_job(job), ("COMPLETED", node))
+        sudo = "sudo -S -p '' true </dev/null"
+        # OpenSSH 10.1+ (Ubuntu 26.04) keeps the forwarded agent socket in the user's home, on NFS on gpu4:
+        # /home is exported with no_root_squash so sudo (root) can reach it.
+        for machine in ("front", "gpu4"):
+            self.assertEqual(self.as_user("alice", machine, sudo, agent=True).returncode, 0, machine)
+        self.assertNotEqual(self.as_user("bob", "front", sudo, agent=True).returncode, 0)
+        # /home never lets a program gain root, on any machine.
+        for machine in ("front", "gpu4", "cpu1"):
+            self.assertIn("nosuid", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout, machine)
+        front = config["machines"]["front"]["address"]
+        for machine in ("gpu4", "cpu1"):
+            self.assertEqual(
+                self.ssh(machine, "findmnt -n -o SOURCE --mountpoint /home").stdout.strip(), f"{front}:/home"
+            )
+        self.on_front("sudo -u alice sh -c 'echo shared > /home/alice/check'")
+        self.assertEqual(self.ssh("cpu1", "sudo -u alice cat /home/alice/check").stdout.strip(), "shared")
+        # -a: every filesystem with quotas (/home's own disk, or / when /home is on the root disk).
+        self.assertIn("alice,ok,ok,", self.on_front("sudo repquota -a -u -O csv"))
+        self.assertEqual(self.ssh("gpu4", "findmnt -n -o SOURCE --mountpoint /scratch").stdout.strip(), "/dev/vdb")
+        self.assertTrue(self.ssh("cpu1", "findmnt -n -o SOURCE --mountpoint /scratch").stdout.startswith("/dev/loop"))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assert_no_changes(result, len(config["machines"]))
+        result = self.deploy(self.ssh_config_for("alice"), agent=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimDeployTest(SimUsersBase):
+    """End to end: `nanohpc sim deploy` sets up Slurm, users, SSH access, sudo, and Munge on the everyday
+    cluster. Real Lima VMs. The first run builds Slurm on the front VM (tens of minutes); later runs use the
+    cached packages. The users get a key generated for the test, so real logins can be tried."""
+
+    def test_deploy(self) -> None:
+        cluster, config, public_key = self.up_and_deploy()
         machines = config["machines"]
 
         with self.subTest("users and UIDs on every machine"):
@@ -341,6 +430,50 @@ class SimDeployTest(unittest.TestCase):
             shares = self.on_front("sshare -n -P -A labcluster -a -o User,RawShares")
             self.assertIn("alice|1", shares.split())
             self.assertIn("bob|1", shares.split())
+
+        with self.subTest("/home shared from the front node, private, with quotas"):
+            front = machines["front"]["address"]
+            for machine in ("gpu4", "gpu2", "cpu1", "gpu4i"):
+                self.assertEqual(
+                    self.ssh(machine, "findmnt -n -o SOURCE,FSTYPE --mountpoint /home").stdout.split(),
+                    [f"{front}:/home", "nfs4"],
+                    machine,
+                )
+            self.assertNotIn("nfs", self.ssh("store", "findmnt -n -o FSTYPE --target /home").stdout)
+            self.on_front("sudo -u alice sh -c 'echo shared > /home/alice/check'")
+            self.assertEqual(self.ssh("gpu4", "sudo -u alice cat /home/alice/check").stdout.strip(), "shared")
+            self.assertNotEqual(self.ssh("gpu4", "sudo -u bob ls /home/alice").returncode, 0)
+            self.assertEqual(self.on_front("stat -c '%U %a' /home/alice").strip(), "alice 700")
+            quotas = {
+                row.split(",")[0]: row.split(",") for row in self.on_front("sudo repquota -u -O csv /home").splitlines()
+            }
+            header = quotas["User"]
+            soft, hard = header.index("BlockSoftLimit"), header.index("BlockHardLimit")
+            self.assertEqual(
+                (quotas["alice"][soft], quotas["alice"][hard]), (str(300 * 1024 * 1024), str(400 * 1024 * 1024))
+            )
+
+        with self.subTest("local scratch on a disk or in an image, with per-user caches and cleanup"):
+            self.assertEqual(self.ssh("gpu4", "findmnt -n -o SOURCE --mountpoint /scratch").stdout.strip(), "/dev/vdb")
+            self.assertTrue(
+                self.ssh("gpu2", "findmnt -n -o SOURCE --mountpoint /scratch").stdout.startswith("/dev/loop")
+            )
+            self.assertEqual(
+                self.ssh("gpu2", "sudo stat -c %s /var/lib/nanohpc/scratch.img").stdout.strip(), str(2 * 1024**3)
+            )
+            self.assertEqual(self.ssh("gpu2", "stat -c '%U %a' /scratch/alice").stdout.strip(), "alice 700")
+            cache = self.ssh("gpu2", "sudo -u alice bash -lc 'echo $UV_CACHE_DIR'").stdout.strip()
+            self.assertEqual(cache, "/scratch/alice/uv-cache")
+            self.assertEqual(
+                self.ssh("gpu2", "systemctl is-enabled nanohpc-scratch-cleanup.timer").stdout.strip(), "enabled"
+            )
+            staged = "/scratch/staged/private/2000"
+            self.ssh(
+                "gpu2",
+                f"sudo -u alice sh -c 'mkdir -p {staged}/old {staged}/new && touch -d \"20 days ago\" {staged}/old/.last-used && touch {staged}/new/.last-used'",
+            )
+            self.assertEqual(self.ssh("gpu2", "sudo systemctl start nanohpc-scratch-cleanup.service").returncode, 0)
+            self.assertEqual(self.ssh("gpu2", f"sudo ls {staged}").stdout.split(), ["new"])
 
         with self.subTest("partition rules and limits"):
             shell = self.run_command(
@@ -406,6 +539,42 @@ class SimDeployTest(unittest.TestCase):
             # gpu2 was left unchanged: the other new user was not created there, but was elsewhere.
             self.assertEqual(self.ssh("gpu2", "getent passwd dave").returncode, 2)
             self.assertIn("dave:x:2006:", self.ssh("gpu4", "getent passwd dave").stdout)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimHomeOnStorageTest(SimUsersBase):
+    """/home served by the storage machine instead of the front node. Real Lima VMs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "home-on-storage.yml"
+        self.state = ROOT / ".nanohpc-sim" / "home-on-storage"
+        super().setUp()
+
+    def test_home_on_storage_machine(self) -> None:
+        # A machine whose local /home holds data stops before the shared /home could hide it.
+        self.addCleanup(self.run_command, "uv", "run", "nanohpc", "sim", "down", str(self.sim))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(self.sim))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.ssh("gpu2", "sudo mkdir /home/olddata").returncode, 0)
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gpu2: /home holds olddata", result.stdout)
+        self.assertNotIn("nfs", self.ssh("gpu2", "findmnt -n -o FSTYPE --target /home").stdout)
+        self.assertEqual(self.ssh("gpu2", "sudo rmdir /home/olddata").returncode, 0)
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+        store = yaml.safe_load((self.state / "cluster.yml").read_text())["machines"]["store"]["address"]
+        for machine in ("front", "gpu4", "gpu2"):
+            self.assertEqual(
+                self.ssh(machine, "findmnt -n -o SOURCE --mountpoint /home").stdout.strip(), f"{store}:/home", machine
+            )
+        self.assertEqual(self.ssh("store", "findmnt -n -o SOURCE --mountpoint /home").stdout.strip(), "/dev/vdb")
+        self.on_front("sudo -u alice sh -c 'echo shared > /home/alice/check'")
+        self.assertEqual(self.ssh("gpu4", "sudo -u alice cat /home/alice/check").stdout.strip(), "shared")
+        # The VM's default account still logs in on the front node, where its own home is now hidden.
+        self.assertEqual(self.ssh("front", "true").returncode, 0)
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assert_no_changes(result, 6)
 
 
 if __name__ == "__main__":

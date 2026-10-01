@@ -1,5 +1,4 @@
 # slurmd, GPUs, and resource limits on the compute machines.
-# Ported from SLURM-REAL's roles/slurm_compute.
 
 - name: Create the Slurm folders
   ansible.builtin.file:

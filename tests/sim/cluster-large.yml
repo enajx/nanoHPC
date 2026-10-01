@@ -20,7 +20,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [main, interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu2-02:
     address: 192.168.104.12
@@ -29,7 +29,7 @@ machines:
     memory_mb: 4096
     gpu: {type: rtx6000ada, count: 2}
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   cpu-03:
     address: 192.168.104.13
@@ -37,7 +37,7 @@ machines:
     cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
     memory_mb: 4096
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu4i-04:
     address: 192.168.104.14
@@ -46,7 +46,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu4-05:
     address: 192.168.104.15
@@ -55,7 +55,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [main, interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu2-06:
     address: 192.168.104.16
@@ -64,7 +64,7 @@ machines:
     memory_mb: 4096
     gpu: {type: rtx6000ada, count: 2}
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   cpu-07:
     address: 192.168.104.17
@@ -72,7 +72,7 @@ machines:
     cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
     memory_mb: 4096
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu4i-08:
     address: 192.168.104.18
@@ -81,7 +81,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu4-09:
     address: 192.168.104.19
@@ -90,7 +90,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [main, interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu2-10:
     address: 192.168.104.20
@@ -99,7 +99,7 @@ machines:
     memory_mb: 4096
     gpu: {type: rtx6000ada, count: 2}
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   cpu-11:
     address: 192.168.104.21
@@ -107,7 +107,7 @@ machines:
     cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
     memory_mb: 4096
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu4i-12:
     address: 192.168.104.22
@@ -116,7 +116,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu4-13:
     address: 192.168.104.23
@@ -125,7 +125,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [main, interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu2-14:
     address: 192.168.104.24
@@ -134,7 +134,7 @@ machines:
     memory_mb: 4096
     gpu: {type: rtx6000ada, count: 2}
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   cpu-15:
     address: 192.168.104.25
@@ -142,7 +142,7 @@ machines:
     cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
     memory_mb: 4096
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu4i-16:
     address: 192.168.104.26
@@ -151,7 +151,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu4-17:
     address: 192.168.104.27
@@ -160,7 +160,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [main, interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu2-18:
     address: 192.168.104.28
@@ -169,7 +169,7 @@ machines:
     memory_mb: 4096
     gpu: {type: rtx6000ada, count: 2}
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   cpu-19:
     address: 192.168.104.29
@@ -177,7 +177,7 @@ machines:
     cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
     memory_mb: 4096
     partitions: [main]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
   gpu4i-20:
     address: 192.168.104.30
@@ -186,7 +186,7 @@ machines:
     memory_mb: 4096
     gpu: {type: a6000, count: 4}
     partitions: [interactive]
-    scratch: {image_gb: 5}
+    scratch: {image_gb: 2}
 
 users:
   - name: alice

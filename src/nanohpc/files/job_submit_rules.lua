@@ -1,4 +1,4 @@
--- Shared rules, ported from SLURM-REAL. The tables above this line are generated per cluster:
+-- Shared rules. The tables above this line are generated per cluster:
 -- submit_limit, default_partition, job_types (batch | interactive | any), walls (minutes), gpu_limits.
 local jobs_snapshot = nil
 local unconfirmed_submissions = {}
