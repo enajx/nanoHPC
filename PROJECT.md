@@ -49,7 +49,7 @@ flowchart LR
 
 Tech stack. Most of it comes from the source deployment; changes from it are noted.
 
-- **Ubuntu 22.04, 24.04, and 26.04** on all machines (the source deployment is 22.04 only).
+- **Ubuntu 22.04, 24.04, and 26.04** on all machines (the source deployment is 22.04 only), each checked with a deploy on the simulated cluster.
 - **Slurm** 26.05.4 (`slurmctld`, `slurmdbd`, `slurmd`) with **Munge** authentication and GPU scheduling. nanoHPC builds Slurm from the official source, once per Ubuntu release and CPU type, caches the packages on the administrator's machine, and installs them on all machines (the source deployment used packages built by hand). Partitions, their job types (batch, interactive shell, or any), limits, and fair-share on GPU usage come from `cluster.yml`.
 - **NVIDIA GPUs** of any model, mixed across nodes, and CPU-only nodes. NVIDIA drivers must be installed beforehand; nanoHPC checks the GPU count.
 - **Ansible** for all machine configuration, as roles and playbooks. The administrator does not edit Ansible files: nanoHPC generates them from `cluster.yml`.
@@ -57,7 +57,7 @@ Tech stack. Most of it comes from the source deployment; changes from it are not
 - **Local users** with fixed UIDs and SSH keys, created from `cluster.yml` on every machine. SSH is key-only; all users may log in to the front node, only administrators to the other machines.
 - **Root for deploys**: nanoHPC connects with `ssh <machine>` (the administrator's own SSH config) and adds no passwordless sudo rules. Administrators' forwarded SSH keys unlock sudo (`pam_ssh_agent_auth`); the first setup of a machine needs root the normal way.
 - **systemd** services and timers for the collector, quotas, scratch cleanup, backup, and health checks.
-- **NFS** for the shared `/home`, with **disk quotas**, served from the front node or from a separate storage machine.
+- **NFS** for the shared `/home`, with **disk quotas**, served from the front node or from a separate storage machine, on the administrator's disk (never formatted by nanoHPC) or the root disk. Exported `no_root_squash`, with `/home` mounted `nosuid,nodev` on every machine.
 - **Local scratch** on each compute node, with automatic cleanup of old files.
 - **rsync** backup of `/home` to a backup machine in the cluster or to an outside SSH server.
 - **uv** installed for users' Python environments.
@@ -121,7 +121,8 @@ flowchart LR
 - Built: the `cluster.yml` format ([examples/cluster.yml](examples/cluster.yml), [examples/minimal.yml](examples/minimal.yml)) and `nanohpc validate`, which checks a configuration and reports every error with its field path (`src/nanohpc/config.py`). Tests: `uv run python -m unittest discover -s tests`.
 - Built: the simulated test cluster, `nanohpc sim up/down` with Lima VMs ([testing.md](md/testing.md)). Checked on macOS (Apple Silicon) with the everyday, home-on-storage, and 20-node clusters, and on a Linux x86 host with the everyday cluster (GitHub Actions, run by hand only).
 - Built: `nanohpc deploy`: Slurm, users, SSH access, sudo by forwarded key, and Munge (M3a), checked end to end on the simulated cluster (Ubuntu 24.04, ARM64). See [DONE.md](md/DONE.md).
-- Next: `/home` over NFS with quotas and scratch (M3b), then job modes, uv, and health checks (M3c), each after a planning round with the user.
+- Built: `/home` over NFS with quotas and local scratch with cleanup (M3b), checked on the simulated cluster with Ubuntu 22.04, 24.04, and 26.04, and both `/home` layouts.
+- Next: job modes (`cluster-submit`), uv, and health checks (M3c).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
