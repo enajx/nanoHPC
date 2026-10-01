@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Publish hardware readings without changing GPU state or inspecting user processes."""
+
+import argparse
+import csv
+import io
+import json
+import math
+import os
+import subprocess
+import time
+from pathlib import Path
+
+
+def main() -> None:
+    """Collect a complete sample, then atomically replace the exporter textfile."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    response = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=index,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    rows = list(csv.reader(io.StringIO(response.stdout), skipinitialspace=True))
+    if not rows:
+        raise ValueError("nvidia-smi returned no GPUs")
+    columns = [
+        ("utilization_percent", 1),
+        ("memory_used_bytes", 1048576),
+        ("memory_total_bytes", 1048576),
+        ("temperature_celsius", 1),
+        ("power_watts", 1),
+    ]
+    metrics = [f"# TYPE cluster_gpu_{name} gauge" for name, _ in columns]
+    for row in rows:
+        if len(row) != 7:
+            raise ValueError("Unexpected nvidia-smi field count")
+        labels = f"gpu={json.dumps(row[0])},uuid={json.dumps(row[1])}"
+        for (name, scale), raw in zip(columns, row[2:]):
+            if raw.strip() in ("[N/A]", "N/A", "[Not Supported]"):
+                continue
+            value = float(raw) * scale
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"Invalid GPU value for {name}")
+            metrics.append(f"cluster_gpu_{name}{{{labels}}} {value:.17g}")
+    metrics.extend(
+        [
+            "# TYPE cluster_gpu_collection_timestamp_seconds gauge",
+            f"cluster_gpu_collection_timestamp_seconds {time.time()}",
+        ]
+    )
+    temporary = args.output.with_name("." + args.output.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write("\n".join(metrics) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.chmod(0o644)
+    temporary.replace(args.output)
+
+
+if __name__ == "__main__":
+    main()

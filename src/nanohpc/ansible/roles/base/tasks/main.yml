@@ -4,13 +4,14 @@
     marker: "# {mark} nanoHPC cluster machines"
     block: "{{ lookup('file', nanohpc.files + '/hosts') }}"
 
-- name: Create the nanoHPC configuration directory
+- name: Create the nanoHPC configuration and data folders
   ansible.builtin.file:
-    path: /etc/nanohpc
+    path: "{{ item }}"
     state: directory
     owner: root
     group: root
     mode: "0755"
+  loop: [/etc/nanohpc, /var/lib/nanohpc]
 
 - name: Record this machine's roles from cluster.yml (read by cluster-health)
   ansible.builtin.copy:

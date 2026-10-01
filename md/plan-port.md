@@ -59,6 +59,15 @@ The user said to go ahead (2026-10-01). These follow the source deployment and a
 - uv: a pinned release for x86_64 and ARM64, checked against its published SHA-256, in `/opt/uv-<version>` with `/usr/local/bin/uv` and `uvx`, on the front node and the compute nodes.
 - `cluster-health` on every machine: mounts, services (Munge, Slurm daemons, MariaDB, NFS server on the home machine), Slurm answering, nodes not down or drained, disks over 90% full, the scratch cleanup timer. Every deploy ends by running it and reports problems. Stale GPU readings need monitoring (M4); alerts to Slack come with M6.
 
+## M4 (monitoring): choices made by the agent, to review
+
+The user said to go ahead (2026-10-01). These follow the source deployment's design (two Prometheus instances, node exporters over mutually authenticated TLS, GPU and machine-spec collectors, the 30-second status collector, read-only Grafana) and are recorded for the user to review. M4 is done in two steps: M4a metrics, M4b status collector and Grafana.
+
+- Certificates are created and renewed by nanoHPC: a private certificate authority on the front node (its key never leaves the front node) signs one certificate per machine; a deploy renews any certificate with less than 30 days left. The source deployment exchanged self-signed certificates by hand and never renewed them.
+- Prometheus scrapes every machine (compute, storage, and backup machines), not only the compute machines, so the home disk is monitored too.
+- Prometheus 3.15.0, node_exporter 1.12.1, and Grafana 13.2.3, for x86_64 and ARM64, checked against their published SHA-256.
+- On the simulated cluster, machines with fake GPUs run a fake GPU collector that reports made-up utilization, memory, temperature, and power. The machine-spec collector works on machines without GPUs.
+
 ## Simulated cluster
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).

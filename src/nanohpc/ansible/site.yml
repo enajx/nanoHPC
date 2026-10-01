@@ -52,6 +52,16 @@
   become: true
   roles: [job_modes, uv]
 
+- name: Metrics certificates and node exporters on every machine
+  hosts: all
+  become: true
+  roles: [metrics_tls, node_metrics, machine_metrics]
+
+- name: Prometheus on the front node
+  hosts: role_front
+  become: true
+  roles: [prometheus]
+
 - name: Health checks on every machine
   hosts: all
   become: true

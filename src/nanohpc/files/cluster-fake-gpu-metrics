@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Publish made-up GPU readings for a simulated machine with fake GPUs (no NVIDIA driver).
+
+Writes the same series and labels as cluster-gpu-metrics, so dashboards and rules work unchanged:
+cluster_gpu_{utilization_percent,memory_used_bytes,memory_total_bytes,temperature_celsius,power_watts}
+with labels gpu (the index) and uuid ("GPU-fake-<type>-<index>"), plus
+cluster_gpu_collection_timestamp_seconds. Values follow a slow wave over time, shifted per GPU, so the
+same GPU index and time always give the same reading. Each fake GPU has FAKE_MEMORY_MIB of memory.
+"""
+
+import argparse
+import json
+import math
+import os
+import time
+from pathlib import Path
+
+FAKE_MEMORY_MIB = 24576
+PERIOD_SECONDS = 1800.0
+
+
+def positive(text: str) -> int:
+    """Parse a GPU count, which must be a whole number above zero."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
+def reading(index: int, moment: float) -> dict[str, float]:
+    """Return plausible readings for one fake GPU at a given Unix time."""
+    phase = 2 * math.pi * moment / PERIOD_SECONDS + index * 1.3
+    utilization = round(50 + 48 * math.sin(phase))
+    total = FAKE_MEMORY_MIB * 1048576
+    return {
+        "utilization_percent": utilization,
+        "memory_used_bytes": round(total * (0.05 + 0.85 * utilization / 100)),
+        "memory_total_bytes": total,
+        "temperature_celsius": round(32 + 0.5 * utilization),
+        "power_watts": round(30 + 2.5 * utilization, 1),
+    }
+
+
+def main() -> None:
+    """Build a complete sample, then atomically replace the exporter textfile."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--count", type=positive, required=True, help="number of fake GPUs")
+    parser.add_argument("--type", required=True, help="GPU type, as in the cluster configuration")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    moment = time.time()
+    names = ["utilization_percent", "memory_used_bytes", "memory_total_bytes", "temperature_celsius", "power_watts"]
+    metrics = [f"# TYPE cluster_gpu_{name} gauge" for name in names]
+    for index in range(args.count):
+        labels = f"gpu={json.dumps(str(index))},uuid={json.dumps(f'GPU-fake-{args.type}-{index}')}"
+        values = reading(index, moment)
+        for name in names:
+            metrics.append(f"cluster_gpu_{name}{{{labels}}} {float(values[name]):.17g}")
+    metrics.extend(
+        ["# TYPE cluster_gpu_collection_timestamp_seconds gauge", f"cluster_gpu_collection_timestamp_seconds {moment}"]
+    )
+    temporary = args.output.with_name("." + args.output.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write("\n".join(metrics) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.chmod(0o644)
+    temporary.replace(args.output)
+
+
+if __name__ == "__main__":
+    main()

@@ -59,13 +59,15 @@
     - name: Create the scratch image
       when: not image.stat.exists
       block:
+        # The image itself is 0600 and owned by root; /var/lib/nanohpc stays 0755 because other
+        # nanoHPC folders inside it (the metrics textfile folder) are read by service accounts.
         - name: Create the image folder
           ansible.builtin.file:
             path: /var/lib/nanohpc
             state: directory
             owner: root
             group: root
-            mode: "0700"
+            mode: "0755"
 
         - name: Read the free space on the disk that holds the image
           ansible.builtin.command: df --output=avail,size -B1 /var/lib/nanohpc

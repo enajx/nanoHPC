@@ -1,0 +1,164 @@
+# Two Prometheus instances on the front node, on localhost only:
+# - detail (127.0.0.1:9090): every machine every 30 seconds, kept 90 days, plus the daily summary rules;
+# - history (127.0.0.1:9091): only the daily summaries (cluster_daily_*), once a day, kept 5 years.
+
+- name: Name the download for this machine's CPU type
+  ansible.builtin.set_fact:
+    metrics_arch: "{{ 'arm64' if ansible_facts.architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Name the Prometheus folder
+  ansible.builtin.set_fact:
+    prometheus_dir: "/opt/nanohpc-metrics/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}"
+
+- name: Download Prometheus, checking its SHA-256
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/prometheus/releases/download/v{{ nanohpc.metrics.prometheus.version }}/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}.tar.gz"
+    dest: "/var/tmp/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}.tar.gz"
+    checksum: "sha256:{{ nanohpc.metrics.prometheus.sha256[metrics_arch] }}"
+    mode: "0644"
+
+- name: Unpack Prometheus (owned by root, whatever the archive says)
+  ansible.builtin.unarchive:
+    src: "/var/tmp/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}.tar.gz"
+    dest: /opt/nanohpc-metrics
+    remote_src: true
+    extra_opts: [--no-same-owner]
+    owner: root
+    group: root
+    creates: "{{ prometheus_dir }}/prometheus"
+
+- name: Create the Prometheus folders
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /etc/nanohpc/prometheus, owner: root, mode: "0755"}
+    - {path: /var/lib/nanohpc/prometheus, owner: cluster-prometheus, mode: "0750"}
+    - {path: /var/lib/nanohpc/history, owner: cluster-history, mode: "0750"}
+
+- name: Install the daily summary rules (checked with promtool first)
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/prometheus-daily-rules.yml"
+    dest: /etc/nanohpc/prometheus/daily-rules.yml
+    mode: "0644"
+    validate: "{{ prometheus_dir }}/promtool check rules %s"
+  register: daily_rules
+
+- name: Install the detail configuration (checked with promtool first)
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/prometheus.yml"
+    dest: /etc/nanohpc/prometheus/prometheus.yml
+    mode: "0644"
+    validate: "{{ prometheus_dir }}/promtool check config --syntax-only %s"
+  register: detail_config
+
+- name: Install the history configuration (checked with promtool first)
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/prometheus/history.yml
+    mode: "0644"
+    validate: "{{ prometheus_dir }}/promtool check config --syntax-only %s"
+    content: |
+      global:
+        scrape_interval: 1d
+        scrape_timeout: 15s
+      scrape_configs:
+        - job_name: daily-summary
+          metrics_path: /federate
+          honor_labels: true
+          honor_timestamps: false
+          params:
+            "match[]": ['{__name__=~"cluster_daily_.*"}']
+          static_configs:
+            - targets: ['127.0.0.1:9090']
+          sample_limit: 5000
+  register: history_config
+
+- name: Record when the history instance started (once; read by cluster-health)
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/prometheus/history-started
+    content: "{{ ansible_facts.date_time.iso8601 }}\n"
+    mode: "0644"
+    force: false
+
+- name: Install the Prometheus services
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.unit }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description={{ item.description }} (nanoHPC)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      User={{ item.user }}
+      Group={{ item.user }}
+      ExecStart={{ prometheus_dir }}/prometheus --config.file=/etc/nanohpc/prometheus/{{ item.config }} \
+        --storage.tsdb.path={{ item.data }} --storage.tsdb.retention.time={{ item.retention }} \
+        --storage.tsdb.retention.size={{ item.size }} --web.listen-address=127.0.0.1:{{ item.port }} \
+        --query.timeout=15s --query.max-concurrency={{ item.concurrency }} --query.max-samples={{ item.samples }}
+      Restart=on-failure
+      RestartSec=5
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      PrivateDevices=true
+      ProtectKernelTunables=true
+      ProtectKernelModules=true
+      ProtectControlGroups=true
+      CapabilityBoundingSet=
+      RestrictSUIDSGID=true
+      ReadWritePaths={{ item.data }}
+      MemoryMax={{ item.memory }}
+
+      [Install]
+      WantedBy=multi-user.target
+  loop:
+    - {unit: nanohpc-prometheus.service, description: "Cluster metrics", user: cluster-prometheus, config: prometheus.yml,
+       data: /var/lib/nanohpc/prometheus, retention: 90d, size: 50GB, port: 9090, concurrency: 4, samples: 5000000, memory: 4G}
+    - {unit: nanohpc-history.service, description: "Cluster daily history", user: cluster-history, config: history.yml,
+       data: /var/lib/nanohpc/history, retention: 5y, size: 5GB, port: 9091, concurrency: 2, samples: 1000000, memory: 1G}
+  loop_control:
+    label: "{{ item.unit }}"
+  register: prometheus_units
+
+- name: Run the detail Prometheus
+  ansible.builtin.systemd_service:
+    name: nanohpc-prometheus
+    enabled: true
+    daemon_reload: "{{ prometheus_units.changed }}"
+    state: >-
+      {{ 'restarted' if (prometheus_units.changed or detail_config.changed or daily_rules.changed) else 'started' }}
+
+- name: Run the history Prometheus
+  ansible.builtin.systemd_service:
+    name: nanohpc-history
+    enabled: true
+    state: "{{ 'restarted' if (prometheus_units.changed or history_config.changed) else 'started' }}"
+
+- name: Wait until both are ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ item }}/-/ready"
+  register: prometheus_ready
+  until: prometheus_ready.status == 200
+  retries: 90  # a large database can take minutes to load after a restart
+  delay: 2
+  loop: [9090, 9091]
+
+- name: Check that every machine's metrics are collected (over TLS for all but the front node)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D~%22node.%2A%22%7D"
+    return_content: true
+  register: targets_up
+  until: >-
+    (targets_up.json.data.result | length) == (nanohpc.machines | length)
+    and (targets_up.json.data.result | map(attribute='value') | map('last') | select('equalto', '1') | list | length)
+        == (nanohpc.machines | length)
+  retries: 15
+  delay: 4
