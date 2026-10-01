@@ -49,6 +49,16 @@ The user said to go ahead without a planning round (2026-10-01). These choices f
 - The simulated cluster formats its test disks itself (`sim up`), standing in for the administrator: ext4 with quota support.
 - After review (2026-10-01): only accounts not in `cluster.yml` (for example `ubuntu`) may have a local home folder hidden by the mount; a disk is checked in preflight (missing device, partition table, other filesystem type, mounted elsewhere) and a `mkfs` hint is given only for an empty disk; `/scratch` entries in `/etc/fstab` have `nofail`, so a missing scratch disk cannot stop a machine from booting; the machines that mount `/home` wait for the home machine to finish; Ansible's temporary files go to the login session's private runtime folder.
 
+## M3c (job modes, uv, health checks): choices made by the agent, to review
+
+The user said to go ahead (2026-10-01). These follow the source deployment and are recorded for the user to review:
+
+- `cluster-submit` as in the source deployment: `--mode scratch` (default) runs the job in a private copy of the project on the compute node's `/scratch` (Git-tracked files with their current contents, or the files named by `#CLUSTER include=`), and copies back the paths named by `#CLUSTER copy-back=`; `--mode shared` is plain `sbatch`. Installed on the front node and the compute nodes.
+- Space kept free on `/scratch` when copying: at least 1 GiB, at most 85% of the disk used, and 10,000 free inodes (the source deployment's 50 GiB and 1M inodes do not fit small disks).
+- `stage-dataset --private PATH` stages data from the user's home into `/scratch` for reuse across jobs (cleaned up by the daily timer). `stage-dataset --shared` needs a shared datasets area, which nanoHPC does not have yet: later.
+- uv: a pinned release for x86_64 and ARM64, checked against its published SHA-256, in `/opt/uv-<version>` with `/usr/local/bin/uv` and `uvx`, on the front node and the compute nodes.
+- `cluster-health` on every machine: mounts, services (Munge, Slurm daemons, MariaDB, NFS server on the home machine), Slurm answering, nodes not down or drained, disks over 90% full, the scratch cleanup timer. Every deploy ends by running it and reports problems. Stale GPU readings need monitoring (M4); alerts to Slack come with M6.
+
 ## Simulated cluster
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).

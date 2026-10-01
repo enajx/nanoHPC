@@ -12,6 +12,14 @@
     group: root
     mode: "0755"
 
+- name: Record this machine's roles from cluster.yml (read by cluster-health)
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/roles
+    content: "{{ nanohpc.machines[inventory_hostname].roles | join(' ') }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
 - name: Refresh the package lists
   ansible.builtin.apt:
     update_cache: true

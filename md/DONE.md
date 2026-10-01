@@ -37,3 +37,12 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - Local `/scratch` on each compute machine, from a disk or an image file nanoHPC creates (only if 10% of the disk stays free; never resized or trimmed); per-user folders and caches (uv, Hugging Face, PyTorch); a daily cleanup timer for staged data. `/scratch` entries use `nofail`.
 - Checked on the simulated cluster with Ubuntu 22.04 (`/home` on the root disk), 24.04 (everyday cluster and `/home` on the storage machine), and 26.04. The simulated cluster now formats its test disks, turns off Lima's containerd, and fixes 26.04's vsock sshd key path.
 - Files: `src/nanohpc/ansible/roles/{home_server,home_client,scratch}/`, `src/nanohpc/ansible/roles/preflight/` (disk and `/home` checks), `src/nanohpc/ansible/roles/accounts/tasks/main.yml`, `src/nanohpc/files/scratch-cleanup`, `src/nanohpc/render.py`, `src/nanohpc/deploy.py`, `src/nanohpc/sim.py`, `tests/sim/`, `tests/test_render.py`, `tests/test_deploy.py`, `tests/test_sim.py`, `md/testing.md`.
+
+## 2026-10-01: job modes, uv, and health checks (M3c)
+
+- `cluster-submit` runs a job in a private copy of the project on the compute machine's `/scratch` (Git-tracked files with their current contents, or the files named by `#CLUSTER include=`) and copies back the paths named by `#CLUSTER copy-back=`; `--mode shared` is plain `sbatch`. A copy must leave 1 GiB and 15% of the disk and 10,000 inodes free.
+- `stage-dataset --private PATH` stages a folder from the user's home on scratch for reuse across jobs (content-versioned, private, removed by the daily cleanup when unused).
+- uv 0.12.21 for x86_64 and ARM64, checked against its SHA-256, owned by root, on the front node and the compute machines.
+- `cluster-health` checks each machine for its roles (services, mounts, Slurm, nodes, disks, NFS answering). Every deploy ends by running it and printing the report: broken services or mounts fail the deploy; a drained node or a full disk is a warning.
+- Checked on the simulated cluster (everyday cluster, `/home` on the storage machine, Ubuntu 22.04 and 26.04), and reviewed by a separate agent.
+- Files: `src/nanohpc/files/{cluster-submit,stage-dataset,cluster-health}`, `src/nanohpc/ansible/roles/{job_modes,uv,health}/`, `src/nanohpc/ansible/roles/{base,scratch}/tasks/main.yml`, `src/nanohpc/ansible/site.yml`, `src/nanohpc/deploy.py`, `tests/test_cluster_submit.py`, `tests/stage_dataset_test.sh`, `tests/test_sim.py`, `md/testing.md`.

@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Stage a folder from the user's home onto the compute machine's /scratch for reuse across jobs:
+# the copy is versioned by content, marked ready only after a complete copy, and private to the user.
+# Unused copies are removed by the daily scratch cleanup. Space and inode reserves come from
+# /etc/nanohpc/scratch.conf.
+set -euo pipefail
+
+config_file=${STAGE_CONFIG_FILE:-/etc/nanohpc/scratch.conf}
+if test -f "$config_file"; then
+  . "$config_file"
+fi
+
+usage() {
+  echo "usage: stage-dataset --private PATH_IN_HOME" >&2
+  exit 64
+}
+
+scratch_root=${STAGE_SCRATCH_ROOT:-/scratch/staged}
+lock_root=${STAGE_LOCK_ROOT:-/scratch/locks}
+rsync_bin=${STAGE_RSYNC_BIN:-rsync}
+home_root=${STAGE_HOME_ROOT:-$HOME}
+mode=${1:-}
+value=${2:-}
+
+test "$#" = 2 || usage
+if test "$scratch_root" = /scratch/staged; then
+  mountpoint -q /scratch || { echo "scratch filesystem is not mounted" >&2; exit 69; }
+fi
+case "$mode" in
+  --private)
+    case "$value" in ''|/*|*'..'*) usage ;; esac
+    source_dir="$home_root/$value"
+    test -d "$source_dir" || { echo "private dataset does not exist" >&2; exit 66; }
+    source_real=$(cd "$source_dir" && pwd -P)
+    home_real=$(cd "$home_root" && pwd -P)
+    case "$source_real" in "$home_real"/*) ;; *) echo "private dataset is outside home" >&2; exit 66 ;; esac
+    version=$(find "$source_real" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)
+    safe_name=$(printf '%s' "$value" | sha256sum | cut -d ' ' -f 1)
+    destination="$scratch_root/private/$(id -u)/$safe_name/$version"
+    permission=700
+    ;;
+  *) usage ;;
+esac
+
+test -d "$source_dir" || { echo "dataset source does not exist" >&2; exit 66; }
+mkdir -p "$lock_root" "$(dirname "$destination")"
+test -e "$lock_root/cleanup.lock" || touch "$lock_root/cleanup.lock"
+exec 8<"$lock_root/cleanup.lock"
+flock -s 8
+user_locks="$lock_root/$(id -u)"
+mkdir -p -m 0700 "$user_locks"
+lock_name=$(printf '%s' "$destination" | sha256sum | cut -d ' ' -f 1)
+exec 9>"$user_locks/$lock_name.lock"
+flock 9
+
+if test -f "$destination/.ready"; then
+  touch "$destination/.last-used"
+  if test -n "${SLURM_JOB_ID:-}"; then
+    case "$SLURM_JOB_ID" in *[!0-9]*) echo "invalid Slurm job ID" >&2; exit 64 ;; esac
+    mkdir -p "$destination/.jobs"
+    touch "$destination/.jobs/$SLURM_JOB_ID"
+  fi
+  printf '%s\n' "$destination"
+  exit 0
+fi
+
+partial="${destination}.partial-$$"
+trap 'rm -rf "$partial"' EXIT
+rm -rf "$partial"
+mkdir -p "$partial"
+test -e "$lock_root/capacity.lock" || touch "$lock_root/capacity.lock"
+exec 7<"$lock_root/capacity.lock"
+flock -x 7
+if test -n "${STAGE_MIN_FREE_BYTES:-}"; then
+  free_bytes=$(df -B1 --output=avail "$scratch_root" | tail -n 1 | tr -d ' ')
+  total_bytes=$(df -B1 --output=size "$scratch_root" | tail -n 1 | tr -d ' ')
+  source_bytes=$(du -sB1 --apparent-size "$source_dir" | cut -f1)
+  reserve_bytes=$STAGE_MIN_FREE_BYTES
+  if test -n "${STAGE_CAPACITY_PERCENT:-}"; then
+    percent_reserve=$(( total_bytes * (100 - STAGE_CAPACITY_PERCENT) / 100 ))
+    test "$percent_reserve" -le "$reserve_bytes" || reserve_bytes=$percent_reserve
+  fi
+  test "$(( free_bytes - source_bytes ))" -ge "$reserve_bytes" || { echo "scratch free-space reserve reached" >&2; exit 68; }
+fi
+if test -n "${STAGE_MIN_FREE_INODES:-}"; then
+  free_inodes=$(df -Pi "$scratch_root" | awk 'NR == 2 { print $4 }')
+  source_inodes=$(find "$source_dir" -printf '.' | wc -c)
+  test "$(( free_inodes - source_inodes ))" -ge "$STAGE_MIN_FREE_INODES" || { echo "scratch inode reserve reached" >&2; exit 68; }
+fi
+"$rsync_bin" -a --delete --exclude=/.ready --exclude=/.last-used --exclude=/.jobs "$source_dir/" "$partial/"
+printf 'source=%s\nversion=%s\n' "$source_dir" "$version" > "$partial/.ready"
+touch "$partial/.last-used"
+if test -n "${SLURM_JOB_ID:-}"; then
+  case "$SLURM_JOB_ID" in *[!0-9]*) echo "invalid Slurm job ID" >&2; exit 64 ;; esac
+  mkdir -p "$partial/.jobs"
+  touch "$partial/.jobs/$SLURM_JOB_ID"
+fi
+chmod "$permission" "$partial"
+rm -rf "$destination"
+mv "$partial" "$destination"
+trap - EXIT
+printf '%s\n' "$destination"

@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Submit project jobs through Slurm with an explicit file-handling mode."""
+
+import argparse
+import base64
+import fcntl
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+from typing import Iterator, NoReturn, TypedDict
+
+
+class Job(TypedDict):
+    """Only submission metadata is sent through Slurm, never project contents."""
+
+    project: str
+    source: str
+    arguments: list[str]
+    includes: list[str]
+    outputs: list[str]
+    job: str
+
+
+def fail(message: str) -> NoReturn:
+    """Stop with a visible explanation rather than silently changing behavior."""
+    sys.exit(f"cluster-submit: {message}")
+
+
+def relative(value: str) -> Path:
+    """Require an explicit project-relative path, not a root or a parent traversal."""
+    path = Path(value)
+    if not value or path.is_absolute() or not path.parts or ".." in path.parts:
+        fail(f"expected a project-relative file or directory, got {value!r}")
+    if ".git" in path.parts or "\x00" in value:
+        fail(f"unsupported project path: {value!r}")
+    return path
+
+
+def directives(source: str) -> tuple[list[str], list[str], list[str]]:
+    """Read helper declarations and preserve the effective Slurm directive header."""
+    includes: list[str] = []
+    outputs: list[str] = []
+    slurm: list[str] = []
+    header = True
+    for line in source.splitlines():
+        stripped = line.lstrip()
+        if stripped and not stripped.startswith("#"):
+            header = False
+        if header and stripped.startswith("#SBATCH"):
+            slurm.append(line)
+        if stripped.startswith("#CLUSTER "):
+            key, separator, value = stripped[len("#CLUSTER "):].partition("=")
+            if not separator or key not in {"include", "copy-back"}:
+                fail(f"unknown helper directive: {line}")
+            words = shlex.split(value)
+            if len(words) != 1:
+                fail(f"quote paths containing spaces: {line}")
+            relative(words[0])
+            (includes if key == "include" else outputs).append(words[0])
+    return includes, outputs, slurm
+
+
+def descendants(folder: Path) -> Iterator[Path]:
+    """Enumerate without following directory links or hiding unreadable directories."""
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            path = Path(entry.path)
+            yield path
+            if entry.is_dir(follow_symlinks=False):
+                yield from descendants(path)
+
+
+def selection(project: Path, includes: list[str]) -> list[Path]:
+    """Select current tracked contents plus explicit inputs, without reading .gitignore."""
+    git = subprocess.run(["git", "-C", str(project), "rev-parse", "--is-inside-work-tree"],
+                         capture_output=True, check=False)
+    paths: set[Path] = set()
+    if git.returncode == 0 and git.stdout.strip() == b"true":
+        tracked = subprocess.run(
+            ["git", "-C", str(project), "ls-files", "--cached", "--recurse-submodules", "-z", "--", "."],
+            capture_output=True, check=True,
+        )
+        for name in tracked.stdout.split(b"\x00"):
+            if name:
+                path = relative(os.fsdecode(name))
+                if (project / path).exists() or (project / path).is_symlink():
+                    paths.add(path)
+    elif not includes:
+        fail("non-Git projects need explicit #CLUSTER include= paths")
+    for name in includes:
+        path = relative(name)
+        source = project / path
+        if not source.exists() and not source.is_symlink():
+            fail(f"explicit input does not exist: {source}")
+        paths.add(path)
+        if source.is_dir() and not source.is_symlink():
+            paths.update(item.relative_to(project) for item in descendants(source))
+    for path in paths:
+        source = project / path
+        relative(str(path))
+        if not source.resolve().is_relative_to(project):
+            fail(f"input points outside the project: {path}; use its shared path in the script")
+        if source.is_symlink():
+            target = os.readlink(source)
+            if Path(target).is_absolute() or not source.exists():
+                fail(f"input link must have an existing project-relative target: {path}")
+            if source.resolve().relative_to(project) not in paths:
+                fail(f"include the target of input link {path} explicitly")
+        elif not source.is_file() and not source.is_dir():
+            fail(f"input is not a regular file or directory: {path}")
+    return sorted(paths)
+
+
+def no_links(root: Path, path: Path) -> None:
+    """Refuse output links so copying cannot write outside its declared destination."""
+    for part in [path, *path.parents]:
+        if part == Path("."):
+            continue
+        if (root / part).is_symlink():
+            fail(f"output paths must not contain symbolic links: {root / part}")
+    destination = root / path
+    if destination.is_dir():
+        for child in descendants(destination):
+            if child.is_symlink():
+                fail(f"output directory contains a symbolic link: {child}")
+            if not child.is_file() and not child.is_dir():
+                fail(f"output is not a regular file or directory: {child}")
+
+
+def stage(spec: Job, work: Path) -> None:
+    """Copy selected inputs completely before allowing the application to start."""
+    project = Path(spec["project"]).resolve()
+    paths = selection(project, spec["includes"])
+    needed = sum((project / path).lstat().st_size for path in paths)
+    settings: dict[str, int] = {}
+    config = Path("/etc/nanohpc/scratch.conf")
+    if config.is_file():
+        settings = {key: int(value) for key, value in
+                    (line.split("=", 1) for line in config.read_text().splitlines() if "=" in line)}
+    usage = shutil.disk_usage(work)
+    reserve = max(settings.get("STAGE_MIN_FREE_BYTES", 1024 ** 3),
+                  usage.total * (100 - settings.get("STAGE_CAPACITY_PERCENT", 100)) // 100)
+    if usage.free - needed < reserve:
+        fail("selected inputs would use the scratch free-space reserve")
+    filesystem = os.statvfs(work)
+    if filesystem.f_favail < len(paths) + settings.get("STAGE_MIN_FREE_INODES", 1000):
+        fail("selected inputs would use the scratch free-inode reserve")
+    names = b"".join(os.fsencode(str(path)) + b"\x00" for path in paths)
+    subprocess.run(["rsync", "-a", "--no-owner", "--no-group", "--relative", "--from0",
+                    "--files-from=-", "--", str(project) + "/", str(work) + "/"],
+                   input=names, check=True)
+
+
+def collect(spec: Job, work: Path, output: str) -> None:
+    """Merge one declared result path back without deleting unrelated destination files."""
+    path = relative(output)
+    project = Path(spec["project"]).resolve()
+    no_links(work, path)
+    source = work / path
+    if not source.exists():
+        print(f"cluster-submit: output not produced: {path}", flush=True)
+        return
+    no_links(project, path)
+    destination = project / path
+    if source.is_dir():
+        destination.mkdir(parents=True, exist_ok=True)
+        arguments = [str(source) + "/", str(destination) + "/"]
+    elif source.is_file():
+        if destination.is_dir():
+            fail(f"output file conflicts with a destination directory: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        arguments = [str(source), str(destination)]
+    else:
+        fail(f"output is not a regular file or directory: {source}")
+    subprocess.run(["rsync", "-a", "--no-owner", "--no-group", "--", *arguments], check=True)
+
+
+def execute(spec: Job, scratch: Path) -> int:
+    """Run in a private scratch copy and recover declared outputs on ordinary failure."""
+    folder = Path(tempfile.mkdtemp(prefix=f"job-{spec['job']}-", dir=scratch))
+    work = folder / "project"
+    work.mkdir(mode=0o700)
+    metadata = folder / "job.json"
+    metadata.write_text(json.dumps(spec))
+    script = folder / "job.sh"
+    script.write_text(spec["source"])
+    script.chmod(0o700)
+    print(f"cluster-submit: scratch directory {folder}", flush=True)
+    helper = str(Path(__file__).resolve())
+    capacity_lock = Path("/scratch/locks/capacity.lock")
+    lock_path = capacity_lock if capacity_lock.exists() else scratch / ".capacity.lock"
+    with lock_path.open("r" if capacity_lock.exists() else "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        staged = subprocess.run([sys.executable, helper, "--stage", str(metadata), str(work)], check=False)
+    if staged.returncode:
+        print(f"cluster-submit: staging failed; application not started; retained {folder}", file=sys.stderr)
+        return staged.returncode
+    process = subprocess.Popen([str(script), *spec["arguments"]], cwd=work)
+    received: list[int] = []
+
+    def forward(signum: int, frame: object) -> None:
+        """Allow output recovery when Slurm gives the batch process time to exit."""
+        received.append(signum)
+        process.send_signal(signum)
+
+    previous = {sig: signal.signal(sig, forward) for sig in (signal.SIGTERM, signal.SIGINT)}
+    result = process.wait()
+    if result < 0:
+        result = 128 - result
+    if received and result == 0:
+        result = 128 + received[0]
+    copied = True
+    for output in spec["outputs"]:
+        attempt = subprocess.run([sys.executable, helper, "--collect", str(metadata), str(work), output],
+                                 check=False)
+        copied = copied and attempt.returncode == 0
+    for sig, handler in previous.items():
+        signal.signal(sig, handler)
+    if result or not copied:
+        print(f"cluster-submit: job exit={result}, copy-back={'ok' if copied else 'FAILED'}; "
+              f"retained {folder}", file=sys.stderr, flush=True)
+        return result or 74
+    shutil.rmtree(folder)
+    print("cluster-submit: outputs returned; private job scratch removed", flush=True)
+    return 0
+
+
+def runtime(spec: Job) -> int:
+    """Require actual Slurm execution and mounted private user scratch."""
+    job = os.environ.get("SLURM_JOB_ID", "")
+    if not job.isdecimal() or not Path("/scratch").is_mount():
+        fail("scratch execution requires a Slurm job and a mounted /scratch filesystem")
+    import pwd
+    user = pwd.getpwuid(os.getuid()).pw_name
+    user_root = Path("/scratch") / user
+    info = user_root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        fail(f"scratch user directory is not private and owned by you: {user_root}")
+    scratch = user_root / "cluster-jobs"
+    scratch.mkdir(mode=0o700, exist_ok=True)
+    info = scratch.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        fail(f"job directory is not private and owned by you: {scratch}")
+    spec["job"] = job
+    os.environ["UV_CACHE_DIR"] = str(user_root / "uv-cache")
+    os.environ["HF_HOME"] = str(user_root / "hf-cache")
+    os.environ["TORCH_HOME"] = str(user_root / "torch-cache")
+    return execute(spec, scratch)
+
+
+def main() -> None:
+    """Keep shared submissions unchanged and send a small scratch wrapper to sbatch."""
+    if len(sys.argv) > 1 and sys.argv[1] == "--run":
+        sys.exit(runtime(json.loads(base64.b64decode(sys.argv[2]))))
+    if len(sys.argv) > 1 and sys.argv[1] in {"--stage", "--collect"}:
+        spec: Job = json.loads(Path(sys.argv[2]).read_text())
+        if sys.argv[1] == "--stage":
+            stage(spec, Path(sys.argv[3]))
+        else:
+            collect(spec, Path(sys.argv[3]), sys.argv[4])
+        return
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("scratch", "shared"), default="scratch")
+    parser.add_argument("script", help="Batch script, containing normal #SBATCH directives")
+    parser.add_argument("arguments", nargs=argparse.REMAINDER, help="Arguments for the script")
+    options = parser.parse_args()
+    if options.mode == "shared":
+        os.execvp("sbatch", ["sbatch", options.script, *options.arguments])
+    script = Path(options.script)
+    source = script.read_text()
+    if not source.startswith("#!"):
+        parser.error("the batch script needs a #! interpreter line")
+    includes, outputs, slurm = directives(source)
+    project = Path.cwd().resolve()
+    if project == Path.home().resolve() or project == Path("/"):
+        parser.error("submit from a project directory, not your whole home or filesystem root")
+    spec = {"project": str(project), "source": source, "arguments": options.arguments,
+            "includes": includes, "outputs": outputs, "job": ""}
+    encoded = base64.b64encode(json.dumps(spec).encode()).decode()
+    wrapper = "\n".join(["#!/bin/bash", *slurm,
+                         "exec /usr/local/bin/cluster-submit --run " + shlex.quote(encoded), ""])
+    submitted = subprocess.run(["sbatch", "--chdir", str(project)], input=wrapper, text=True, check=False)
+    sys.exit(submitted.returncode)
+
+
+if __name__ == "__main__":
+    main()

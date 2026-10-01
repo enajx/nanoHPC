@@ -1,0 +1,16 @@
+# cluster-submit: run a job in a private copy of the project on the compute machine's /scratch
+# (--mode scratch, the default), or as plain sbatch (--mode shared).
+
+- name: Install what cluster-submit uses
+  ansible.builtin.apt:
+    name: [python3, git, rsync]
+    state: present
+    install_recommends: false
+
+- name: Install cluster-submit
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-submit"
+    dest: /usr/local/bin/cluster-submit
+    owner: root
+    group: root
+    mode: "0755"
