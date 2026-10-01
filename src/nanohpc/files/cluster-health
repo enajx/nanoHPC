@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Report whether this machine's nanoHPC parts work, for the roles it has in cluster.yml
+# (/etc/nanohpc/roles). One line per check:
+#   ok    the check passed
+#   FAIL  something nanoHPC set up is broken (a service, a mount, Slurm not answering); exit code 1
+#   WARN  a state to look at that is not a setup error (a drained node, a full disk); exit code unchanged
+set -uo pipefail
+
+roles=" $(cat /etc/nanohpc/roles 2>/dev/null) "
+problems=0
+
+has() { case "$roles" in *" $1 "*) return 0 ;; esac; return 1; }
+
+check() {
+  local label=$1
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "ok    $label"
+  else
+    echo "FAIL  $label"
+    problems=1
+  fi
+}
+
+note() {
+  local label=$1
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "ok    $label"
+  else
+    echo "WARN  $label"
+  fi
+}
+
+disk() {
+  local used inodes
+  used=$(df --output=pcent "$1" 2>/dev/null | tail -1 | tr -dc 0-9)
+  inodes=$(df --output=ipcent "$1" 2>/dev/null | tail -1 | tr -dc 0-9)
+  note "disk $1: ${used:-?}% space, ${inodes:-?}% inodes used (warning from 90%)" \
+    test "${used:-100}" -lt 90 -a "${inodes:-0}" -lt 90
+}
+
+check "nanoHPC roles are recorded" test -s /etc/nanohpc/roles
+disk /
+
+if has front || has compute; then
+  check "service munge" systemctl is-active --quiet munge
+fi
+
+if has home; then
+  check "/home is mounted" mountpoint -q /home
+  check "service nfs-server" systemctl is-active --quiet nfs-server
+  disk /home
+elif ! has backup; then
+  check "/home is the shared NFS mount" sh -c 'findmnt -n -o FSTYPE --mountpoint /home | grep -qx nfs4'
+  # A hung NFS server makes /home hang rather than fail; the timeout turns that into a failure.
+  check "/home answers within 10 seconds" timeout 10 stat -t /home/.
+fi
+
+if has front; then
+  for service in mariadb slurmdbd slurmctld; do
+    check "service $service" systemctl is-active --quiet "$service"
+  done
+  check "the Slurm controller answers" scontrol ping
+  if nodes=$(sinfo -h -N -t down,drain,fail,unknown,no_respond,maint -o '%N %T' 2>/dev/null); then
+    nodes=$(printf '%s\n' "$nodes" | sed '/^$/d' | sort -u | paste -sd ',' -)
+    note "no Slurm node is down, drained, not responding, or in maintenance${nodes:+ ($nodes)}" test -z "$nodes"
+  else
+    check "sinfo lists the Slurm nodes" false
+  fi
+fi
+
+if has compute; then
+  check "service slurmd" systemctl is-active --quiet slurmd
+  check "/scratch is mounted" mountpoint -q /scratch
+  check "/scratch has its staging and lock folders" test -d /scratch/staged/private -a -f /scratch/locks/capacity.lock
+  disk /scratch
+  check "scratch cleanup timer" systemctl is-active --quiet nanohpc-scratch-cleanup.timer
+fi
+
+exit "$problems"

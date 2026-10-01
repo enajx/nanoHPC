@@ -16,7 +16,7 @@ flowchart LR
 
   D[Design decisions]:::done --> C[cluster.yml + validation]:::done
   C --> SIM[Simulated cluster]:::done
-  SIM --> S[Slurm + accounts + storage]:::queued
+  SIM --> S[Slurm + accounts + storage]:::done
   S --> M[Monitoring]:::queued
   M --> W[Website from config]:::queued
   S --> BK[Backup + alerts + auto-deploy]:::queued
@@ -26,6 +26,8 @@ flowchart LR
   BK --> R
   WZ --> R
   N --> R
+  S --> F[Setup follow-ups]:::queued
+  F --> R
 ```
 
 ### Design
@@ -71,15 +73,22 @@ flowchart LR
 - [x] nanoHPC never formats a disk. The home and scratch disks named in the configuration must already have a filesystem; nanoHPC checks its type and mounts it, and stops with the command to run if the disk has no filesystem.
 - [x] `/home` is shared from the front node, or from a separate storage machine, to all machines, with the per-user quotas from the configuration.
 - [x] Each compute node has local scratch (a disk, or an image file nanoHPC creates), and staged scratch data unused for `scratch.cleanup_days` is cleaned up daily. Per-user caches in `/scratch/<user>` are not cleaned.
+- [x] Partitions work with the GPU fair-share priority and per-user limits from the configuration.
+- [x] `cluster-submit` runs a job on a private scratch copy of the project and copies declared outputs back.
+- [x] uv is available to users on the front node and the compute machines.
+- [x] `stage-dataset --private` stages a user's data on a compute machine's scratch for reuse across jobs.
+- [x] Health checks report broken Slurm services and full disks (`cluster-health`, run at the end of every deploy).
+- [x] On the simulated cluster, Slurm schedules GPU jobs on the fake GPU nodes.
+- [ ] On the simulated cluster, a fake exporter reports GPU metrics.
+
+### Cluster setup follow-ups
+
+- [ ] Health checks report stale GPU readings (needs monitoring, M4).
+- [ ] `stage-dataset --shared` stages datasets from a shared datasets area (needs that area first).
+- [ ] Scratch copies that `cluster-submit` keeps after a failed job (`/scratch/<user>/cluster-jobs/job-*`, kept so the user can look at them) are cleaned up after some days; today only the user can remove them, and the daily cleanup only handles staged data.
 - [ ] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on the simulated cluster; no test reboots a machine yet).
 - [ ] XFS home and scratch disks, and quota enforcement over NFS (a user over the hard limit cannot write), are checked on the simulated cluster.
 - [ ] Quotas survive kernel upgrades: on Ubuntu cloud kernels the quota modules come from `linux-modules-extra-<kernel>`, which nanoHPC installs for the running kernel only. After a kernel upgrade the `/home` mount with quotas could fail at boot until the next deploy.
-- [x] Partitions work with the GPU fair-share priority and per-user limits from the configuration.
-- [ ] `cluster-submit` runs a job on a private scratch copy of the project and copies declared outputs back.
-- [ ] uv is available to users on all machines.
-- [ ] Health checks report broken Slurm services, full disks, and stale GPU readings.
-- [x] On the simulated cluster, Slurm schedules GPU jobs on the fake GPU nodes.
-- [ ] On the simulated cluster, a fake exporter reports GPU metrics.
 
 ### Monitoring and website
 
