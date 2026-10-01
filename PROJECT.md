@@ -60,7 +60,7 @@ Tech stack. Most of it comes from the source deployment; changes from it are not
 - **NFS** for the shared `/home`, with **disk quotas**, served from the front node or from a separate storage machine, on the administrator's disk (never formatted by nanoHPC) or the root disk. Exported `no_root_squash`, with `/home` mounted `nosuid,nodev` on every machine.
 - **Local scratch** on each compute node, with automatic cleanup of old files.
 - **rsync** backup of `/home` to a backup machine in the cluster or to an outside SSH server.
-- **uv** installed for users' Python environments.
+- **uv** (pinned, checksum checked) installed for users' Python environments; `cluster-submit` runs jobs in a private scratch copy of a project; `cluster-health` checks each machine and runs at the end of every deploy.
 - **Prometheus** with **node_exporter** and GPU metrics. The front node scrapes the other machines over mutually authenticated TLS. A second Prometheus keeps daily summaries for 5 years.
 - **Grafana** with read-only dashboards embedded in the website: queue, queue history, GPU usage, machines, long-term history.
 - **Python collector** (`cluster-monitor-snapshot`) that writes a `status.json` snapshot every 30 seconds for the website.
@@ -122,7 +122,8 @@ flowchart LR
 - Built: the simulated test cluster, `nanohpc sim up/down` with Lima VMs ([testing.md](md/testing.md)). Checked on macOS (Apple Silicon) with the everyday, home-on-storage, and 20-node clusters, and on a Linux x86 host with the everyday cluster (GitHub Actions, run by hand only).
 - Built: `nanohpc deploy`: Slurm, users, SSH access, sudo by forwarded key, and Munge (M3a), checked end to end on the simulated cluster (Ubuntu 24.04, ARM64). See [DONE.md](md/DONE.md).
 - Built: `/home` over NFS with quotas and local scratch with cleanup (M3b), checked on the simulated cluster with Ubuntu 22.04, 24.04, and 26.04, and both `/home` layouts.
-- Next: job modes (`cluster-submit`), uv, and health checks (M3c).
+- Built: `cluster-submit` job modes, `stage-dataset`, uv for users, and `cluster-health`, which every deploy runs at the end (M3c). With this, setting up Slurm, users, storage, and scratch (phase 4's cluster part) is done; open follow-ups are in [TODO.md](TODO.md).
+- Next: monitoring (Prometheus, Grafana, status collector, M4), after a planning round with the user.
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
