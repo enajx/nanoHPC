@@ -1,0 +1,7 @@
+- name: Install cluster-health
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-health"
+    dest: /usr/local/bin/cluster-health
+    owner: root
+    group: root
+    mode: "0755"

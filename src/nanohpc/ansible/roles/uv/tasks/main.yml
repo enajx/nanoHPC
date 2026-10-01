@@ -1,0 +1,51 @@
+# uv for users: a pinned release, checked against its published SHA-256, in /opt/uv-<version>.
+
+- name: Name the uv download for this machine's CPU type
+  ansible.builtin.set_fact:
+    uv_arch: "{{ 'aarch64' if ansible_facts.architecture in ['aarch64', 'arm64'] else 'x86_64' }}"
+    uv_home: "/opt/uv-{{ nanohpc.uv.version }}"
+
+- name: Require a CPU type uv is pinned for
+  ansible.builtin.assert:
+    that: ansible_facts.architecture in ['x86_64', 'aarch64', 'arm64']
+    fail_msg: "{{ inventory_hostname }}: nanoHPC pins uv for x86_64 and ARM64, not {{ ansible_facts.architecture }}."
+    quiet: true
+
+- name: Create the uv folder
+  ansible.builtin.file:
+    path: "{{ uv_home }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download uv, checking its SHA-256
+  ansible.builtin.get_url:
+    url: "https://github.com/astral-sh/uv/releases/download/{{ nanohpc.uv.version }}/uv-{{ uv_arch }}-unknown-linux-gnu.tar.gz"
+    dest: "/var/tmp/uv-{{ nanohpc.uv.version }}-{{ uv_arch }}.tar.gz"
+    checksum: "sha256:{{ nanohpc.uv.sha256[uv_arch] }}"
+    mode: "0644"
+
+- name: Unpack uv
+  ansible.builtin.unarchive:
+    src: "/var/tmp/uv-{{ nanohpc.uv.version }}-{{ uv_arch }}.tar.gz"
+    dest: "{{ uv_home }}"
+    remote_src: true
+    # Owned by root whatever the archive says, so no user can replace programs that root runs.
+    extra_opts: [--strip-components=1, --no-same-owner]
+    owner: root
+    group: root
+    creates: "{{ uv_home }}/uv"
+
+- name: Put uv and uvx on every user's path
+  ansible.builtin.file:
+    src: "{{ uv_home }}/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+  loop: [uv, uvx]
+
+- name: Check the uv version
+  ansible.builtin.command: /usr/local/bin/uv --version
+  register: uv_version
+  changed_when: false
+  failed_when: not uv_version.stdout.startswith('uv ' ~ nanohpc.uv.version ~ ' ')

@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import time
 import unittest
 from pathlib import Path
@@ -475,6 +476,39 @@ class SimDeployTest(SimUsersBase):
             self.assertEqual(self.ssh("gpu2", "sudo systemctl start nanohpc-scratch-cleanup.service").returncode, 0)
             self.assertEqual(self.ssh("gpu2", f"sudo ls {staged}").stdout.split(), ["new"])
 
+        with self.subTest("uv, cluster-health, stage-dataset, and cluster-submit"):
+            self.assertTrue(self.ssh("gpu2", "uv --version").stdout.startswith("uv 0.12.21 "))
+            for machine in machines:
+                health = self.ssh(machine, "sudo cluster-health")
+                self.assertEqual(health.returncode, 0, f"{machine}: {health.stdout}")
+            script = (ROOT / "tests" / "stage_dataset_test.sh").read_text()
+            staged = self.ssh("gpu2", "bash -s /usr/local/bin/stage-dataset", stdin=script)
+            self.assertEqual(staged.returncode, 0, staged.stdout + staged.stderr)
+            project = textwrap.dedent("""\
+                set -e
+                rm -rf ~/proj && mkdir ~/proj && cd ~/proj && git init -q
+                printf 'input data\\n' > input.txt
+                cat > job.sh <<'JOB'
+                #!/bin/bash
+                #SBATCH --partition=main
+                #SBATCH --nodelist=gpu2
+                #SBATCH --wait
+                #CLUSTER copy-back=results
+                mkdir -p results
+                pwd > results/where.txt
+                cat input.txt >> results/where.txt
+                JOB
+                git add input.txt job.sh && git -c user.name=a -c user.email=a@a commit -qm job
+                cluster-submit job.sh
+            """)
+            submitted = self.ssh("front", "cd /tmp && sudo -iu alice bash -s", stdin=project)
+            self.assertEqual(submitted.returncode, 0, submitted.stdout + submitted.stderr)
+            where = self.on_front("sudo -u alice cat /home/alice/proj/results/where.txt").splitlines()
+            self.assertTrue(where[0].startswith("/scratch/alice/cluster-jobs/job-"), where)
+            self.assertEqual(where[1], "input data")
+            # The private scratch copy is removed after a successful job.
+            self.assertEqual(self.ssh("gpu2", "sudo ls /scratch/alice/cluster-jobs").stdout.split(), [])
+
         with self.subTest("partition rules and limits"):
             shell = self.run_command(
                 "ssh", "-tt", "-F", str(self.state / "ssh_config"), "front",
@@ -499,6 +533,15 @@ class SimDeployTest(SimUsersBase):
             self.assertEqual(len(recap), len(machines), result.stdout[-4000:])
             for line in recap:
                 self.assertIn("changed=0 ", line)
+
+        with self.subTest("a drained node is a warning in the health report, not a failed deploy"):
+            self.on_front("sudo scontrol update nodename=cpu1 state=drain reason=maintenance-test")
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            self.assertIn(
+                "WARN  no Slurm node is down, drained, not responding, or in maintenance (cpu1", result.stdout
+            )
+            self.on_front("sudo scontrol update nodename=cpu1 state=resume")
 
         with self.subTest("a later deploy by an administrator through the forwarded key, without a password"):
             result = self.deploy(self.ssh_config_for("alice"), agent=True)

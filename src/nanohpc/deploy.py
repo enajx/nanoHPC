@@ -33,6 +33,13 @@ SLURM: dict[str, Any] = {
         "compute": ["slurm-smd-slurmd"],
     },
 }
+UV: dict[str, Any] = {
+    "version": "0.12.21",
+    "sha256": {
+        "x86_64": "23f02075b652bb1df64178cfae41b5caf160822e720e2663568f3f5d63bc52c0",
+        "aarch64": "030b69227b40af8c1981b7301793dc66e71ed3c796ea8688209dd268bd91ec51",
+    },
+}
 CACHE = Path.home() / ".cache" / "nanohpc"
 ANSIBLE = Path(str(resources.files("nanohpc").joinpath("ansible")))
 
@@ -152,6 +159,7 @@ def variables(config: dict[str, Any], work: Path, fake_gpus: list[str], qos: lis
             "files": str(work / "files"),
             "package_files": str(resources.files("nanohpc").joinpath("files")),
             "slurm": {**SLURM, "cache": str(CACHE / "slurm" / SLURM["version"])},
+            "uv": UV,
         }
     }
 

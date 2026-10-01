@@ -64,7 +64,7 @@ function slurm_job_submit(job_desc, part_list, submit_uid)
     for partition in (job_desc.partition or default_partition):gmatch("[^,]+") do
         local job_type = job_types[partition]
         if job_type == "batch" and job_desc.script == nil then
-            slurm.log_user("Rejected: %s accepts submitted background jobs only. Use sbatch, or a partition that accepts the interactive shell.", partition)
+            slurm.log_user("Rejected: %s accepts submitted background jobs only. Use sbatch or cluster-submit, or a partition that accepts the interactive shell.", partition)
             return slurm.ERROR
         end
         if job_type == "interactive" and not is_interactive_shell(job_desc) then
