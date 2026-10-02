@@ -1,0 +1,96 @@
+#!/usr/bin/python3
+"""SSH forced command of the backup account: allow only an rsync server into or out of one fixed folder.
+
+Installed on the backup machine and named in the unprivileged backup account's authorized_keys, for example
+  command="/usr/local/bin/nanohpc-backup-receive /srv/backup/home",... ssh-ed25519 AAAA... home machine
+sshd then runs this program instead of what the client asked for, and puts the client's command in
+SSH_ORIGINAL_COMMAND. Two command lines are allowed, as rsync 3.2 and 3.4 clients send them with
+--rsync-path="rsync --fake-super":
+  backup:  rsync --fake-super --server <options> . FOLDER/
+  restore: rsync --fake-super --server --sender <options> . FOLDER/[SUBPATH]
+<options> is one short option group as rsync writes it (for example -lHogDtpAXre.iLsfxCIvu) followed by long
+options from a fixed list (plus --list-only when sending, for the deploy's read-only check). A restore path that
+leads out of the folder through a backed-up symbolic link is refused. Options that name other paths (--temp-dir, --link-dest, --partial-dir, ...), follow links
+out of the folder (-L, -k, -K), delete source files, or move the file list off the command line (-s) are refused,
+as are other commands, other folders, `.` or `..` in paths, and any character outside letters, digits, and
+`._/=-`, so shell characters and rsync's backslash escapes never pass. --fake-super is required: the account is not
+root, so owners, permissions, ACLs, and xattrs are kept as extended attributes on the copies.
+
+An allowed command is run directly (exec, no shell); anything else prints a message on stderr and exits 1.
+
+Argument:
+  FOLDER   the backup folder, an absolute path without a final slash (for example /srv/backup/home).
+"""
+
+import os
+import re
+import sys
+
+SAFE_COMMAND = re.compile(r"[A-Za-z0-9._/= -]+")
+SAFE_FOLDER = re.compile(r"(/[A-Za-z0-9._-]+)+")
+# One short option group: flags without arguments, then rsync's "e." capability letters.
+SHORT_OPTIONS = re.compile(r"-[vqnlHogDtpAXrzcuWIxSdOJNU]*e\.[A-Za-z]*")
+LONG_OPTIONS = re.compile(
+    r"--(numeric-ids|partial|delete|delete-excluded|delete-before|delete-during|delete-after|delete-delay"
+    r"|timeout=[0-9]+|bwlimit=[0-9]+)"
+)
+
+
+def refuse(reason: str) -> None:
+    """Print why the command was refused and exit 1."""
+    print("nanohpc-backup-receive: refused: " + reason, file=sys.stderr)
+    sys.exit(1)
+
+
+def inside(path: str, folder: str, sending: bool) -> bool:
+    """Whether an rsync path is the folder (receiving), or the folder or a plain path inside it (sending)."""
+    if path == folder + "/":
+        return True
+    if not sending or not path.startswith(folder + "/"):
+        return False
+    parts = path[len(folder) + 1 :].removesuffix("/").split("/")
+    return all(part not in ["", ".", ".."] for part in parts)
+
+
+def allowed(command: str, folder: str) -> list[str]:
+    """Return the words of an allowed rsync server command line; refuse anything else."""
+    if not SAFE_COMMAND.fullmatch(command):
+        refuse("only an rsync server command with plain characters is allowed")
+    words = command.split(" ")
+    if words[:3] != ["rsync", "--fake-super", "--server"]:
+        refuse("only 'rsync --fake-super --server' is allowed")
+    sending = len(words) > 3 and words[3] == "--sender"
+    options = words[4 if sending else 3 : -2]
+    if not options or not SHORT_OPTIONS.fullmatch(options[0]):
+        refuse("the short rsync options are missing or not allowed")
+    for option in options[1:]:
+        # --list-only (the deploy's read-only check) only reads, so only when sending.
+        if not (LONG_OPTIONS.fullmatch(option) or (sending and option == "--list-only")):
+            refuse("rsync option not allowed: " + option)
+    if words[-2] != ".":
+        refuse("the command does not end with '. PATH'")
+    if not inside(words[-1], folder, sending):
+        refuse("path outside " + folder + "/ (backups go to " + folder + "/ itself): " + words[-1])
+    # A backed-up symbolic link (for example alice/escape -> /etc) must not lead a restore out of the folder.
+    real_folder = os.path.realpath(folder)
+    real_path = os.path.realpath(words[-1])
+    if sending and real_path != real_folder and not real_path.startswith(real_folder + "/"):
+        refuse("path leads outside " + folder + "/ through a link: " + words[-1])
+    return words
+
+
+def main() -> None:
+    """Check the folder argument and the client's command, then run the command without a shell."""
+    if len(sys.argv) != 2:
+        print("usage: nanohpc-backup-receive FOLDER", file=sys.stderr)
+        sys.exit(1)
+    folder = sys.argv[1]
+    if not SAFE_FOLDER.fullmatch(folder) or os.path.normpath(folder) != folder:
+        print("nanohpc-backup-receive: invalid folder (absolute, plain, no final slash): " + folder, file=sys.stderr)
+        sys.exit(1)
+    words = allowed(os.environ.get("SSH_ORIGINAL_COMMAND", ""), folder)
+    os.execvp(words[0], words)
+
+
+if __name__ == "__main__":
+    main()

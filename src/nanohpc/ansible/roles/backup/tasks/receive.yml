@@ -1,0 +1,67 @@
+# On the cluster's backup machine: an unprivileged account receives the mirror. Its key may only run rsync
+# into (or, for restores, out of) the backup folder, and only from the home machine's address. File owners
+# and permissions are kept as extended attributes (rsync --fake-super), so no root login is needed.
+- name: Install rsync
+  ansible.builtin.apt:
+    name: rsync
+    state: present
+    install_recommends: false
+
+- name: Create the backup account
+  ansible.builtin.user:
+    name: nanohpc-backup
+    system: true
+    home: /var/lib/nanohpc-backup
+    create_home: false
+    shell: /bin/sh  # sshd runs the forced command through the account's shell
+
+# Its home is root's, so nothing it runs can add SSH keys there (its key is in /etc/ssh/authorized_keys).
+- name: Give the backup account a home it cannot write to
+  ansible.builtin.file:
+    path: /var/lib/nanohpc-backup
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Only root and the backup account can enter the backup path. The mirror folder inside takes /home's own
+# permissions from rsync, so it is created once and then left to rsync.
+- name: Create the backup path
+  ansible.builtin.file:
+    path: "{{ nanohpc.backup.folder | dirname }}"
+    state: directory
+    owner: root
+    group: nanohpc-backup
+    mode: "0750"
+
+- name: Look for the mirror folder
+  ansible.builtin.stat:
+    path: "{{ nanohpc.backup.folder }}"
+  register: mirror_folder
+
+- name: Create the mirror folder (first deploy only)
+  ansible.builtin.file:
+    path: "{{ nanohpc.backup.folder }}"
+    state: directory
+    owner: nanohpc-backup
+    group: nanohpc-backup
+    mode: "0700"
+  when: not mirror_folder.stat.exists
+
+- name: Install the receiving command
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-backup-receive"
+    dest: /usr/local/bin/nanohpc-backup-receive
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Accept the home machine's backup key, for rsync into the backup folder only
+  ansible.builtin.copy:
+    dest: /etc/ssh/authorized_keys/nanohpc-backup
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      restrict,from="{{ nanohpc.home.server_address }}",command="/usr/local/bin/nanohpc-backup-receive {{ nanohpc.backup.folder }}"
+      {{ hostvars[nanohpc.home.server].backup_public_key }}

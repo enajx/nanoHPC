@@ -1,0 +1,140 @@
+# On the home machine: the nightly mirror of /home (one copy; files deleted from /home are deleted from it),
+# its result as metrics for alerts and cluster-health, and a check that the destination accepts the key.
+- name: Install rsync
+  ansible.builtin.apt:
+    name: rsync
+    state: present
+    install_recommends: false
+
+- name: Install the backup command
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-backup"
+    dest: /usr/local/bin/cluster-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Pin the backup machine's SSH host key
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/backup/known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ nanohpc.backup.address }} ssh-ed25519 {{ hostvars[nanohpc.backup.machine].ansible_facts.ssh_host_key_ed25519_public }}\n"
+  when: nanohpc.backup.kind == 'machine'
+
+# An outside server's host key is learned when nanoHPC first backs up to that host, then kept: if the key
+# changes later, the backup stops ("Host key verification failed") until an administrator checks it and
+# removes /etc/nanohpc/backup/known_hosts. The fingerprint is printed for the administrator to compare.
+- name: Learn the outside server's SSH host key (first deploy to this host only)
+  ansible.builtin.shell: |
+    set -eu
+    if test -f /etc/nanohpc/backup/known_hosts && ssh-keygen -F {{ nanohpc.backup.address | quote }} -f /etc/nanohpc/backup/known_hosts >/dev/null; then
+      exit 0
+    fi
+    ssh-keyscan -t ed25519 -T 15 {{ nanohpc.backup.address | quote }} > /etc/nanohpc/backup/known_hosts.partial
+    test -s /etc/nanohpc/backup/known_hosts.partial
+    mv /etc/nanohpc/backup/known_hosts.partial /etc/nanohpc/backup/known_hosts
+    echo learned
+    ssh-keygen -l -f /etc/nanohpc/backup/known_hosts
+  register: outside_host_key
+  changed_when: "'learned' in outside_host_key.stdout"
+  when: nanohpc.backup.kind == 'outside'
+
+- name: Show the outside server's host key fingerprint to compare
+  ansible.builtin.debug:
+    msg: "Learned {{ nanohpc.backup.address }}'s SSH host key: {{ outside_host_key.stdout_lines[-1] }}. Compare it with the server's own (ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub there)."
+  when: nanohpc.backup.kind == 'outside' and outside_host_key is changed
+
+- name: Record that backups are set up, and since when (read by cluster-health)
+  ansible.builtin.copy:
+    dest: "/etc/nanohpc/backup/{{ item.name }}"
+    content: "{{ item.content }}"
+    force: "{{ item.force }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {name: enabled, content: "{{ nanohpc.backup.destination }}\n", force: true}
+    - {name: started, content: "{{ ansible_facts.date_time.iso8601 }}\n", force: false}
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Name the backup command
+  ansible.builtin.set_fact:
+    backup_command: >-
+      /usr/local/bin/cluster-backup --source /home/ --destination {{ nanohpc.backup.destination }}
+      --identity /etc/nanohpc/backup/id_ed25519 --known-hosts /etc/nanohpc/backup/known_hosts
+      {% for pattern in nanohpc.backup.exclude %}--exclude {{ pattern | quote }} {% endfor %}
+      {{ '--fake-super' if nanohpc.backup.kind == 'machine' else '' }}
+      --metrics /var/lib/nanohpc/metrics-textfile/backup.prom
+
+- name: Install the backup service and its nightly timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/nanohpc-backup.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if item == 'service' %}
+      [Unit]
+      Description=Mirror /home to {{ nanohpc.backup.destination }} (nanoHPC)
+      After=network-online.target
+      Wants=network-online.target
+      RequiresMountsFor=/home
+
+      [Service]
+      Type=oneshot
+      ExecStart={{ backup_command | regex_replace('\s+', ' ') | trim }}
+      Nice=10
+      IOSchedulingClass=idle
+      ProtectSystem=strict
+      ProtectHome=read-only
+      PrivateTmp=true
+      ReadWritePaths=/var/lib/nanohpc/metrics-textfile
+      {% else %}
+      [Unit]
+      Description=Mirror /home every night at {{ nanohpc.backup.time }} (nanoHPC)
+
+      [Timer]
+      OnCalendar=*-*-* {{ nanohpc.backup.time }}:00
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+      {% endif %}
+  loop: [service, timer]
+  register: backup_units
+
+- name: Run the backup timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ backup_units.changed }}"
+
+# Read-only: list the destination folder through the same key and options as the backup.
+- name: Check that the backup destination accepts this machine's key
+  ansible.builtin.command:
+    argv: >-
+      {{ ['rsync', '--list-only', '--timeout=30',
+          '-e', 'ssh -i /etc/nanohpc/backup/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/nanohpc/backup/known_hosts']
+         + (['--rsync-path=rsync --fake-super'] if nanohpc.backup.kind == 'machine' else [])
+         + [nanohpc.backup.destination] }}
+  register: backup_reachable
+  changed_when: false
+  failed_when: backup_reachable.rc != 0 and nanohpc.backup.kind == 'machine'
+
+- name: Read the backup key's public half
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/backup/id_ed25519.pub
+  register: outside_public_key
+  when: nanohpc.backup.kind == 'outside' and backup_reachable.rc != 0
+
+- name: Say how to let this machine back up to the outside server
+  ansible.builtin.debug:
+    msg: >-
+      The backup destination {{ nanohpc.backup.destination }} does not accept {{ inventory_hostname }}'s backup
+      key yet, so the nightly backup will fail. On that server, add this line to the account's
+      ~/.ssh/authorized_keys: {{ outside_public_key.content | b64decode | trim }}
+  when: nanohpc.backup.kind == 'outside' and backup_reachable.rc != 0
