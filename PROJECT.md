@@ -64,7 +64,7 @@ Tech stack. Most of it comes from the source deployment; changes from it are not
 - **Prometheus** with **node_exporter** and GPU metrics. The front node scrapes the other machines over mutually authenticated TLS. A second Prometheus keeps daily summaries for 5 years.
 - **Grafana** with read-only dashboards embedded in the website: queue, queue history, GPU usage, machines, long-term history.
 - **Python collector** (`cluster-monitor-snapshot`) that writes a `status.json` snapshot every 30 seconds for the website.
-- **React + TypeScript + Vite** website, served by its own **nginx** on the front node over HTTPS (Let's Encrypt or the administrator's own certificate).
+- **React + TypeScript + Vite** website, shipped prebuilt in the package (or built on the front node), served by its own **nginx** on the front node over HTTPS (Let's Encrypt or the administrator's own certificate), under a configurable path.
 - **Slack alerts** from health checks (optional), and **automatic redeploy** when the administrator's configuration repository changes (optional).
 - Fixed install paths on every cluster (`/etc/nanohpc`, `/var/lib/nanohpc`). The cluster name only appears in the website, dashboards, and Slurm.
 - **Python `unittest`** and **Playwright** browser tests. **Lima** VMs for the simulated test cluster ([testing setup](md/testing.md)).
@@ -113,6 +113,7 @@ flowchart LR
   GRAF --> WEB
   USERS[Lab users] -- SSH --> FN
   USERS -- browser --> WEB
+  LAB[Lab website, optional] -- forwards /cluster/ --> WEB
 ```
 
 ## Status
@@ -125,7 +126,8 @@ flowchart LR
 - Built: `cluster-submit` job modes, `stage-dataset`, uv for users, and `cluster-health`, which every deploy runs at the end (M3c). With this, setting up Slurm, users, storage, and scratch (phase 4's cluster part) is done; open follow-ups are in [TODO.md](TODO.md).
 - Built: metrics (M4a): certificates issued and renewed by a private authority on the front node, node exporters over mutual TLS on every machine, machine-spec and GPU collectors, Prometheus with 90-day detail and 5-year daily history.
 - Built: the status collector and Grafana (M4b): a 30-second `status.json` snapshot for the website, machine health from each machine's required services and mounts, users' quotas from the home machine, and six read-only Grafana dashboards on the front node's localhost. With this, monitoring (M4) is done.
-- Next: the website from the configuration, over HTTPS (M5).
+- Built: the website (M5): content from `cluster.yml` and the status snapshot, served by nginx on the front node under a configurable path (default `/cluster/`) over HTTPS (Let's Encrypt or the administrator's own certificate), optionally limited to listed networks, with forwarding rules for a lab's own website. Checked with a real browser on the simulated cluster. See [testing.md](md/testing.md).
+- Next: backup, alerts, and automatic deploys (M6), planned with the user first. Agreed so far: full-cluster pull for automatic deploys, a dry run before every deploy, and key-only root login for administrators ([plan-port.md](md/plan-port.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
