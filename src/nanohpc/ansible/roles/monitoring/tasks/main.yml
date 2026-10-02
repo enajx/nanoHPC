@@ -1,0 +1,210 @@
+# The status collector and the home quota reader.
+# - Front node: every 30 seconds, cluster-monitor-snapshot reads Slurm and Prometheus (as the unprivileged
+#   cluster-monitor account) and writes status.json and machines.md for the website, plus cluster.prom
+#   (Slurm figures) for Prometheus.
+# - Home machine: every 5 minutes, cluster-home-quotas reads the users' /home quotas (as root, since
+#   repquota reads the disk) and writes them as metrics, so the front node gets them through Prometheus
+#   wherever /home is.
+
+- name: Install the quota reader on the home machine
+  when: inventory_hostname == nanohpc.home.server
+  block:
+    - name: Install cluster-home-quotas
+      ansible.builtin.copy:
+        src: "{{ nanohpc.package_files }}/cluster-home-quotas"
+        dest: /usr/local/bin/cluster-home-quotas
+        owner: root
+        group: root
+        mode: "0755"
+
+    # repquota needs the block device, so this service has no PrivateDevices.
+    - name: Install the quota reader service and timer
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/nanohpc-home-quotas.{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {% if item == 'service' %}
+          [Unit]
+          Description=Read the users' /home quotas for metrics (nanoHPC)
+          RequiresMountsFor=/home
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/cluster-home-quotas --output /var/lib/nanohpc/metrics-textfile/home-quotas.prom \
+            --repquota /usr/sbin/repquota --filesystem {{ '/home' if nanohpc.home.device else '/' }} \
+            --users {{ nanohpc.users | map(attribute='name') | join(' ') }}
+          TimeoutStartSec=40
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=read-only
+          PrivateTmp=true
+          ProtectKernelTunables=true
+          ProtectKernelModules=true
+          ProtectControlGroups=true
+          RestrictSUIDSGID=true
+          RestrictAddressFamilies=AF_UNIX
+          ReadWritePaths=/var/lib/nanohpc/metrics-textfile
+          MemoryMax=128M
+          CPUQuota=25%
+          {% else %}
+          [Unit]
+          Description=Read the /home quotas every 5 minutes (nanoHPC)
+
+          [Timer]
+          OnBootSec=20s
+          OnUnitActiveSec=5min
+          AccuracySec=30s
+
+          [Install]
+          WantedBy=timers.target
+          {% endif %}
+      loop: [service, timer]
+      register: quota_units
+
+    - name: Read the quotas once now (a failure here shows the reader's error)
+      ansible.builtin.systemd_service:
+        name: nanohpc-home-quotas.service
+        state: started
+        daemon_reload: "{{ quota_units.changed }}"
+      changed_when: false  # a one-off run of the reader, not a change to the machine
+
+    - name: Run the quota reader timer
+      ansible.builtin.systemd_service:
+        name: nanohpc-home-quotas.timer
+        enabled: true
+        state: started
+
+    - name: Check that the quota reader wrote its metrics
+      ansible.builtin.stat:
+        path: /var/lib/nanohpc/metrics-textfile/home-quotas.prom
+      register: quota_output
+      failed_when: not quota_output.stat.exists
+
+- name: Install the status collector on the front node
+  when: inventory_hostname in groups['role_front']
+  block:
+    - name: Create the status folder
+      ansible.builtin.file:
+        path: /var/lib/nanohpc/monitor
+        state: directory
+        owner: cluster-monitor
+        group: cluster-monitor
+        mode: "0755"
+
+    - name: Install the status collector and its machine status rules
+      ansible.builtin.copy:
+        src: "{{ nanohpc.package_files }}/{{ item.name }}"
+        dest: "/usr/local/bin/{{ item.name }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      # The rules are a module the collector imports from its own folder, not a command.
+      loop:
+        - {name: cluster-monitor-snapshot, mode: "0755"}
+        - {name: cluster_machine_status.py, mode: "0644"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Install the list of machines and what each must run and mount
+      ansible.builtin.copy:
+        src: "{{ nanohpc.files }}/monitor-machines.json"
+        dest: /etc/nanohpc/monitor-machines.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    # GPU-hour totals count from the cluster's first deploy. Recorded once, in local time, as sacct reads it.
+    - name: Record when accounting started (once)
+      ansible.builtin.copy:
+        dest: /etc/nanohpc/accounting-start
+        content: "{{ ansible_facts.date_time.date }}T{{ ansible_facts.date_time.time }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+
+    - name: Read when accounting started
+      ansible.builtin.slurp:
+        src: /etc/nanohpc/accounting-start
+      register: accounting_start
+
+    - name: Install the status collector service and timer
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/nanohpc-monitor-snapshot.{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {% if item == 'service' %}
+          [Unit]
+          Description=Cluster status snapshot for the website and metrics (nanoHPC)
+          After=slurmctld.service slurmdbd.service nanohpc-prometheus.service
+
+          [Service]
+          Type=oneshot
+          User=cluster-monitor
+          Group=cluster-monitor
+          ExecStart=/usr/local/bin/cluster-monitor-snapshot \
+            --output /var/lib/nanohpc/monitor/status.json \
+            --machine-markdown-output /var/lib/nanohpc/monitor/machines.md \
+            --metrics /var/lib/nanohpc/monitor-textfile/cluster.prom \
+            --controller {{ groups['role_front'][0] }} --cluster-name {{ nanohpc.cluster_name }} \
+            --machines /etc/nanohpc/monitor-machines.json --refresh-seconds 30 \
+            --accounting-start {{ accounting_start.content | b64decode | trim }} \
+            --prometheus-url http://127.0.0.1:9090 \
+            --users {{ nanohpc.users | map(attribute='name') | join(' ') }}
+          TimeoutStartSec=90
+          UMask=0022
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=true
+          PrivateTmp=true
+          PrivateDevices=true
+          ProtectKernelTunables=true
+          ProtectKernelModules=true
+          ProtectControlGroups=true
+          RestrictSUIDSGID=true
+          RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+          CapabilityBoundingSet=
+          ReadWritePaths=/var/lib/nanohpc/monitor /var/lib/nanohpc/monitor-textfile
+          MemoryMax=256M
+          CPUQuota=25%
+          {% else %}
+          [Unit]
+          Description=Refresh the cluster status snapshot every 30 seconds (nanoHPC)
+
+          [Timer]
+          OnBootSec=30s
+          OnUnitActiveSec=30s
+          AccuracySec=1s
+
+          [Install]
+          WantedBy=timers.target
+          {% endif %}
+      loop: [service, timer]
+      register: snapshot_units
+
+    - name: Take a snapshot now (a failure here shows the collector's error)
+      ansible.builtin.systemd_service:
+        name: nanohpc-monitor-snapshot.service
+        state: started
+        daemon_reload: "{{ snapshot_units.changed }}"
+      changed_when: false  # a one-off run of the collector, not a change to the machine
+
+    - name: Run the status collector timer
+      ansible.builtin.systemd_service:
+        name: nanohpc-monitor-snapshot.timer
+        enabled: true
+        state: started
+
+    - name: Check that the snapshot was written
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: snapshot_output
+      failed_when: not snapshot_output.stat.exists
+      loop:
+        - /var/lib/nanohpc/monitor/status.json
+        - /var/lib/nanohpc/monitor/machines.md
+        - /var/lib/nanohpc/monitor-textfile/cluster.prom

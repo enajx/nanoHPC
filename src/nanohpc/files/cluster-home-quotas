@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+"""Publish selected home quota totals as node_exporter metrics, for the status collector on the front node.
+
+Runs as root on the home machine. Reads user block quotas with `repquota -u -O csv FILESYSTEM` and writes a
+node_exporter textfile (mode 0644) with, for each named user:
+  cluster_home_quota_used_bytes{user="NAME"}, cluster_home_quota_soft_bytes{user="NAME"},
+  cluster_home_quota_hard_bytes{user="NAME"}
+and cluster_home_quota_collected_timestamp_seconds (when repquota was read, in Unix seconds).
+The file is replaced whole, and only when every named user has a valid quota record: any failure leaves the
+last good file (its timestamp then shows how old it is).
+
+Arguments:
+  --output PATH            the .prom file to write, in node_exporter's textfile folder.
+  --repquota PATH          the repquota program (for example /usr/sbin/repquota).
+  --filesystem PATH        mount point of the filesystem that holds /home and its quotas: /home when it is
+                           its own mount, / when /home is a folder on the root disk.
+  --users NAME [NAME ...]  the cluster's users; nobody else (root, service accounts) is written.
+"""
+
+import argparse
+import csv
+import json
+import os
+import re
+import subprocess
+import time
+from pathlib import Path
+
+
+def collect(repquota: str, filesystem: str, users: list[str]) -> dict[str, dict[str, int]]:
+    """Read filesystem quota blocks and retain only named cluster users."""
+    if (
+        not users
+        or len(users) != len(set(users))
+        or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", user) for user in users)
+    ):
+        raise ValueError("Invalid cluster user list")
+    output = subprocess.run(
+        [repquota, "-u", "-O", "csv", filesystem], capture_output=True, text=True, check=True, timeout=25
+    ).stdout
+    rows = csv.DictReader(output.splitlines())
+    required = {"User", "BlockUsed", "BlockSoftLimit", "BlockHardLimit"}
+    if rows.fieldnames is None or not required.issubset(rows.fieldnames):
+        raise ValueError("Quota output is missing required columns")
+    selected: dict[str, dict[str, int]] = {}
+    for row in rows:
+        name = row["User"]
+        if name not in users:
+            continue
+        if name in selected:
+            raise ValueError("Duplicate quota record for " + name)
+        used, soft, hard = (int(row[field]) * 1024 for field in ("BlockUsed", "BlockSoftLimit", "BlockHardLimit"))
+        if used < 0 or soft <= 0 or hard < soft:
+            raise ValueError("Invalid quota values for " + name)
+        selected[name] = {"used_bytes": used, "soft_bytes": soft, "hard_bytes": hard}
+    if set(selected) != set(users):
+        raise ValueError("Missing cluster user quota record")
+    return selected
+
+
+def metrics(quotas: dict[str, dict[str, int]], collected: float) -> str:
+    """Write each user's used, soft, and hard bytes, and when they were read."""
+    lines = []
+    for field, meaning in [
+        ("used_bytes", "Bytes used in /home"),
+        ("soft_bytes", "Soft quota on /home in bytes"),
+        ("hard_bytes", "Hard quota on /home in bytes"),
+    ]:
+        lines += [f"# HELP cluster_home_quota_{field} {meaning}.", f"# TYPE cluster_home_quota_{field} gauge"]
+        lines += [
+            f"cluster_home_quota_{field}{{user={json.dumps(user)}}} {values[field]}"
+            for user, values in sorted(quotas.items())
+        ]
+    lines += [
+        "# HELP cluster_home_quota_collected_timestamp_seconds When the quotas were last read.",
+        "# TYPE cluster_home_quota_collected_timestamp_seconds gauge",
+        f"cluster_home_quota_collected_timestamp_seconds {collected}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def publish(path: Path, content: str) -> None:
+    """Replace complete output only after a successful quota read."""
+    temporary = path.with_name("." + path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.chmod(0o644)
+    temporary.replace(path)
+
+
+def main() -> None:
+    """Read fixed operator supplied paths and user names."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--repquota", required=True)
+    parser.add_argument("--filesystem", required=True)
+    parser.add_argument("--users", nargs="+", required=True)
+    arguments = parser.parse_args()
+    quotas = collect(arguments.repquota, arguments.filesystem, arguments.users)
+    publish(arguments.output, metrics(quotas, time.time()))
+
+
+if __name__ == "__main__":
+    main()

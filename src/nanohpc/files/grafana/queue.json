@@ -1,0 +1,283 @@
+{
+  "uid": "nanohpc-queue",
+  "title": "Running Jobs and Queue",
+  "schemaVersion": 39,
+  "editable": false,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "state",
+        "label": "State",
+        "type": "custom",
+        "query": "Running + pending : RUNNING|PENDING,Running : RUNNING,Pending : PENDING,Completed : COMPLETED,Failed : FAILED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL|BOOT_FAIL|DEADLINE|PREEMPTED,Cancelled : CANCELLED,All : .+",
+        "multi": false,
+        "includeAll": false,
+        "current": {
+          "text": "Running + pending",
+          "value": "RUNNING|PENDING"
+        },
+        "options": [
+          {
+            "text": "Running + pending",
+            "value": "RUNNING|PENDING",
+            "selected": true
+          },
+          {
+            "text": "Running",
+            "value": "RUNNING",
+            "selected": false
+          },
+          {
+            "text": "Pending",
+            "value": "PENDING",
+            "selected": false
+          },
+          {
+            "text": "Completed",
+            "value": "COMPLETED",
+            "selected": false
+          },
+          {
+            "text": "Failed",
+            "value": "FAILED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL|BOOT_FAIL|DEADLINE|PREEMPTED",
+            "selected": false
+          },
+          {
+            "text": "Cancelled",
+            "value": "CANCELLED",
+            "selected": false
+          },
+          {
+            "text": "All",
+            "value": ".+",
+            "selected": false
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "${state:text} jobs",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 12
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Priority",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(cluster_job_requested_gpus * on(job_id) group_left(user,job_name,state,reason,node,partition) cluster_job_info{state=~\"$state\"}) and on() (time() - cluster_snapshot_timestamp_seconds < 90)",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B",
+          "expr": "(cluster_job_requested_cpus * on(job_id) group_left(user,job_name,state,reason,node,partition) cluster_job_info{state=~\"$state\"}) and on() (time() - cluster_snapshot_timestamp_seconds < 90)",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "C",
+          "expr": "(cluster_job_requested_memory_bytes * on(job_id) group_left(user,job_name,state,reason,node,partition) cluster_job_info{state=~\"$state\"}) and on() (time() - cluster_snapshot_timestamp_seconds < 90)",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "D",
+          "expr": "(cluster_job_elapsed_seconds * on(job_id) group_left(user,job_name,state,reason,node,partition) cluster_job_info{state=~\"$state\"}) and on() (time() - cluster_snapshot_timestamp_seconds < 90)",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "E",
+          "expr": "(cluster_job_waiting_seconds * on(job_id) group_left(user,job_name,state,reason,node,partition) cluster_job_info{state=~\"$state\"}) and on() (time() - cluster_snapshot_timestamp_seconds < 90)",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "F",
+          "expr": "(cluster_job_priority * on(job_id) group_left(user,job_name,state,reason,node,partition) cluster_job_info{state=~\"$state\"}) and on() (time() - cluster_snapshot_timestamp_seconds < 90)",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "G",
+          "expr": "(cluster_job_end_seconds * 1000 * on(job_id) group_left(user,job_name,state,reason,node,partition) cluster_job_info{state=~\"$state\"}) and on() (time() - cluster_snapshot_timestamp_seconds < 90)",
+          "format": "table",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "machine": true
+            },
+            "renameByName": {
+              "job_id": "Job ID",
+              "user": "User",
+              "job_name": "Name",
+              "state": "State",
+              "reason": "Pending reason",
+              "node": "Node",
+              "partition": "Partition",
+              "Value #A": "GPUs",
+              "Value #B": "CPUs",
+              "Value #C": "RAM",
+              "Value #D": "Elapsed",
+              "Value #E": "Waiting",
+              "Value #F": "Priority",
+              "Value #G": "End"
+            },
+            "indexByName": {
+              "job_id": 0,
+              "user": 1,
+              "job_name": 2,
+              "state": 3,
+              "Value #A": 4,
+              "Value #B": 5,
+              "Value #C": 6,
+              "Value #D": 7,
+              "Value #E": 8,
+              "Value #G": 9,
+              "Value #F": 10,
+              "reason": 11,
+              "node": 12,
+              "partition": 13
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true,
+            "align": "auto"
+          },
+          "noValue": "—"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "User"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "${__value.raw}",
+                    "url": "/cluster/#users?user=${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "data-links"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RAM"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Elapsed"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Waiting"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "End"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

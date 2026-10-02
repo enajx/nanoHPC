@@ -1,0 +1,648 @@
+#!/usr/bin/python3
+"""Publish a fixed read-only view of Slurm; never execute visitor-supplied queries.
+
+Reads Slurm (scontrol, squeue, sshare, sprio, sacct, sacctmgr) and, if given, Prometheus, then writes:
+- status.json for the website (`--output`, and a copy at `--mirror-output`);
+- machines.md, a Markdown table of the compute machines (`--machine-markdown-output`, and a copy at
+  `--machine-markdown-mirror-output`);
+- cluster.prom, Slurm figures for node_exporter's textfile collector (`--metrics`).
+Every file is replaced whole, and only after all reads succeed: any failure leaves the last good files.
+
+Arguments (all set by the operator, never from the website):
+  --output PATH              status.json to write.
+  --mirror-output PATH       optional second copy of status.json.
+  --machine-markdown-output PATH         machines.md to write.
+  --machine-markdown-mirror-output PATH  optional second copy of machines.md.
+  --metrics PATH             cluster.prom to write.
+  --controller NAME          the front node's machine name (runs the Slurm controller).
+  --cluster-name NAME        the cluster's name, for the machines.md heading.
+  --machines PATH            JSON file of every machine to check, by machine name (Prometheus's `machine`
+                             label, and Slurm's node name for compute machines):
+                               {"NAME": {"role": "front" | "compute" | "storage",
+                                         "units": ["slurmd.service", ...],
+                                         "mounts": ["/", "/home", "/scratch", ...]}}
+                             `units` are the systemd units that must be active and `mounts` the mount points
+                             that must be writable with free space. Exactly one machine has the role front
+                             (the --controller); the compute machines must be exactly Slurm's nodes; storage
+                             machines (home and backup machines) run no Slurm and get no Slurm check.
+  --refresh-seconds N        how often the snapshot is refreshed (at least 5), published for the website.
+  --accounting-start TIME    start of the GPU-hour totals, as sacct reads it: YYYY-MM-DD or
+                             YYYY-MM-DDTHH:MM:SS, local time, no timezone.
+  --prometheus-url URL       optional detail Prometheus (for example http://127.0.0.1:9090). Without it,
+                             every machine's health is Unknown and no home quotas are shown. Home quotas
+                             come from the cluster_home_quota_* series that cluster-home-quotas writes on the
+                             home machine; they are left out when absent or older than 10 minutes, and series
+                             from more than one machine are an error.
+  --users NAME [NAME ...]    the cluster's users; only they appear in the ranking, user cards, and priorities.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from cluster_machine_status import machine_status, measurements, query
+
+UTC = timezone.utc  # noqa: UP017 (datetime.UTC needs Python 3.11; Ubuntu 22.04 has 3.10)
+QUOTA_QUERY = '{__name__=~"cluster_home_quota_(used_bytes|soft_bytes|hard_bytes|collected_timestamp_seconds)"}'
+ROLE_NAMES = {"front": "Front node", "compute": "Compute", "storage": "Storage"}
+
+
+def read(arguments: list[str]) -> str:
+    """Fail the entire collection if any required source fails or times out."""
+    return subprocess.run(arguments, capture_output=True, text=True, check=True, timeout=25).stdout.strip()
+
+
+def read_accounting(arguments: list[str]) -> str:
+    """Read job times as epoch seconds, including across daylight-saving changes."""
+    return subprocess.run(
+        arguments, capture_output=True, text=True, check=True, timeout=25, env={**os.environ, "SLURM_TIME_FORMAT": "%s"}
+    ).stdout.strip()
+
+
+def fields(line: str) -> dict[str, str]:
+    """Extract Slurm's named fields without interpreting values as shell text."""
+    return dict(part.split("=", 1) for part in line.split() if "=" in part)
+
+
+def gpu_count(tres: str) -> int:
+    """Prefer the total GPU TRES, otherwise sum types without double-counting."""
+    resources = dict(part.split("=", 1) for part in tres.split(",") if "=" in part)
+    if "gres/gpu" in resources:
+        return int(resources["gres/gpu"])
+    return sum(int(value) for name, value in resources.items() if name.startswith("gres/gpu:"))
+
+
+def slurm_available_gpus(node: dict[str, str]) -> int:
+    """Count GPUs that Slurm could assign to a new job right now."""
+    if "CfgTRES" not in node or "AllocTRES" not in node:
+        raise ValueError("Slurm node GPU resources are missing")
+    total = gpu_count(node["CfgTRES"])
+    allocated = gpu_count(node["AllocTRES"])
+    if allocated > total:
+        raise ValueError("Slurm allocated more GPUs than configured")
+    state = node["State"]
+    schedulable = state.split("+")[0] in ("IDLE", "MIXED", "ALLOCATED") and not any(
+        flag in state for flag in ("DRAIN", "FAIL", "INVALID", "NO_RESPOND", "NOT_RESPONDING")
+    )
+    return total - allocated if schedulable else 0
+
+
+def atomic_write(path: Path, content: str) -> None:
+    """Replace a complete public file only after all collection has succeeded."""
+    temporary = path.with_name("." + path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.chmod(0o644)
+    temporary.replace(path)
+
+
+def binary_size(value: float | None) -> str:
+    """Format measured byte counts without turning missing data into zero."""
+    if value is None:
+        return "Unknown"
+    size = float(value)
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    unit = 0
+    while size >= 1024 and unit < len(units) - 1:
+        size /= 1024
+        unit += 1
+    return f"{size:.0f} {units[unit]}" if unit == 0 else f"{size:.1f} {units[unit]}"
+
+
+def markdown_cell(value: object) -> str:
+    """Keep monitored labels inside one Markdown table cell."""
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def grouped_gpus(specs: dict, configured_count: int | None) -> tuple[str, str]:
+    """Summarize the same GPU inventory shown by the website machine cards."""
+    count = specs.get("gpu_count")
+    if count is None:
+        count = configured_count
+    gpus = specs.get("gpus") or []
+    if count is None:
+        return "Unknown", "Unknown"
+    count = int(count)
+    if count == 0:
+        return "0", "Not applicable"
+    if len(gpus) != count:
+        return f"{count} GPUs", "Unknown"
+
+    def groups(values: list[str]) -> str:
+        grouped: dict[str, int] = {}
+        for value in values:
+            grouped[value] = grouped.get(value, 0) + 1
+        return ", ".join(f"{amount}× {value}" for value, amount in grouped.items())
+
+    return (groups([str(gpu["model"]) for gpu in gpus]), groups([binary_size(gpu["memory_bytes"]) for gpu in gpus]))
+
+
+def machines_markdown(snapshot: dict, cluster_name: str) -> str:
+    """Render the current compute-machine snapshot as agent-readable Markdown."""
+    lines = [
+        f"# {cluster_name} machines",
+        "",
+        "> Generated from the same current machine data as the website. Do not edit this file by hand.",
+        "",
+        f"Updated: {snapshot['generated_at']}",
+        "",
+        "| Machine | Health | GPU use, last hour | Available GPUs | GPUs | GPU memory | CPU cores | RAM | Scratch size |",
+        "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: |",
+    ]
+    for node in snapshot["nodes"]:
+        if node["role"] != "Compute":
+            continue
+        specs = node.get("specs") or {}
+        total = node.get("total_gpus")
+        gpu_models, gpu_memory = grouped_gpus(specs, total)
+        available = node.get("available_gpus")
+        availability = f"{available}/{total}" if available is not None and total is not None else "Unknown"
+        cores = specs.get("cpu_cores")
+        cores_text = str(int(cores)) if isinstance(cores, (int, float)) and float(cores).is_integer() else "Unknown"
+        scratch = next((disk for disk in specs.get("disks", []) if disk.get("mount") == "/scratch"), None)
+        values = [
+            node["name"],
+            node.get("health") or "Unknown",
+            node.get("gpu_usage") or "Unknown",
+            availability,
+            gpu_models,
+            gpu_memory,
+            cores_text,
+            binary_size(specs.get("ram_bytes")),
+            binary_size(scratch.get("total_bytes") if scratch else None),
+        ]
+        lines.append("| " + " | ".join(markdown_cell(value) for value in values) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def read_machines(path: Path) -> dict[str, dict[str, Any]]:
+    """Read the machines file: each machine's role, required systemd units, and required mount points."""
+    machines = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(machines, dict) or not machines:
+        raise ValueError(f"{path}: expected a non-empty object of machines")
+    for name, machine in machines.items():
+        valid = (
+            isinstance(machine, dict)
+            and set(machine) == {"role", "units", "mounts"}
+            and machine["role"] in ROLE_NAMES
+            and all(
+                isinstance(machine[key], list) and all(isinstance(item, str) and item for item in machine[key])
+                for key in ("units", "mounts")
+            )
+        )
+        if not valid:
+            raise ValueError(
+                f"{path}: machine {name} needs exactly role (front, compute, or storage), units, and mounts"
+            )
+    return machines
+
+
+def home_quotas(prometheus: str | None, end: int, now: datetime) -> dict[str, dict[str, int]]:
+    """Read the home machine's fresh quota readings from Prometheus; none when absent or stale."""
+    if prometheus is None:
+        return {}
+    rows = query(prometheus, "query", {"query": QUOTA_QUERY, "time": end})
+    machines = sorted({str(row["metric"].get("machine")) for row in rows})
+    if len(machines) > 1:
+        raise ValueError(f"Home quotas reported by more than one machine: {', '.join(machines)}")
+    stamps = [
+        float(row["value"][1])
+        for row in rows
+        if row["metric"]["__name__"] == "cluster_home_quota_collected_timestamp_seconds"
+    ]
+    if len(stamps) != 1 or not 0 <= now.timestamp() - stamps[0] < 600:
+        return {}
+    quotas: dict[str, dict[str, int]] = defaultdict(dict)
+    for row in rows:
+        field = row["metric"]["__name__"].removeprefix("cluster_home_quota_")
+        if field != "collected_timestamp_seconds":
+            quotas[row["metric"]["user"]][field] = int(float(row["value"][1]))
+    return {user: values for user, values in quotas.items() if len(values) == 3}
+
+
+def rolling_gpu_hours(records: str, now: datetime) -> dict[str, dict[str, float]]:
+    """Count allocated GPU time overlapping each rolling period."""
+    result: dict[str, dict[str, float]] = defaultdict(lambda: {"7d": 0.0, "30d": 0.0, "365d": 0.0})
+    for line in records.splitlines():
+        user, _, _, tres, _, start, end = line.split("|")[:7]
+        gpus = gpu_count(tres)
+        if not user or not gpus or start == "Unknown":
+            continue
+        started = datetime.fromtimestamp(int(start), UTC)
+        finished = now if end == "Unknown" else datetime.fromtimestamp(int(end), UTC)
+        for days in (7, 30, 365):
+            seconds = max(0.0, (min(finished, now) - max(started, now - timedelta(days=days))).total_seconds())
+            result[user][f"{days}d"] += gpus * seconds / 3600
+    return result
+
+
+def average_wait_seconds(records: str, now: datetime) -> float | None:
+    """Average submit-to-start seconds for jobs that started in the last 30 days."""
+    first_start = int((now - timedelta(days=30)).timestamp())
+    last_start = int(now.timestamp())
+    waits: list[int] = []
+    for line in records.splitlines():
+        _, submitted, started, _ = line.split("|")[:4]
+        if started in ("Unknown", "None"):
+            continue
+        start = int(started)
+        if first_start <= start <= last_start:
+            wait = start - int(submitted)
+            if wait < 0:
+                raise ValueError("Job start precedes submission")
+            waits.append(wait)
+    return sum(waits) / len(waits) if waits else None
+
+
+def slurm_job_id(job: dict) -> str:
+    """Use a unique visible ID for a regular job or one array task."""
+    array = job.get("array_job_id", {})
+    task = job.get("array_task_id", {})
+    if array.get("number") and task.get("set"):
+        return f"{array['number']}_{task['number']}"
+    return str(job["job_id"])
+
+
+def overview_jobs(jobs: list[dict], now: int) -> list[dict]:
+    """Publish only the running and pending fields needed by the Overview table."""
+    result = []
+    for job in jobs:
+        state = job["job_state"][0]
+        if state not in ("RUNNING", "PENDING"):
+            continue
+        start = job["start_time"]["number"] if job["start_time"]["set"] else 0
+        submit = job["submit_time"]["number"]
+        result.append(
+            {
+                "id": slurm_job_id(job),
+                "user": job["user_name"],
+                "state": state,
+                "gpus": gpu_count(job["tres_req_str"]),
+                "node": job.get("nodes") or "",
+                "priority": job["priority"]["number"],
+                "seconds": max(0, now - (start if state == "RUNNING" and start else submit)),
+            }
+        )
+    return result
+
+
+def requested_cpus_and_memory(tres: str) -> tuple[int, int]:
+    """Read requested CPUs and memory bytes from a Slurm TRES string such as cpu=4,mem=32G."""
+    values = dict(item.split("=", 1) for item in tres.split(",") if "=" in item)
+    memory = re.fullmatch(r"(\d+(?:\.\d+)?)([KMGTPE]?)", values.get("mem", "0"))
+    if memory is None:
+        raise ValueError("Unrecognized requested memory")
+    memory_bytes = int(float(memory[1]) * 1024 ** ("KMGTPE".index(memory[2]) + 1 if memory[2] else 0))
+    return int(values.get("cpu", "0")), memory_bytes
+
+
+def label(value: str) -> str:
+    """Quote a Prometheus label value: escape backslash, quote, and newline; other control characters
+    (such as a tab in a job name) become spaces, since the text format accepts no other escapes."""
+    text = "".join(" " if ord(char) < 32 and char != "\n" or ord(char) == 127 else char for char in value)
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+
+
+def job_metrics(labels: dict[str, str], values: dict[str, int]) -> list[str]:
+    """Write one job's labels once, and its numbers as separate series joined by job ID."""
+    label_text = ",".join(f"{key}={label(str(value))}" for key, value in labels.items())
+    job_id = label(labels["job_id"])
+    return [f"cluster_job_info{{{label_text}}} 1"] + [
+        f"cluster_job_{key}{{job_id={job_id}}} {value}" for key, value in values.items()
+    ]
+
+
+def queue_metrics(jobs: list[dict], now: int) -> list[str]:
+    """Keep numeric job values out of labels; export only running and pending records."""
+    metrics: list[str] = []
+    for job in jobs:
+        state = job["job_state"][0]
+        if state not in ("RUNNING", "PENDING"):
+            continue
+        labels = {
+            "job_id": slurm_job_id(job),
+            "user": job["user_name"],
+            "job_name": job["name"],
+            "state": state,
+            "reason": job["state_reason"] if state == "PENDING" else "",
+            "node": job.get("nodes", ""),
+            "partition": job.get("partition", ""),
+        }
+        cpus, memory_bytes = requested_cpus_and_memory(job["tres_req_str"])
+        start = job["start_time"]["number"] if job["start_time"]["set"] else 0
+        submit = job["submit_time"]["number"]
+        values = {
+            "requested_gpus": gpu_count(job["tres_req_str"]),
+            "requested_cpus": cpus,
+            "requested_memory_bytes": memory_bytes,
+            "priority": job["priority"]["number"],
+            "elapsed_seconds": max(0, now - start) if state == "RUNNING" and start else 0,
+            "waiting_seconds": max(0, (start if state == "RUNNING" and start else now) - submit),
+        }
+        metrics.extend(job_metrics(labels, values))
+    return metrics
+
+
+def finished_job_metrics(records: str, active_ids: set[str], now: int) -> list[str]:
+    """Export jobs that ended in the last 7 days from accounting, without priority or pending reason.
+
+    A job that never ran has Elapsed 0 and Waiting until it ended. Jobs still listed as running or
+    pending by squeue are skipped, so each job ID has one info series.
+    """
+    # JobName is last, so a name containing the separator stays whole, and a line with fewer fields is
+    # the rest of a name that contained a newline.
+    rows: list[list[str]] = []
+    for line in records.splitlines():
+        parts = line.split("|", 9)
+        if len(parts) == 10:
+            rows.append(parts)
+        elif rows:
+            rows[-1][9] += "\n" + line
+        else:
+            raise ValueError("Unrecognized accounting line")
+    metrics: list[str] = []
+    for job_id, user, state, node, partition, tres, submit, start, end, name in rows:
+        end_time = int(end)
+        if job_id in active_ids or end_time < now - 7 * 86400:
+            continue
+        submit_time = int(submit)
+        ran = start not in ("None", "Unknown")
+        cpus, memory_bytes = requested_cpus_and_memory(tres)
+        labels = {
+            "job_id": job_id,
+            "user": user,
+            "job_name": name,
+            "state": state.split()[0],
+            "reason": "",
+            "node": "" if node == "None assigned" else node,
+            "partition": partition,
+        }
+        values = {
+            "requested_gpus": gpu_count(tres),
+            "requested_cpus": cpus,
+            "requested_memory_bytes": memory_bytes,
+            "elapsed_seconds": max(0, end_time - int(start)) if ran else 0,
+            "waiting_seconds": max(0, (int(start) if ran else end_time) - submit_time),
+            "end_seconds": end_time,
+        }
+        metrics.extend(job_metrics(labels, values))
+    return metrics
+
+
+def collect(
+    controller: str,
+    machines: dict[str, dict[str, Any]],
+    refresh: int,
+    accounting_start: str,
+    prometheus: str | None,
+    users: list[str],
+) -> tuple[dict, str]:
+    """Read current scheduler state and allocation accounting using fixed commands."""
+    nodes = [fields(line) for line in read(["scontrol", "show", "nodes", "--oneliner"]).splitlines()]
+    jobs = [line.split("|") for line in read(["squeue", "--noheader", "--array", "--format=%i|%u|%T"]).splitlines()]
+    queue = json.loads(read(["squeue", "--array", "--json"]))
+    if queue.get("errors"):
+        raise ValueError("Slurm queue query returned errors")
+    shares = [
+        line.split("|")
+        for line in read(
+            ["sshare", "--all", "--noheader", "--parsable2", "--format=User,RawUsage,FairShare"]
+        ).splitlines()
+    ]
+    priorities = [line.split("|") for line in read(["sprio", "--noheader", "--format=%i|%u|%Y|%F|%A"]).splitlines()]
+    allocations = read_accounting(
+        [
+            "sacct",
+            "-X",
+            "--allusers",
+            "--noheader",
+            "--parsable2",
+            f"--starttime={accounting_start}",
+            "--format=User,JobIDRaw,ElapsedRaw,AllocTRES,State,Start,End",
+        ]
+    )
+    waiting_records = read_accounting(
+        [
+            "sacct",
+            "-X",
+            "--allusers",
+            "--noheader",
+            "--parsable2",
+            "--starttime=now-30days",
+            "--format=JobIDRaw,Submit,Start,State",
+        ]
+    )
+    finished = read_accounting(
+        [
+            "sacct",
+            "-X",
+            "--allusers",
+            "--noheader",
+            "--parsable2",
+            "--starttime=now-7days",
+            "--endtime=now",
+            "--state=CD,F,TO,OOM,NF,BF,DL,PR,CA",
+            "--format=JobID,User,State,NodeList,Partition,ReqTRES,Submit,Start,End,JobName",
+        ]
+    )
+    partitions = [fields(line) for line in read(["scontrol", "show", "partition", "--oneliner"]).splitlines()]
+    qos = [
+        line.split("|")
+        for line in read(
+            ["sacctmgr", "--noheader", "--parsable2", "show", "qos", "format=Name,MaxWall,MaxSubmitJobsPU,MaxTRESPU"]
+        ).splitlines()
+    ]
+    config = {
+        name.strip(): value.strip()
+        for line in read(["scontrol", "show", "config"]).splitlines()
+        if "=" in line
+        for name, value in [line.split("=", 1)]
+    }
+    usage: dict[str, float] = defaultdict(float)
+    for line in allocations.splitlines():
+        user, _, elapsed, tres, _ = line.split("|")[:5]
+        usage[user] += gpu_count(tres) * int(elapsed) / 3600
+    ranking = [
+        {
+            "user": user.strip(),
+            "gpu_hours": usage[user.strip()],
+            "decayed_gpu_hours": float(raw) / 3600,
+            "fairshare": float(share),
+        }
+        for user, raw, share in (row[:3] for row in shares)
+        if user.strip() in users and share.strip()
+    ]
+    ranking.sort(key=lambda row: (-row["fairshare"], row["user"]))
+    policies = []
+    partition_summary = []
+    for partition in partitions:
+        name = partition["PartitionName"]
+        partition_summary.append(
+            {
+                "name": name,
+                "default": partition["Default"] == "YES",
+                "max_time": partition["MaxTime"],
+                "nodes": partition["Nodes"],
+            }
+        )
+        policies.extend(
+            [
+                {"name": f"{name}: maximum runtime", "value": partition["MaxTime"]},
+                {"name": f"{name}: default memory per CPU", "value": partition.get("DefMemPerCPU", "Not set") + " MiB"},
+                {"name": f"{name}: GPU defaults", "value": partition.get("JobDefaults", "Not set")},
+                {"name": f"{name}: usage billing", "value": partition.get("TRESBillingWeights", "Not set")},
+            ]
+        )
+    for name, wall, limit, tres in (row[:4] for row in qos):
+        if limit:
+            policies.append({"name": f"{name}: running + pending jobs per user", "value": limit})
+        if tres:
+            policies.append({"name": f"{name}: simultaneous resources per user", "value": tres})
+    for key in ("PriorityWeightFairShare", "PriorityWeightAge", "PriorityDecayHalfLife", "PriorityMaxAge"):
+        # Slurm uses a capital S; the comparison tolerates version-specific capitalization.
+        value = next((value for name, value in config.items() if name.lower() == key.lower()), "Unavailable")
+        policies.append({"name": key, "value": value})
+    now = datetime.now(UTC)
+    windows = rolling_gpu_hours(allocations, now)
+    sample_end = int(now.timestamp()) // 60 * 60
+    health, history = measurements(prometheus, sample_end) if prometheus else ([], [])
+    quotas = home_quotas(prometheus, sample_end, now)
+    user_cards = [
+        {
+            "user": user,
+            **{f"gpu_hours_{period}": windows[user][period] for period in ("7d", "30d", "365d")},
+            "home": quotas.get(user),
+        }
+        for user in sorted(set(users))
+    ]
+    slurm_nodes = [node["NodeName"] for node in nodes]
+    fronts = [name for name, machine in machines.items() if machine["role"] == "front"]
+    if fronts != [controller]:
+        raise ValueError(f"The machines file must have {controller} as its only front machine, found {fronts}")
+    computes = [name for name, machine in machines.items() if machine["role"] == "compute"]
+    if sorted(computes) != sorted(slurm_nodes):
+        raise ValueError(
+            f"Slurm's nodes ({', '.join(sorted(slurm_nodes))}) differ from the machines file's compute machines "
+            f"({', '.join(sorted(computes))})"
+        )
+
+    def status(name: str, slurm_state: str, gpus: int) -> dict[str, Any]:
+        machine = machines[name]
+        role = ROLE_NAMES[machine["role"]]
+        return machine_status(
+            name, role, slurm_state, gpus, machine["units"], machine["mounts"], health, history, sample_end
+        )
+
+    compute_nodes = []
+    for node in nodes:
+        total = gpu_count(node.get("CfgTRES", ""))
+        compute = status(node["NodeName"], node["State"], total)
+        compute["total_gpus"] = total
+        compute["available_gpus"] = slurm_available_gpus(node)
+        compute_nodes.append(compute)
+    storage_nodes = [status(name, "", 0) for name, machine in machines.items() if machine["role"] == "storage"]
+    result = {
+        "generated_at": now.isoformat(),
+        "refresh_seconds": refresh,
+        "accounting_start": accounting_start,
+        "running_jobs": sum(row[2] == "RUNNING" for row in jobs),
+        "pending_jobs": sum(row[2] == "PENDING" for row in jobs),
+        "average_wait_seconds_30d": average_wait_seconds(waiting_records, now),
+        "total_gpus": sum(gpu_count(node.get("CfgTRES", "")) for node in nodes),
+        "allocated_gpus": sum(gpu_count(node.get("AllocTRES", "")) for node in nodes),
+        "jobs": overview_jobs(queue["jobs"], int(now.timestamp())),
+        "nodes": [status(controller, "", 0)] + compute_nodes + storage_nodes,
+        "ranking": ranking,
+        "users": user_cards,
+        "priorities": [
+            {
+                "job_id": row[0].strip(),
+                "user": row[1].strip(),
+                "priority": float(row[2]),
+                "fairshare": float(row[3]),
+                "age": float(row[4]),
+            }
+            for row in priorities
+            if row[1].strip() in users
+        ],
+        "policies": policies,
+        "partitions": partition_summary,
+    }
+    metrics = [
+        "# HELP cluster_snapshot_timestamp_seconds Last fully successful collection.",
+        "# TYPE cluster_snapshot_timestamp_seconds gauge",
+        f"cluster_snapshot_timestamp_seconds {now.timestamp()}",
+    ]
+    for key in ("running_jobs", "pending_jobs", "total_gpus", "allocated_gpus"):
+        metrics.extend([f"# TYPE cluster_{key} gauge", f"cluster_{key} {result[key]}"])
+    for node in nodes:
+        name = node["NodeName"]
+        free = slurm_available_gpus(node)
+        total = gpu_count(node["CfgTRES"])
+        allocated = gpu_count(node["AllocTRES"])
+        metrics.append(f"cluster_node_available_gpus{{node={label(name)}}} {free}")
+        metrics.append(f"cluster_node_allocated_gpus{{node={label(name)}}} {allocated}")
+        metrics.append(f"cluster_node_total_gpus{{node={label(name)}}} {total}")
+    for row in ranking:
+        user_label = label(row["user"])
+        metrics.extend(
+            [
+                f"cluster_allocated_gpu_hours{{user={user_label}}} {row['gpu_hours']}",
+                f"cluster_decayed_gpu_hours{{user={user_label}}} {row['decayed_gpu_hours']}",
+                f"cluster_fairshare_factor{{user={user_label}}} {row['fairshare']}",
+            ]
+        )
+    metrics.extend(queue_metrics(queue["jobs"], int(now.timestamp())))
+    active = {slurm_job_id(job) for job in queue["jobs"] if job["job_state"][0] in ("RUNNING", "PENDING")}
+    metrics.extend(finished_job_metrics(finished, active, int(now.timestamp())))
+    return result, "\n".join(metrics) + "\n"
+
+
+def main() -> None:
+    """Only accept operator-controlled paths and settings, never browser input."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--mirror-output", type=Path)
+    parser.add_argument("--machine-markdown-output", type=Path, required=True)
+    parser.add_argument("--machine-markdown-mirror-output", type=Path)
+    parser.add_argument("--metrics", type=Path, required=True)
+    parser.add_argument("--controller", required=True)
+    parser.add_argument("--cluster-name", required=True)
+    parser.add_argument("--machines", type=Path, required=True)
+    parser.add_argument("--refresh-seconds", type=int, required=True)
+    parser.add_argument("--accounting-start", required=True)
+    parser.add_argument("--prometheus-url")
+    parser.add_argument("--users", nargs="+", required=True)
+    args = parser.parse_args()
+    if args.refresh_seconds < 5:
+        parser.error("refresh interval must be at least five seconds")
+    if datetime.fromisoformat(args.accounting_start).tzinfo is not None:
+        parser.error("--accounting-start must be a local time without a timezone, as sacct reads it")
+    result, metrics = collect(
+        args.controller,
+        read_machines(args.machines),
+        args.refresh_seconds,
+        args.accounting_start,
+        args.prometheus_url,
+        args.users,
+    )
+    machine_document = machines_markdown(result, args.cluster_name)
+    atomic_write(args.metrics, metrics)
+    atomic_write(args.output, json.dumps(result, indent=2) + "\n")
+    atomic_write(args.machine_markdown_output, machine_document)
+    if args.mirror_output:
+        atomic_write(args.mirror_output, json.dumps(result, indent=2) + "\n")
+    if args.machine_markdown_mirror_output:
+        atomic_write(args.machine_markdown_mirror_output, machine_document)
+
+
+if __name__ == "__main__":
+    main()

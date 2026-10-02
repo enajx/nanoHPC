@@ -13,6 +13,7 @@ import textwrap
 import time
 import unittest
 import urllib.parse
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -312,8 +313,15 @@ class SimUsersBase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
         recap = [line for line in result.stdout.splitlines() if " : ok=" in line]
         self.assertEqual(len(recap), machines, result.stdout[-4000:])
+        changed = []
+        task = ""
+        for line in result.stdout.splitlines():
+            if line.startswith("TASK ["):
+                task = line
+            elif line.startswith("changed: "):
+                changed.append(f"{task} {line}")
         for line in recap:
-            self.assertIn("changed=0 ", line)
+            self.assertIn("changed=0 ", line, "\n".join(changed))
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
@@ -554,6 +562,100 @@ class SimDeployTest(SimUsersBase):
             rules = self.ssh("front", f"cd /tmp/rules/tests && {promtool} test rules prometheus_daily_rules_test.yml")
             self.assertEqual(rules.returncode, 0, rules.stdout + rules.stderr)
 
+        with self.subTest("Grafana: six dashboards for anonymous viewers, read-only, on localhost only"):
+            grafana = "http://127.0.0.1:3000/grafana"
+            found = json.loads(self.on_front(f"curl -sf '{grafana}/api/search?type=dash-db'"))
+            self.assertEqual(
+                sorted(item["uid"] for item in found),
+                sorted(
+                    f"nanohpc-{name}" for name in ["history", "machines", "overview", "queue-history", "queue", "usage"]
+                ),
+            )
+            # Both data sources answer through Grafana for an anonymous viewer.
+            for source in ("cluster-detail", "cluster-history"):
+                answer = self.on_front(f"curl -sf '{grafana}/api/datasources/proxy/uid/{source}/api/v1/query?query=1'")
+                self.assertEqual(json.loads(answer)["status"], "success")
+            # Anonymous viewers cannot save a dashboard.
+            save = self.on_front(
+                f"curl -s -o /dev/null -w '%{{http_code}}' -X POST -H 'Content-Type: application/json' "
+                f'-d \'{{"dashboard": {{"title": "x"}}}}\' {grafana}/api/dashboards/db'
+            )
+            self.assertIn(save.strip(), {"401", "403"})
+            # Nor create snapshots or annotations.
+            for path, body in (("snapshots", '{"dashboard": {}}'), ("annotations", '{"text": "x"}')):
+                refused = self.on_front(
+                    f"curl -s -o /dev/null -w '%{{http_code}}' -X POST -H 'Content-Type: application/json' "
+                    f"-d '{body}' {grafana}/api/{path}"
+                )
+                self.assertIn(refused.strip(), {"401", "403", "404"}, path)
+            # The machine panels (CPU, memory, disks) cover every machine, the front node included.
+            panels = json.loads((ROOT / "src/nanohpc/files/grafana/machines.json").read_text())["panels"]
+            for panel in panels:
+                for target in panel.get("targets", []):
+                    if target.get("expr", "").startswith(("100 * (1 - avg", "node_")):
+                        shown = {series["metric"]["machine"] for series in query(target["expr"])}
+                        self.assertEqual(shown, set(machines), f"{panel['title']}: {target['expr']}")
+            front = machines["front"]["address"]
+            self.assertNotEqual(self.ssh("gpu4", f"curl -s --max-time 5 http://{front}:3000/").returncode, 0)
+
+        with self.subTest("status snapshot every 30 seconds: machines, jobs, quotas, Slurm figures"):
+
+            def snapshot() -> dict[str, Any]:
+                return json.loads(self.on_front("cat /var/lib/nanohpc/monitor/status.json"))
+
+            job = self.on_front(
+                "cd /tmp && sudo -u alice sbatch --parsable -p main -t 5 -o /dev/null --wrap 'sleep 300'"
+            ).strip()
+            self.addCleanup(self.ssh, "front", f"sudo scancel {job}")
+            first = snapshot()
+            for _ in range(20):
+                status = snapshot()
+                healthy = {node["name"]: node["health"] for node in status["nodes"]}
+                if status["generated_at"] != first["generated_at"] and job in {
+                    str(item["id"]) for item in status["jobs"]
+                } and set(healthy.values()) == {"Healthy"}:  # fmt: skip
+                    break
+                time.sleep(6)
+            self.assertNotEqual(status["generated_at"], first["generated_at"])
+            self.assertEqual(status["refresh_seconds"], 30)
+            # Two refreshes in a row are about 30 seconds apart.
+            stamps = [status["generated_at"]]
+            for _ in range(60):
+                time.sleep(2)
+                latest = snapshot()["generated_at"]
+                if latest != stamps[-1]:
+                    stamps.append(latest)
+                if len(stamps) == 3:
+                    break
+            self.assertEqual(len(stamps), 3, stamps)
+            gap = (datetime.fromisoformat(stamps[2]) - datetime.fromisoformat(stamps[1])).total_seconds()
+            self.assertTrue(25 <= gap <= 40, stamps)
+            self.assertIn(job, {str(item["id"]) for item in status["jobs"]})
+            self.assertEqual(
+                {node["name"]: node["health"] for node in status["nodes"]},
+                {machine: "Healthy" for machine in machines},
+                json.dumps(status["nodes"], indent=1),
+            )
+            roles = {node["name"]: node["role"] for node in status["nodes"]}
+            self.assertEqual(roles["front"], "Front node")
+            self.assertEqual(roles["store"], "Storage")
+            alice = next(card for card in status["users"] if card["user"] == "alice")
+            self.assertEqual(alice["home"]["soft_bytes"], config["home"]["quota_soft_gb"] * 1024**3)
+            self.assertIn(
+                f"# {config['cluster']['name']} machines", self.on_front("cat /var/lib/nanohpc/monitor/machines.md")
+            )
+            # The Slurm figures reach Prometheus (the job is running or waiting).
+            for _ in range(20):
+                jobs = sum(
+                    float(series["value"][1])
+                    for name in ("cluster_running_jobs", "cluster_pending_jobs")
+                    for series in query(name)
+                )
+                if jobs >= 1:
+                    break
+                time.sleep(5)
+            self.assertGreaterEqual(jobs, 1)
+
         with self.subTest("partition rules and limits"):
             shell = self.run_command(
                 "ssh", "-tt", "-F", str(self.state / "ssh_config"), "front",
@@ -573,11 +675,7 @@ class SimDeployTest(SimUsersBase):
 
         with self.subTest("a second deploy changes nothing"):
             result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
-            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
-            recap = [line for line in result.stdout.splitlines() if " : ok=" in line]
-            self.assertEqual(len(recap), len(machines), result.stdout[-4000:])
-            for line in recap:
-                self.assertIn("changed=0 ", line)
+            self.assert_no_changes(result, len(machines))
 
         with self.subTest("a missing metrics certificate is issued again by the next deploy"):
             self.assertEqual(self.ssh("gpu2", "sudo rm /etc/nanohpc/metrics-tls/node.crt").returncode, 0)
@@ -669,6 +767,16 @@ class SimHomeOnStorageTest(SimUsersBase):
         self.assertEqual(self.ssh("front", "true").returncode, 0)
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assert_no_changes(result, 6)
+        # The quotas read on the storage machine reach the front node's status snapshot.
+        for _ in range(30):
+            status = json.loads(self.on_front("cat /var/lib/nanohpc/monitor/status.json"))
+            alice = next(card for card in status["users"] if card["user"] == "alice")
+            if alice["home"] is not None:
+                break
+            time.sleep(5)
+        self.assertIsNotNone(alice["home"], status["users"])
+        self.assertGreater(alice["home"]["soft_bytes"], 0)
+        self.assertEqual({node["name"]: node["role"] for node in status["nodes"]}["store"], "Storage")
 
 
 if __name__ == "__main__":

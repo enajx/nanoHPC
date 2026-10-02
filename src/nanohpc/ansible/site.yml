@@ -57,10 +57,15 @@
   become: true
   roles: [metrics_tls, node_metrics, machine_metrics]
 
-- name: Prometheus on the front node
+- name: Prometheus and Grafana on the front node
   hosts: role_front
   become: true
-  roles: [prometheus]
+  roles: [prometheus, grafana]
+
+- name: Status collector on the front node, home quota reader on the home machine
+  hosts: role_front:role_home
+  become: true
+  roles: [monitoring]
 
 - name: Health checks on every machine
   hosts: all
