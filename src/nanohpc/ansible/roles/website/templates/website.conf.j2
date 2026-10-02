@@ -122,6 +122,17 @@ server {
         add_header Cache-Control "no-store" always;
 {{ headers }}    }
 
+{% if website.deploy_hook %}
+    # GitHub's push notifications for automatic deploys (checked by the listener with the shared secret).
+    location = {{ prefix }}deploy-hook {
+        allow all;
+        limit_except POST { deny all; }
+        client_max_body_size 1m;
+        proxy_pass http://127.0.0.1:9099;
+        proxy_set_header Host $host;
+    }
+
+{% endif %}
     location = {{ prefix }}data/status.json {
         limit_except GET { deny all; }
         alias /var/lib/nanohpc/monitor/status.json;

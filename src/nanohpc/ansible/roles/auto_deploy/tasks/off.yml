@@ -1,0 +1,32 @@
+# Automatic deploys are off: stop the timer and the webhook listener, and remove the secrets copy. The checkout
+# and keys stay; the other machines stop accepting the front node's root key at their next deploy.
+- name: Look for the automatic deploy timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-auto-deploy.timer
+  register: auto_deploy_timer
+
+- name: Stop the automatic deploy timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-auto-deploy.timer
+    enabled: false
+    state: stopped
+  when: auto_deploy_timer.stat.exists
+
+- name: Remove the automatic deploy units and its last result
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/nanohpc-auto-deploy.timer
+    - /etc/systemd/system/nanohpc-auto-deploy.service
+    - /var/lib/nanohpc/metrics-textfile/auto-deploy.prom
+    - /var/lib/nanohpc/auto-deploy/config/.env
+  register: auto_deploy_removed
+
+- name: Forget the removed automatic deploy units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: auto_deploy_removed is changed
+
+- name: Remove the webhook listener
+  ansible.builtin.include_tasks: webhook_off.yml

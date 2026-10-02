@@ -156,7 +156,7 @@
     owner: root
     group: root
     mode: "0644"
-  when: nanohpc_login_user not in (nanohpc.users | map(attribute='name'))
+  when: nanohpc_login_user not in (nanohpc.users | map(attribute='name')) and nanohpc_login_user != 'root'
 
 - name: Make sure the list of deploy accounts exists
   ansible.builtin.file:
@@ -177,7 +177,7 @@
   ansible.builtin.set_fact:
     deploy_account_names: >-
       {{ (((deploy_accounts.content | b64decode).split() + [nanohpc_login_user]) | unique)
-         | reject('in', nanohpc.users | map(attribute='name')) | list }}
+         | reject('in', nanohpc.users | map(attribute='name')) | reject('equalto', 'root') | list }}
 
 # The deploy accounts (for example `ubuntu`) are not in cluster.yml. Their SSH keys are copied out of
 # their home folders, so they still log in when the shared /home or the home disk hides those folders.
@@ -202,8 +202,21 @@
 - name: Name nanoHPC's own SSH accounts on this machine
   ansible.builtin.set_fact:
     service_account_names: >-
-      {{ ['nanohpc-backup'] if (nanohpc.backup is not none and nanohpc.backup.kind == 'machine'
-                                and inventory_hostname == nanohpc.backup.machine) else [] }}
+      {{ (['nanohpc-backup'] if (nanohpc.backup is not none and nanohpc.backup.kind == 'machine'
+                                 and inventory_hostname == nanohpc.backup.machine) else [])
+         + (['root'] if nanohpc.auto_deploy.enabled else []) }}
+
+# Automatic deploys: the front node logs in as root with its own key, accepted only from its address
+# (key-only; the key file is on local disk, so it works without /home).
+- name: Accept the front node's automatic deploy key for root
+  ansible.builtin.copy:
+    dest: /etc/ssh/authorized_keys/root
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      from="{{ nanohpc.metrics.front_address }}",no-agent-forwarding,no-X11-forwarding {{ hostvars[groups['role_front'][0]].auto_deploy_public_key }}
+  when: nanohpc.auto_deploy.enabled
 
 - name: List the installed SSH key files
   ansible.builtin.find:
@@ -222,9 +235,12 @@
 # account it runs as, nor the one an earlier deploy ran as (for example `ubuntu` on first setup).
 - name: List who may log in on this machine
   ansible.builtin.set_fact:
+    # root only from the front node's address (its automatic deploys), whatever keys root has elsewhere.
     ssh_allowed: >-
       {{ (((nanohpc.users | map(attribute='name') | list) if inventory_hostname in groups['role_front'] else nanohpc.admins)
-          + deploy_account_names + service_account_names + [nanohpc_login_user]) | unique }}
+          + deploy_account_names + (service_account_names | reject('equalto', 'root') | list)
+          + (['root@' ~ nanohpc.metrics.front_address] if nanohpc.auto_deploy.enabled else [])
+          + ([nanohpc_login_user] if (nanohpc_login_user != 'root' or not nanohpc.auto_deploy.enabled) else [])) | unique }}
 
 - name: Change SSH access, and put the old file back unless the effective settings are right
   block:
@@ -236,6 +252,9 @@
           PasswordAuthentication no
           KbdInteractiveAuthentication no
           AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys/%u
+          {% if nanohpc.auto_deploy.enabled %}
+          PermitRootLogin prohibit-password
+          {% endif %}
           AllowUsers {{ ssh_allowed | join(' ') }}
         owner: root
         group: root
@@ -256,7 +275,10 @@
         that:
           - "'passwordauthentication no' in ssh_effective.stdout_lines"
           - "'kbdinteractiveauthentication no' in ssh_effective.stdout_lines"
-          - "('allowusers ' ~ nanohpc_login_user) in ssh_effective.stdout_lines"
+          - "('allowusers ' ~ (('root@' ~ nanohpc.metrics.front_address) if (nanohpc_login_user == 'root' and nanohpc.auto_deploy.enabled) else nanohpc_login_user)) in ssh_effective.stdout_lines"
+          - >-
+            not nanohpc.auto_deploy.enabled or ('permitrootlogin without-password' in ssh_effective.stdout_lines
+            or 'permitrootlogin prohibit-password' in ssh_effective.stdout_lines)
           - ssh_effective.stdout_lines | select('match', '^allowgroups ') | list | length == 0
           - "'pubkeyauthentication yes' in ssh_effective.stdout_lines"
           - ssh_effective.stdout_lines | select('match', '^authorizedkeysfile .*/etc/ssh/authorized_keys/%u') | list | length == 1

@@ -21,6 +21,7 @@ EXPECTED_ALERTS = {
     "MachineMetricsMissing": "critical",
     "BackupFailed": "critical",
     "BackupOld": "warning",
+    "AutoDeployFailed": "critical",
 }
 EXPECTED = [
     "cluster_daily_cpu_busy_ratio",
