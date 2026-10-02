@@ -82,6 +82,9 @@ SSH_KEY = re.compile(
     r" [A-Za-z0-9+/]+={0,2}( [^\r\n]*)?"
 )
 # Accounts that exist on Ubuntu or that nanoHPC creates for its own services.
+# Accounts nanoHPC creates itself (users in cluster.yml cannot have these names).
+NANOHPC_ACCOUNTS = frozenset(["nanohpc-backup"])
+EXCLUDE_PATTERN = re.compile(r"[A-Za-z0-9._/*?\[\]-]+")
 SYSTEM_NAMES = frozenset(
     [
         "root",
@@ -306,6 +309,8 @@ def check_users(checker: Checker, value: Any) -> list[dict[str, Any]]:
         name = checker.matches(user.get("name"), USER_NAME, f"{path}.name", "a lowercase Linux user name")
         if name in SYSTEM_NAMES:
             checker.fail(f"{path}.name", f"{name} is a system account")
+        elif name in NANOHPC_ACCOUNTS:
+            checker.fail(f"{path}.name", f"{name} is reserved for nanoHPC")
         elif name is not None:
             if name in names:
                 checker.fail(f"{path}.name", f"{name} is already used")
@@ -621,7 +626,9 @@ def check_backup(checker: Checker, value: Any, machines: dict[str, dict[str, Any
     if (
         "to" in backup
         and target not in backup_machines
-        and not (isinstance(target, str) and SSH_TARGET.fullmatch(target))
+        and not (
+            isinstance(target, str) and SSH_TARGET.fullmatch(target) and is_directory_path(target.split(":", 1)[1])
+        )
     ):
         checker.fail("backup.to", "must be a machine with the backup role or user@host:/path")
     for name in backup_machines:
@@ -631,6 +638,13 @@ def check_backup(checker: Checker, value: Any, machines: dict[str, dict[str, Any
     checker.matches(backup["time"], CLOCK_TIME, "backup.time", 'HH:MM in quotes (24-hour clock), like "03:00"')
     backup.setdefault("exclude", [])
     checker.string_list(backup["exclude"], "backup.exclude")
+    # The patterns go on the backup service's command line: no characters systemd or a shell would change.
+    if isinstance(backup["exclude"], list):
+        for index, pattern in enumerate(backup["exclude"]):
+            if isinstance(pattern, str) and not EXCLUDE_PATTERN.fullmatch(pattern):
+                checker.fail(
+                    f"backup.exclude[{index}]", "must be a plain rsync pattern (letters, digits, . _ - / * ? [ ])"
+                )
     return backup
 
 
@@ -689,8 +703,37 @@ def load_config(path: Path, check_files: bool) -> tuple[dict[str, Any], list[str
     loader.dispose()
     config, errors = check_config(raw)
     if check_files and not errors:
-        errors = website_files(config["cluster"]["website"], path.parent)
+        errors = website_files(config["cluster"]["website"], path.parent) + secrets(config, path.parent)
     return config, loader.duplicates + errors
+
+
+def read_env(path: Path) -> dict[str, str]:
+    """Read KEY=VALUE lines of a .env file (blank lines and # comments skipped, optional quotes removed)."""
+    values = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+def secrets(config: dict[str, Any], folder: Path) -> list[str]:
+    """Put the secrets the configuration needs into config["secrets"], read from .env next to cluster.yml
+    (never committed). Report missing or malformed ones."""
+    env_path = (folder / ".env").resolve()
+    env = read_env(env_path) if env_path.is_file() else {}
+    webhook = env.get("NANOHPC_SLACK_WEBHOOK") if config["alerts"]["slack"] is True else None
+    config["secrets"] = {"slack_webhook": webhook}
+    if config["alerts"]["slack"] is True and not webhook:
+        return [f"alerts.slack is true but {env_path} has no NANOHPC_SLACK_WEBHOOK"]
+    if webhook is not None and not re.fullmatch(r"https?://[^\s'\"]+", webhook):
+        return ["NANOHPC_SLACK_WEBHOOK in .env must be an http(s) URL"]
+    return []
 
 
 LOGO_TYPES = (".png", ".svg", ".jpg", ".webp")

@@ -194,8 +194,11 @@ class PrometheusTest(unittest.TestCase):
         prometheus = yaml.safe_load(render(config, names(config), False).prometheus_yml)
         jobs = {job["job_name"]: job for job in prometheus["scrape_configs"]}
         self.assertEqual(
-            sorted(jobs), ["node", "node-cpu1", "node-gpu2", "node-gpu4", "node-gpu4i", "node-store", "prometheus"]
+            sorted(jobs),
+            ["alertmanager", "node", "node-cpu1", "node-gpu2", "node-gpu4", "node-gpu4i", "node-store", "prometheus"],
         )
+        # Alertmanager's own metrics, so failed Slack posts can be noticed.
+        self.assertEqual(jobs["alertmanager"]["static_configs"][0]["targets"], ["127.0.0.1:9093"])
         self.assertEqual(jobs["node"]["static_configs"][0]["targets"], ["127.0.0.1:9100"])
         self.assertEqual(jobs["node"]["static_configs"][0]["labels"], {"machine": "front"})
         store = jobs["node-store"]
@@ -205,7 +208,14 @@ class PrometheusTest(unittest.TestCase):
         self.assertEqual(store["tls_config"]["ca_file"], "/etc/nanohpc/metrics-tls/ca.crt")
         self.assertEqual(store["tls_config"]["cert_file"], "/etc/nanohpc/metrics-tls/prometheus.crt")
         self.assertEqual(prometheus["global"]["scrape_interval"], "30s")
-        self.assertEqual(prometheus["rule_files"], ["/etc/nanohpc/prometheus/daily-rules.yml"])
+        self.assertEqual(
+            prometheus["rule_files"],
+            ["/etc/nanohpc/prometheus/daily-rules.yml", "/etc/nanohpc/prometheus/alert-rules.yml"],
+        )
+        # Alerts go to the front node's Alertmanager, on localhost.
+        self.assertEqual(
+            prometheus["alerting"], {"alertmanagers": [{"static_configs": [{"targets": ["127.0.0.1:9093"]}]}]}
+        )
 
 
 class ForwardingRulesTest(unittest.TestCase):

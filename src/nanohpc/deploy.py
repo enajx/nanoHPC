@@ -56,6 +56,13 @@ METRICS: dict[str, Any] = {
             "arm64": "ad35b605f9954b9f1ffddf5ba054bdc5a98d790b9eae5291e1eeb83f1ecbd0e7",
         },
     },
+    "alertmanager": {
+        "version": "0.34.1",
+        "sha256": {
+            "amd64": "265b9d1e55ef0d5306a436018af6d2b686c2ce051f03d968f7464ecb1372a7e8",
+            "arm64": "d98d6cbaf52151c7e76e24355fec88b11cebcb9875d4cdd8b76ddce7a7e5535c",
+        },
+    },
     "grafana": {
         "version": "13.2.3",
         "sha256": {
@@ -200,6 +207,8 @@ def variables(
             "slurm": {**SLURM, "cache": str(CACHE / "slurm" / SLURM["version"])},
             "uv": UV,
             "website": website_variables(config, simulated),
+            "backup": backup_variables(config),
+            "alerts": {"slack": config["alerts"]["slack"]},
             "metrics": {
                 **METRICS,
                 "front_address": front_values["address"],
@@ -240,6 +249,29 @@ def website_variables(config: dict[str, Any], simulated: bool) -> dict[str, Any]
 
 WEBSITE_SOURCE_FILES = ("index.html", "package.json", "package-lock.json", "tsconfig.json", "vite.config.ts")
 WEBSITE_SOURCE_FOLDERS = ("src", "public")
+
+
+def backup_variables(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Return where the nightly /home mirror goes: the cluster's backup machine (an unprivileged nanohpc-backup
+    account there, into <backup path>/home), or an outside SSH server (user@host:/path)."""
+    backup = config["backup"]
+    if backup is None:
+        return None
+    target = backup["to"]
+    common = {"time": backup["time"], "exclude": backup["exclude"]}
+    if target in config["machines"]:
+        address = config["machines"][target]["address"]
+        folder = config["machines"][target]["backup"]["path"].rstrip("/") + "/home"
+        return {
+            "kind": "machine",
+            "machine": target,
+            "address": address,
+            "destination": f"nanohpc-backup@{address}:{folder}/",
+            "folder": folder,
+            **common,
+        }
+    host = target.split("@", 1)[1].split(":", 1)[0]
+    return {"kind": "outside", "address": host, "destination": target.rstrip("/") + "/", **common}
 
 
 def website_source_hash(source: Path) -> str:
@@ -340,6 +372,11 @@ def prepare(
     (files / "site.json").write_text(json.dumps(site_data(config), indent=2))
     for name, text in rendered.gres_conf.items():
         (files / "gres" / f"{name}.conf").write_text(text)
+    # Secrets go in their own file that only this user can read, never in vars.json.
+    secrets = work / "secrets.json"
+    secrets.touch(mode=0o600)
+    secrets.chmod(0o600)
+    secrets.write_text(json.dumps({"nanohpc_secrets": config["secrets"]}))
     (work / "vars.json").write_text(json.dumps(variables(config, work, simulated, fake_gpus, rendered.qos), indent=2))
     (work / "inventory.yml").write_text(yaml.safe_dump(inventory(config)))
     (work / "ansible.cfg").write_text(ansible_cfg(ssh_config))
@@ -376,6 +413,8 @@ def deploy(config: dict[str, Any], ssh_config: Path | None, simulated: bool, fak
         str(ANSIBLE / "site.yml"),
         "-e",
         f"@{work / 'vars.json'}",
+        "-e",
+        f"@{work / 'secrets.json'}",
     ]
     # A private folder for this run only (0700, short path under /tmp for SSH sockets, removed at the end).
     # Ansible's shared SSH connections live here, so a run never reuses a connection from an earlier run
@@ -398,6 +437,8 @@ def deploy(config: dict[str, Any], ssh_config: Path | None, simulated: bool, fak
             command += ["--become-password-file", str(password_file)]
         # Ansible refuses non-blocking terminal handles, so it gets a plain stdin.
         code = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL, check=False).returncode
+        # The secrets are on the front node now; no copy stays in the work folder.
+        (work / "secrets.json").unlink()
         # Close the shared SSH connections now, so none keeps the forwarded agent open after the run.
         for socket in Path(private).iterdir():
             if socket.is_socket():

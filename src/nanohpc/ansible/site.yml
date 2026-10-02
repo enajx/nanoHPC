@@ -57,15 +57,46 @@
   become: true
   roles: [metrics_tls, node_metrics, machine_metrics]
 
-- name: Prometheus and Grafana on the front node
+- name: Prometheus, alerts, and Grafana on the front node
   hosts: role_front
   become: true
-  roles: [prometheus, grafana]
+  roles: [prometheus, alerts, grafana]
 
 - name: Status collector on the front node, home quota reader on the home machine
   hosts: role_front:role_home
   become: true
   roles: [monitoring]
+
+# Nightly /home mirror: the key on the home machine, the receiving account on the backup machine (for a
+# backup machine in the cluster), then the timer and a check that the destination accepts the key.
+- name: Backup key on the home machine
+  hosts: role_home
+  become: true
+  tasks:
+    - name: Make or read the backup key
+      ansible.builtin.include_role:
+        name: backup
+        tasks_from: key
+      when: nanohpc.backup is not none
+
+- name: Backup machine receives the mirror
+  hosts: role_backup
+  become: true
+  tasks:
+    - name: Set up the receiving account
+      ansible.builtin.include_role:
+        name: backup
+        tasks_from: receive
+      when: nanohpc.backup is not none and nanohpc.backup.kind == 'machine'
+
+- name: Nightly backup on the home machine
+  hosts: role_home
+  become: true
+  tasks:
+    - name: Schedule the backup
+      ansible.builtin.include_role:
+        name: backup
+        tasks_from: "{{ 'schedule' if nanohpc.backup is not none else 'off' }}"
 
 - name: Test certificate server for the website (simulated clusters only)
   hosts: role_front

@@ -5,3 +5,44 @@
     owner: root
     group: root
     mode: "0755"
+
+# Every 5 minutes the checks run and their results become metrics (health.prom), which the front node's
+# alert rules turn into alerts. A run that finds a FAIL exits 1; that is a result, not a failed service.
+- name: Install the health check service and timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/nanohpc-health.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if item == 'service' %}
+      [Unit]
+      Description=Run cluster-health and record the results as metrics (nanoHPC)
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/cluster-health --metrics /var/lib/nanohpc/metrics-textfile/health.prom
+      SuccessExitStatus=1
+      StandardOutput=null
+      TimeoutStartSec=4min
+      {% else %}
+      [Unit]
+      Description=Run the health checks every 5 minutes (nanoHPC)
+
+      [Timer]
+      OnBootSec=2min
+      OnUnitActiveSec=5min
+      AccuracySec=10s
+
+      [Install]
+      WantedBy=timers.target
+      {% endif %}
+  loop: [service, timer]
+  register: health_units
+
+- name: Run the health check timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-health.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ health_units.changed }}"

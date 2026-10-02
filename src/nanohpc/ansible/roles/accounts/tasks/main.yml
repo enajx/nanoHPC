@@ -197,16 +197,24 @@
   register: kept_keys
   changed_when: "'changed' in kept_keys.stdout"
 
+# nanoHPC's own SSH accounts on this machine: the backup machine receives the nightly /home mirror as
+# nanohpc-backup (a key that may only run rsync into the backup folder; the backup role installs it).
+- name: Name nanoHPC's own SSH accounts on this machine
+  ansible.builtin.set_fact:
+    service_account_names: >-
+      {{ ['nanohpc-backup'] if (nanohpc.backup is not none and nanohpc.backup.kind == 'machine'
+                                and inventory_hostname == nanohpc.backup.machine) else [] }}
+
 - name: List the installed SSH key files
   ansible.builtin.find:
     paths: /etc/ssh/authorized_keys
   register: ssh_key_files
 
-- name: Remove SSH keys of users no longer in cluster.yml (deploy accounts keep theirs)
+- name: Remove SSH keys of users no longer in cluster.yml (deploy and nanoHPC accounts keep theirs)
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: absent
-  loop: "{{ ssh_key_files.files | rejectattr('path', 'search', '/(' ~ ((nanohpc.users | map(attribute='name') | list) + deploy_account_names) | join('|') ~ ')$') | list }}"
+  loop: "{{ ssh_key_files.files | rejectattr('path', 'search', '/(' ~ ((nanohpc.users | map(attribute='name') | list) + deploy_account_names + service_account_names) | join('|') ~ ')$') | list }}"
   loop_control:
     label: "{{ item.path | basename }}"
 
@@ -216,7 +224,7 @@
   ansible.builtin.set_fact:
     ssh_allowed: >-
       {{ (((nanohpc.users | map(attribute='name') | list) if inventory_hostname in groups['role_front'] else nanohpc.admins)
-          + deploy_account_names + [nanohpc_login_user]) | unique }}
+          + deploy_account_names + service_account_names + [nanohpc_login_user]) | unique }}
 
 - name: Change SSH access, and put the old file back unless the effective settings are right
   block:

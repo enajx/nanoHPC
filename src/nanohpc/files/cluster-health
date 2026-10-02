@@ -4,21 +4,95 @@
 #   ok    the check passed
 #   FAIL  something nanoHPC set up is broken (a service, a mount, Slurm not answering); exit code 1
 #   WARN  a state to look at that is not a setup error (a drained node, a full disk); exit code unchanged
+# With --metrics PATH it also writes each check's state as a node_exporter textfile at PATH:
+#   cluster_health_check_state{check="<id>"} 0 ok, 1 warning, 2 failing
+#   cluster_health_timestamp_seconds          when this run finished
+# The id is the label cut at the first " (" or ":", so it stays the same when numbers or machine lists change.
 set -uo pipefail
 
-roles=" $(cat /etc/nanohpc/roles 2>/dev/null) "
+usage() {
+  echo "usage: cluster-health [--metrics PATH]" >&2
+  exit 2
+}
+
+metrics_path=""
+while test "$#" -gt 0; do
+  case "$1" in
+    --metrics)
+      test "$#" -ge 2 -a -n "${2:-}" || usage
+      metrics_path=$2
+      shift 2
+      ;;
+    *) usage ;;
+  esac
+done
+
+# Tests set NANOHPC_HEALTH_TEST_ROOT to a folder holding fake etc/nanohpc and var/lib/nanohpc; empty on machines.
+root=${NANOHPC_HEALTH_TEST_ROOT:-}
+roles=" $(cat "$root/etc/nanohpc/roles" 2>/dev/null) "
 problems=0
+check_ids=()
+check_states=()
 
 has() { case "$roles" in *" $1 "*) return 0 ;; esac; return 1; }
+
+# Print one report line and keep the check's state for the metrics. A second check with the same id keeps the worst state.
+report() {
+  local result=$1 label=$2 state id i
+  case "$result" in
+    ok) state=0 ;;
+    WARN) state=1 ;;
+    FAIL) state=2 problems=1 ;;
+  esac
+  printf '%-5s %s\n' "$result" "$label"
+  id=${label%%" ("*}
+  id=${id%%:*}
+  id=${id#"${id%%[![:space:]]*}"}
+  id=${id%"${id##*[![:space:]]}"}
+  for i in "${!check_ids[@]}"; do
+    if test "${check_ids[$i]}" = "$id"; then
+      test "$state" -gt "${check_states[$i]}" && check_states[$i]=$state
+      return 0
+    fi
+  done
+  check_ids+=("$id")
+  check_states+=("$state")
+}
+
+# Escape a label value for the Prometheus text format: backslash, double quote, newline.
+escape_label() {
+  local value=$1
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  printf '%s' "$value"
+}
+
+# Write the kept states to PATH through a temporary file in the same folder, so node_exporter never reads half a file.
+write_metrics() {
+  local path=$1 temporary i
+  temporary=$(mktemp "$(dirname "$path")/.cluster-health.XXXXXX") || exit 1
+  {
+    echo "# HELP cluster_health_check_state State of each cluster-health check on this machine: 0 ok, 1 warning, 2 failing."
+    echo "# TYPE cluster_health_check_state gauge"
+    for i in "${!check_ids[@]}"; do
+      printf 'cluster_health_check_state{check="%s"} %s\n' "$(escape_label "${check_ids[$i]}")" "${check_states[$i]}"
+    done
+    echo "# HELP cluster_health_timestamp_seconds When cluster-health last finished on this machine (Unix time)."
+    echo "# TYPE cluster_health_timestamp_seconds gauge"
+    echo "cluster_health_timestamp_seconds $(date +%s)"
+  } >"$temporary" || exit 1
+  chmod 0644 "$temporary" || exit 1
+  mv -f "$temporary" "$path" || exit 1
+}
 
 check() {
   local label=$1
   shift
   if "$@" >/dev/null 2>&1; then
-    echo "ok    $label"
+    report ok "$label"
   else
-    echo "FAIL  $label"
-    problems=1
+    report FAIL "$label"
   fi
 }
 
@@ -26,11 +100,16 @@ note() {
   local label=$1
   shift
   if "$@" >/dev/null 2>&1; then
-    echo "ok    $label"
+    report ok "$label"
   else
-    echo "WARN  $label"
+    report WARN "$label"
   fi
 }
+
+# Tests source this file to call report and write_metrics directly; stop here when sourced.
+if test "${BASH_SOURCE[0]}" != "$0"; then
+  return 0
+fi
 
 disk() {
   local used inodes
@@ -40,7 +119,7 @@ disk() {
     test "${used:-100}" -lt 90 -a "${inodes:-0}" -lt 90
 }
 
-check "nanoHPC roles are recorded" test -s /etc/nanohpc/roles
+check "nanoHPC roles are recorded" test -s "$root/etc/nanohpc/roles"
 disk /
 check "service nanohpc-node-exporter (metrics)" systemctl is-active --quiet nanohpc-node-exporter
 note "metrics certificate valid for at least 30 more days" sh -c \
@@ -57,6 +136,18 @@ if has home; then
   check "home quota reader timer" systemctl is-active --quiet nanohpc-home-quotas.timer
   check "the home quota reader's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-home-quotas.service'
   disk /home
+  # The nightly backup writes its result as metrics; only once a backup is configured.
+  if test -f "$root/etc/nanohpc/backup/enabled"; then
+    backup_metrics=$root/var/lib/nanohpc/metrics-textfile/backup.prom
+    last_success=$(awk '$1 == "cluster_backup_last_success_timestamp_seconds" { print int($2) }' "$backup_metrics" 2>/dev/null)
+    last_exit=$(awk '$1 == "cluster_backup_last_exit_code" { print int($2) }' "$backup_metrics" 2>/dev/null)
+    # No age warning before the backup's first night: only once the backup was set up more than 26 hours ago.
+    if test -n "$(find "$root/etc/nanohpc/backup/started" -mmin +1560 2>/dev/null)"; then
+      note "the last successful /home backup is less than 26 hours old" \
+        test "$(( $(date +%s) - ${last_success:-0} ))" -lt 93600
+    fi
+    note "the last /home backup run worked" test "${last_exit:-0}" = 0
+  fi
 elif ! has backup; then
   check "/home is the shared NFS mount" sh -c 'findmnt -n -o FSTYPE --mountpoint /home | grep -qx nfs4'
   # A hung NFS server makes /home hang rather than fail; the timeout turns that into a failure.
@@ -64,7 +155,7 @@ elif ! has backup; then
 fi
 
 if has front; then
-  for service in mariadb slurmdbd slurmctld nanohpc-prometheus nanohpc-history nanohpc-grafana; do
+  for service in mariadb slurmdbd slurmctld nanohpc-prometheus nanohpc-history nanohpc-alertmanager nanohpc-grafana; do
     check "service $service" systemctl is-active --quiet "$service"
   done
   check "the Slurm controller answers" scontrol ping
@@ -105,7 +196,7 @@ print(",".join(sorted({r["metric"].get("machine", r["metric"].get("rule_group", 
     if machines=$(problem_machines "$query"); then
       note "$label${machines:+ ($machines)}" test -z "$machines"
     else
-      echo "WARN  $label (Prometheus did not answer)"
+      report WARN "$label (Prometheus did not answer)"
     fi
   }
   # Only the node_exporter collectors nanoHPC relies on; others can fail harmlessly on some machines.
@@ -113,6 +204,8 @@ print(",".join(sorted({r["metric"].get("machine", r["metric"].get("rule_group", 
   metric_check "GPU readings are fresh (under 2 minutes old)" 'time() - cluster_gpu_collection_timestamp_seconds > 120'
   metric_check "machine specs are fresh (under 15 minutes old)" 'time() - cluster_machine_specs_timestamp_seconds > 900'
   metric_check "home quotas are fresh (under 15 minutes old)" 'time() - cluster_home_quota_collected_timestamp_seconds > 900 or absent(cluster_home_quota_collected_timestamp_seconds)'
+  # Alerts that cannot reach Alertmanager, or Slack posts that fail, would otherwise go unnoticed.
+  metric_check "alerts are delivered (Prometheus to Alertmanager, Alertmanager to Slack)" 'increase(prometheus_notifications_dropped_total[1h]) > 0 or increase(alertmanager_notifications_failed_total[1h]) > 0'
   metric_check "the daily summary rules evaluate" 'increase(prometheus_rule_evaluation_failures_total[10m]) > 0'
   # The history instance collects once a day; after its first two days it must hold daily summaries.
   history_age=$(( $(date +%s) - $(stat -c %Y /etc/nanohpc/prometheus/history-started 2>/dev/null || date +%s) ))
@@ -120,7 +213,7 @@ print(",".join(sorted({r["metric"].get("machine", r["metric"].get("rule_group", 
     if summaries=$(problem_machines 'count(cluster_daily_scrape_coverage_ratio) > 0' 9091); then
       note "the 5-year history holds daily summaries" test -n "$summaries"
     else
-      echo "WARN  the 5-year history holds daily summaries (history Prometheus did not answer)"
+      report WARN "the 5-year history holds daily summaries (history Prometheus did not answer)"
     fi
   fi
   # Every metrics certificate the front node issued, so an expiry shows up even without a deploy.
@@ -146,4 +239,7 @@ if has compute; then
   check "scratch cleanup timer" systemctl is-active --quiet nanohpc-scratch-cleanup.timer
 fi
 
+if test -n "$metrics_path"; then
+  write_metrics "$metrics_path"
+fi
 exit "$problems"

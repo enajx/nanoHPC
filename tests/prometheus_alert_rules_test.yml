@@ -1,0 +1,185 @@
+# promtool unit tests for src/nanohpc/files/prometheus-alert-rules.yml (run by tests/test_prometheus_rules.py).
+# cluster-health runs every 5 minutes; here a sample every minute stands for what Prometheus scrapes.
+rule_files:
+  - ../src/nanohpc/files/prometheus-alert-rules.yml
+evaluation_interval: 30s
+tests:
+  # Health check states: a check that stays failing or warning alerts; one bad run (state kept 5 minutes) does not;
+  # a recovered check stops alerting.
+  - interval: 1m
+    input_series:
+      # Fails from minute 2 to 11, recovers at minute 12.
+      - series: 'cluster_health_check_state{job="node-c1",machine="c1",check="service slurmd"}'
+        values: '0 0 2 2 2 2 2 2 2 2 2 2 0 0 0 0'
+      # One bad run: failing from minute 1 to 5 only.
+      - series: 'cluster_health_check_state{job="node-c1",machine="c1",check="the Slurm controller answers"}'
+        values: '0 2 2 2 2 2 0 0 0 0 0 0 0 0 0 0'
+      # Warns from minute 2 to 11, recovers at minute 12.
+      - series: 'cluster_health_check_state{job="node",machine="front",check="disk /home"}'
+        values: '0 0 1 1 1 1 1 1 1 1 1 1 0 0 0 0'
+      - series: 'cluster_health_check_state{job="node",machine="front",check="service munge"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HealthCheckFailing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: HealthCheckFailing
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: HealthCheckFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-c1
+              machine: c1
+              check: service slurmd
+            exp_annotations:
+              summary: 'The check "service slurmd" is failing on c1.'
+      - eval_time: 13m
+        alertname: HealthCheckFailing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: HealthCheckWarning
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: HealthCheckWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node
+              machine: front
+              check: disk /home
+            exp_annotations:
+              summary: 'The check "disk /home" has a warning on front.'
+      - eval_time: 13m
+        alertname: HealthCheckWarning
+        exp_alerts: []
+
+  # Health checks not running: the textfile keeps its last finish time when the checks stop running.
+  - interval: 1m
+    input_series:
+      # Runs until minute 5, then stops; runs again at minute 25.
+      - series: 'cluster_health_timestamp_seconds{job="node-c1",machine="c1"}'
+        values: '0+60x5 300x19 1500+60x5'
+      # Runs all the time.
+      - series: 'cluster_health_timestamp_seconds{job="node",machine="front"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HealthChecksNotRunning
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: HealthChecksNotRunning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-c1
+              machine: c1
+            exp_annotations:
+              summary: "The health checks on c1 have not run for more than 15 minutes."
+      - eval_time: 26m
+        alertname: HealthChecksNotRunning
+        exp_alerts: []
+
+  # A machine whose metrics cannot be read for 5 minutes; Prometheus's own job does not count.
+  - interval: 1m
+    input_series:
+      # Down from minute 2 to 9, back at minute 10.
+      - series: 'up{job="node-c2",machine="c2"}'
+        values: '1 1 0 0 0 0 0 0 0 0 1 1 1'
+      # Down for 3 minutes only.
+      - series: 'up{job="node",machine="front"}'
+        values: '1 0 0 0 1 1 1 1 1 1 1 1 1'
+      - series: 'up{job="prometheus",machine="front"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: MachineMetricsMissing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: MachineMetricsMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-c2
+              machine: c2
+            exp_annotations:
+              summary: "Prometheus cannot read the metrics of c2 for 5 minutes, so its health checks are unknown; the machine may be down."
+      - eval_time: 11m
+        alertname: MachineMetricsMissing
+        exp_alerts: []
+
+  # A failed backup run alerts until a later run works.
+  - interval: 1m
+    input_series:
+      - series: 'cluster_backup_last_exit_code{job="node",machine="front"}'
+        values: '0 0 23 23 23 0 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: BackupFailed
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: BackupFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              machine: front
+            exp_annotations:
+              summary: "The last /home backup from front failed (exit code 23)."
+      - eval_time: 6m
+        alertname: BackupFailed
+        exp_alerts: []
+
+  # An old last successful backup alerts; a daily one does not; a backup that never succeeded (0) is left to
+  # BackupFailed.
+  - interval: 1h
+    input_series:
+      # Last success at hour 1, then again at hour 30.
+      - series: 'cluster_backup_last_success_timestamp_seconds{job="node",machine="front"}'
+        values: '3600x29 108000x10'
+      # Succeeds every day.
+      - series: 'cluster_backup_last_success_timestamp_seconds{job="node-store",machine="store"}'
+        values: '3600x23 86400x16'
+      - series: 'cluster_backup_last_success_timestamp_seconds{job="node-new",machine="new"}'
+        values: '0x39'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: BackupOld
+        exp_alerts: []
+      - eval_time: 28h
+        alertname: BackupOld
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node
+              machine: front
+            exp_annotations:
+              summary: "The last successful /home backup from front is more than 26 hours old."
+      - eval_time: 31h
+        alertname: BackupOld
+        exp_alerts: []
+
+  # A machine that answers but has never written its health checks (for example its timer never ran).
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node-c3",machine="c3"}'
+        values: '1x30'
+      - series: 'up{job="node-c4",machine="c4"}'
+        values: '1x30'
+      - series: 'cluster_health_timestamp_seconds{job="node-c4",machine="c4"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HealthChecksMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: HealthChecksMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-c3
+              machine: c3
+            exp_annotations:
+              summary: "The health checks on c3 have never reported."

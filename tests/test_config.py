@@ -213,6 +213,41 @@ class WebsiteFilesTest(unittest.TestCase):
             self.assertIn("cluster.website.logo must be a .png, .svg, .jpg, or .webp file", errors)
 
 
+class SecretsTest(unittest.TestCase):
+    """Secrets are in a .env file next to cluster.yml (never committed), read only when they are needed."""
+
+    def write(self, folder: Path, slack: bool, env: str | None) -> Path:
+        raw = yaml.safe_load(EXAMPLE.read_text())
+        raw["alerts"]["slack"] = slack
+        path = folder / "cluster.yml"
+        path.write_text(yaml.safe_dump(raw))
+        if env is not None:
+            (folder / ".env").write_text(env)
+        return path
+
+    def test_slack_webhook_from_env(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            env = "# alerts\nOTHER=1\nNANOHPC_SLACK_WEBHOOK='https://hooks.slack.com/services/T/B/x'\n"
+            config, errors = load_config(self.write(folder, True, env), True)
+            self.assertEqual(errors, [])
+            self.assertEqual(config["secrets"], {"slack_webhook": "https://hooks.slack.com/services/T/B/x"})
+
+    def test_missing_webhook_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            _, errors = load_config(self.write(folder, True, None), True)
+            self.assertIn(f"alerts.slack is true but {folder.resolve() / '.env'} has no NANOHPC_SLACK_WEBHOOK", errors)
+            _, errors = load_config(self.write(folder, True, "NANOHPC_SLACK_WEBHOOK=not a url\n"), True)
+            self.assertIn("NANOHPC_SLACK_WEBHOOK in .env must be an http(s) URL", errors)
+
+    def test_no_secrets_needed_without_slack(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config, errors = load_config(self.write(Path(directory), False, None), True)
+            self.assertEqual(errors, [])
+            self.assertEqual(config["secrets"], {"slack_webhook": None})
+
+
 class InvalidConfigTest(unittest.TestCase):
     """Each wrong configuration is rejected with a message naming the field."""
 
@@ -553,6 +588,22 @@ class RobustInputTest(unittest.TestCase):
             (
                 lambda raw: raw["cluster"]["website"].update(login_address=5),
                 "cluster.website.login_address must be a host name",
+            ),
+            (
+                lambda raw: raw["backup"].update(to="lab@backup.example.org:/"),
+                "backup.to must be a machine with the backup role or user@host:/path",
+            ),
+            (
+                lambda raw: raw["backup"].update(to="lab@backup.example.org:/srv/../etc"),
+                "backup.to must be a machine with the backup role or user@host:/path",
+            ),
+            (lambda raw: raw["backup"].update(exclude=["$HOME/x"]), "backup.exclude[0] must be a plain rsync pattern"),
+            (lambda raw: raw["backup"].update(exclude=["50%"]), "backup.exclude[0] must be a plain rsync pattern"),
+            (
+                lambda raw: raw["users"].append(
+                    {"name": "nanohpc-backup", "uid": 2050, "ssh_keys": raw["users"][0]["ssh_keys"]}
+                ),
+                "users[2].name nanohpc-backup is reserved for nanoHPC",
             ),
             (lambda raw: raw["cluster"]["website"].update(path="cluster"), "cluster.website.path must be a URL path"),
             (lambda raw: raw["cluster"]["website"].update(path="/a b/"), "cluster.website.path must be a URL path"),
