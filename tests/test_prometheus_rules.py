@@ -1,4 +1,5 @@
-"""Check the Prometheus daily recording rules: YAML shape always, promtool unit tests when promtool is installed."""
+"""Check the Prometheus daily recording rules and alert rules: YAML shape always, promtool unit tests when promtool
+is installed."""
 
 import shutil
 import subprocess
@@ -10,6 +11,17 @@ import yaml
 REPO = Path(__file__).resolve().parents[1]
 RULES = REPO / "src/nanohpc/files/prometheus-daily-rules.yml"
 RULES_TEST = REPO / "tests/prometheus_daily_rules_test.yml"
+ALERT_RULES = REPO / "src/nanohpc/files/prometheus-alert-rules.yml"
+ALERT_RULES_TEST = REPO / "tests/prometheus_alert_rules_test.yml"
+EXPECTED_ALERTS = {
+    "HealthCheckFailing": "critical",
+    "HealthCheckWarning": "warning",
+    "HealthChecksNotRunning": "warning",
+    "HealthChecksMissing": "warning",
+    "MachineMetricsMissing": "critical",
+    "BackupFailed": "critical",
+    "BackupOld": "warning",
+}
 EXPECTED = [
     "cluster_daily_cpu_busy_ratio",
     "cluster_daily_memory_used_ratio",
@@ -51,6 +63,31 @@ class DailyRulesTests(unittest.TestCase):
         """promtool evaluates the rules against fixed input series and expected results."""
         result = subprocess.run(
             ["promtool", "test", "rules", str(RULES_TEST)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class AlertRulesTests(unittest.TestCase):
+    """The alert rules have the expected names, severities, and a summary naming the machine."""
+
+    def test_alert_rules_shape(self) -> None:
+        """One group of alerts, each with its severity and a summary naming the machine (and the check if any)."""
+        groups = yaml.safe_load(ALERT_RULES.read_text())["groups"]
+        self.assertEqual([group["name"] for group in groups], ["cluster-alerts"])
+        rules = groups[0]["rules"]
+        self.assertEqual({rule["alert"]: rule["labels"]["severity"] for rule in rules}, EXPECTED_ALERTS)
+        self.assertEqual(len(rules), len(EXPECTED_ALERTS))
+        for rule in rules:
+            self.assertTrue(rule["expr"].strip(), rule["alert"])
+            self.assertIn("$labels.machine", rule["annotations"]["summary"], rule["alert"])
+            if rule["alert"] in ("HealthCheckFailing", "HealthCheckWarning"):
+                self.assertIn("$labels.check", rule["annotations"]["summary"], rule["alert"])
+
+    @unittest.skipIf(shutil.which("promtool") is None, "promtool is not installed, so the alert rule tests cannot run")
+    def test_promtool_alert_tests(self) -> None:
+        """promtool checks which alerts fire, and when, for fixed input series, including recoveries."""
+        result = subprocess.run(
+            ["promtool", "test", "rules", str(ALERT_RULES_TEST)], capture_output=True, text=True, check=False
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

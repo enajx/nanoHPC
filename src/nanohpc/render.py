@@ -245,9 +245,11 @@ def render_prometheus(config: dict[str, Any]) -> str:
         }
         jobs.append(remote)
     jobs.append(job("prometheus", "127.0.0.1:9090", front))
+    jobs.append(job("alertmanager", "127.0.0.1:9093", front))
     prometheus = {
         "global": {"scrape_interval": "30s", "scrape_timeout": "10s", "evaluation_interval": "30s"},
-        "rule_files": ["/etc/nanohpc/prometheus/daily-rules.yml"],
+        "rule_files": ["/etc/nanohpc/prometheus/daily-rules.yml", "/etc/nanohpc/prometheus/alert-rules.yml"],
+        "alerting": {"alertmanagers": [{"static_configs": [{"targets": ["127.0.0.1:9093"]}]}]},
         "scrape_configs": jobs,
     }
     return yaml.safe_dump(prometheus, sort_keys=False)

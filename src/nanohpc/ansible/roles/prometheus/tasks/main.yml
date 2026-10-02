@@ -47,6 +47,14 @@
     validate: "{{ prometheus_dir }}/promtool check rules %s"
   register: daily_rules
 
+- name: Install the alert rules (checked with promtool first)
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/prometheus-alert-rules.yml"
+    dest: /etc/nanohpc/prometheus/alert-rules.yml
+    mode: "0644"
+    validate: "{{ prometheus_dir }}/promtool check rules %s"
+  register: alert_rules
+
 - name: Install the detail configuration (checked with promtool first)
   ansible.builtin.copy:
     src: "{{ nanohpc.files }}/prometheus.yml"
@@ -134,7 +142,7 @@
     enabled: true
     daemon_reload: "{{ prometheus_units.changed }}"
     state: >-
-      {{ 'restarted' if (prometheus_units.changed or detail_config.changed or daily_rules.changed) else 'started' }}
+      {{ 'restarted' if (prometheus_units.changed or detail_config.changed or daily_rules.changed or alert_rules.changed) else 'started' }}
 
 - name: Run the history Prometheus
   ansible.builtin.systemd_service:
