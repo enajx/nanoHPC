@@ -1,0 +1,314 @@
+# The website on the front node, served by nginx at https://<hostname><path>:
+# - the site's files (one folder per build in /srv/nanohpc-web/releases, `current` points at the one in use);
+# - what comes from cluster.yml (site.json, the user guide's docs.md and policy.md, the logo) in
+#   /srv/nanohpc-web/config;
+# - the status snapshot and machines.md read straight from the status collector's folder;
+# - HTTPS with the administrator's own certificate, or one from Let's Encrypt, renewed twice a day.
+
+- name: Install nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    install_recommends: false
+
+- name: Remove nginx's default site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  register: default_site
+
+- name: Create the website folders
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /srv/nanohpc-web, mode: "0755"}
+    - {path: /srv/nanohpc-web/releases, mode: "0755"}
+    - {path: /srv/nanohpc-web/config, mode: "0755"}
+    - {path: /etc/nanohpc/website, mode: "0755"}
+    - {path: /etc/nanohpc/website/tls, mode: "0700"}
+    - {path: /var/lib/nanohpc/acme/.well-known/acme-challenge, mode: "0755"}
+
+# The site's files: prebuilt in the nanoHPC package (build: package), or built here from the source in the
+# package (build: front). A build is named by the hash of its sources, and front builds by "front-" and the
+# hash, so moving to `build: front` builds on the front node even when the same source was installed prebuilt.
+- name: Name the website build
+  ansible.builtin.set_fact:
+    website_release: >-
+      {{ (lookup('ansible.builtin.file', nanohpc.website.package + '/build-source.sha256') | trim)
+         if nanohpc.website.build == 'package' else 'front-' + nanohpc.website.source_hash }}
+
+- name: Copy the prebuilt website
+  ansible.builtin.copy:
+    src: "{{ nanohpc.website.package }}/"
+    dest: "/srv/nanohpc-web/releases/{{ website_release }}/"
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  when: nanohpc.website.build == 'package'
+
+- name: Build the website on the front node
+  ansible.builtin.include_tasks: build.yml
+  when: nanohpc.website.build == 'front'
+
+- name: Use this build
+  ansible.builtin.file:
+    src: "/srv/nanohpc-web/releases/{{ website_release }}"
+    dest: /srv/nanohpc-web/current
+    state: link
+    owner: root
+    group: root
+
+- name: Install the cluster's site data
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/site.json"
+    dest: /srv/nanohpc-web/config/site.json
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the logo
+  ansible.builtin.copy:
+    src: "{{ nanohpc.website.logo.source }}"
+    dest: "/srv/nanohpc-web/config/{{ nanohpc.website.logo.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: nanohpc.website.logo is not none
+
+- name: Install the user guide filler
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-website-docs"
+    dest: /usr/local/bin/cluster-website-docs
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Fill the user guide and policy pages with the cluster's values
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/cluster-website-docs
+      - --site
+      - /srv/nanohpc-web/config/site.json
+      - --template
+      - "/srv/nanohpc-web/current/{{ item }}"
+      - --output
+      - "/srv/nanohpc-web/config/{{ item }}"
+  loop: [docs.md, policy.md]
+  register: website_docs
+  changed_when: website_docs.stdout == 'changed'
+
+# HTTPS certificate: the administrator's own, or Let's Encrypt's.
+- name: Install the administrator's certificate and key
+  ansible.builtin.copy:
+    src: "{{ item.source }}"
+    dest: "/etc/nanohpc/website/tls/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {source: "{{ nanohpc.website.certificate }}", name: fullchain.pem, mode: "0644"}
+    - {source: "{{ nanohpc.website.certificate_key }}", name: privkey.pem, mode: "0600"}
+  loop_control:
+    label: "{{ item.name }}"
+  register: own_certificate
+  when: nanohpc.website.https == 'own'
+
+- name: Name the certificate files
+  ansible.builtin.set_fact:
+    letsencrypt_live: /etc/nanohpc/website/letsencrypt/live/nanohpc-website
+    certbot_environment: "{{ {'REQUESTS_CA_BUNDLE': nanohpc.website.acme.ca_bundle} if nanohpc.website.acme else {} }}"
+    certbot_server: "{{ ['--server', nanohpc.website.acme.server] if nanohpc.website.acme else [] }}"
+
+# "ok": a certificate for this hostname; "other": one for an earlier hostname (kept in use until the new one
+# exists, so HTTPS stays up); "": none yet.
+- name: Check for a Let's Encrypt certificate for this hostname
+  ansible.builtin.shell: |
+    set -eu
+    test -f {{ letsencrypt_live }}/fullchain.pem || exit 0
+    openssl x509 -noout -ext subjectAltName -in {{ letsencrypt_live }}/fullchain.pem | grep -qiw 'DNS:{{ nanohpc.website.hostname }}' && echo ok || echo other
+  register: letsencrypt_current
+  changed_when: false
+  when: nanohpc.website.https == 'letsencrypt'
+
+# Until a certificate exists, nginx serves only port 80 (the challenge files Let's Encrypt checks).
+- name: Choose the certificate nginx uses
+  ansible.builtin.set_fact:
+    tls_certificate: >-
+      {{ '/etc/nanohpc/website/tls/fullchain.pem' if nanohpc.website.https == 'own'
+         else (letsencrypt_live + '/fullchain.pem') if letsencrypt_current.stdout in ['ok', 'other'] else none }}
+    tls_certificate_key: >-
+      {{ '/etc/nanohpc/website/tls/privkey.pem' if nanohpc.website.https == 'own'
+         else (letsencrypt_live + '/privkey.pem') if letsencrypt_current.stdout in ['ok', 'other'] else none }}
+
+- name: Install and load the nginx site
+  ansible.builtin.include_tasks: nginx_site.yml
+
+- name: Get the certificate from Let's Encrypt
+  when: nanohpc.website.https == 'letsencrypt'
+  block:
+    # One folder per certbot version, so a new pinned version is installed; /opt/nanohpc-certbot/current points at it.
+    - name: Install certbot (pinned, in its own environment)
+      ansible.builtin.command:
+        argv: [/usr/local/bin/uv, tool, install, --python, "3.12", "certbot=={{ nanohpc.website.certbot.version }}"]
+        creates: "/opt/nanohpc-certbot/{{ nanohpc.website.certbot.version }}/bin/certbot"
+      environment:
+        UV_TOOL_DIR: "/opt/nanohpc-certbot/{{ nanohpc.website.certbot.version }}/tools"
+        UV_TOOL_BIN_DIR: "/opt/nanohpc-certbot/{{ nanohpc.website.certbot.version }}/bin"
+        UV_PYTHON_INSTALL_DIR: "/opt/nanohpc-certbot/{{ nanohpc.website.certbot.version }}/python"
+
+    - name: Use this certbot version
+      ansible.builtin.file:
+        src: "/opt/nanohpc-certbot/{{ nanohpc.website.certbot.version }}"
+        dest: /opt/nanohpc-certbot/current
+        state: link
+        force: true
+
+    - name: Install the reload command run after each new certificate
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/nanohpc-website-reload
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          # Load a new website certificate: check the nginx configuration, then reload without a restart.
+          set -eu
+          nginx -t -q
+          systemctl reload nginx
+
+    - name: Ask Let's Encrypt for the certificate (the challenge is answered by nginx on port 80)
+      ansible.builtin.command:
+        argv: >-
+          {{ ['/opt/nanohpc-certbot/current/bin/certbot', 'certonly', '--non-interactive', '--agree-tos',
+              '--register-unsafely-without-email', '--webroot', '--webroot-path', '/var/lib/nanohpc/acme',
+              '--cert-name', 'nanohpc-website', '--domain', nanohpc.website.hostname,
+              '--config-dir', '/etc/nanohpc/website/letsencrypt', '--work-dir', '/var/lib/nanohpc/certbot',
+              '--logs-dir', '/var/log/nanohpc-certbot'] + certbot_server }}
+      environment: "{{ certbot_environment }}"
+      when: letsencrypt_current.stdout != 'ok'
+
+    - name: Use the new certificate
+      ansible.builtin.set_fact:
+        tls_certificate: "{{ letsencrypt_live }}/fullchain.pem"
+        tls_certificate_key: "{{ letsencrypt_live }}/privkey.pem"
+
+    - name: Install and load the nginx site with HTTPS
+      ansible.builtin.include_tasks: nginx_site.yml
+
+    - name: Install the renewal service and timer
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/nanohpc-website-certificate.{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {% if item == 'service' %}
+          [Unit]
+          Description=Renew the website's Let's Encrypt certificate (nanoHPC)
+          After=network-online.target nginx.service
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          {% for name, value in certbot_environment.items() %}
+          Environment={{ name }}={{ value }}
+          {% endfor %}
+          ExecStart=/opt/nanohpc-certbot/current/bin/certbot renew --non-interactive --config-dir /etc/nanohpc/website/letsencrypt \
+            --work-dir /var/lib/nanohpc/certbot --logs-dir /var/log/nanohpc-certbot \
+            --deploy-hook /usr/local/sbin/nanohpc-website-reload
+          TimeoutStartSec=15min
+          UMask=0077
+          MemoryMax=512M
+          CPUQuota=50%
+          {% else %}
+          [Unit]
+          Description=Check the website certificate twice a day (nanoHPC)
+
+          [Timer]
+          OnCalendar=*-*-* 00,12:00:00
+          RandomizedDelaySec=1h
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+          {% endif %}
+      loop: [service, timer]
+      register: renewal_units
+
+    - name: Run the renewal timer
+      ansible.builtin.systemd_service:
+        name: nanohpc-website-certificate.timer
+        enabled: true
+        state: started
+        daemon_reload: "{{ renewal_units.changed }}"
+
+# A cluster that moved to its own certificate stops asking Let's Encrypt.
+- name: Look for a Let's Encrypt renewal timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-website-certificate.timer
+  register: renewal_timer
+  when: nanohpc.website.https == 'own'
+
+- name: Stop the Let's Encrypt renewal
+  ansible.builtin.systemd_service:
+    name: nanohpc-website-certificate.timer
+    enabled: false
+    state: stopped
+  when: nanohpc.website.https == 'own' and renewal_timer.stat.exists
+
+- name: Remove the Let's Encrypt renewal
+  ansible.builtin.file:
+    path: "/etc/systemd/system/nanohpc-website-certificate.{{ item }}"
+    state: absent
+  loop: [service, timer]
+  register: removed_renewal
+  when: nanohpc.website.https == 'own'
+
+- name: Forget the removed renewal units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: removed_renewal is changed
+
+# A cluster that moved to Let's Encrypt keeps no copy of its former own key.
+- name: Remove a former own certificate and key
+  ansible.builtin.file:
+    path: "/etc/nanohpc/website/tls/{{ item }}"
+    state: absent
+  loop: [fullchain.pem, privkey.pem]
+  when: nanohpc.website.https == 'letsencrypt'
+
+- name: Reload nginx for a new administrator's certificate
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: reloaded
+  when: own_certificate is changed
+
+- name: Record the website's address for cluster-health
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/website/address
+    content: "{{ nanohpc.website.hostname }} {{ nanohpc.website.path }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Check that the website answers over HTTPS
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --silent
+      - --fail
+      - --insecure  # only that nginx serves the site here; cluster-health checks the certificate
+      - --resolve
+      - "{{ nanohpc.website.hostname }}:443:127.0.0.1"
+      - "https://{{ nanohpc.website.hostname }}{{ nanohpc.website.path }}{{ item }}"
+  loop: ["", site.json, docs.md, grafana/d/nanohpc-overview]
+  register: website_answer
+  until: website_answer.rc == 0
+  retries: 5
+  delay: 2
+  changed_when: false

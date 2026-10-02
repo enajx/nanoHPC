@@ -80,8 +80,24 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
 - **Build**: the website ships prebuilt in the nanoHPC package (no Node on the cluster; the content comes from `cluster.yml` when the page loads). `cluster.yml` can choose to build it on the front node instead.
 - **Address**: the front node serves the website itself over HTTPS at `https://<hostname>/<path>/`. The path is configurable, default `/cluster/`; Grafana is under it (`<path>grafana/`). nanoHPC prints ready-made forwarding rules (nginx, Apache, Caddy) so a lab's own website can show the cluster site at `labwebsite.com/cluster/`. The wizard (M7) asks for these settings.
 - **Access**: by default anyone who reaches the site can read it, no login, read-only. `cluster.yml` can limit it to listed networks. The wizard recommends (says it is not required) a private network such as WireGuard or Tailscale, for security and simpler administrator access to the cluster.
+- **Settings** (`cluster.website`, agreed 2026-10-02): `path` (default `/cluster/`), `allow` (networks that may open the site; empty means anyone), `forwarded_by` (address of the lab's web server that forwards to the site; only from it is the passed-on visitor address trusted for `allow`), `build` (`package` or `front`, default `package`), next to the existing `hostname`, `https`, `certificate`, `certificate_key`, `logo`, `login_address`.
 - **HTTPS testing**: the simulated cluster runs Pebble (Let's Encrypt's test server) so the real certificate request and renewal are tested; the administrator's own certificate is tested with a test certificate.
 - From the source deployment: its website (pages, `status.json` reading, Grafana embedding, user guide), with every site-specific part (names, logo, hostnames, the forum software front layer, Slurm-web) removed or taken from `cluster.yml`.
+
+## M5: choices made by the agent, to review
+
+- nginx from Ubuntu's packages, one site file (`/etc/nginx/conf.d/nanohpc-website.conf`); a configuration that fails `nginx -t` is put back and the deploy stops. Port 80 only answers Let's Encrypt's challenge and redirects to HTTPS. The routes, read-only methods, rate limits, security headers, and the Grafana route list follow the source deployment.
+- Let's Encrypt: certbot 5.8.0 (pinned, in its own uv environment), webroot challenge, no email address registered, renewal checked twice a day with an nginx reload after a new certificate. Let's Encrypt must reach the front node's hostname on port 80; a front node that is not reachable from the internet uses `https: own`.
+- Certificate, key, and logo paths in `cluster.yml` are on the administrator's machine, relative to `cluster.yml`, and `nanohpc validate` reports missing files.
+- `build: front`: Node 24.21.0 (pinned), `npm ci --ignore-scripts` and the build run as an unprivileged account, only when the source changed; the source ships in the nanoHPC package.
+- `cluster-health` on the front node: nginx running and the site answering over HTTPS (fail), the certificate valid for 14 more days and the last renewal check (warn), the renewal timer (fail).
+- Simulated cluster: Pebble and its test DNS server run on the front node; for `https: own`, `sim up` makes a test certificate. The test clusters cover the default path with Let's Encrypt (everyday), `path: /` with an own certificate, a logo, and `build: front` (Ubuntu 22.04), and another path with `allow` (Ubuntu 26.04).
+
+## Agreed for M6 and admin access, 2026-10-02
+
+- **Automatic deploys**: full-cluster pull. The source deployment's front node polls its GitHub repository (read-only deploy key, clean checkout, fast-forward only, a lock, failed commits not retried) and runs Ansible locally as root, but only for the front node's safe parts. nanoHPC goes further: the front node deploys every machine, so it gets root SSH access to every machine (the user accepted that a compromised front node then reaches every machine). `nanohpc deploy` from the administrator's machine stays. Trigger, key restrictions, and what runs unattended are planned when M6 starts.
+- **Dry run first** (agreed 2026-10-02): the cluster is critical infrastructure, so every deploy, manual or automatic, first runs a read-only dry run (Ansible check mode). `nanohpc deploy` continues to the real run on its own when the dry run passed; an automatic deploy applies only if the dry run passed, and otherwise stops and alerts.
+- **Admin recovery access**: key-only root login for the administrators in `cluster.yml` on every machine, keys on local disk, so it works when the front node or `/home` is down (like the source deployment's `ssh_access`).
 
 ## Simulated cluster
 

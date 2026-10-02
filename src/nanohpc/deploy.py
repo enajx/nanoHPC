@@ -7,6 +7,7 @@ runs the playbook in `nanohpc/ansible/`. Work files go to ~/.cache/nanohpc/clust
 """
 
 import getpass
+import hashlib
 import json
 import os
 import subprocess
@@ -63,6 +64,18 @@ METRICS: dict[str, Any] = {
         },
     },
 }
+CERTBOT: dict[str, Any] = {"version": "5.8.0"}
+# Node for `website.build: front` (Node's architecture names: x64, arm64).
+NODE: dict[str, Any] = {
+    "version": "24.21.0",
+    "sha256": {
+        "x64": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6",
+        "arm64": "6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2",
+    },
+}
+# Pebble, Let's Encrypt's test server, stands in for Let's Encrypt on a simulated cluster (its VMs have no
+# public address). It runs on the front node; the sim setup installs it and its certificate authority.
+TEST_ACME: dict[str, str] = {"server": "https://127.0.0.1:14000/dir", "ca_bundle": "/etc/nanohpc/test-acme/ca.pem"}
 CACHE = Path.home() / ".cache" / "nanohpc"
 ANSIBLE = Path(str(resources.files("nanohpc").joinpath("ansible")))
 
@@ -157,7 +170,9 @@ def home_variables(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def variables(config: dict[str, Any], work: Path, fake_gpus: list[str], qos: list[dict[str, Any]]) -> dict[str, Any]:
+def variables(
+    config: dict[str, Any], work: Path, simulated: bool, fake_gpus: list[str], qos: list[dict[str, Any]]
+) -> dict[str, Any]:
     """Return the `nanohpc` variables the roles read."""
     policy_limit = config["policy"]["max_gpus_per_user"]
     gpus = {name: machine["gpu"]["count"] for name, machine in compute_machines(config).items() if machine.get("gpu")}
@@ -184,6 +199,7 @@ def variables(config: dict[str, Any], work: Path, fake_gpus: list[str], qos: lis
             "package_files": str(resources.files("nanohpc").joinpath("files")),
             "slurm": {**SLURM, "cache": str(CACHE / "slurm" / SLURM["version"])},
             "uv": UV,
+            "website": website_variables(config, simulated),
             "metrics": {
                 **METRICS,
                 "front_address": front_values["address"],
@@ -194,6 +210,66 @@ def variables(config: dict[str, Any], work: Path, fake_gpus: list[str], qos: lis
                 },
             },
         }
+    }
+
+
+def website_variables(config: dict[str, Any], simulated: bool) -> dict[str, Any]:
+    """Return what the website role needs: address, access, certificate, logo, and where the site files are."""
+    website = config["cluster"]["website"]
+    logo = website["logo"]
+    source = Path(str(resources.files("nanohpc").joinpath("website-source")))
+    return {
+        "hostname": website["hostname"],
+        "path": website["path"],
+        "grafana_url": f"https://{website['hostname']}{website['path']}grafana/",
+        "https": website["https"],
+        "certificate": website["certificate"],
+        "certificate_key": website["certificate_key"],
+        "allow": website["allow"],
+        "forwarded_by": website["forwarded_by"],
+        "build": website["build"],
+        "logo": None if logo is None else {"source": logo, "name": "logo" + Path(logo).suffix.lower()},
+        "certbot": CERTBOT,
+        "acme": TEST_ACME if simulated and website["https"] == "letsencrypt" else None,
+        "package": str(resources.files("nanohpc").joinpath("website")),
+        "source": str(source),
+        "source_hash": website_source_hash(source) if website["build"] == "front" else None,
+        "node": NODE,
+    }
+
+
+WEBSITE_SOURCE_FILES = ("index.html", "package.json", "package-lock.json", "tsconfig.json", "vite.config.ts")
+WEBSITE_SOURCE_FOLDERS = ("src", "public")
+
+
+def website_source_hash(source: Path) -> str:
+    """Return the hash of the website source, as its build records it (website-source/scripts/hash-source.mjs):
+    SHA-256 over each file's relative path, a NUL, its length, a NUL, and its content, in path order."""
+    paths = list(WEBSITE_SOURCE_FILES)
+    for folder in WEBSITE_SOURCE_FOLDERS:
+        paths += [
+            str(path.relative_to(source))
+            for path in (source / folder).rglob("*")
+            if path.is_file() and path.name != ".DS_Store"
+        ]
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        content = (source / path).read_bytes()
+        digest.update(f"{path}\0{len(content)}\0".encode())
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def site_data(config: dict[str, Any]) -> dict[str, Any]:
+    """Return site.json: what the website shows that comes from cluster.yml (read by the page when it loads)."""
+    website = config["cluster"]["website"]
+    return {
+        "cluster_name": config["cluster"]["name"],
+        "logo": None if website["logo"] is None else "logo" + Path(website["logo"]).suffix.lower(),
+        "login_address": website["login_address"],
+        "home_quota_soft_gb": config["home"]["quota_soft_gb"],
+        "home_quota_hard_gb": config["home"]["quota_hard_gb"],
+        "scratch_cleanup_days": config["scratch"]["cleanup_days"],
     }
 
 
@@ -261,9 +337,10 @@ def prepare(
     (files / "exports").write_text(rendered.home_exports)
     (files / "prometheus.yml").write_text(rendered.prometheus_yml)
     (files / "monitor-machines.json").write_text(json.dumps(monitor_machines(config), indent=2))
+    (files / "site.json").write_text(json.dumps(site_data(config), indent=2))
     for name, text in rendered.gres_conf.items():
         (files / "gres" / f"{name}.conf").write_text(text)
-    (work / "vars.json").write_text(json.dumps(variables(config, work, fake_gpus, rendered.qos), indent=2))
+    (work / "vars.json").write_text(json.dumps(variables(config, work, simulated, fake_gpus, rendered.qos), indent=2))
     (work / "inventory.yml").write_text(yaml.safe_dump(inventory(config)))
     (work / "ansible.cfg").write_text(ansible_cfg(ssh_config))
 
