@@ -110,7 +110,7 @@ backup:
   exclude: [.cache/, .venv/, __pycache__/]
 
 alerts:
-  slack: false                  # webhook read from a secret file on the front node
+  slack: false                  # true: the webhook is NANOHPC_SLACK_WEBHOOK in .env next to this file
 
 auto_deploy:
   enabled: false
