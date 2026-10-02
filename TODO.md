@@ -102,6 +102,11 @@ flowchart LR
 - [ ] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
 - [ ] Cluster name, logo, login address, and the user guide on the website come from the configuration.
 - [ ] The website is served by its own nginx over HTTPS, with a Let's Encrypt certificate or the administrator's own certificate.
+- [ ] The website is served under a configurable path (default `/cluster/`), with Grafana under it.
+- [ ] nanoHPC prints ready-made forwarding rules (nginx, Apache, Caddy) so a lab's own website can show the cluster site at `labwebsite.com/cluster/`.
+- [ ] Anyone can read the website by default (no login); `cluster.yml` can limit it to listed networks.
+- [ ] The website ships prebuilt in the nanoHPC package; `cluster.yml` can choose to build it on the front node instead.
+- [ ] Let's Encrypt certificates are requested and renewed on the simulated cluster, against Pebble (Let's Encrypt's test server).
 - [ ] The Machines page shows a minimal retro-style animated diagram of the cluster architecture, which users can turn on and off with a button.
 
 ### Backup, alerts, and auto-deploy
@@ -115,6 +120,7 @@ flowchart LR
 - [ ] `nanohpc` is installed with `uv tool install` and runs from any machine with SSH access to the cluster.
 - [ ] `nanohpc init` is a wizard that writes a whole `cluster.yml` with simple defaults, and probes the machines over SSH for CPUs, memory, and GPU type and count.
 - [ ] The wizard guides the administrator through preparing the machines (for example making the filesystems on the home and scratch disks), with hints for each step and the option to skip and do it themselves. It mentions `ssh-add -c` (confirm each use of the key, for example to watch an agent) as an option, not the default, and says that a deploy uses the key for every sudo call, so `-c` asks many times during a deploy.
+- [ ] The wizard asks for the website's hostname, path, HTTPS choice, and who can open it, and recommends (says it is not required) a private network such as WireGuard or Tailscale for security and simpler administrator access.
 - [ ] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid`. The deploy's stop on a UID conflict stays as a safety net.
 - [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
 - [ ] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster.

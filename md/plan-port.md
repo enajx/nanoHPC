@@ -75,6 +75,14 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
   - Storage machines (home, backup) appear in the status with the role "Storage". CPU-only machines show GPU use "Not applicable".
   - GPU-hour totals count from the first deploy, recorded once in `/etc/nanohpc/accounting-start`.
 
+## Agreed for M5 (website), 2026-10-02
+
+- **Build**: the website ships prebuilt in the nanoHPC package (no Node on the cluster; the content comes from `cluster.yml` when the page loads). `cluster.yml` can choose to build it on the front node instead.
+- **Address**: the front node serves the website itself over HTTPS at `https://<hostname>/<path>/`. The path is configurable, default `/cluster/`; Grafana is under it (`<path>grafana/`). nanoHPC prints ready-made forwarding rules (nginx, Apache, Caddy) so a lab's own website can show the cluster site at `labwebsite.com/cluster/`. The wizard (M7) asks for these settings.
+- **Access**: by default anyone who reaches the site can read it, no login, read-only. `cluster.yml` can limit it to listed networks. The wizard recommends (says it is not required) a private network such as WireGuard or Tailscale, for security and simpler administrator access to the cluster.
+- **HTTPS testing**: the simulated cluster runs Pebble (Let's Encrypt's test server) so the real certificate request and renewal are tested; the administrator's own certificate is tested with a test certificate.
+- From the source deployment: its website (pages, `status.json` reading, Grafana embedding, user guide), with every site-specific part (names, logo, hostnames, the forum software front layer, Slurm-web) removed or taken from `cluster.yml`.
+
 ## Simulated cluster
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).
