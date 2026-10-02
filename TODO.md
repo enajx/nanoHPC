@@ -19,7 +19,7 @@ flowchart LR
   SIM --> S[Slurm + accounts + storage]:::done
   S --> M[Monitoring]:::done
   M --> W[Website from config]:::done
-  S --> BK[Backup + alerts + auto-deploy]:::queued
+  S --> BK[Backup + alerts + auto-deploy]:::wip
   C --> WZ[Wizard]:::queued
   S --> N[Add node + redeploy]:::queued
   W --> R[Release v0.1]:::queued
@@ -112,12 +112,13 @@ flowchart LR
 
 - [ ] Above the soft limit (`home.quota_soft_gb` in `cluster.yml`, e.g. 300 GB) users only get a notice; writing never stops (today the soft limit becomes a hard stop after `quota_grace`).
 - [ ] No hard limit for writing to `/home`; the hard limit (`home.quota_hard_gb`) applies to running jobs instead: a user above it cannot start jobs until they clean up, which is more flexible (today the filesystem stops writes at the hard limit).
+- [ ] Machines boot normally when the machine serving `/home` is down: `/home` is mounted with `hard,nofail,x-systemd.automount,x-systemd.mount-timeout=90` (plus `nosuid,nodev`), so the boot never waits on it, SSH comes up, and `/home` connects by itself on first use once the server answers (as in the source deployment, commit 7b76d31, roles/nfs_client). Checked on the simulated cluster by rebooting a compute node with the home server down. Agreed for later (2026-10-02); no live remount handling needed before v0.1, since no real cluster runs nanoHPC yet.
 - [ ] Website follow-ups: the printed forwarding rules are tried with real nginx, Apache, and Caddy (with `forwarded_by`); switching between certificate types, hostnames, paths, and build modes is checked on the simulated cluster; nginx starts on machines with IPv6 turned off.
 
 ### Backup, alerts, and auto-deploy
 
-- [ ] `/home` is copied every night with rsync to the backup machine in the cluster or to an outside SSH server, as one mirror of `/home` (files deleted from `/home` are deleted from the copy). A failed backup is reported.
-- [ ] Every machine runs its health checks every few minutes; the front node sends Slack alerts (off by default) when a check starts failing or warning and when it recovers, not on every run, plus failed backups and failed automatic deploys. The Slack webhook is in a `.env` file next to `cluster.yml` (never committed), copied to the front node by the deploy.
+- [x] `/home` is copied every night with rsync to the backup machine in the cluster or to an outside SSH server, as one mirror of `/home` (files deleted from `/home` are deleted from the copy). A failed backup is reported.
+- [x] Every machine runs its health checks every few minutes; the front node sends Slack alerts (off by default) when a check starts failing or warning and when it recovers, not on every run, plus failed backups and failed automatic deploys. The Slack webhook is in a `.env` file next to `cluster.yml` (never committed), copied to the front node by the deploy.
 - [ ] The front node can redeploy the whole cluster automatically from the administrator's configuration repository (off by default): it checks a branch every 10 minutes (set in `cluster.yml`; `main` by default, a stable or release branch suggested), pulls it with a read-only key, and deploys every machine itself with no one logging in and no password. A GitHub webhook can trigger it right after a push instead of waiting. The front node gets root SSH access to every machine for this (agreed 2026-10-02). The configuration repository pins the nanoHPC version the front node uses. `nanohpc deploy` from the administrator's machine stays. Until the dry run exists (M8), automatic deploys apply without it; then each one runs the dry run first, applies only if it passed, and otherwise stops and alerts.
 
 ### Commands
@@ -136,6 +137,8 @@ flowchart LR
 
 ### Release
 
+- [ ] A README, curated by the user (not filled in by the agent): a title for nanoHPC using the same neobrutalism components as the front-end monitor; a description of nanoHPC as a minimalistic Slurm + Slurm monitoring tool for small lab clusters; a features section (a concise list); how to use it; the tech stack; how to contribute, linking to CONTRIBUTING.md; and the license (MIT).
+- [ ] Before the release, the real-VM tests pass on Ubuntu 22.04 and 26.04 too (during development they run on 24.04 only).
 - [ ] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website.
 - [ ] A full setup is tested on real x86 machines, and once on a real GPU machine for the NVIDIA driver and CUDA.
 - [ ] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option.
@@ -153,6 +156,7 @@ flowchart LR
 - [ ] A link to a live demo in the GitHub repository, so people can see what it looks like on a simulated cluster.
 - [ ] Optional shared scratch on a separate storage machine (not the front node), seen by every compute node: a fast NFS server with NVMe or SSD disks first, BeeGFS later. Files unused for N days (30 to 90) are deleted by a daily cleanup. Needs a fast network; `stage-dataset --shared` builds on it.
 - [ ] A general "Welcome to <cluster name>" login banner (with a small "powered by nanoHPC") and some general info. Below it, notifications for that user only: when they are above the soft limit of their home usage (as defined in `cluster.yml`, the same for all users), they are told to clean up, with a summary of where most of their space is (for example a certain repository or certain worktrees).
+- [ ] See how the terminal login banner looks in SLURM-REAL and use it as inspiration for the login banner above.
 - [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.
 
 ## Uncategorized
