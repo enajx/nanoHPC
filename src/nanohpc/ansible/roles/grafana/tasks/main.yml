@@ -1,4 +1,5 @@
-# Grafana on the front node, on localhost only (127.0.0.1:3000), served under /grafana/ for the website.
+# Grafana on the front node, on localhost only (127.0.0.1:3000), served under the website's path
+# (<path>grafana/), where the website's nginx forwards the dashboards' requests.
 # Anyone who reaches it is an anonymous viewer: no login form, no sign-up, no editing. The admin password
 # and secret key are generated once on the front node and kept in a root-only file.
 
@@ -82,7 +83,7 @@
       [server]
       http_addr = 127.0.0.1
       http_port = 3000
-      root_url = http://localhost:3000/grafana/
+      root_url = {{ nanohpc.website.grafana_url }}
       serve_from_sub_path = true
       enforce_domain = false
       [security]
@@ -234,7 +235,7 @@
 
 - name: Wait until Grafana answers
   ansible.builtin.uri:
-    url: http://127.0.0.1:3000/grafana/api/health
+    url: "http://127.0.0.1:3000{{ nanohpc.website.path }}grafana/api/health"
   register: grafana_ready
   until: grafana_ready.status == 200
   retries: 30
@@ -242,7 +243,7 @@
 
 - name: Check that the six dashboards are loaded and readable without logging in
   ansible.builtin.uri:
-    url: http://127.0.0.1:3000/grafana/api/search?type=dash-db
+    url: "http://127.0.0.1:3000{{ nanohpc.website.path }}grafana/api/search?type=dash-db"
     return_content: true
   register: grafana_dashboards
   until: >-

@@ -68,6 +68,21 @@ if has front; then
     check "service $service" systemctl is-active --quiet "$service"
   done
   check "the Slurm controller answers" scontrol ping
+  if test -f /etc/nanohpc/website/address; then
+    read -r web_host web_path < /etc/nanohpc/website/address
+    check "service nginx (website)" systemctl is-active --quiet nginx
+    for page in "" site.json grafana/d/nanohpc-overview; do
+      check "the website answers over HTTPS (${web_path}${page})" \
+        curl -sfk -o /dev/null --max-time 10 --resolve "$web_host:443:127.0.0.1" "https://$web_host${web_path}${page}"
+    done
+    note "the website certificate is valid for at least 14 more days" sh -c \
+      "openssl s_client -connect 127.0.0.1:443 -servername '$web_host' </dev/null 2>/dev/null | openssl x509 -noout -checkend 1209600"
+    if test -f /etc/systemd/system/nanohpc-website-certificate.timer; then
+      check "website certificate renewal timer" systemctl is-active --quiet nanohpc-website-certificate.timer
+      note "the last website certificate renewal check worked" \
+        sh -c '! systemctl is-failed --quiet nanohpc-website-certificate.service'
+    fi
+  fi
   check "status collector timer" systemctl is-active --quiet nanohpc-monitor-snapshot.timer
   check "the status collector's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-monitor-snapshot.service'
   check "the status snapshot is fresh (under 2 minutes old)" \

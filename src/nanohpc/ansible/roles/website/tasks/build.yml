@@ -1,0 +1,128 @@
+# build: front. Build the website from the source in the nanoHPC package with a pinned Node, as an
+# unprivileged account, only when no release of this source exists yet. npm downloads the packages listed
+# in the source's package-lock.json (no install scripts run).
+- name: Look for a build of this source
+  ansible.builtin.stat:
+    path: "/srv/nanohpc-web/releases/{{ website_release }}/index.html"
+  register: website_built
+
+- name: Build this source
+  when: not website_built.stat.exists
+  block:
+    - name: Name the Node download for this machine's CPU type
+      ansible.builtin.set_fact:
+        node_arch: "{{ 'arm64' if ansible_facts.architecture in ['aarch64', 'arm64'] else 'x64' }}"
+
+    - name: Name the Node folder
+      ansible.builtin.set_fact:
+        node_dir: "/opt/nanohpc-node/node-v{{ nanohpc.website.node.version }}-linux-{{ node_arch }}"
+        build_dir: "/var/lib/nanohpc/website-build/{{ website_release }}"
+
+    - name: Create the build account
+      ansible.builtin.user:
+        name: cluster-web-build
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Create the Node and build folders
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: "0755"
+      loop:
+        - {path: /opt/nanohpc-node, owner: root}
+        - {path: /var/lib/nanohpc/website-build, owner: cluster-web-build}
+
+    - name: Download Node, checking its SHA-256
+      ansible.builtin.get_url:
+        url: "https://nodejs.org/dist/v{{ nanohpc.website.node.version }}/node-v{{ nanohpc.website.node.version }}-linux-{{ node_arch }}.tar.xz"
+        dest: "/var/tmp/node-v{{ nanohpc.website.node.version }}-linux-{{ node_arch }}.tar.xz"
+        checksum: "sha256:{{ nanohpc.website.node.sha256[node_arch] }}"
+        timeout: 120
+        mode: "0644"
+
+    - name: Unpack Node (owned by root)
+      ansible.builtin.unarchive:
+        src: "/var/tmp/node-v{{ nanohpc.website.node.version }}-linux-{{ node_arch }}.tar.xz"
+        dest: /opt/nanohpc-node
+        remote_src: true
+        extra_opts: [--no-same-owner]
+        owner: root
+        group: root
+        creates: "{{ node_dir }}/bin/node"
+
+    - name: Pack the website source (without installed packages)
+      ansible.builtin.command:
+        argv: [tar, -czf, "{{ nanohpc.files }}/website-source.tar.gz", --no-xattrs, --exclude=node_modules,
+               --exclude=test-results, --exclude=playwright-report, -C, "{{ nanohpc.website.source | dirname }}",
+               website-source]
+      environment:
+        COPYFILE_DISABLE: "1"  # macOS tar: no ._ resource files
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Remove a release copy that stopped halfway
+      ansible.builtin.file:
+        path: "/srv/nanohpc-web/releases/{{ website_release }}.partial"
+        state: absent
+
+    - name: Start from an empty build folder
+      ansible.builtin.file:
+        path: "{{ build_dir }}"
+        state: "{{ item }}"
+        owner: cluster-web-build
+        group: cluster-web-build
+        mode: "0755"
+      loop: [absent, directory]
+
+    - name: Copy the website source
+      ansible.builtin.unarchive:
+        src: "{{ nanohpc.files }}/website-source.tar.gz"
+        dest: "{{ build_dir }}"
+        owner: cluster-web-build
+        group: cluster-web-build
+
+    - name: Install the packages and build (as the build account)
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - cluster-web-build
+          - --
+          - env
+          - "PATH={{ node_dir }}/bin:/usr/bin:/bin"
+          - "HOME={{ build_dir }}"
+          - sh
+          - -c
+          - "cd {{ build_dir }}/website-source && npm ci --ignore-scripts --no-audit --no-fund && npm run build"
+      register: website_build
+      changed_when: true
+
+    - name: Check that the build is of this source
+      ansible.builtin.command: cat {{ build_dir }}/website/build-source.sha256
+      register: built_hash
+      changed_when: false
+      failed_when: built_hash.stdout | trim != nanohpc.website.source_hash
+
+    # Copied under a temporary name and renamed, so a copy that stopped halfway is never taken as a release.
+    - name: Keep this build as a release
+      ansible.builtin.copy:
+        src: "{{ build_dir }}/website/"
+        dest: "/srv/nanohpc-web/releases/{{ website_release }}.partial/"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Name the release
+      ansible.builtin.command: mv /srv/nanohpc-web/releases/{{ website_release }}.partial /srv/nanohpc-web/releases/{{ website_release }}
+
+    - name: Remove the build folder
+      ansible.builtin.file:
+        path: "{{ build_dir }}"
+        state: absent

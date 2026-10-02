@@ -1,0 +1,52 @@
+#!/usr/bin/python3
+"""Fill a website markdown template (docs.md or policy.md) with the cluster's own values from site.json.
+
+Placeholders are {{name}} for name in PLACEHOLDERS. An unknown placeholder stops the command without
+writing. The output (mode 0644) is replaced only when its content changes; the command prints "changed"
+or "unchanged" so the deploy can report it.
+
+Arguments:
+  --site PATH       site.json written by the deploy.
+  --template PATH   the template from the website build.
+  --output PATH     the filled file.
+"""
+
+import argparse
+import json
+import os
+import re
+from pathlib import Path
+
+PLACEHOLDERS = ("cluster_name", "login_address", "home_quota_soft_gb", "home_quota_hard_gb", "scratch_cleanup_days")
+
+
+def fill(template: str, site: dict) -> str:
+    """Replace each {{name}} by its value; stop on a placeholder that site.json does not provide."""
+    unknown = sorted(set(re.findall(r"\{\{(\w+)\}\}", template)) - set(PLACEHOLDERS))
+    if unknown:
+        raise ValueError("unknown placeholders in the template: " + ", ".join(unknown))
+    for name in PLACEHOLDERS:
+        template = template.replace("{{" + name + "}}", str(site[name]))
+    return template
+
+
+def main() -> None:
+    """Write the filled file when it differs from the current one."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--site", type=Path, required=True)
+    parser.add_argument("--template", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    arguments = parser.parse_args()
+    text = fill(arguments.template.read_text(encoding="utf-8"), json.loads(arguments.site.read_text()))
+    if arguments.output.exists() and arguments.output.read_text(encoding="utf-8") == text:
+        print("unchanged")
+        return
+    temporary = arguments.output.with_name("." + arguments.output.name + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.chmod(0o644)
+    os.replace(temporary, arguments.output)
+    print("changed")
+
+
+if __name__ == "__main__":
+    main()

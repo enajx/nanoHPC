@@ -17,7 +17,7 @@ class PrepareTest(unittest.TestCase):
     """The work folder holds everything Ansible needs, generated from cluster.yml."""
 
     def setUp(self) -> None:
-        config, errors = load_config(ROOT / "examples" / "cluster.yml")
+        config, errors = load_config(ROOT / "examples" / "cluster.yml", True)
         assert errors == [], errors
         self.config = config
         self.hostnames = {name: f"host-{name}" for name in config["machines"]}
@@ -84,6 +84,60 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(metrics["grafana"]["version"], "13.2.3")
         self.assertEqual(set(metrics["grafana"]["sha256"]), {"amd64", "arm64"})
 
+    def test_website_variables_and_site_data(self) -> None:
+        prepare(self.config, self.hostnames, None, False, [], self.work)
+        website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
+        self.assertEqual(website["hostname"], "cluster.example.org")
+        self.assertEqual(website["path"], "/cluster/")
+        self.assertEqual(website["grafana_url"], "https://cluster.example.org/cluster/grafana/")
+        self.assertEqual(website["https"], "letsencrypt")
+        self.assertEqual(website["allow"], [])
+        self.assertIsNone(website["forwarded_by"])
+        self.assertEqual(website["build"], "package")
+        self.assertIsNone(website["logo"])
+        self.assertEqual(website["certbot"]["version"], "5.8.0")
+        # A real cluster asks Let's Encrypt itself.
+        self.assertIsNone(website["acme"])
+        self.assertTrue(Path(website["package"]).joinpath("build-source.sha256").name)
+        site = json.loads((self.work / "files" / "site.json").read_text())
+        self.assertEqual(
+            site,
+            {
+                "cluster_name": "labcluster",
+                "logo": None,
+                "login_address": "cluster.example.org",
+                "home_quota_soft_gb": 300,
+                "home_quota_hard_gb": 400,
+                "scratch_cleanup_days": 14,
+            },
+        )
+
+    def test_front_build_variables(self) -> None:
+        """build: front builds the source shipped in the package; its hash names the release, and matches the
+        prebuilt site's, since both come from the same source."""
+        self.config["cluster"]["website"]["build"] = "front"
+        prepare(self.config, self.hostnames, None, False, [], self.work)
+        website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
+        self.assertEqual(website["build"], "front")
+        self.assertTrue((Path(website["source"]) / "package-lock.json").is_file())
+        built = (Path(website["package"]) / "build-source.sha256").read_text().strip()
+        self.assertEqual(website["source_hash"], built)
+        self.assertEqual(set(website["node"]["sha256"]), {"x64", "arm64"})
+
+    def test_simulated_cluster_uses_the_test_certificate_server(self) -> None:
+        """A simulated cluster cannot reach Let's Encrypt: it asks Pebble, its test server, on the front node."""
+        prepare(self.config, self.hostnames, None, True, [], self.work)
+        website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
+        self.assertEqual(website["acme"]["server"], "https://127.0.0.1:14000/dir")
+        self.assertEqual(website["acme"]["ca_bundle"], "/etc/nanohpc/test-acme/ca.pem")
+
+    def test_logo_name_in_site_data(self) -> None:
+        self.config["cluster"]["website"]["logo"] = "/somewhere/Lab Logo.SVG"
+        prepare(self.config, self.hostnames, None, False, [], self.work)
+        self.assertEqual(json.loads((self.work / "files" / "site.json").read_text())["logo"], "logo.svg")
+        website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
+        self.assertEqual(website["logo"], {"source": "/somewhere/Lab Logo.SVG", "name": "logo.svg"})
+
     def test_monitor_machines(self) -> None:
         """The status collector checks each machine's role, required services, and mounts."""
         prepare(self.config, self.hostnames, None, True, [], self.work)
@@ -110,7 +164,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(machines["store"], {"role": "storage", "units": [], "mounts": ["/"]})
         self.assertEqual(sorted(machines), sorted(self.config["machines"]))
         # With /home on a storage machine, that machine runs the NFS server and the front node mounts /home.
-        config, errors = load_config(ROOT / "tests" / "sim" / "cluster-home-on-storage.yml")
+        config, errors = load_config(ROOT / "tests" / "sim" / "cluster-home-on-storage.yml", True)
         assert errors == [], errors
         machines = monitor_machines(config)
         storage = [name for name, machine in config["machines"].items() if "home" in machine["roles"]]

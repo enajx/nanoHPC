@@ -1,0 +1,52 @@
+# Write the nginx site for the current certificate (none yet: port 80 only), check the whole nginx
+# configuration, and put the previous file back if the check fails.
+- name: Write the nginx site
+  ansible.builtin.template:
+    src: website.conf.j2
+    dest: /etc/nginx/conf.d/nanohpc-website.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  vars:
+    website: "{{ nanohpc.website }}"
+  register: nginx_site
+
+- name: Check the nginx configuration
+  ansible.builtin.command: nginx -t
+  register: nginx_check
+  changed_when: false
+  failed_when: false
+
+- name: Put the previous nginx site back after a failed check
+  ansible.builtin.copy:
+    src: "{{ nginx_site.backup_file }}"
+    dest: /etc/nginx/conf.d/nanohpc-website.conf
+    remote_src: true
+    mode: "0644"
+  when: nginx_check.rc != 0 and nginx_site.backup_file is defined
+
+# On a first deploy there is no previous file: remove the bad one so nginx can still start.
+- name: Remove a first nginx site that failed the check
+  ansible.builtin.file:
+    path: /etc/nginx/conf.d/nanohpc-website.conf
+    state: absent
+  when: nginx_check.rc != 0 and nginx_site.backup_file is not defined
+
+- name: Stop on a bad nginx configuration
+  ansible.builtin.fail:
+    msg: "{{ inventory_hostname }}: nginx rejected the website configuration: {{ nginx_check.stderr }}"
+  when: nginx_check.rc != 0
+
+- name: Remove the backup of the nginx site
+  ansible.builtin.file:
+    path: "{{ nginx_site.backup_file }}"
+    state: absent
+  when: nginx_site.backup_file is defined
+  changed_when: false
+
+- name: Run nginx with the website
+  ansible.builtin.systemd_service:
+    name: nginx
+    enabled: true
+    state: "{{ 'reloaded' if (nginx_site.changed or default_site.changed) else 'started' }}"

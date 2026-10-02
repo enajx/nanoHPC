@@ -55,3 +55,8 @@ logs/
 
 # nanohpc sim state (generated VM addresses and SSH config)
 .nanohpc-sim/
+
+# Website dependencies (installed with npm ci in src/nanohpc/website-source/)
+src/nanohpc/website-source/node_modules/
+src/nanohpc/website-source/test-results/
+src/nanohpc/website-source/playwright-report/

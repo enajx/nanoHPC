@@ -18,7 +18,7 @@ flowchart LR
   C --> SIM[Simulated cluster]:::done
   SIM --> S[Slurm + accounts + storage]:::done
   S --> M[Monitoring]:::done
-  M --> W[Website from config]:::queued
+  M --> W[Website from config]:::done
   S --> BK[Backup + alerts + auto-deploy]:::queued
   C --> WZ[Wizard]:::queued
   S --> N[Add node + redeploy]:::queued
@@ -85,10 +85,11 @@ flowchart LR
 
 - [x] Health checks report stale GPU readings, stale machine specs, missing metrics, and failing daily rules (`cluster-health` on the front node).
 - [ ] `stage-dataset --shared` stages datasets from a shared datasets area (needs that area first).
-- [ ] Scratch copies that `cluster-submit` keeps after a failed job (`/scratch/<user>/cluster-jobs/job-*`, kept so the user can look at them) are cleaned up after some days; today only the user can remove them, and the daily cleanup only handles staged data.
+- [ ] Scratch copies that `cluster-submit` keeps after a failed job (`/scratch/<user>/cluster-jobs/job-*`, kept so the user can look at them) are cleaned up after some days; today only the user can remove them, and the daily cleanup only handles staged data. The source deployment added this on 2026-10-02 (`scratch-job-cleanup`: copies removed 7 days after their job ended), to port.
 - [ ] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on the simulated cluster; no test reboots a machine yet).
 - [ ] XFS home and scratch disks, and quota enforcement over NFS (a user over the hard limit cannot write), are checked on the simulated cluster.
 - [ ] Quotas survive kernel upgrades: on Ubuntu cloud kernels the quota modules come from `linux-modules-extra-<kernel>`, which nanoHPC installs for the running kernel only. After a kernel upgrade the `/home` mount with quotas could fail at boot until the next deploy.
+- [ ] Admins have direct access to computing nodes even if the front node is down: every machine, front and compute, is reachable directly over SSH, and an administrator can log in and use sudo on any machine while the home server is down. Today the login is accepted (keys and accounts are local) but can hang on the `hard` NFS `/home` mount, and on Ubuntu 26.04 sudo by forwarded key needs the agent socket in the NFS home; a recovery login that does not touch NFS is also missing: key-only root login for the administrators in `cluster.yml` on every machine, with the keys on local disk (agreed 2026-10-02). Checked on the simulated cluster by stopping the home server. The source deployment has recent work on this (`roles/ssh_access`, `playbooks/admin-access.yml`, uncommitted on 2026-10-02) to look at.
 
 ### Monitoring and website
 
@@ -96,30 +97,34 @@ flowchart LR
 - [x] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
 - [x] Daily summaries are kept for 5 years (the history Prometheus).
 - [x] The daily summaries are shown in the long-term history in Grafana.
-- [ ] The daily summaries are shown in the long-term history on the website.
+- [x] The daily summaries are shown in the long-term history on the website.
 - [x] Grafana dashboards (queue, queue history, GPU usage, machines, long-term history) work for any number of nodes, GPU and CPU-only.
 - [x] The status collector writes the website snapshot every 30 seconds.
-- [ ] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
-- [ ] Cluster name, logo, login address, and the user guide on the website come from the configuration.
-- [ ] The website is served by its own nginx over HTTPS, with a Let's Encrypt certificate or the administrator's own certificate.
-- [ ] The website is served under a configurable path (default `/cluster/`), with Grafana under it.
-- [ ] nanoHPC prints ready-made forwarding rules (nginx, Apache, Caddy) so a lab's own website can show the cluster site at `labwebsite.com/cluster/`.
-- [ ] Anyone can read the website by default (no login); `cluster.yml` can limit it to listed networks.
-- [ ] The website ships prebuilt in the nanoHPC package; `cluster.yml` can choose to build it on the front node instead.
-- [ ] Let's Encrypt certificates are requested and renewed on the simulated cluster, against Pebble (Let's Encrypt's test server).
+- [x] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
+- [x] Cluster name, logo, login address, and the user guide on the website come from the configuration.
+- [x] The website is served by its own nginx over HTTPS, with a Let's Encrypt certificate or the administrator's own certificate.
+- [x] The website is served under a configurable path (default `/cluster/`), with Grafana under it.
+- [x] nanoHPC prints ready-made forwarding rules (nginx, Apache, Caddy) so a lab's own website can show the cluster site at `labwebsite.com/cluster/`.
+- [x] Anyone can read the website by default (no login); `cluster.yml` can limit it to listed networks.
+- [x] The website ships prebuilt in the nanoHPC package; `cluster.yml` can choose to build it on the front node instead.
+- [x] Let's Encrypt certificates are requested and renewed on the simulated cluster, against Pebble (Let's Encrypt's test server).
 - [ ] The Machines page shows a minimal retro-style animated diagram of the cluster architecture, which users can turn on and off with a button.
+
+- [ ] Website follow-ups: the printed forwarding rules are tried with real nginx, Apache, and Caddy (with `forwarded_by`); switching between certificate types, hostnames, paths, and build modes is checked on the simulated cluster; nginx starts on machines with IPv6 turned off.
 
 ### Backup, alerts, and auto-deploy
 
 - [ ] `/home` is copied every night with rsync to the backup machine in the cluster or to an outside SSH server.
 - [ ] Health checks can send alerts to Slack (off by default).
-- [ ] The front node can redeploy automatically when the administrator's configuration repository changes on GitHub (off by default).
+- [ ] The front node can redeploy the whole cluster automatically when the administrator's configuration repository changes on GitHub (off by default): it pulls the repository and deploys every machine itself, with no one logging in and no password (agreed 2026-10-02: full-cluster pull, so the front node gets root SSH access to every machine; details planned with the user when M6 starts). `nanohpc deploy` from the administrator's machine stays. Each automatic deploy runs the dry run first and applies only if it passed; otherwise it stops, leaves the cluster as it is, and sends an alert.
 
 ### Commands
 
 - [ ] `nanohpc` is installed with `uv tool install` and runs from any machine with SSH access to the cluster.
+- [ ] Every deploy runs a read-only dry run first (Ansible check mode on every machine; nothing changes) and continues to the real run on its own only if the dry run passed. A failed dry run stops with the cluster unchanged and says what failed. Every role works in check mode (a first deploy of a new machine can only be partly previewed).
 - [ ] `nanohpc init` is a wizard that writes a whole `cluster.yml` with simple defaults, and probes the machines over SSH for CPUs, memory, and GPU type and count.
 - [ ] The wizard guides the administrator through preparing the machines (for example making the filesystems on the home and scratch disks), with hints for each step and the option to skip and do it themselves. It mentions `ssh-add -c` (confirm each use of the key, for example to watch an agent) as an option, not the default, and says that a deploy uses the key for every sudo call, so `-c` asks many times during a deploy.
+- [ ] The wizard and the docs explain the three kinds of storage (home: small, safe, backed up; shared scratch: large, fast, cleaned by age; local scratch: per machine, per job), recommend a faster network (10 GbE or more) before adding shared storage, and suggest moving `/home` off the front node to its own storage machine (or a NAS) as the cluster grows.
 - [ ] The wizard asks for the website's hostname, path, HTTPS choice, and who can open it, and recommends (says it is not required) a private network such as WireGuard or Tailscale for security and simpler administrator access.
 - [ ] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid`. The deploy's stop on a UID conflict stays as a safety net.
 - [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
@@ -144,7 +149,10 @@ flowchart LR
 - [ ] Test nanoHPC on non-Ubuntu machines.
 - [ ] Move the REAL cluster from SLURM-REAL to nanoHPC (maybe, not planned).
 - [ ] A link to a live demo in the GitHub repository, so people can see what it looks like on a simulated cluster.
+- [ ] Optional shared scratch on a separate storage machine (not the front node), seen by every compute node: a fast NFS server with NVMe or SSD disks first, BeeGFS later. Files unused for N days (30 to 90) are deleted by a daily cleanup. Needs a fast network; `stage-dataset --shared` builds on it.
+- [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.
 
 ## Uncategorized
 
-- [ ] ...
+- [x] Compare the deployment mode with SLURM-REAL and pick one (2026-10-02: full-cluster pull for automatic deploys, next to `nanohpc deploy`; see the auto-deploy item).
+- [x] Check how SLURM-REAL does the auto deployment without the user having to SSH in manually and without entering the password every time the agent does something, then have a conversation with the user about whether nanoHPC does the same (relates to the auto-deploy item under "Backup, alerts, and auto-deploy" and the deployment mode comparison above).

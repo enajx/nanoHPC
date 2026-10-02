@@ -1,0 +1,146 @@
+# Simulated clusters only (nanohpc.website.acme is set by `nanohpc sim deploy`): Pebble, Let's Encrypt's
+# test server, on the front node, so the website's Let's Encrypt path (certbot, the challenge on port 80,
+# renewal) runs for real. Pebble checks the challenge at the website's hostname, which its companion DNS
+# server (pebble-challtestsrv) answers with the front node's address.
+# Pebble's own HTTPS address uses a certificate from a test authority made here; certbot trusts it through
+# /etc/nanohpc/test-acme/ca.pem. Certificates Pebble issues chain to a root it makes when it starts,
+# readable at https://127.0.0.1:15000/roots/0.
+
+- name: Set up Pebble
+  when: nanohpc.website.acme is not none
+  block:
+    - name: Name the downloads for this machine's CPU type
+      ansible.builtin.set_fact:
+        acme_arch: "{{ 'arm64' if ansible_facts.architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+        pebble:
+          version: "2.10.1"
+          sha256:
+            pebble-amd64: 4f2fcb5bca8c85c9cf73ad140fccfc0d2be40bd81ab99879c79b7b8a0b4f70ed
+            pebble-arm64: b53fd072a69eb7692451de4e8b0667e0bdf5cccd7e36fc51b8eaf2fcc135ed9f
+            pebble-challtestsrv-amd64: e93a5aa25ecdf3af2f9fbb2de32b0173e64a2eae81002a4ccfe35fa6f4f60b92
+            pebble-challtestsrv-arm64: db8e1a79ccdb2195c489fbe4f40fddb7f30e86f9cd8a07912566ee5025094d6c
+
+    - name: Create the test certificate server folders
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [/opt/nanohpc-test-acme, /etc/nanohpc/test-acme]
+
+    - name: Download Pebble and its DNS server, checking their SHA-256
+      ansible.builtin.get_url:
+        url: "https://github.com/letsencrypt/pebble/releases/download/v{{ pebble.version }}/{{ item }}-linux-{{ acme_arch }}.tar.gz"
+        dest: "/var/tmp/{{ item }}-{{ pebble.version }}-linux-{{ acme_arch }}.tar.gz"
+        checksum: "sha256:{{ pebble.sha256[item + '-' + acme_arch] }}"
+        mode: "0644"
+      loop: [pebble, pebble-challtestsrv]
+
+    - name: Unpack Pebble and its DNS server
+      ansible.builtin.unarchive:
+        src: "/var/tmp/{{ item }}-{{ pebble.version }}-linux-{{ acme_arch }}.tar.gz"
+        dest: /opt/nanohpc-test-acme
+        remote_src: true
+        extra_opts: ["--strip-components=3", --no-same-owner]
+        owner: root
+        group: root
+        creates: "/opt/nanohpc-test-acme/{{ item }}"
+      loop: [pebble, pebble-challtestsrv]
+
+    # The release archives hold the programs without the executable bit.
+    - name: Make Pebble and its DNS server executable
+      ansible.builtin.file:
+        path: "/opt/nanohpc-test-acme/{{ item }}"
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [pebble, pebble-challtestsrv]
+
+    - name: Make the test authority and Pebble's own certificate
+      ansible.builtin.shell: |
+        set -eu
+        cd /etc/nanohpc/test-acme
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+          -subj "/CN=nanoHPC test ACME authority" -keyout ca.key -out ca.pem
+        openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=localhost" \
+          -keyout pebble.key -out pebble.csr
+        printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\n' > pebble.ext
+        openssl x509 -req -in pebble.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 3650 \
+          -extfile pebble.ext -out pebble.pem
+        chmod 0600 ca.key pebble.key
+      args:
+        creates: /etc/nanohpc/test-acme/pebble.pem
+
+    - name: Install Pebble's configuration
+      ansible.builtin.copy:
+        dest: /etc/nanohpc/test-acme/pebble.json
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {
+            "pebble": {
+              "listenAddress": "127.0.0.1:14000",
+              "managementListenAddress": "127.0.0.1:15000",
+              "certificate": "/etc/nanohpc/test-acme/pebble.pem",
+              "privateKey": "/etc/nanohpc/test-acme/pebble.key",
+              "httpPort": 80,
+              "tlsPort": 443,
+              "ocspResponderURL": "",
+              "externalAccountBindingRequired": false
+            }
+          }
+      register: pebble_config
+
+    - name: Install the Pebble services
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ item.name }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description={{ item.description }} (nanoHPC simulated cluster only)
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          {% for setting in item.environment %}
+          Environment={{ setting }}
+          {% endfor %}
+          ExecStart={{ item.command }}
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      loop:
+        - name: nanohpc-test-acme-dns
+          description: Test DNS answering the website hostname with the front node's address
+          environment: []
+          command: >-
+            /opt/nanohpc-test-acme/pebble-challtestsrv -dnsserver 127.0.0.1:8053 -http01 "" -https01 "" -tlsalpn01 ""
+            -doh "" -management 127.0.0.1:8055 -defaultIPv4 {{ nanohpc.machines[inventory_hostname].address }} -defaultIPv6 ""
+        - name: nanohpc-test-acme
+          description: Pebble, Let's Encrypt's test server
+          environment: [PEBBLE_VA_NOSLEEP=1, PEBBLE_WFE_NONCEREJECT=0]
+          command: /opt/nanohpc-test-acme/pebble -config /etc/nanohpc/test-acme/pebble.json -dnsserver 127.0.0.1:8053
+      loop_control:
+        label: "{{ item.name }}"
+      register: pebble_units
+
+    - name: Run the test DNS server and Pebble
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        daemon_reload: "{{ pebble_units.changed }}"
+        state: "{{ 'restarted' if (pebble_units.changed or pebble_config.changed) else 'started' }}"
+      loop: [nanohpc-test-acme-dns, nanohpc-test-acme]
+
+    - name: Wait until Pebble answers
+      ansible.builtin.command: curl --silent --fail --cacert /etc/nanohpc/test-acme/ca.pem https://127.0.0.1:14000/dir
+      register: pebble_ready
+      until: pebble_ready.rc == 0
+      retries: 15
+      delay: 2
+      changed_when: false

@@ -4,7 +4,9 @@
 administrator can fix them all in one pass. Nothing is changed on any machine here.
 """
 
+import ipaddress
 import re
+import subprocess
 from collections.abc import Hashable, Mapping
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,28 @@ ALERTS_DEFAULTS: dict[str, Any] = {"slack": False}
 AUTO_DEPLOY_DEFAULTS: dict[str, Any] = {"enabled": False, "repository": None}
 
 CLUSTER_NAME = re.compile(r"[a-z][a-z0-9-]{0,39}")
+DNS_NAME = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*")
+URL_PATH = re.compile(r"/([A-Za-z0-9._~-]+/)*([A-Za-z0-9._~-]+)?")
+
+
+def is_network(value: str) -> bool:
+    """Return whether a value is an IPv4 or IPv6 network (an address alone is a one-address network)."""
+    try:
+        ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
+def is_address(value: str) -> bool:
+    """Return whether a value is an IPv4 or IPv6 address."""
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
 MACHINE_NAME = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]*")
 HOST_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
 USER_NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
@@ -208,11 +232,16 @@ def check_cluster(checker: Checker, value: Any, users: set[str]) -> dict[str, An
             cluster["website"],
             "cluster.website",
             ("hostname", "https"),
-            ("certificate", "certificate_key", "logo", "login_address"),
+            ("certificate", "certificate_key", "logo", "login_address", "path", "allow", "forwarded_by", "build"),
         )
         if website is not None:
             if "hostname" in website:
-                checker.matches(website["hostname"], HOST_NAME, "cluster.website.hostname", "a host name")
+                # Lowercase, as certificates store it; Let's Encrypt refuses names with underscores.
+                hostname = website["hostname"]
+                if isinstance(hostname, str) and DNS_NAME.fullmatch(hostname.lower()):
+                    website["hostname"] = hostname.lower()
+                else:
+                    checker.fail("cluster.website.hostname", "must be a DNS name (letters, digits, - and .)")
             https = website.get("https")
             if "https" in website and https not in ("letsencrypt", "own"):
                 checker.fail("cluster.website.https", "must be letsencrypt or own")
@@ -227,10 +256,36 @@ def check_cluster(checker: Checker, value: Any, users: set[str]) -> dict[str, An
                 checker.fail("cluster.website.logo", "must be a file path")
             if website.get("login_address") is not None:
                 checker.matches(website["login_address"], HOST_NAME, "cluster.website.login_address", "a host name")
+            path = website.get("path", "/cluster/")
+            if (
+                not isinstance(path, str)
+                or not URL_PATH.fullmatch(path)
+                or any(part in (".", "..") for part in path.split("/"))
+            ):
+                checker.fail("cluster.website.path", 'must be a URL path such as "/cluster/" or "/"')
+            else:
+                website["path"] = path if path.endswith("/") else path + "/"
+            allow = website.get("allow", [])
+            if not isinstance(allow, list):
+                checker.fail("cluster.website.allow", "must be a list of networks, such as [10.0.0.0/8]")
+            else:
+                for index, network in enumerate(allow):
+                    if not isinstance(network, str) or not is_network(network):
+                        checker.fail(f"cluster.website.allow[{index}]", "must be a network, such as 10.0.0.0/8")
+                website["allow"] = allow
+            forwarded_by = website.get("forwarded_by")
+            if forwarded_by is not None and not (isinstance(forwarded_by, str) and is_address(forwarded_by)):
+                checker.fail("cluster.website.forwarded_by", "must be an IP address (the lab web server's)")
+            if website.get("build", "package") not in ("package", "front"):
+                checker.fail("cluster.website.build", "must be package or front")
+            website.setdefault("path", "/cluster/")
+            website.setdefault("forwarded_by", None)
+            website.setdefault("build", "package")
             website.setdefault("certificate", None)
             website.setdefault("certificate_key", None)
             website.setdefault("logo", None)
-            website.setdefault("login_address", website.get("hostname"))
+            if website.get("login_address") is None:
+                website["login_address"] = website.get("hostname")
             cluster["website"] = website
     return cluster
 
@@ -626,10 +681,65 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
     return config, checker.errors
 
 
-def load_config(path: Path) -> tuple[dict[str, Any], list[str]]:
-    """Read and validate a cluster.yml file. Duplicate keys are reported as errors."""
+def load_config(path: Path, check_files: bool) -> tuple[dict[str, Any], list[str]]:
+    """Read and validate a cluster.yml file. Duplicate keys are reported as errors. With `check_files`, the
+    website's certificate, key, and logo paths are resolved against the file's folder and must exist."""
     loader = UniqueKeyLoader(path.read_text())
     raw = loader.get_single_data()
     loader.dispose()
     config, errors = check_config(raw)
+    if check_files and not errors:
+        errors = website_files(config["cluster"]["website"], path.parent)
     return config, loader.duplicates + errors
+
+
+LOGO_TYPES = (".png", ".svg", ".jpg", ".webp")
+
+
+def website_files(website: dict[str, Any], folder: Path) -> list[str]:
+    """Resolve the website's certificate, key, and logo paths (on the administrator's machine, relative to
+    cluster.yml's folder) to absolute paths, and report missing files and unsupported logo types."""
+    errors = []
+    for key in ("certificate", "certificate_key", "logo"):
+        if website[key] is None:
+            continue
+        path = (folder / Path(website[key]).expanduser()).resolve()
+        website[key] = str(path)
+        if not path.is_file():
+            errors.append(f"cluster.website.{key}: {path} not found")
+        elif key == "logo" and path.suffix.lower() not in LOGO_TYPES:
+            errors.append("cluster.website.logo must be a .png, .svg, .jpg, or .webp file")
+    if website["https"] == "own" and not errors:
+        errors = own_certificate_errors(website)
+    return errors
+
+
+def openssl(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run openssl on the administrator's machine and return its result."""
+    return subprocess.run(["openssl", *arguments], capture_output=True, text=True, check=False)
+
+
+def own_certificate_errors(website: dict[str, Any]) -> list[str]:
+    """Check the administrator's own certificate before any machine is touched: a PEM certificate, matching its
+    key, for the website hostname (or a wildcard covering it), and not expired."""
+    certificate, key = website["certificate"], website["certificate_key"]
+    public = openssl(["x509", "-noout", "-pubkey", "-in", certificate])
+    if public.returncode != 0:
+        return ["cluster.website.certificate is not a PEM certificate"]
+    key_public = openssl(["pkey", "-pubout", "-in", key])
+    if key_public.returncode != 0:
+        return ["cluster.website.certificate_key is not a PEM private key without a passphrase"]
+    errors = []
+    if key_public.stdout.strip() != public.stdout.strip():
+        errors.append("cluster.website.certificate_key does not match cluster.website.certificate")
+    text = openssl(["x509", "-noout", "-text", "-in", certificate]).stdout
+    names = [name.lower() for name in re.findall(r"DNS:([^\s,]+)", text)]
+    hostname = website["hostname"]
+    wildcard = "*." + hostname.split(".", 1)[-1]
+    if hostname not in names and wildcard not in names:
+        errors.append(
+            f"cluster.website.certificate is not for {hostname} (it names {', '.join(names) or 'no DNS name'})"
+        )
+    if openssl(["x509", "-noout", "-checkend", "0", "-in", certificate]).returncode != 0:
+        errors.append("cluster.website.certificate has expired")
+    return errors

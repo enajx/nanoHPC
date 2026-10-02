@@ -7,6 +7,7 @@ from pathlib import Path
 
 from nanohpc import deploy, sim
 from nanohpc.config import load_config
+from nanohpc.render import render_forwarding_rules
 
 
 def validate(path: Path) -> int:
@@ -14,7 +15,7 @@ def validate(path: Path) -> int:
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
         return 1
-    config, errors = load_config(path)
+    config, errors = load_config(path, True)
     if errors:
         print(f"{path}: {len(errors)} error(s)", file=sys.stderr)
         for error in errors:
@@ -31,13 +32,36 @@ def run_deploy(path: Path, ssh_config: Path | None) -> int:
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
         return 1
-    config, errors = load_config(path)
+    config, errors = load_config(path, True)
     if errors:
         print(f"{path}: {len(errors)} error(s); nothing was changed", file=sys.stderr)
         for error in errors:
             print(f"  {error}", file=sys.stderr)
         return 1
     return deploy.deploy(config, ssh_config, False, [])
+
+
+def forwarding_rules(path: Path) -> int:
+    """Print the rules a lab's own web server needs to show the cluster website under the same path."""
+    if not path.is_file():
+        print(f"{path}: file not found", file=sys.stderr)
+        return 1
+    # The rules need no certificate or logo file.
+    config, errors = load_config(path, False)
+    if errors:
+        print(f"{path}: {len(errors)} error(s)", file=sys.stderr)
+        for error in errors:
+            print(f"  {error}", file=sys.stderr)
+        return 1
+    if config["cluster"]["website"]["path"] == "/":
+        print(
+            f"{path}: the website uses the whole hostname (path /); to show it on a lab website,"
+            " set cluster.website.path, for example /cluster/",
+            file=sys.stderr,
+        )
+        return 1
+    print(render_forwarding_rules(config), end="")
+    return 0
 
 
 def simulate(action: str, path: Path, ssh_config: Path | None) -> int:
@@ -66,7 +90,7 @@ def simulate(action: str, path: Path, ssh_config: Path | None) -> int:
         if not (state / "cluster.yml").is_file():
             print(f"{plan.name} is not up: run nanohpc sim up {path} first", file=sys.stderr)
             return 1
-        config, errors = load_config(state / "cluster.yml")
+        config, errors = load_config(state / "cluster.yml", True)
         if errors:
             print("\n".join([f"{state / 'cluster.yml'}: {error}" for error in errors]), file=sys.stderr)
             return 1
@@ -85,6 +109,10 @@ def main() -> None:
     setup = commands.add_parser("deploy", help="set up the cluster described by a cluster.yml")
     setup.add_argument("path", type=Path, help="path to cluster.yml")
     setup.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
+    rules = commands.add_parser(
+        "forwarding-rules", help="print rules for the lab's own web server to show the cluster website"
+    )
+    rules.add_argument("path", type=Path, help="path to cluster.yml")
     simulation = commands.add_parser("sim", help="simulated test cluster of Lima VMs (for testing nanoHPC)")
     simulation.add_argument(
         "action", choices=("up", "deploy", "down"), help="start, set up, or remove the simulated cluster"
@@ -98,5 +126,7 @@ def main() -> None:
         sys.exit(validate(arguments.path))
     if arguments.command == "deploy":
         sys.exit(run_deploy(arguments.path, arguments.ssh_config))
+    if arguments.command == "forwarding-rules":
+        sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":
         sys.exit(simulate(arguments.action, arguments.path, arguments.ssh_config))
