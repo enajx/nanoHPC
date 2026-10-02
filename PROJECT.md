@@ -127,7 +127,8 @@ flowchart LR
 - Built: metrics (M4a): certificates issued and renewed by a private authority on the front node, node exporters over mutual TLS on every machine, machine-spec and GPU collectors, Prometheus with 90-day detail and 5-year daily history.
 - Built: the status collector and Grafana (M4b): a 30-second `status.json` snapshot for the website, machine health from each machine's required services and mounts, users' quotas from the home machine, and six read-only Grafana dashboards on the front node's localhost. With this, monitoring (M4) is done.
 - Built: the website (M5): content from `cluster.yml` and the status snapshot, served by nginx on the front node under a configurable path (default `/cluster/`) over HTTPS (Let's Encrypt or the administrator's own certificate), optionally limited to listed networks, with forwarding rules for a lab's own website. Checked with a real browser on the simulated cluster. See [testing.md](md/testing.md).
-- Next: backup, alerts, and automatic deploys (M6), planned with the user first. Agreed so far: full-cluster pull for automatic deploys, a dry run before every deploy, and key-only root login for administrators ([plan-port.md](md/plan-port.md)).
+- Built: nightly `/home` backup to the backup machine or an outside SSH server, and Slack alerts from the front node when a check starts failing or recovers (M6a).
+- Next: automatic deploys (M6b): the front node deploys the whole cluster from the configuration repository by itself. Agreed for later: a dry run before every deploy (M8) and key-only root login for administrators ([plan-port.md](md/plan-port.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
