@@ -101,6 +101,13 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
   - `cluster.yml` (agreed 2026-10-02): top-level `nanohpc_version`; `auto_deploy.branch` (default `main`), `auto_deploy.every_minutes` (default 10), `auto_deploy.webhook` (default false; GitHub calls `https://<website hostname><path>deploy-hook`, signed with `NANOHPC_DEPLOY_WEBHOOK_SECRET` from `.env`); `alerts.slack` reads `NANOHPC_SLACK_WEBHOOK` from `.env` next to `cluster.yml`. Done in two steps: M6a backup and alerts, M6b automatic deploys.
 - **Admin recovery access**: key-only root login for the administrators in `cluster.yml` on every machine, keys on local disk, so it works when the front node or `/home` is down (like the source deployment's `ssh_access`).
 
+## M6a (backup and alerts): choices made by the agent, to review
+
+- Alerts: every machine runs `cluster-health` every 5 minutes and writes each check's state as metrics; Prometheus alert rules (a check failing or warning, health checks not running, a machine's metrics missing, a failed or old backup) go to Alertmanager 0.34.1 on the front node's localhost, which posts to Slack when an alert starts and when it resolves, and does not repeat it. The webhook is a root-owned file on the front node that only Alertmanager can read. The source deployment's alerts were an hourly check of its backup and scratch use, without recovery messages.
+- Backup to the cluster's backup machine: the home machine pushes `/home` with rsync over SSH (its own key) to an unprivileged `nanohpc-backup` account on the backup machine. That key may only run rsync into the backup folder, from the home machine's address; file owners and permissions are kept with rsync's `--fake-super` (stored as extended attributes), so the backup machine needs no root login. Restoring uses the same key from the home machine.
+- Backup to an outside SSH server (`user@host:/path`): the deploy prints the home machine's public backup key to install there; owners are kept only if that account can keep them.
+- The backup's result (time of the last success, exit code) is a metric; `cluster-health` on the home machine warns when the last successful backup is more than 26 hours old.
+
 ## Simulated cluster
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).

@@ -797,6 +797,42 @@ class SimDeployTest(SimUsersBase):
                 time.sleep(5)
             self.assertGreaterEqual(jobs, 1)
 
+        with self.subTest("nightly /home mirror to the backup machine: owners kept, deletions mirrored, restore"):
+            backup = config["machines"]["store"]["backup"]["path"].rstrip("/") + "/home"
+            self.on_front(
+                "sudo -u alice sh -c 'mkdir -p ~/keep && echo precious > ~/keep/data.txt && echo old > ~/gone.txt'"
+            )
+            self.on_front("sudo systemctl start nanohpc-backup.service")
+            self.assertIn(
+                "cluster_backup_last_exit_code 0", self.on_front("cat /var/lib/nanohpc/metrics-textfile/backup.prom")
+            )
+            stored = self.ssh("store", f"sudo cat {backup}/alice/keep/data.txt")
+            self.assertEqual(stored.stdout.strip(), "precious", stored.stderr)
+            # The unprivileged account owns the copy; the real owner is kept as an extended attribute.
+            self.assertEqual(
+                self.ssh("store", f"sudo stat -c %U {backup}/alice/keep/data.txt").stdout.strip(), "nanohpc-backup"
+            )
+            attributes = self.ssh(
+                "store", f"sudo python3 -c 'import os; print(os.listxattr(\"{backup}/alice/keep/data.txt\"))'"
+            )
+            self.assertIn("user.rsync.%stat", attributes.stdout, attributes.stderr)
+            # One mirror: a file deleted from /home is deleted from the copy at the next run.
+            self.on_front("sudo -u alice rm ~alice/gone.txt && sudo systemctl start nanohpc-backup.service")
+            self.assertEqual(self.ssh("store", f"sudo test -e {backup}/alice/gone.txt").returncode, 1)
+            # Restore one user's folder with the same key: owners come back.
+            ssh_options = "ssh -i /etc/nanohpc/backup/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/etc/nanohpc/backup/known_hosts"
+            store = config["machines"]["store"]["address"]
+            self.on_front(
+                f"sudo rsync -a --numeric-ids --rsync-path='rsync --fake-super' -e '{ssh_options}' "
+                f"nanohpc-backup@{store}:{backup}/alice/keep/ /tmp/restored/"
+            )
+            self.assertEqual(self.on_front("stat -c %U /tmp/restored/data.txt").strip(), "alice")
+            # The key can only run rsync on the backup folder.
+            shell = self.ssh("front", f"sudo {ssh_options} nanohpc-backup@{store} id")
+            self.assertNotEqual(shell.returncode, 0)
+            self.assertNotIn("uid=", shell.stdout)
+            self.assertEqual(self.on_front("systemctl is-active nanohpc-backup.timer").strip(), "active")
+
         with self.subTest("partition rules and limits"):
             shell = self.run_command(
                 "ssh", "-tt", "-F", str(self.state / "ssh_config"), "front",
@@ -854,6 +890,74 @@ class SimDeployTest(SimUsersBase):
             self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
             self.assertNotEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
             self.assertEqual(self.ssh("front", "test -e /etc/ssh/authorized_keys/bob").returncode, 1)
+
+        with self.subTest("Slack alerts from the front node: a failing check on a machine, and its recovery"):
+            # A stand-in for Slack on the front node records what Alertmanager posts.
+            receiver = textwrap.dedent("""
+                import http.server
+                class Hook(http.server.BaseHTTPRequestHandler):
+                    def do_POST(self):
+                        body = self.rfile.read(int(self.headers["Content-Length"]))
+                        with open("/tmp/slack.log", "ab") as log:
+                            log.write(body + b"\\n")
+                        # Like Slack's incoming webhooks: 200 with the body "ok".
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/plain")
+                        self.send_header("Content-Length", "2")
+                        self.end_headers()
+                        self.wfile.write(b"ok")
+                http.server.HTTPServer(("127.0.0.1", 18080), Hook).serve_forever()
+            """)
+            self.assertEqual(self.ssh("front", "cat > /tmp/slack.py", stdin=receiver).returncode, 0)
+            self.on_front("rm -f /tmp/slack.log; (nohup python3 /tmp/slack.py >/dev/null 2>&1 &)")
+            self.addCleanup(self.ssh, "front", "pkill -f /tmp/slack.py")
+            with_slack = yaml.safe_load(cluster.read_text())
+            with_slack["alerts"]["slack"] = True
+            cluster.write_text(yaml.safe_dump(with_slack))
+            (cluster.parent / ".env").write_text("NANOHPC_SLACK_WEBHOOK=http://127.0.0.1:18080/slack\n")
+            result = self.deploy(self.state / "ssh_config", agent=False)
+            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            # The webhook is a secret: not in the deploy's output, its variables, or a file left behind.
+            self.assertNotIn("18080", result.stdout + result.stderr)
+            work = Path.home() / ".cache/nanohpc/clusters/labcluster"
+            self.assertNotIn("18080", (work / "vars.json").read_text())
+            self.assertFalse((work / "secrets.json").exists())
+
+            def posted(*texts: str) -> bool:
+                """Whether one message posted to the stand-in Slack contains all these texts."""
+                messages = self.ssh("front", "cat /tmp/slack.log 2>/dev/null").stdout.splitlines()
+                return any(all(text in message for text in texts) for message in messages)
+
+            # A check starts failing on cpu1: one problem message.
+            self.assertEqual(
+                self.ssh(
+                    "cpu1",
+                    "sudo systemctl stop nanohpc-scratch-cleanup.timer && sudo systemctl start nanohpc-health.service",
+                ).returncode,
+                0,
+            )
+            for _ in range(90):
+                if posted("Problem", "scratch cleanup timer", "cpu1"):
+                    break
+                time.sleep(10)
+            self.assertTrue(
+                posted("Problem", "scratch cleanup timer", "cpu1"), self.ssh("front", "cat /tmp/slack.log").stdout
+            )
+            # It recovers: one resolved message.
+            self.assertEqual(
+                self.ssh(
+                    "cpu1",
+                    "sudo systemctl start nanohpc-scratch-cleanup.timer && sudo systemctl start nanohpc-health.service",
+                ).returncode,
+                0,
+            )
+            for _ in range(90):
+                if posted("Resolved", "scratch cleanup timer", "cpu1"):
+                    break
+                time.sleep(10)
+            self.assertTrue(
+                posted("Resolved", "scratch cleanup timer", "cpu1"), self.ssh("front", "cat /tmp/slack.log").stdout
+            )
 
         with self.subTest("a UID conflict stops that machine only"):
             self.assertEqual(self.ssh("gpu2", "sudo useradd -u 3005 carol").returncode, 0)
