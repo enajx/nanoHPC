@@ -79,6 +79,8 @@ How the VMs are made:
 
 Real-VM tests (slow, off by default, `NANOHPC_SIM=1`):
 
+Run them one at a time on a laptop: with three test clusters up at once (12 VMs on a 10-CPU, 32 GB Mac), deploys failed on SSH and metrics timeouts that did not happen when each ran alone.
+
 Which ones to run (agreed 2026-10-03): while developing, only on Ubuntu 24.04: the everyday test, `/home` on the storage machine, the less common settings (`NANOHPC_SIM_FILE=variations` with `SimReleaseTest`), and the test of the feature being built. Ubuntu 22.04 and 26.04 (`NANOHPC_SIM_FILE=ubuntu-2204` and `ubuntu-2604`) run before the release.
 
 
