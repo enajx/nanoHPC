@@ -79,6 +79,11 @@ How the VMs are made:
 
 Real-VM tests (slow, off by default, `NANOHPC_SIM=1`):
 
+Run them one at a time on a laptop: with three test clusters up at once (12 VMs on a 10-CPU, 32 GB Mac), deploys failed on SSH and metrics timeouts that did not happen when each ran alone.
+
+Which ones to run (agreed 2026-10-03): while developing, only on Ubuntu 24.04: the everyday test, `/home` on the storage machine, the less common settings (`NANOHPC_SIM_FILE=variations` with `SimReleaseTest`), and the test of the feature being built. Ubuntu 22.04 and 26.04 (`NANOHPC_SIM_FILE=ubuntu-2204` and `ubuntu-2604`) run before the release.
+
+
 - `uv run python -m unittest tests.test_sim.SimClusterTest`: brings a cluster up, checks SSH, sudo, the cluster network, and the disks on every machine, then brings it down. `NANOHPC_SIM_FILE=large` picks another sim file.
 - `uv run python -m unittest tests.test_sim.SimReleaseTest` with `NANOHPC_SIM_FILE=ubuntu-2204` or `ubuntu-2604`: deploys a small cluster (front node, one fake-GPU node, one CPU node) on that Ubuntu release and checks the stop for a scratch disk with no filesystem, Slurm nodes, jobs, sudo by forwarded key on every machine, the shared `/home` and quotas, scratch, a repeat deploy with no changes, and a later deploy as an administrator. The 22.04 cluster keeps `/home` on the root disk (no `home.device`). Each release builds its own Slurm packages the first time.
 - `uv run python -m unittest tests.test_sim.SimHomeOnStorageTest`: `/home` served by the storage machine; checks that a machine whose local `/home` holds data stops, then the NFS mounts, shared files, a repeat deploy with no changes, and the users' quotas (read on the storage machine) in the front node's status snapshot.
@@ -91,6 +96,11 @@ Real-VM tests (slow, off by default, `NANOHPC_SIM=1`):
 - Real VMs: every VM test that deploys checks the website over HTTPS from the front node (certificate, pages, refused routes, `allow`), then opens every page in a real browser through an SSH tunnel to the front node (`npm run test:live`: real nginx, Grafana, and security headers; no refused requests, console errors, or blocked content). The VM tests therefore need Node and Playwright's Chromium on the machine that runs them.
 - Let's Encrypt on the simulated cluster: Pebble, Let's Encrypt's test server, runs on the front node with a test DNS server that answers the website hostname with the front node's address, so certbot's request, the challenge on port 80, and renewal run for real. For `https: own`, `sim up` makes a test certificate authority and a certificate for the hostname in `.nanohpc-sim/<name>/website-tls/`.
 - Which test cluster covers what: everyday: Let's Encrypt, path `/cluster/`; Ubuntu 22.04: own certificate, path `/`, a logo, `build: front`; Ubuntu 26.04: path `/hpc/` and an `allow` list that refuses the other machines.
+
+### Backup and alerts
+
+- Fast: `tests/test_cluster_backup.py` and `tests/test_backup_receive.py` run the backup and its forced command with real rsync 3.x (set `NANOHPC_TEST_RSYNC` to an rsync 3.x; macOS's own rsync is openrsync and cannot run them; without it those tests are skipped); `tests/test_cluster_health.py` (health checks as metrics, with fake commands); `tests/test_prometheus_rules.py` (alert rules with promtool, when promtool is on PATH).
+- Real VMs: the everyday test runs a backup to the backup machine (owners kept, deletions mirrored, a restore, the key refused for anything but rsync) and checks Slack alerts with a stand-in Slack server on the front node (a failing check on a machine, then its recovery).
 
 ## Fake GPUs
 

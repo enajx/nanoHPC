@@ -1,0 +1,22 @@
+# On the home machine: the SSH key the nightly backup uses (made once, kept on local disk, root only).
+- name: Create the backup folder
+  ansible.builtin.file:
+    path: /etc/nanohpc/backup
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Make the backup key
+  ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-backup@{{ inventory_hostname }}" -f /etc/nanohpc/backup/id_ed25519
+  args:
+    creates: /etc/nanohpc/backup/id_ed25519
+
+- name: Read the backup key's public half
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/backup/id_ed25519.pub
+  register: backup_public_key_file
+
+- name: Keep the public key for the backup machine
+  ansible.builtin.set_fact:
+    backup_public_key: "{{ backup_public_key_file.content | b64decode | trim }}"

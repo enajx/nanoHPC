@@ -1,0 +1,65 @@
+# Alerts of the front node's Prometheus, sent to Alertmanager when they start and when they resolve.
+# cluster-health runs every 5 minutes on every machine and writes each check's state as metrics
+# (cluster_health_check_state: 0 ok, 1 warning, 2 failing). A state is kept 5 minutes until the next run,
+# so `for: 7m` skips a single bad run and alerts on the second one, about 7 minutes after the first.
+groups:
+  - name: cluster-alerts
+    rules:
+      - alert: HealthCheckFailing
+        expr: cluster_health_check_state == 2
+        for: 7m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The check "{{ $labels.check }}" is failing on {{ $labels.machine }}.'
+
+      - alert: HealthCheckWarning
+        expr: cluster_health_check_state == 1
+        for: 7m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The check "{{ $labels.check }}" has a warning on {{ $labels.machine }}.'
+
+      # The textfile keeps the last finish time when the checks stop running; 15 minutes is three missed runs.
+      - alert: HealthChecksNotRunning
+        expr: time() - cluster_health_timestamp_seconds > 900
+        labels:
+          severity: warning
+        annotations:
+          summary: "The health checks on {{ $labels.machine }} have not run for more than 15 minutes."
+
+      # A machine that answers but has never reported its health checks (its timer never ran).
+      - alert: HealthChecksMissing
+        expr: up{job=~"node|node-.+"} == 1 unless on(machine) cluster_health_timestamp_seconds
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The health checks on {{ $labels.machine }} have never reported."
+
+      # A machine that is down stops reporting its health checks, so their alerts would look resolved.
+      - alert: MachineMetricsMissing
+        expr: up{job=~"node|node-.+"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus cannot read the metrics of {{ $labels.machine }} for 5 minutes, so its health checks are unknown; the machine may be down."
+
+      # The backup writes its last exit code after each run; it stays until a later run works.
+      - alert: BackupFailed
+        expr: cluster_backup_last_exit_code != 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The last /home backup from {{ $labels.machine }} failed (exit code {{ $value }})."
+
+      # Only once the backup has succeeded at least once (the time is above 0): before that there is no series,
+      # or a time of 0, and a run that failed is reported by BackupFailed.
+      - alert: BackupOld
+        expr: time() - cluster_backup_last_success_timestamp_seconds > 26 * 3600 and cluster_backup_last_success_timestamp_seconds > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The last successful /home backup from {{ $labels.machine }} is more than 26 hours old."

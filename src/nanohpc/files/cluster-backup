@@ -1,0 +1,149 @@
+#!/usr/bin/python3
+"""Mirror /home to the backup destination with rsync over SSH, and publish the result as node_exporter metrics.
+
+Runs as root on the home machine, from a systemd timer. The copy is one mirror of the source: files deleted from
+the source, and files that match an exclude pattern, are deleted from the copy. rsync's exit code 24 (files that
+vanished while they were being copied, normal on a /home in use) counts as success. rsync's own messages go to
+stderr (the journal); on failure a last line gives the exit code.
+
+rsync runs with --archive --hard-links --acls --xattrs --numeric-ids --delete --delete-excluded --partial
+--timeout=600, and SSH with the given key only (IdentitiesOnly), never asking for input (BatchMode), and only to the
+host key pinned in --known-hosts (StrictHostKeyChecking, UserKnownHostsFile).
+
+Metrics (gauges, in a textfile replaced whole, mode 0644):
+  cluster_backup_last_exit_code                    exit code of the last run (0 also for rsync's 24)
+  cluster_backup_last_run_timestamp_seconds        when the last run started, in Unix seconds
+  cluster_backup_last_success_timestamp_seconds    when the last successful run finished; kept from the previous
+                                                   file when a run fails, absent until a run has succeeded
+  cluster_backup_duration_seconds                  how long the last run took
+
+Restore one user's folder (as root on the home machine, with the same key; add --delete to also remove files
+created since the backup):
+  rsync --archive --hard-links --acls --xattrs --numeric-ids \\
+    --rsh "ssh -i KEY -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=FILE" \\
+    --rsync-path "rsync --fake-super" nanohpc-backup@BACKUP:/srv/backup/home/USER/ /home/USER/
+(--rsync-path only for a destination that uses --fake-super.)
+
+Arguments:
+  --source PATH          the folder to copy, with a final slash (/home/).
+  --destination TARGET   rsync target with a final slash, for example nanohpc-backup@10.0.0.5:/srv/backup/home/.
+  --identity PATH        the SSH private key.
+  --known-hosts PATH     file with the destination's host key.
+  --exclude PATTERN      rsync exclude pattern (for example .cache/); may be given several times or not at all.
+  --fake-super           run the receiving rsync with --fake-super, so an unprivileged account on the destination
+                         keeps owners, permissions, ACLs, and xattrs as extended attributes.
+  --metrics PATH         the .prom file to write, in node_exporter's textfile folder.
+"""
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+SUCCESS_METRIC = "cluster_backup_last_success_timestamp_seconds"
+
+
+def rsync_command(arguments: argparse.Namespace) -> list[str]:
+    """Build the rsync command line that mirrors the source to the destination over SSH."""
+    ssh = [
+        "ssh",
+        "-i",
+        arguments.identity,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "UserKnownHostsFile=" + arguments.known_hosts,
+    ]
+    command = [
+        "rsync",
+        "--archive",
+        "--hard-links",
+        "--acls",
+        "--xattrs",
+        "--numeric-ids",
+        "--delete",
+        "--delete-excluded",
+        "--partial",
+        "--timeout=600",
+        "--rsh=" + " ".join(ssh),
+    ]
+    command += ["--exclude=" + pattern for pattern in arguments.exclude]
+    if arguments.fake_super:
+        command.append("--rsync-path=rsync --fake-super")
+    return command + [arguments.source, arguments.destination]
+
+
+def previous_success(path: Path) -> str | None:
+    """Return the last success time from the previous metrics file, if it has one."""
+    if not path.exists():
+        return None
+    found = re.search(rf"^{SUCCESS_METRIC} (\S+)$", path.read_text(encoding="utf-8"), re.MULTILINE)
+    return found.group(1) if found else None
+
+
+def metrics(exit_code: int, started: float, duration: float, success: str | None) -> str:
+    """Write the run's exit code, start time, duration, and the last success time when there is one."""
+    values = [
+        ("cluster_backup_last_exit_code", "Exit code of the last /home backup (0 is success).", str(exit_code)),
+        ("cluster_backup_last_run_timestamp_seconds", "When the last /home backup started.", str(started)),
+        ("cluster_backup_duration_seconds", "How long the last /home backup took.", str(duration)),
+    ]
+    if success is not None:
+        values.append((SUCCESS_METRIC, "When the last successful /home backup finished.", success))
+    lines = []
+    for name, meaning, value in values:
+        lines += [f"# HELP {name} {meaning}", f"# TYPE {name} gauge", f"{name} {value}"]
+    return "\n".join(lines) + "\n"
+
+
+def publish(path: Path, content: str) -> None:
+    """Replace the metrics file whole, so node_exporter never reads half of it."""
+    temporary = path.with_name("." + path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.chmod(0o644)
+    temporary.replace(path)
+
+
+def main() -> None:
+    """Check the arguments, run rsync, write the metrics, and exit with rsync's code (0 for 24)."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--source", required=True)
+    parser.add_argument("--destination", required=True)
+    parser.add_argument("--identity", required=True)
+    parser.add_argument("--known-hosts", required=True)
+    parser.add_argument("--exclude", action="append", default=[])
+    parser.add_argument("--fake-super", action="store_true")
+    parser.add_argument("--metrics", type=Path, required=True)
+    arguments = parser.parse_args()
+    for name in ["source", "destination"]:
+        if not getattr(arguments, name).endswith("/"):
+            parser.error(f"--{name} must end with '/' (rsync copies the folder itself into the copy otherwise)")
+    for name in ["identity", "known_hosts"]:
+        if re.search(r"[\s'\"\\]", getattr(arguments, name)):
+            parser.error(f"--{name.replace('_', '-')} must not contain spaces, quotes, or backslashes")
+
+    started = time.time()
+    clock = time.monotonic()
+    exit_code = subprocess.run(rsync_command(arguments), check=False).returncode
+    duration = time.monotonic() - clock
+    if exit_code == 24:
+        exit_code = 0
+    success = str(time.time()) if exit_code == 0 else previous_success(arguments.metrics)
+    publish(arguments.metrics, metrics(exit_code, started, duration, success))
+    if exit_code != 0:
+        print(f"cluster-backup: rsync to {arguments.destination} failed with exit code {exit_code}", file=sys.stderr)
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

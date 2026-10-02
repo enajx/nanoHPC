@@ -138,6 +138,42 @@ class PrepareTest(unittest.TestCase):
         website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
         self.assertEqual(website["logo"], {"source": "/somewhere/Lab Logo.SVG", "name": "logo.svg"})
 
+    def test_backup_and_alert_variables(self) -> None:
+        self.config["secrets"] = {"slack_webhook": "https://hooks.slack.com/services/T/B/x"}
+        self.config["alerts"]["slack"] = True
+        prepare(self.config, self.hostnames, None, False, [], self.work)
+        variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
+        self.assertEqual(
+            variables["backup"],
+            {
+                "kind": "machine",
+                "machine": "store",
+                "address": "192.168.104.20",
+                "destination": "nanohpc-backup@192.168.104.20:/srv/nanohpc-backup/home/",
+                "folder": "/srv/nanohpc-backup/home",
+                "time": "03:00",
+                "exclude": [".cache/", ".venv/", "__pycache__/"],
+            },
+        )
+        self.assertEqual(variables["alerts"], {"slack": True})
+        self.assertEqual(set(variables["metrics"]["alertmanager"]["sha256"]), {"amd64", "arm64"})
+        # The webhook is a secret: only in a file only this user can read, never in vars.json.
+        self.assertNotIn("hooks.slack.com", (self.work / "vars.json").read_text())
+        secrets = self.work / "secrets.json"
+        self.assertEqual(
+            json.loads(secrets.read_text()),
+            {"nanohpc_secrets": {"slack_webhook": "https://hooks.slack.com/services/T/B/x"}},
+        )
+        self.assertEqual(oct(secrets.stat().st_mode & 0o777), oct(0o600))
+
+    def test_backup_to_an_outside_server(self) -> None:
+        self.config["backup"]["to"] = "lab@backup.example.org:/srv/cluster"
+        prepare(self.config, self.hostnames, None, False, [], self.work)
+        backup = json.loads((self.work / "vars.json").read_text())["nanohpc"]["backup"]
+        self.assertEqual(backup["kind"], "outside")
+        self.assertEqual(backup["destination"], "lab@backup.example.org:/srv/cluster/")
+        self.assertEqual(backup["address"], "backup.example.org")
+
     def test_monitor_machines(self) -> None:
         """The status collector checks each machine's role, required services, and mounts."""
         prepare(self.config, self.hostnames, None, True, [], self.work)

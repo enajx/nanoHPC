@@ -1,0 +1,29 @@
+# Backups removed from cluster.yml: stop the nightly timer (the key and the last copy stay).
+- name: Look for a backup timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-backup.timer
+  register: backup_timer
+
+- name: Stop the backup timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-backup.timer
+    enabled: false
+    state: stopped
+  when: backup_timer.stat.exists
+
+- name: Remove the backup timer and service, and the backup's last result
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/nanohpc-backup.timer
+    - /etc/systemd/system/nanohpc-backup.service
+    - /etc/nanohpc/backup/enabled
+    - /etc/nanohpc/backup/started
+    - /var/lib/nanohpc/metrics-textfile/backup.prom
+  register: backup_removed
+
+- name: Forget the removed backup units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: backup_removed is changed
