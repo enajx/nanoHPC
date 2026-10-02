@@ -1129,6 +1129,8 @@ class SimAutoDeployTest(SimUsersBase):
             self.ssh("cpu1", "rm -f /tmp/front-key")
 
         with self.subTest("a manual deploy after automatic ones changes nothing, and pauses them while it runs"):
+            # The administrator's cluster.yml is the repository's (with carol from the commits above).
+            cluster.write_text(yaml.safe_dump(config, sort_keys=False))
             result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
             self.assert_no_changes(result, len(config["machines"]))
             self.assertEqual(self.on_front("systemctl is-active nanohpc-auto-deploy.timer").strip(), "active")
