@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 from nanohpc.config import load_config
-from nanohpc.deploy import SLURM, prepare
+from nanohpc.deploy import SLURM, monitor_machines, prepare
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -81,6 +81,45 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(metrics["gpus"]["gpu4"], {"count": 4, "type": "a6000", "fake": False})
         self.assertNotIn("cpu1", metrics["gpus"])
         self.assertEqual(set(metrics["prometheus"]["sha256"]), {"amd64", "arm64"})
+        self.assertEqual(metrics["grafana"]["version"], "13.2.3")
+        self.assertEqual(set(metrics["grafana"]["sha256"]), {"amd64", "arm64"})
+
+    def test_monitor_machines(self) -> None:
+        """The status collector checks each machine's role, required services, and mounts."""
+        prepare(self.config, self.hostnames, None, True, [], self.work)
+        machines = json.loads((self.work / "files" / "monitor-machines.json").read_text())
+        self.assertEqual(
+            machines["front"],
+            {
+                "role": "front",
+                "units": [
+                    "slurmctld.service",
+                    "slurmdbd.service",
+                    "munge.service",
+                    "mariadb.service",
+                    "nfs-server.service",
+                ],
+                "mounts": ["/", "/home"],
+            },
+        )
+        self.assertEqual(
+            machines["gpu4"],
+            {"role": "compute", "units": ["slurmd.service", "munge.service"], "mounts": ["/", "/home", "/scratch"]},
+        )
+        # The backup machine does not mount /home.
+        self.assertEqual(machines["store"], {"role": "storage", "units": [], "mounts": ["/"]})
+        self.assertEqual(sorted(machines), sorted(self.config["machines"]))
+        # With /home on a storage machine, that machine runs the NFS server and the front node mounts /home.
+        config, errors = load_config(ROOT / "tests" / "sim" / "cluster-home-on-storage.yml")
+        assert errors == [], errors
+        machines = monitor_machines(config)
+        storage = [name for name, machine in config["machines"].items() if "home" in machine["roles"]]
+        self.assertEqual(
+            machines[storage[0]], {"role": "storage", "units": ["nfs-server.service"], "mounts": ["/", "/home"]}
+        )
+        front = next(name for name, machine in machines.items() if machine["role"] == "front")
+        self.assertNotIn("nfs-server.service", machines[front]["units"])
+        self.assertEqual(machines[front]["mounts"], ["/", "/home"])
 
     def test_files_are_written(self) -> None:
         prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], self.work)

@@ -55,6 +55,13 @@ METRICS: dict[str, Any] = {
             "arm64": "ad35b605f9954b9f1ffddf5ba054bdc5a98d790b9eae5291e1eeb83f1ecbd0e7",
         },
     },
+    "grafana": {
+        "version": "13.2.3",
+        "sha256": {
+            "amd64": "6107ad27016296aac38e0d7ffa8753ab540b5541ad27e94790f771289d733235",
+            "arm64": "a2a41b960ba4c25e83140484e48813730d3c81891a128439a2a9d2df6eb3840e",
+        },
+    },
 }
 CACHE = Path.home() / ".cache" / "nanohpc"
 ANSIBLE = Path(str(resources.files("nanohpc").joinpath("ansible")))
@@ -190,6 +197,30 @@ def variables(config: dict[str, Any], work: Path, fake_gpus: list[str], qos: lis
     }
 
 
+def monitor_machines(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return, per machine, what the status collector checks: its role (front, compute, or storage), the
+    services that must be active, and the mount points that must be writable with free space.
+
+    Only services node_exporter's systemd collector reports can be listed (see the node_metrics role).
+    """
+    server = home_server(config)
+    clients = home_clients(config)
+    result: dict[str, dict[str, Any]] = {}
+    for name, machine in config["machines"].items():
+        roles = machine["roles"]
+        nfs = ["nfs-server.service"] if name == server else []
+        home = ["/home"] if name == server or name in clients else []
+        if "front" in roles:
+            units = ["slurmctld.service", "slurmdbd.service", "munge.service", "mariadb.service", *nfs]
+            result[name] = {"role": "front", "units": units, "mounts": ["/", *home]}
+        elif "compute" in roles:
+            units = ["slurmd.service", "munge.service"]
+            result[name] = {"role": "compute", "units": units, "mounts": ["/", *home, "/scratch"]}
+        else:
+            result[name] = {"role": "storage", "units": nfs, "mounts": ["/", *home]}
+    return result
+
+
 def ansible_cfg(ssh_config: Path | None) -> str:
     """Return ansible.cfg for the run."""
     ssh_args = "-o ControlMaster=auto -o ControlPersist=120s -o ForwardAgent=yes" + (
@@ -229,6 +260,7 @@ def prepare(
     (files / "hosts").write_text(rendered.hosts)
     (files / "exports").write_text(rendered.home_exports)
     (files / "prometheus.yml").write_text(rendered.prometheus_yml)
+    (files / "monitor-machines.json").write_text(json.dumps(monitor_machines(config), indent=2))
     for name, text in rendered.gres_conf.items():
         (files / "gres" / f"{name}.conf").write_text(text)
     (work / "vars.json").write_text(json.dumps(variables(config, work, fake_gpus, rendered.qos), indent=2))

@@ -54,6 +54,8 @@ fi
 if has home; then
   check "/home is mounted" mountpoint -q /home
   check "service nfs-server" systemctl is-active --quiet nfs-server
+  check "home quota reader timer" systemctl is-active --quiet nanohpc-home-quotas.timer
+  check "the home quota reader's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-home-quotas.service'
   disk /home
 elif ! has backup; then
   check "/home is the shared NFS mount" sh -c 'findmnt -n -o FSTYPE --mountpoint /home | grep -qx nfs4'
@@ -62,10 +64,14 @@ elif ! has backup; then
 fi
 
 if has front; then
-  for service in mariadb slurmdbd slurmctld nanohpc-prometheus nanohpc-history; do
+  for service in mariadb slurmdbd slurmctld nanohpc-prometheus nanohpc-history nanohpc-grafana; do
     check "service $service" systemctl is-active --quiet "$service"
   done
   check "the Slurm controller answers" scontrol ping
+  check "status collector timer" systemctl is-active --quiet nanohpc-monitor-snapshot.timer
+  check "the status collector's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-monitor-snapshot.service'
+  check "the status snapshot is fresh (under 2 minutes old)" \
+    test "$(( $(date +%s) - $(stat -c %Y /var/lib/nanohpc/monitor/status.json 2>/dev/null || echo 0) ))" -lt 120
   # Ask the front node's Prometheus which machines have a metrics problem. If Prometheus does not answer,
   # say so rather than reporting no problems.
   problem_machines() {
@@ -91,6 +97,7 @@ print(",".join(sorted({r["metric"].get("machine", r["metric"].get("rule_group", 
   metric_check "metrics arrive from every machine" 'up{job=~"node.*"} == 0 or node_textfile_scrape_error == 1 or node_scrape_collector_success{collector=~"cpu|meminfo|filesystem|systemd|textfile"} == 0'
   metric_check "GPU readings are fresh (under 2 minutes old)" 'time() - cluster_gpu_collection_timestamp_seconds > 120'
   metric_check "machine specs are fresh (under 15 minutes old)" 'time() - cluster_machine_specs_timestamp_seconds > 900'
+  metric_check "home quotas are fresh (under 15 minutes old)" 'time() - cluster_home_quota_collected_timestamp_seconds > 900 or absent(cluster_home_quota_collected_timestamp_seconds)'
   metric_check "the daily summary rules evaluate" 'increase(prometheus_rule_evaluation_failures_total[10m]) > 0'
   # The history instance collects once a day; after its first two days it must hold daily summaries.
   history_age=$(( $(date +%s) - $(stat -c %Y /etc/nanohpc/prometheus/history-started 2>/dev/null || date +%s) ))
