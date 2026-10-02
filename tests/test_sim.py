@@ -527,7 +527,7 @@ class SimDeployTest(SimUsersBase):
     cached packages. The users get a key generated for the test, so real logins can be tried."""
 
     def test_deploy(self) -> None:
-        cluster, config, public_key = self.up_and_deploy()
+        _, config, _ = self.up_and_deploy()
         machines = config["machines"]
 
         with self.subTest("users and UIDs on every machine"):
@@ -865,6 +865,18 @@ class SimDeployTest(SimUsersBase):
         with self.subTest("a second deploy changes nothing"):
             result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
             self.assert_no_changes(result, len(machines))
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimRedeployTest(SimUsersBase):
+    """The safety checks that each need another deploy, on the everyday cluster: a missing certificate issued
+    again, a drained node as a warning only, a deploy by an administrator's forwarded key, the stop with no key
+    and no terminal, a removed user's login taken away, and a UID conflict that stops only that machine. Run
+    when accounts, SSH, sudo, preflight, deploy.py, or the certificates change, and before the release. Real
+    Lima VMs."""
+
+    def test_redeploys(self) -> None:
+        cluster, _, public_key = self.up_and_deploy()
 
         with self.subTest("a missing metrics certificate is issued again by the next deploy"):
             self.assertEqual(self.ssh("gpu2", "sudo rm /etc/nanohpc/metrics-tls/node.crt").returncode, 0)
