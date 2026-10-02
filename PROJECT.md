@@ -39,7 +39,7 @@ flowchart LR
 
   P1[Define scope and decisions]:::done --> P2[Configuration format]:::done
   P2 --> P3[Simulated cluster]:::done
-  P3 --> P4[Port and bootstrap]:::queued
+  P3 --> P4[Port and bootstrap]:::wip
   P4 --> P5[Wizard and operate]:::queued
   P5 --> P6[Release v0.1]:::queued
   P6 --> P7[Later: LDAP, AMD, restic, more OS]:::queued
@@ -124,7 +124,8 @@ flowchart LR
 - Built: `/home` over NFS with quotas and local scratch with cleanup (M3b), checked on the simulated cluster with Ubuntu 22.04, 24.04, and 26.04, and both `/home` layouts.
 - Built: `cluster-submit` job modes, `stage-dataset`, uv for users, and `cluster-health`, which every deploy runs at the end (M3c). With this, setting up Slurm, users, storage, and scratch (phase 4's cluster part) is done; open follow-ups are in [TODO.md](TODO.md).
 - Built: metrics (M4a): certificates issued and renewed by a private authority on the front node, node exporters over mutual TLS on every machine, machine-spec and GPU collectors, Prometheus with 90-day detail and 5-year daily history.
-- Next: the status collector and Grafana dashboards (M4b).
+- Built: the status collector and Grafana (M4b): a 30-second `status.json` snapshot for the website, machine health from each machine's required services and mounts, users' quotas from the home machine, and six read-only Grafana dashboards on the front node's localhost. With this, monitoring (M4) is done.
+- Next: the website from the configuration, over HTTPS (M5).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
