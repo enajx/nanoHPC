@@ -68,6 +68,13 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
 - Prometheus 3.15.0, node_exporter 1.12.1, and Grafana 13.2.3, for x86_64 and ARM64, checked against their published SHA-256.
 - On the simulated cluster, machines with fake GPUs run a fake GPU collector that reports made-up utilization, memory, temperature, and power. The machine-spec collector works on machines without GPUs.
 
+- M4b (status collector and Grafana): the source deployment's 30-second status collector (`status.json` for the website, `machines.md`, and Slurm figures for Prometheus), machine status rules, and home quota reader, without its backup card (nanoHPC's backup is M6) and with the accounting start taken from the cluster's first deploy instead of a fixed date. Grafana 13.2.3, anonymous read-only, on the front node's localhost, served under `/grafana/` for the website (M5); the source deployment's six dashboards with `nanohpc-` identifiers and no site names, working for any number of machines.
+  - Home quotas reach the front node through Prometheus: the quota reader runs on the home machine (it needs the disk) and writes `cluster_home_quota_*` metrics, so the user cards show quotas in both `/home` layouts. The source deployment wrote a file on the front node, which only works when /home is there.
+  - The status collector runs as its own account and writes its Slurm figures into its own metrics folder (`/var/lib/nanohpc/monitor-textfile`, read by the front node's exporter), so it cannot touch the other collectors' files.
+  - What each machine must run and mount is generated from `cluster.yml` (front: Slurm controller, accounting, MariaDB; compute: slurmd, `/scratch`; the home machine: NFS server; `/home` wherever it is mounted).
+  - Storage machines (home, backup) appear in the status with the role "Storage". CPU-only machines show GPU use "Not applicable".
+  - GPU-hour totals count from the first deploy, recorded once in `/etc/nanohpc/accounting-start`.
+
 ## Simulated cluster
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).

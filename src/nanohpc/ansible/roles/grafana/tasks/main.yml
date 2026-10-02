@@ -1,0 +1,251 @@
+# Grafana on the front node, on localhost only (127.0.0.1:3000), served under /grafana/ for the website.
+# Anyone who reaches it is an anonymous viewer: no login form, no sign-up, no editing. The admin password
+# and secret key are generated once on the front node and kept in a root-only file.
+
+- name: Name the download for this machine's CPU type
+  ansible.builtin.set_fact:
+    metrics_arch: "{{ 'arm64' if ansible_facts.architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Name the Grafana folder
+  ansible.builtin.set_fact:
+    grafana_dir: "/opt/nanohpc-metrics/grafana-{{ nanohpc.metrics.grafana.version }}"
+
+- name: Create the Grafana service account
+  ansible.builtin.user:
+    name: cluster-grafana
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Create the Grafana folders
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ grafana_dir }}", owner: root, mode: "0755"}
+    - {path: /etc/nanohpc/grafana, owner: root, mode: "0755"}
+    - {path: /etc/nanohpc/grafana/provisioning, owner: root, mode: "0755"}
+    - {path: /etc/nanohpc/grafana/provisioning/datasources, owner: root, mode: "0755"}
+    - {path: /etc/nanohpc/grafana/provisioning/dashboards, owner: root, mode: "0755"}
+    - {path: /etc/nanohpc/grafana/dashboards, owner: root, mode: "0755"}
+    - {path: /var/lib/nanohpc/grafana, owner: cluster-grafana, mode: "0700"}
+
+- name: Download Grafana, checking its SHA-256
+  ansible.builtin.get_url:
+    url: "https://dl.grafana.com/oss/release/grafana-{{ nanohpc.metrics.grafana.version }}.linux-{{ metrics_arch }}.tar.gz"
+    dest: "/var/tmp/grafana-{{ nanohpc.metrics.grafana.version }}.linux-{{ metrics_arch }}.tar.gz"
+    checksum: "sha256:{{ nanohpc.metrics.grafana.sha256[metrics_arch] }}"
+    timeout: 120
+    mode: "0644"
+
+- name: Unpack Grafana (owned by root, whatever the archive says)
+  ansible.builtin.unarchive:
+    src: "/var/tmp/grafana-{{ nanohpc.metrics.grafana.version }}.linux-{{ metrics_arch }}.tar.gz"
+    dest: "{{ grafana_dir }}"
+    remote_src: true
+    extra_opts: [--strip-components=1, --no-same-owner]
+    owner: root
+    group: root
+    creates: "{{ grafana_dir }}/bin/grafana"
+
+- name: Check for the Grafana secrets
+  ansible.builtin.stat:
+    path: /etc/nanohpc/grafana/secrets.env
+  register: grafana_secrets
+
+- name: Generate the Grafana admin password and secret key (once, root-only)
+  ansible.builtin.shell: |
+    set -eu
+    umask 077
+    python3 -c 'import secrets
+    print("GF_SECURITY_ADMIN_PASSWORD=" + secrets.token_urlsafe(48))
+    print("GF_SECURITY_SECRET_KEY=" + secrets.token_urlsafe(48))' > /etc/nanohpc/grafana/secrets.env.partial
+    mv /etc/nanohpc/grafana/secrets.env.partial /etc/nanohpc/grafana/secrets.env
+  when: not grafana_secrets.stat.exists
+  no_log: true
+
+- name: Install the Grafana configuration
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/grafana/grafana.ini
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [paths]
+      data = /var/lib/nanohpc/grafana
+      logs = /var/lib/nanohpc/grafana/log
+      plugins = /var/lib/nanohpc/grafana/plugins
+      provisioning = /etc/nanohpc/grafana/provisioning
+      [server]
+      http_addr = 127.0.0.1
+      http_port = 3000
+      root_url = http://localhost:3000/grafana/
+      serve_from_sub_path = true
+      enforce_domain = false
+      [security]
+      admin_user = nanohpc-admin
+      allow_embedding = true
+      cookie_samesite = strict
+      disable_gravatar = true
+      [users]
+      allow_sign_up = false
+      allow_org_create = false
+      viewers_can_edit = false
+      [auth.anonymous]
+      enabled = true
+      org_name = Main Org.
+      org_role = Viewer
+      hide_version = true
+      [auth]
+      disable_login_form = true
+      [analytics]
+      reporting_enabled = false
+      check_for_updates = false
+      check_for_plugin_updates = false
+      [plugins]
+      preinstall_disabled = true
+      plugin_admin_enabled = false
+      [snapshots]
+      enabled = false
+      external_enabled = false
+      [dataproxy]
+      timeout = 20
+      response_limit = 10485760
+      [dashboards]
+      min_refresh_interval = 30s
+      [log]
+      mode = console
+      [live]
+      max_connections = 0
+  register: grafana_config
+
+- name: Provision the two Prometheus data sources
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/grafana/provisioning/datasources/prometheus.yml
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Cluster detail
+          uid: cluster-detail
+          type: prometheus
+          access: proxy
+          url: http://127.0.0.1:9090
+          isDefault: true
+          editable: false
+          jsonData:
+            httpMethod: POST
+            timeInterval: 30s
+            prometheusType: Prometheus
+        - name: Cluster daily history
+          uid: cluster-history
+          type: prometheus
+          access: proxy
+          url: http://127.0.0.1:9091
+          editable: false
+          jsonData:
+            httpMethod: POST
+            timeInterval: 1d
+            prometheusType: Prometheus
+  register: grafana_datasources
+
+- name: Provision the dashboards folder
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/grafana/provisioning/dashboards/cluster.yml
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      apiVersion: 1
+      providers:
+        - name: cluster
+          orgId: 1
+          folder: Cluster
+          type: file
+          disableDeletion: true
+          allowUiUpdates: false
+          updateIntervalSeconds: 30
+          options:
+            path: /etc/nanohpc/grafana/dashboards
+  register: grafana_provider
+
+# Grafana reads the dashboard files again every 30 seconds, so a changed dashboard needs no restart.
+- name: Install the dashboards
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/grafana/"
+    dest: /etc/nanohpc/grafana/dashboards/
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the Grafana service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nanohpc-grafana.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Cluster dashboards (nanoHPC)
+      After=network-online.target nanohpc-prometheus.service
+      Wants=network-online.target
+
+      [Service]
+      User=cluster-grafana
+      Group=cluster-grafana
+      WorkingDirectory={{ grafana_dir }}
+      EnvironmentFile=/etc/nanohpc/grafana/secrets.env
+      ExecStart={{ grafana_dir }}/bin/grafana server --homepath={{ grafana_dir }} --config=/etc/nanohpc/grafana/grafana.ini
+      Restart=on-failure
+      RestartSec=5
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      PrivateDevices=true
+      ProtectKernelTunables=true
+      ProtectKernelModules=true
+      ProtectControlGroups=true
+      RestrictSUIDSGID=true
+      RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+      CapabilityBoundingSet=
+      ReadWritePaths=/var/lib/nanohpc/grafana
+      MemoryMax=2G
+      CPUQuota=100%
+      UMask=0077
+
+      [Install]
+      WantedBy=multi-user.target
+  register: grafana_unit
+
+- name: Run Grafana
+  ansible.builtin.systemd_service:
+    name: nanohpc-grafana
+    enabled: true
+    daemon_reload: "{{ grafana_unit.changed }}"
+    state: >-
+      {{ 'restarted' if (grafana_unit.changed or grafana_config.changed or grafana_datasources.changed
+         or grafana_provider.changed) else 'started' }}
+
+- name: Wait until Grafana answers
+  ansible.builtin.uri:
+    url: http://127.0.0.1:3000/grafana/api/health
+  register: grafana_ready
+  until: grafana_ready.status == 200
+  retries: 30
+  delay: 2
+
+- name: Check that the six dashboards are loaded and readable without logging in
+  ansible.builtin.uri:
+    url: http://127.0.0.1:3000/grafana/api/search?type=dash-db
+    return_content: true
+  register: grafana_dashboards
+  until: >-
+    (grafana_dashboards.json | map(attribute='uid') | select('match', '^nanohpc-') | list | length) == 6
+  retries: 15
+  delay: 2

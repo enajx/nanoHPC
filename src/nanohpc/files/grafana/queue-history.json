@@ -1,0 +1,37 @@
+{
+  "uid": "nanohpc-queue-history",
+  "title": "Queue history",
+  "schemaVersion": 39,
+  "editable": false,
+  "refresh": "30s",
+  "time": {"from": "now-7d", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Allocated GPUs",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 10},
+      "datasource": {"type": "prometheus", "uid": "cluster-detail"},
+      "fieldConfig": {"defaults": {"min": 0, "decimals": 0}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "cluster_allocated_gpus and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "Allocated GPUs"}]
+    },
+    {
+      "id": 2,
+      "title": "Running jobs",
+      "type": "timeseries",
+      "gridPos": {"x": 8, "y": 0, "w": 8, "h": 10},
+      "datasource": {"type": "prometheus", "uid": "cluster-detail"},
+      "fieldConfig": {"defaults": {"min": 0, "decimals": 0}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "cluster_running_jobs and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "Running jobs"}]
+    },
+    {
+      "id": 3,
+      "title": "Queue size",
+      "type": "timeseries",
+      "gridPos": {"x": 16, "y": 0, "w": 8, "h": 10},
+      "datasource": {"type": "prometheus", "uid": "cluster-detail"},
+      "fieldConfig": {"defaults": {"min": 0, "decimals": 0}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "cluster_pending_jobs and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "Pending jobs"}]
+    }
+  ]
+}

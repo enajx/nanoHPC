@@ -17,7 +17,7 @@ flowchart LR
   D[Design decisions]:::done --> C[cluster.yml + validation]:::done
   C --> SIM[Simulated cluster]:::done
   SIM --> S[Slurm + accounts + storage]:::done
-  S --> M[Monitoring]:::queued
+  S --> M[Monitoring]:::done
   M --> W[Website from config]:::queued
   S --> BK[Backup + alerts + auto-deploy]:::queued
   C --> WZ[Wizard]:::queued
@@ -95,9 +95,10 @@ flowchart LR
 - [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
 - [x] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
 - [x] Daily summaries are kept for 5 years (the history Prometheus).
-- [ ] The daily summaries are shown in the long-term history (Grafana and the website).
-- [ ] Grafana dashboards (queue, queue history, GPU usage, machines, long-term history) work for any number of nodes, GPU and CPU-only.
-- [ ] The status collector writes the website snapshot every 30 seconds.
+- [x] The daily summaries are shown in the long-term history in Grafana.
+- [ ] The daily summaries are shown in the long-term history on the website.
+- [x] Grafana dashboards (queue, queue history, GPU usage, machines, long-term history) work for any number of nodes, GPU and CPU-only.
+- [x] The status collector writes the website snapshot every 30 seconds.
 - [ ] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
 - [ ] Cluster name, logo, login address, and the user guide on the website come from the configuration.
 - [ ] The website is served by its own nginx over HTTPS, with a Let's Encrypt certificate or the administrator's own certificate.

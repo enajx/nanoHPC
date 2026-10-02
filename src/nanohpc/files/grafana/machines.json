@@ -1,0 +1,248 @@
+{
+  "uid": "nanohpc-machines",
+  "title": "Machine metrics",
+  "schemaVersion": 39,
+  "editable": false,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [{
+      "name": "gpu_group",
+      "label": "GPU lines",
+      "type": "custom",
+      "query": "Individual GPUs : 1,Per machine : 0",
+      "multi": false,
+      "includeAll": false,
+      "current": {"text": "Per machine", "value": "0"},
+      "options": [
+        {"text": "Individual GPUs", "value": "1", "selected": false},
+        {"text": "Per machine", "value": "0", "selected": true}
+      ]
+    }]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "CPU in use",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - avg by (machine) (rate(node_cpu_seconds_total{job=~\"node|node-.+\",mode=\"idle\"}[5m])))",
+          "legendFormat": "{{machine}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Available memory",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_memory_MemAvailable_bytes{job=~\"node|node-.+\"}",
+          "legendFormat": "{{machine}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Available filesystem space",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_filesystem_avail_bytes{job=~\"node|node-.+\",fstype!~\"tmpfs|overlay|squashfs|nfs.*\"}",
+          "legendFormat": "{{machine}} {{mountpoint}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "GPU utilization",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(cluster_gpu_utilization_percent{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 1)",
+          "legendFormat": "{{machine}} GPU {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "avg by (machine) (cluster_gpu_utilization_percent{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 0)",
+          "legendFormat": "{{machine}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "GPU memory used",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(cluster_gpu_memory_used_bytes{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 1)",
+          "legendFormat": "{{machine}} GPU {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (machine) (cluster_gpu_memory_used_bytes{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 0)",
+          "legendFormat": "{{machine}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "GPU temperature",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(cluster_gpu_temperature_celsius{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 1)",
+          "legendFormat": "{{machine}} GPU {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (machine) (cluster_gpu_temperature_celsius{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 0)",
+          "legendFormat": "{{machine}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "GPU power",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(cluster_gpu_power_watts{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 1)",
+          "legendFormat": "{{machine}} GPU {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (machine) (cluster_gpu_power_watts{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 0)",
+          "legendFormat": "{{machine}}"
+        }
+      ]
+    }
+  ]
+}
