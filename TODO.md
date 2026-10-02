@@ -110,13 +110,15 @@ flowchart LR
 - [x] Let's Encrypt certificates are requested and renewed on the simulated cluster, against Pebble (Let's Encrypt's test server).
 - [ ] The Machines page shows a minimal retro-style animated diagram of the cluster architecture, which users can turn on and off with a button.
 
+- [ ] Above the soft limit (`home.quota_soft_gb` in `cluster.yml`, e.g. 300 GB) users only get a notice; writing never stops (today the soft limit becomes a hard stop after `quota_grace`).
+- [ ] No hard limit for writing to `/home`; the hard limit (`home.quota_hard_gb`) applies to running jobs instead: a user above it cannot start jobs until they clean up, which is more flexible (today the filesystem stops writes at the hard limit).
 - [ ] Website follow-ups: the printed forwarding rules are tried with real nginx, Apache, and Caddy (with `forwarded_by`); switching between certificate types, hostnames, paths, and build modes is checked on the simulated cluster; nginx starts on machines with IPv6 turned off.
 
 ### Backup, alerts, and auto-deploy
 
-- [ ] `/home` is copied every night with rsync to the backup machine in the cluster or to an outside SSH server.
-- [ ] Health checks can send alerts to Slack (off by default).
-- [ ] The front node can redeploy the whole cluster automatically when the administrator's configuration repository changes on GitHub (off by default): it pulls the repository and deploys every machine itself, with no one logging in and no password (agreed 2026-10-02: full-cluster pull, so the front node gets root SSH access to every machine; details planned with the user when M6 starts). `nanohpc deploy` from the administrator's machine stays. Each automatic deploy runs the dry run first and applies only if it passed; otherwise it stops, leaves the cluster as it is, and sends an alert.
+- [ ] `/home` is copied every night with rsync to the backup machine in the cluster or to an outside SSH server, as one mirror of `/home` (files deleted from `/home` are deleted from the copy). A failed backup is reported.
+- [ ] Every machine runs its health checks every few minutes; the front node sends Slack alerts (off by default) when a check starts failing or warning and when it recovers, not on every run, plus failed backups and failed automatic deploys. The Slack webhook is in a `.env` file next to `cluster.yml` (never committed), copied to the front node by the deploy.
+- [ ] The front node can redeploy the whole cluster automatically from the administrator's configuration repository (off by default): it checks a branch every 10 minutes (set in `cluster.yml`; `main` by default, a stable or release branch suggested), pulls it with a read-only key, and deploys every machine itself with no one logging in and no password. A GitHub webhook can trigger it right after a push instead of waiting. The front node gets root SSH access to every machine for this (agreed 2026-10-02). The configuration repository pins the nanoHPC version the front node uses. `nanohpc deploy` from the administrator's machine stays. Until the dry run exists (M8), automatic deploys apply without it; then each one runs the dry run first, applies only if it passed, and otherwise stops and alerts.
 
 ### Commands
 
@@ -150,6 +152,7 @@ flowchart LR
 - [ ] Move the REAL cluster from SLURM-REAL to nanoHPC (maybe, not planned).
 - [ ] A link to a live demo in the GitHub repository, so people can see what it looks like on a simulated cluster.
 - [ ] Optional shared scratch on a separate storage machine (not the front node), seen by every compute node: a fast NFS server with NVMe or SSD disks first, BeeGFS later. Files unused for N days (30 to 90) are deleted by a daily cleanup. Needs a fast network; `stage-dataset --shared` builds on it.
+- [ ] A general "Welcome to <cluster name>" login banner (with a small "powered by nanoHPC") and some general info. Below it, notifications for that user only: when they are above the soft limit of their home usage (as defined in `cluster.yml`, the same for all users), they are told to clean up, with a summary of where most of their space is (for example a certain repository or certain worktrees).
 - [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.
 
 ## Uncategorized
