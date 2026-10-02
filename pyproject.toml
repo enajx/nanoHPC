@@ -26,3 +26,8 @@ dev = [
     "ruff>=0.16.9",
     "types-pyyaml>=6.0.12.20260906",
 ]
+
+[tool.uv.build-backend]
+# The website source ships in the package (cluster.yml can build the site on the front node), but not its
+# local npm install or test output. source-exclude also applies to the wheel.
+source-exclude = ["node_modules", "test-results", "playwright-report"]

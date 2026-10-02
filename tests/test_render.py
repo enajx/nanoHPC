@@ -1,6 +1,9 @@
 """Tests for the files nanoHPC generates from cluster.yml (Slurm configuration, hosts, job submit rules)."""
 
 import copy
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -8,7 +11,7 @@ from typing import Any
 import yaml
 
 from nanohpc.config import check_config
-from nanohpc.render import render
+from nanohpc.render import render, render_forwarding_rules
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -158,10 +161,6 @@ class HostsTest(unittest.TestCase):
         self.assertIn("192.168.104.20 store\n", hosts)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class HomeExportsTest(unittest.TestCase):
     """The home machine exports /home to every other machine that uses it."""
 
@@ -207,3 +206,60 @@ class PrometheusTest(unittest.TestCase):
         self.assertEqual(store["tls_config"]["cert_file"], "/etc/nanohpc/metrics-tls/prometheus.crt")
         self.assertEqual(prometheus["global"]["scrape_interval"], "30s")
         self.assertEqual(prometheus["rule_files"], ["/etc/nanohpc/prometheus/daily-rules.yml"])
+
+
+class ForwardingRulesTest(unittest.TestCase):
+    """Rules for a lab's own web server, to show the cluster site at labwebsite.com/<path>."""
+
+    def test_rules_for_each_server(self) -> None:
+        rules = render_forwarding_rules(config_of())
+        # nginx: the path is passed on unchanged, over verified HTTPS, with the visitor's address.
+        self.assertIn("location /cluster/ {", rules)
+        self.assertIn("proxy_pass https://cluster.example.org;", rules)
+        self.assertIn("proxy_ssl_verify on;", rules)
+        self.assertIn("proxy_set_header X-Forwarded-For $remote_addr;", rules)
+        # Apache and Caddy.
+        self.assertIn("ProxyPass /cluster/ https://cluster.example.org/cluster/", rules)
+        self.assertIn("SSLProxyEngine on", rules)
+        self.assertIn("handle /cluster/* {", rules)
+        self.assertIn("reverse_proxy https://cluster.example.org", rules)
+        self.assertIn("SSLProxyCACertificateFile /etc/ssl/certs/ca-certificates.crt", rules)
+        # The path without its slash goes to the path.
+        self.assertIn("location = /cluster { return 301 /cluster/; }", rules)
+        self.assertIn("RedirectMatch 301 ^/cluster$ /cluster/", rules)
+        self.assertIn("redir /cluster /cluster/", rules)
+        # The front node needs the visitors' addresses (rate limits per visitor, and `allow`).
+        self.assertIn("forwarded_by: <the lab web server's address>", rules)
+
+    def test_command_prints_the_rules(self) -> None:
+        command = shutil.which("nanohpc")
+        assert command is not None, "the nanohpc command is not installed in this environment"
+        result = subprocess.run(
+            [command, "forwarding-rules", str(ROOT / "examples" / "cluster.yml")],
+            capture_output=True, text=True, check=False,
+        )  # fmt: skip
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, render_forwarding_rules(config_of()))
+
+    def test_whole_hostname_has_no_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            raw = yaml.safe_load((ROOT / "examples" / "cluster.yml").read_text())
+            raw["cluster"]["website"]["path"] = "/"
+            path = Path(directory) / "cluster.yml"
+            path.write_text(yaml.safe_dump(raw))
+            command = shutil.which("nanohpc")
+            assert command is not None, "the nanohpc command is not installed in this environment"
+            result = subprocess.run(
+                [command, "forwarding-rules", str(path)], capture_output=True, text=True, check=False
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("set cluster.website.path", result.stderr)
+
+    def test_other_path(self) -> None:
+        rules = render_forwarding_rules(config_of(lambda raw: raw["cluster"]["website"].update(path="/hpc")))
+        self.assertIn("location /hpc/ {", rules)
+        self.assertIn("ProxyPass /hpc/ https://cluster.example.org/hpc/", rules)
+
+
+if __name__ == "__main__":
+    unittest.main()

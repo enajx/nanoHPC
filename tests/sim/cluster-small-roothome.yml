@@ -6,8 +6,12 @@ cluster:
   - alice
   website:
     hostname: cluster.example.org
-    https: letsencrypt
-    logo: null
+    https: own
+    certificate: made-by-sim-up       # sim up makes a test certificate for the hostname
+    certificate_key: made-by-sim-up
+    logo: logo.svg
+    path: /                     # the whole hostname
+    build: front                # built on the front node from the source in nanoHPC
     login_address: cluster.example.org
 machines:
   front:

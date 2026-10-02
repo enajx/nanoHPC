@@ -9,6 +9,8 @@ cluster:
     https: letsencrypt
     logo: null
     login_address: cluster.example.org
+    path: /hpc                  # another path than the default
+    allow: [10.255.255.0/24]    # a network none of the test machines is in: others are refused
 machines:
   front:
     address: 192.168.104.10

@@ -273,3 +273,51 @@ def render(config: dict[str, Any], hostnames: dict[str, str], simulated: bool) -
         home_exports=render_home_exports(config),
         prometheus_yml=render_prometheus(config),
     )
+
+
+FORWARDING_RULES = """\
+Forwarding rules for the lab's own web server, so that https://<lab website>{path} shows the cluster
+website served by the front node at https://{hostname}{path}. Add the one for your web server, keep the
+path {path} the same on both sides, and reload the web server.
+
+In cluster.yml, also set `forwarded_by: <the lab web server's address>` under cluster.website: the
+front node then uses the visitor address the lab web server passes on, for its per-visitor rate limits and
+for `allow`. Without it, every visitor looks like the lab web server.
+
+--- nginx (inside the lab website's server block) ---
+location = {bare} {{ return 301 {path}; }}
+location {path} {{
+    proxy_pass https://{hostname};
+    proxy_set_header Host {hostname};
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_ssl_server_name on;
+    proxy_ssl_name {hostname};
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+}}
+
+--- Apache (inside the lab website's VirtualHost; needs mod_proxy, mod_proxy_http, and mod_ssl) ---
+SSLProxyEngine on
+SSLProxyVerify require
+SSLProxyCACertificateFile /etc/ssl/certs/ca-certificates.crt
+RedirectMatch 301 ^{bare}$ {path}
+ProxyPass {path} https://{hostname}{path}
+ProxyPassReverse {path} https://{hostname}{path}
+
+--- Caddy (inside the lab website's site block) ---
+redir {bare} {path}
+handle {path}* {{
+    reverse_proxy https://{hostname} {{
+        header_up Host {hostname}
+    }}
+}}
+"""
+
+
+def render_forwarding_rules(config: dict[str, Any]) -> str:
+    """Return ready-made rules (nginx, Apache, Caddy) for a lab's own web server to show the cluster website
+    under the same path, forwarded over verified HTTPS to the front node."""
+    website = config["cluster"]["website"]
+    path = website["path"]
+    # A lab website forwards a path such as /cluster/ (the whole hostname, "/", is not forwarded).
+    return FORWARDING_RULES.format(path=path, bare=path.rstrip("/"), hostname=website["hostname"])

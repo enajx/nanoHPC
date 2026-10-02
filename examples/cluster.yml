@@ -14,6 +14,10 @@ cluster:
     # certificate_key: /path/on/admin/machine/key.pem
     logo: null                  # optional image file
     login_address: cluster.example.org   # shown in the user guide
+    path: /cluster/             # where the site is on the hostname; "/" uses the whole hostname
+    allow: []                   # networks that may open the site, e.g. [10.0.0.0/8]; empty: anyone
+    forwarded_by: null          # the lab web server's address, if it forwards labwebsite.com/cluster/ here
+    build: package              # package: prebuilt in nanoHPC | front: built on the front node
 
 machines:
   front:

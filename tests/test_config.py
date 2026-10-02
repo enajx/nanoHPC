@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from nanohpc.config import check_config
+from nanohpc.config import check_config, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "cluster.yml"
@@ -124,6 +124,11 @@ class HeterogeneousClusterTest(unittest.TestCase):
         self.assertEqual(config["alerts"], {"slack": False})
         self.assertEqual(config["auto_deploy"], {"enabled": False, "repository": None})
         self.assertEqual(config["cluster"]["website"]["login_address"], "cluster.mylab.example.org")
+        website = config["cluster"]["website"]
+        self.assertEqual(website["path"], "/cluster/")
+        self.assertEqual(website["allow"], [])
+        self.assertIsNone(website["forwarded_by"])
+        self.assertEqual(website["build"], "package")
         self.assertEqual(config["machines"]["gpu1"]["aliases"], [])
         self.assertEqual(config["partitions"]["main"]["jobs"], "any")
 
@@ -133,6 +138,79 @@ def mutate(change: Callable[[dict[str, Any]], None]) -> list[str]:
     raw = example()
     change(raw)
     return check_config(raw)[1]
+
+
+class WebsiteFilesTest(unittest.TestCase):
+    """Certificate, key, and logo paths are on the administrator's machine, relative to cluster.yml."""
+
+    def write(self, folder: Path, website: dict[str, Any]) -> Path:
+        raw = yaml.safe_load(EXAMPLE.read_text())
+        raw["cluster"]["website"].update(website)
+        path = folder / "cluster.yml"
+        path.write_text(yaml.safe_dump(raw))
+        return path
+
+    def test_relative_paths_are_resolved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "tls").mkdir()
+            self.make_certificate(folder / "tls", "cert", "cluster.example.org", "90")
+            (folder / "tls" / "cert.key").rename(folder / "tls" / "key.pem")
+            (folder / "logo.png").write_text("x")
+            website = {
+                "https": "own",
+                "certificate": "tls/cert.pem",
+                "certificate_key": "tls/key.pem",
+                "logo": "logo.png",
+            }
+            config, errors = load_config(self.write(folder, website), True)
+            self.assertEqual(errors, [])
+            resolved = config["cluster"]["website"]
+            self.assertEqual(resolved["certificate"], str(folder.resolve() / "tls/cert.pem"))
+            self.assertEqual(resolved["certificate_key"], str(folder.resolve() / "tls/key.pem"))
+            self.assertEqual(resolved["logo"], str(folder.resolve() / "logo.png"))
+
+    def make_certificate(self, folder: Path, name: str, hostname: str, days: str) -> None:
+        """Write a self-signed certificate and key for `hostname` as <name>.pem and <name>.key."""
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", days, "-subj", f"/CN={hostname}",
+             "-addext", f"subjectAltName=DNS:{hostname}", "-keyout", f"{name}.key", "-out", f"{name}.pem"],
+            cwd=folder, capture_output=True, check=True,
+        )  # fmt: skip
+
+    def test_own_certificate_is_checked(self) -> None:
+        """Before touching any machine: the certificate matches its key, names the hostname, and is not expired."""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            self.make_certificate(folder, "good", "cluster.example.org", "90")
+            self.make_certificate(folder, "other", "other.example.org", "90")
+            good = {"https": "own", "certificate": "good.pem", "certificate_key": "good.key"}
+            self.assertEqual(load_config(self.write(folder, good), True)[1], [])
+            mismatched = {"https": "own", "certificate": "good.pem", "certificate_key": "other.key"}
+            self.assertIn(
+                "cluster.website.certificate_key does not match cluster.website.certificate",
+                load_config(self.write(folder, mismatched), True)[1],
+            )
+            wrong_name = {"https": "own", "certificate": "other.pem", "certificate_key": "other.key"}
+            self.assertIn(
+                "cluster.website.certificate is not for cluster.example.org (it names other.example.org)",
+                load_config(self.write(folder, wrong_name), True)[1],
+            )
+            (folder / "broken.pem").write_text("not a certificate")
+            broken = {"https": "own", "certificate": "broken.pem", "certificate_key": "good.key"}
+            self.assertIn(
+                "cluster.website.certificate is not a PEM certificate", load_config(self.write(folder, broken), True)[1]
+            )
+
+    def test_missing_files_and_logo_types_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "logo.bmp").write_text("x")
+            website = {"https": "own", "certificate": "cert.pem", "certificate_key": "/no/key.pem", "logo": "logo.bmp"}
+            _, errors = load_config(self.write(folder, website), True)
+            self.assertIn(f"cluster.website.certificate: {folder.resolve() / 'cert.pem'} not found", errors)
+            self.assertIn("cluster.website.certificate_key: /no/key.pem not found", errors)
+            self.assertIn("cluster.website.logo must be a .png, .svg, .jpg, or .webp file", errors)
 
 
 class InvalidConfigTest(unittest.TestCase):
@@ -476,6 +554,22 @@ class RobustInputTest(unittest.TestCase):
                 lambda raw: raw["cluster"]["website"].update(login_address=5),
                 "cluster.website.login_address must be a host name",
             ),
+            (lambda raw: raw["cluster"]["website"].update(path="cluster"), "cluster.website.path must be a URL path"),
+            (lambda raw: raw["cluster"]["website"].update(path="/a b/"), "cluster.website.path must be a URL path"),
+            (lambda raw: raw["cluster"]["website"].update(path="/x/../"), "cluster.website.path must be a URL path"),
+            (lambda raw: raw["cluster"]["website"].update(allow="10.0.0.0/8"), "cluster.website.allow must be a list"),
+            (
+                lambda raw: raw["cluster"]["website"].update(allow=["10.0.0.0/33"]),
+                "cluster.website.allow[0] must be a network",
+            ),
+            (
+                lambda raw: raw["cluster"]["website"].update(forwarded_by="lab server"),
+                "cluster.website.forwarded_by must be an IP address",
+            ),
+            (
+                lambda raw: raw["cluster"]["website"].update(build="docker"),
+                "cluster.website.build must be package or front",
+            ),
         ]
         for change, expected in cases:
             with self.subTest(expected):
@@ -490,10 +584,28 @@ class RobustInputTest(unittest.TestCase):
                 https="own", certificate="/etc/ssl/c.pem", certificate_key="/etc/ssl/k.pem"
             ),
             lambda raw: raw["partitions"]["main"].update(max_time="7-12:00:00"),
+            lambda raw: raw["cluster"]["website"].update(path="/"),
+            lambda raw: raw["cluster"]["website"].update(path="/lab/cluster"),
+            lambda raw: raw["cluster"]["website"].update(
+                allow=["10.0.0.0/8", "192.168.1.7", "2001:db8::/32"], forwarded_by="203.0.113.5", build="front"
+            ),
         ]
         for index, change in enumerate(cases):
             with self.subTest(index):
                 self.assertEqual(mutate(change), [])
+
+    def test_website_hostname_and_login_address(self) -> None:
+        """The hostname is used lowercase (as certificates store it); a null login address means the hostname."""
+        raw = example()
+        raw["cluster"]["website"].update(hostname="Cluster.Example.ORG", login_address=None)
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["cluster"]["website"]["hostname"], "cluster.example.org")
+        self.assertEqual(config["cluster"]["website"]["login_address"], "cluster.example.org")
+        raw = example()
+        raw["cluster"]["website"].update(hostname="my_cluster.example.org")
+        _, errors = check_config(raw)
+        self.assertIn("cluster.website.hostname must be a DNS name (letters, digits, - and .)", errors[0])
 
     def test_storage_roles_do_not_run_jobs(self) -> None:
         def home_on_compute(raw: dict[str, Any]) -> None:
