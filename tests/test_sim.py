@@ -310,11 +310,19 @@ class SimUsersBase(unittest.TestCase):
             "uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--ssh-config", str(ssh_config), agent=agent
         )  # fmt: skip
 
+    def remove_at_end(self) -> None:
+        """Remove the simulated cluster when the test ends, unless NANOHPC_SIM_KEEP=1: then it stays up, and the
+        next run deploys onto it again (quicker while fixing something; a cluster that already ran a test may
+        not behave like a new one, so a milestone ends with a run from scratch)."""
+        if os.environ.get("NANOHPC_SIM_KEEP") == "1":
+            return
+        self.addCleanup(self.run_command, "uv", "run", "nanohpc", "sim", "down", str(self.sim))
+
     def up_with_test_key(self) -> tuple[Path, dict[str, Any], str]:
         """Bring the sim cluster up and give its users the test key. Return the cluster file, its config,
         and the test public key. The VMs are removed when the test ends."""
         # Registered first, so VMs are removed even when `sim up` itself fails.
-        self.addCleanup(self.run_command, "uv", "run", "nanohpc", "sim", "down", str(self.sim))
+        self.remove_at_end()
         result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(self.sim))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         # Give the users the test key, in the generated cluster.yml that `sim deploy` reads.
@@ -674,12 +682,6 @@ class SimDeployTest(SimUsersBase):
             # Right after a deploy the front node's health report has no warnings.
             report = self.ssh("front", "sudo cluster-health").stdout
             self.assertNotIn("WARN", report, report)
-            # GPU readings that stop arriving are reported as stale.
-            self.assertEqual(self.ssh("gpu2", "sudo systemctl stop nanohpc-gpu-metrics.timer").returncode, 0)
-            time.sleep(130)
-            report = self.ssh("front", "sudo cluster-health").stdout
-            self.assertIn("WARN  GPU readings are fresh (under 2 minutes old) (gpu2)", report, report)
-            self.assertEqual(self.ssh("gpu2", "sudo systemctl start nanohpc-gpu-metrics.timer").returncode, 0)
             # Without the front node's client certificate, a machine's exporter refuses the connection.
             gpu4 = machines["gpu4"]["address"]
             self.assertNotEqual(self.ssh("front", f"curl -sk --max-time 5 https://{gpu4}:9100/metrics").returncode, 0)
@@ -901,6 +903,41 @@ class SimDeployTest(SimUsersBase):
             self.assertNotEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
             self.assertEqual(self.ssh("front", "test -e /etc/ssh/authorized_keys/bob").returncode, 1)
 
+        with self.subTest("a UID conflict stops that machine only"):
+            self.assertEqual(self.ssh("gpu2", "sudo useradd -u 3005 carol").returncode, 0)
+            changed = yaml.safe_load(cluster.read_text())
+            changed["users"] += [
+                {"name": "carol", "uid": 2005, "ssh_keys": [public_key]},
+                {"name": "dave", "uid": 2006, "ssh_keys": [public_key]},
+            ]
+            cluster.write_text(yaml.safe_dump(changed))
+            result = self.deploy(self.state / "ssh_config", agent=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "gpu2: user carol has UID 3005 and primary group ID 3005, but cluster.yml says 2005", result.stdout
+            )
+            self.assertIn("carol:x:3005:", self.ssh("gpu2", "getent passwd carol").stdout)
+            # gpu2 was left unchanged: the other new user was not created there, but was elsewhere.
+            self.assertEqual(self.ssh("gpu2", "getent passwd dave").returncode, 2)
+            self.assertIn("dave:x:2006:", self.ssh("gpu4", "getent passwd dave").stdout)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimAlertsTest(SimUsersBase):
+    """The slow alert checks, on the everyday cluster: stale GPU readings, and Slack alerts with a stand-in Slack
+    server (a failing check, then its recovery; up to half an hour of waiting). Run when alerts or metrics
+    change, and before the release. Real Lima VMs."""
+
+    def test_alerts(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+
+        with self.subTest("GPU readings that stop arriving are reported as stale"):
+            self.assertEqual(self.ssh("gpu2", "sudo systemctl stop nanohpc-gpu-metrics.timer").returncode, 0)
+            time.sleep(130)
+            report = self.ssh("front", "sudo cluster-health").stdout
+            self.assertIn("WARN  GPU readings are fresh (under 2 minutes old) (gpu2)", report, report)
+            self.assertEqual(self.ssh("gpu2", "sudo systemctl start nanohpc-gpu-metrics.timer").returncode, 0)
+
         with self.subTest("Slack alerts from the front node: a failing check on a machine, and its recovery"):
             # A stand-in for Slack on the front node records what Alertmanager posts.
             receiver = textwrap.dedent("""
@@ -968,24 +1005,6 @@ class SimDeployTest(SimUsersBase):
             self.assertTrue(
                 posted("Resolved", "scratch cleanup timer", "cpu1"), self.ssh("front", "cat /tmp/slack.log").stdout
             )
-
-        with self.subTest("a UID conflict stops that machine only"):
-            self.assertEqual(self.ssh("gpu2", "sudo useradd -u 3005 carol").returncode, 0)
-            changed = yaml.safe_load(cluster.read_text())
-            changed["users"] += [
-                {"name": "carol", "uid": 2005, "ssh_keys": [public_key]},
-                {"name": "dave", "uid": 2006, "ssh_keys": [public_key]},
-            ]
-            cluster.write_text(yaml.safe_dump(changed))
-            result = self.deploy(self.state / "ssh_config", agent=False)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(
-                "gpu2: user carol has UID 3005 and primary group ID 3005, but cluster.yml says 2005", result.stdout
-            )
-            self.assertIn("carol:x:3005:", self.ssh("gpu2", "getent passwd carol").stdout)
-            # gpu2 was left unchanged: the other new user was not created there, but was elsewhere.
-            self.assertEqual(self.ssh("gpu2", "getent passwd dave").returncode, 2)
-            self.assertIn("dave:x:2006:", self.ssh("gpu4", "getent passwd dave").stdout)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
@@ -1132,7 +1151,7 @@ class SimHomeOnStorageTest(SimUsersBase):
 
     def test_home_on_storage_machine(self) -> None:
         # A machine whose local /home holds data stops before the shared /home could hide it.
-        self.addCleanup(self.run_command, "uv", "run", "nanohpc", "sim", "down", str(self.sim))
+        self.remove_at_end()
         result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(self.sim))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.ssh("gpu2", "sudo mkdir /home/olddata").returncode, 0)

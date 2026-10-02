@@ -81,7 +81,11 @@ Real-VM tests (slow, off by default, `NANOHPC_SIM=1`):
 
 Run them one at a time on a laptop: with three test clusters up at once (12 VMs on a 10-CPU, 32 GB Mac), deploys failed on SSH and metrics timeouts that did not happen when each ran alone.
 
-Which ones to run (agreed 2026-10-03): while developing, only on Ubuntu 24.04: the everyday test, `/home` on the storage machine, the less common settings (`NANOHPC_SIM_FILE=variations` with `SimReleaseTest`), and the test of the feature being built. Ubuntu 22.04 and 26.04 (`NANOHPC_SIM_FILE=ubuntu-2204` and `ubuntu-2604`) run before the release.
+Which ones to run (agreed 2026-10-03), on Ubuntu 24.04 while developing:
+- The everyday test (`SimDeployTest`) and the test of the feature being built, once from a new cluster at the end of each milestone.
+- `SimHomeOnStorageTest` when storage, accounts, or backup change; `SimReleaseTest` with `NANOHPC_SIM_FILE=variations` (the less common settings) when the website or its certificates change; `SimAlertsTest` (stale GPU readings and Slack alerts, with up to half an hour of waiting) when alerts or metrics change.
+- While fixing something, `NANOHPC_SIM_KEEP=1` keeps the simulated cluster up after the test, and the next run deploys onto it again, which is much quicker. A cluster that already ran a test may not behave like a new one, so the milestone still ends with a run from scratch.
+- Before the release: everything, also on Ubuntu 22.04 and 26.04 (`NANOHPC_SIM_FILE=ubuntu-2204` and `ubuntu-2604`).
 
 
 - `uv run python -m unittest tests.test_sim.SimClusterTest`: brings a cluster up, checks SSH, sudo, the cluster network, and the disks on every machine, then brings it down. `NANOHPC_SIM_FILE=large` picks another sim file.
@@ -100,7 +104,7 @@ Which ones to run (agreed 2026-10-03): while developing, only on Ubuntu 24.04: t
 ### Backup and alerts
 
 - Fast: `tests/test_cluster_backup.py` and `tests/test_backup_receive.py` run the backup and its forced command with real rsync 3.x (set `NANOHPC_TEST_RSYNC` to an rsync 3.x; macOS's own rsync is openrsync and cannot run them; without it those tests are skipped); `tests/test_cluster_health.py` (health checks as metrics, with fake commands); `tests/test_prometheus_rules.py` (alert rules with promtool, when promtool is on PATH).
-- Real VMs: the everyday test runs a backup to the backup machine (owners kept, deletions mirrored, a restore, the key refused for anything but rsync) and checks Slack alerts with a stand-in Slack server on the front node (a failing check on a machine, then its recovery).
+- Real VMs: the everyday test runs a backup to the backup machine (owners kept, deletions mirrored, a restore, the key refused for anything but rsync) and `SimAlertsTest` checks Slack alerts with a stand-in Slack server on the front node (a failing check on a machine, then its recovery) and stale GPU readings.
 
 ### Automatic deploys
 
