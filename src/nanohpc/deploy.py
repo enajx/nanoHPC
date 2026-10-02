@@ -10,12 +10,14 @@ import getpass
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from importlib import resources
+from importlib import metadata, resources
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +85,8 @@ NODE: dict[str, Any] = {
 # Pebble, Let's Encrypt's test server, stands in for Let's Encrypt on a simulated cluster (its VMs have no
 # public address). It runs on the front node; the sim setup installs it and its certificate authority.
 TEST_ACME: dict[str, str] = {"server": "https://127.0.0.1:14000/dir", "ca_bundle": "/etc/nanohpc/test-acme/ca.pem"}
+# Where the front node gets nanoHPC for automatic deploys when nothing else says (at tag v<version>).
+NANOHPC_REPOSITORY = "https://github.com/enajx/nanoHPC"
 CACHE = Path.home() / ".cache" / "nanohpc"
 ANSIBLE = Path(str(resources.files("nanohpc").joinpath("ansible")))
 
@@ -178,7 +182,12 @@ def home_variables(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def variables(
-    config: dict[str, Any], work: Path, simulated: bool, fake_gpus: list[str], qos: list[dict[str, Any]]
+    config: dict[str, Any],
+    work: Path,
+    simulated: bool,
+    fake_gpus: list[str],
+    automatic: bool,
+    qos: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Return the `nanohpc` variables the roles read."""
     policy_limit = config["policy"]["max_gpus_per_user"]
@@ -208,6 +217,9 @@ def variables(
             "uv": UV,
             "website": website_variables(config, simulated),
             "backup": backup_variables(config),
+            "auto_deploy": auto_deploy_variables(config, simulated, fake_gpus),
+            # Run by the front node's automatic deploy (it keeps the install settings a manual deploy made).
+            "automatic": automatic,
             "alerts": {"slack": config["alerts"]["slack"]},
             "metrics": {
                 **METRICS,
@@ -238,6 +250,7 @@ def website_variables(config: dict[str, Any], simulated: bool) -> dict[str, Any]
         "forwarded_by": website["forwarded_by"],
         "build": website["build"],
         "logo": None if logo is None else {"source": logo, "name": "logo" + Path(logo).suffix.lower()},
+        "deploy_hook": config["auto_deploy"]["webhook"] is True,
         "certbot": CERTBOT,
         "acme": TEST_ACME if simulated and website["https"] == "letsencrypt" else None,
         "package": str(resources.files("nanohpc").joinpath("website")),
@@ -249,6 +262,79 @@ def website_variables(config: dict[str, Any], simulated: bool) -> dict[str, Any]
 
 WEBSITE_SOURCE_FILES = ("index.html", "package.json", "package-lock.json", "tsconfig.json", "vite.config.ts")
 WEBSITE_SOURCE_FOLDERS = ("src", "public")
+
+
+def install_source(direct_url: str | None) -> dict[str, str | None]:
+    """Return how the front node installs nanoHPC for automatic deploys, from how this nanoHPC was installed
+    (`direct_url` is the installed package's direct_url.json, None when it came from PyPI):
+    pypi (nanohpc==<version>), git (that repository at tag v<version>), or wheel (a local checkout: the
+    deploy builds a wheel and copies it). Anything else: the nanoHPC repository on GitHub."""
+    if direct_url is None:
+        return {"kind": "pypi", "url": None}
+    info = json.loads(direct_url)
+    if "vcs_info" in info:
+        return {"kind": "git", "url": info["url"]}
+    if "dir_info" in info:
+        return {"kind": "wheel", "url": info["url"]}
+    return {"kind": "git", "url": NANOHPC_REPOSITORY}
+
+
+def refusal(config: dict[str, Any], automatic: bool, running_version: str) -> str | None:
+    """Return why this deploy must not start, or None. With automatic deploys on, every deploy uses the
+    nanoHPC version pinned in cluster.yml, so manual and automatic deploys never alternate between versions.
+    An automatic deploy cannot turn automatic deploys off: it would remove the root login it runs on."""
+    pinned = config["nanohpc_version"]
+    if config["auto_deploy"]["enabled"] is True and pinned != running_version:
+        return (
+            f"cluster.yml pins nanoHPC {pinned} (nanohpc_version), but this is nanoHPC {running_version}: "
+            f"deploy with nanoHPC {pinned}, or change nanohpc_version"
+        )
+    if automatic and config["auto_deploy"]["enabled"] is not True:
+        return "this commit turns automatic deploys off: turn them off with nanohpc deploy from the administrator's machine"
+    return None
+
+
+def nanohpc_wheel(install: dict[str, str | None], version: str, work: Path) -> str | None:
+    """For nanoHPC from a local checkout, build the wheel the front node installs into work/files/nanohpc-wheel.
+    Return an error message when cluster.yml pins another version, None otherwise (and for other install kinds)."""
+    if install["kind"] != "wheel":
+        return None
+    installed = metadata.version("nanohpc")
+    if installed != version:
+        return (
+            f"cluster.yml pins nanoHPC {version}, but this nanoHPC (a local checkout) is {installed}: "
+            f"set nanohpc_version to it, or deploy from nanoHPC {version}"
+        )
+    if shutil.which("uv") is None:
+        return "building the nanoHPC wheel for the front node needs uv on this machine (https://docs.astral.sh/uv/)"
+    project = Path(urllib.parse.unquote(urllib.parse.urlparse(str(install["url"])).path))
+    folder = work / "files" / "nanohpc-wheel"
+    if folder.exists():
+        shutil.rmtree(folder)
+    command = ["uv", "build", "--wheel", "--quiet", "--out-dir", str(folder), str(project)]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return f"building the nanoHPC wheel from {project} failed:\n{result.stderr.strip()}"
+    return None
+
+
+def auto_deploy_variables(config: dict[str, Any], simulated: bool, fake_gpus: list[str]) -> dict[str, Any]:
+    """Return what the auto_deploy role needs: the repository, branch, schedule, webhook, how to install the
+    pinned nanoHPC version on the front node, and, on a simulated cluster, how `nanohpc sim deploy` deployed it
+    (so the front node's automatic deploys do the same)."""
+    deploy = config["auto_deploy"]
+    repository = deploy["repository"]
+    host = None
+    if isinstance(repository, str):
+        host = repository.removeprefix("ssh://").split("@", 1)[1].split(":", 1)[0].split("/", 1)[0]
+    return {
+        **deploy,
+        "repository_host": host,
+        "version": config["nanohpc_version"],
+        "install": install_source(metadata.distribution("nanohpc").read_text("direct_url.json")),
+        "simulated": simulated,
+        "fake_gpus": fake_gpus,
+    }
 
 
 def backup_variables(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -356,6 +442,7 @@ def prepare(
     ssh_config: Path | None,
     simulated: bool,
     fake_gpus: list[str],
+    automatic: bool,
     work: Path,
 ) -> None:
     """Write the generated files, inventory, variables, and ansible.cfg into the work folder."""
@@ -377,7 +464,9 @@ def prepare(
     secrets.touch(mode=0o600)
     secrets.chmod(0o600)
     secrets.write_text(json.dumps({"nanohpc_secrets": config["secrets"]}))
-    (work / "vars.json").write_text(json.dumps(variables(config, work, simulated, fake_gpus, rendered.qos), indent=2))
+    (work / "vars.json").write_text(
+        json.dumps(variables(config, work, simulated, fake_gpus, automatic, rendered.qos), indent=2)
+    )
     (work / "inventory.yml").write_text(yaml.safe_dump(inventory(config)))
     (work / "ansible.cfg").write_text(ansible_cfg(ssh_config))
 
@@ -390,8 +479,15 @@ Options:
     with your key loaded in your SSH agent (ssh-add). nanoHPC forwards it, so no password is needed."""
 
 
-def deploy(config: dict[str, Any], ssh_config: Path | None, simulated: bool, fake_gpus: list[str]) -> int:
-    """Set up the cluster. Return the exit code of the Ansible run."""
+def deploy(
+    config: dict[str, Any], ssh_config: Path | None, simulated: bool, fake_gpus: list[str], automatic: bool
+) -> int:
+    """Set up the cluster. Return the exit code of the Ansible run. `automatic`: run by the front node's
+    automatic deploy."""
+    refused = refusal(config, automatic, metadata.version("nanohpc"))
+    if refused is not None:
+        print(f"Nothing was changed: {refused}", file=sys.stderr)
+        return 1
     found = probe(list(config["machines"]), ssh_config)
     if found.errors:
         print("Nothing was changed: some machines cannot be used.", file=sys.stderr)
@@ -404,7 +500,13 @@ def deploy(config: dict[str, Any], ssh_config: Path | None, simulated: bool, fak
         return 1
     work = CACHE / "clusters" / config["cluster"]["name"]
     work.mkdir(parents=True, exist_ok=True)
-    prepare(config, found.hostnames, ssh_config, simulated, fake_gpus, work)
+    if config["auto_deploy"]["enabled"] is True:
+        install = install_source(metadata.distribution("nanohpc").read_text("direct_url.json"))
+        error = nanohpc_wheel(install, config["nanohpc_version"], work)
+        if error is not None:
+            print(f"Nothing was changed: {error}", file=sys.stderr)
+            return 1
+    prepare(config, found.hostnames, ssh_config, simulated, fake_gpus, automatic, work)
     playbook = Path(sys.executable).parent / "ansible-playbook"
     command = [
         str(playbook),
