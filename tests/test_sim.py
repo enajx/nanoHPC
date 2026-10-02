@@ -6,6 +6,7 @@ because it takes minutes and several GB of memory.
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ import time
 import unittest
 import urllib.parse
 from datetime import datetime
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -136,7 +138,7 @@ class SimOutputTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
             (state / "cluster.yml").write_text(render_cluster(plan, addresses, state))
-            config, errors = load_config(state / "cluster.yml", True)
+            config, errors = load_config(state / "cluster.yml", True, False)
             self.assertEqual(errors, [])
             website = config["cluster"]["website"]
             self.assertEqual(website["https"], "own")
@@ -976,6 +978,139 @@ class SimDeployTest(SimUsersBase):
             # gpu2 was left unchanged: the other new user was not created there, but was elsewhere.
             self.assertEqual(self.ssh("gpu2", "getent passwd dave").returncode, 2)
             self.assertIn("dave:x:2006:", self.ssh("gpu4", "getent passwd dave").stdout)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimAutoDeployTest(SimUsersBase):
+    """Automatic deploys: the front node deploys the whole cluster from a configuration repository by itself.
+    The repository is a bare Git repository of the cluster user bob on the front node, standing in for GitHub;
+    the front node reads it with its own read-only key. Real Lima VMs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "auto-deploy.yml"
+        self.state = ROOT / ".nanohpc-sim" / "auto-deploy"
+        super().setUp()
+
+    def push(self, config: dict[str, Any], message: str) -> str:
+        """Commit cluster.yml to the stand-in repository as bob; return the new commit."""
+        script = textwrap.dedent(f"""
+            set -e
+            rm -rf /tmp/config-work && git clone -q /home/bob/config.git /tmp/config-work 2>/dev/null
+            cd /tmp/config-work
+            cat > cluster.yml
+            git add cluster.yml
+            git -c user.name=bob -c user.email=bob@example.org commit -qm '{message}'
+            git push -q /home/bob/config.git HEAD:main
+            git rev-parse HEAD
+        """)
+        command = f"cd /tmp && sudo -u bob bash -c {shlex.quote(script)}"
+        result = self.ssh("front", command, stdin=yaml.safe_dump(config, sort_keys=False))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout.strip().splitlines()[-1]
+
+    def run_auto_deploy(self) -> subprocess.CompletedProcess[str]:
+        """Start one automatic deploy on the front node and wait for it (the timer does the same)."""
+        return self.ssh("front", "sudo systemctl start nanohpc-auto-deploy.service")
+
+    def test_front_node_deploys_from_the_repository(self) -> None:
+        cluster, config, public_key = self.up_with_test_key()
+        front = config["machines"]["front"]["address"]
+        config["nanohpc_version"] = metadata.version("nanohpc")
+        config["auto_deploy"] = {
+            "enabled": True,
+            "repository": f"bob@{front}:/home/bob/config.git",
+            "branch": "main",
+            "every_minutes": 1440,  # the test starts each run itself
+        }
+        cluster.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        with self.subTest("first deploy: the front node's keys, and how to let it read the repository"):
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr)
+            self.assertIn("cannot read", result.stdout)
+            # Every machine accepts the front node's key for root, from the front node only.
+            for machine in config["machines"]:
+                keys = self.ssh(machine, "sudo cat /etc/ssh/authorized_keys/root").stdout
+                self.assertIn(f'from="{front}"', keys, machine)
+            self.assertIn(config["nanohpc_version"], self.on_front("sudo /opt/nanohpc-tool/bin/nanohpc --version"))
+
+        with self.subTest("the repository key is added: the front node deploys its newest commit"):
+            repository_key = self.on_front("sudo cat /etc/nanohpc/auto-deploy/repository_ed25519.pub").strip()
+            for user in config["users"]:
+                if user["name"] == "bob":
+                    user["ssh_keys"] = [*user["ssh_keys"], repository_key]
+            cluster.write_text(yaml.safe_dump(config, sort_keys=False))
+            self.on_front("cd /tmp && sudo -u bob git init -q --bare --initial-branch=main /home/bob/config.git")
+            commit = self.push(config, "first")
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr)
+            self.assertNotIn("cannot read", result.stdout)
+            run = self.run_auto_deploy()
+            self.assertEqual(
+                run.returncode, 0, self.on_front("sudo journalctl -u nanohpc-auto-deploy -n 80 --no-pager")
+            )
+            self.assertEqual(self.on_front("sudo cat /var/lib/nanohpc/auto-deploy/state/deployed").strip(), commit)
+            metrics = self.on_front("cat /var/lib/nanohpc/metrics-textfile/auto-deploy.prom")
+            self.assertIn("cluster_auto_deploy_last_exit_code 0", metrics)
+
+        with self.subTest("a new commit changes the cluster with no one logging in"):
+            config["users"].append({"name": "carol", "uid": 2010, "ssh_keys": [public_key]})
+            self.push(config, "add carol")
+            self.assertEqual(self.run_auto_deploy().returncode, 0)
+            self.assertIn("carol:x:2010:", self.ssh("cpu1", "getent passwd carol").stdout)
+
+        with self.subTest("a broken commit changes nothing, is reported, and is not retried"):
+            broken = {**config, "unknown_field": True}
+            bad = self.push(broken, "broken")
+            self.assertNotEqual(self.run_auto_deploy().returncode, 0)
+            self.assertEqual(self.on_front("sudo cat /var/lib/nanohpc/auto-deploy/state/failed").strip(), bad)
+            self.assertNotIn(
+                "cluster_auto_deploy_last_exit_code 0",
+                self.on_front("cat /var/lib/nanohpc/metrics-textfile/auto-deploy.prom"),
+            )
+            self.assertIn("carol:x:2010:", self.ssh("cpu1", "getent passwd carol").stdout)
+            self.assertEqual(self.run_auto_deploy().returncode, 0)  # the same commit: waits for a newer one
+            self.assertIn("WARN  the last automatic deploy worked", self.ssh("front", "sudo cluster-health").stdout)
+
+        with self.subTest("a fixed commit deploys again"):
+            fixed = self.push(config, "fixed")
+            self.assertEqual(self.run_auto_deploy().returncode, 0)
+            self.assertEqual(self.on_front("sudo cat /var/lib/nanohpc/auto-deploy/state/deployed").strip(), fixed)
+
+        with self.subTest("root logs in only from the front node, with the front node's key"):
+            gpu4 = config["machines"]["gpu4"]["address"]
+            self.on_front("sudo ssh -F /etc/nanohpc/auto-deploy/ssh_config gpu4 true")
+            key = self.on_front("sudo cat /etc/nanohpc/auto-deploy/id_ed25519")
+            self.assertEqual(self.ssh("cpu1", "umask 077 && cat > /tmp/front-key", stdin=key).returncode, 0)
+            elsewhere = self.ssh(
+                "cpu1",
+                f"ssh -i /tmp/front-key -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{gpu4} true",
+            )
+            self.assertNotEqual(elsewhere.returncode, 0)
+            self.ssh("cpu1", "rm -f /tmp/front-key")
+
+        with self.subTest("a manual deploy after automatic ones changes nothing, and pauses them while it runs"):
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assert_no_changes(result, len(config["machines"]))
+            self.assertEqual(self.on_front("systemctl is-active nanohpc-auto-deploy.timer").strip(), "active")
+
+        with self.subTest("a commit cannot turn automatic deploys off; a manual deploy can"):
+            off = {**config, "auto_deploy": {**config["auto_deploy"], "enabled": False}}
+            self.push(off, "turn off")
+            self.assertNotEqual(self.run_auto_deploy().returncode, 0)
+            self.assertIn(
+                "turn them off with nanohpc deploy",
+                self.on_front("sudo journalctl -u nanohpc-auto-deploy -n 40 --no-pager"),
+            )
+            self.assertEqual(self.ssh("cpu1", "sudo test -e /etc/ssh/authorized_keys/root").returncode, 0)
+            cluster.write_text(yaml.safe_dump(off, sort_keys=False))
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            self.assertEqual(self.ssh("cpu1", "sudo test -e /etc/ssh/authorized_keys/root").returncode, 1)
+            self.assertNotIn("root", self.ssh("cpu1", "sudo sshd -T | grep -i ^allowusers").stdout)
+            self.assertNotEqual(
+                self.ssh("front", "systemctl is-enabled nanohpc-auto-deploy.timer").stdout.strip(), "enabled"
+            )
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

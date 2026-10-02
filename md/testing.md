@@ -100,6 +100,11 @@ Which ones to run (agreed 2026-10-03): while developing, only on Ubuntu 24.04: t
 - Fast: `tests/test_cluster_backup.py` and `tests/test_backup_receive.py` run the backup and its forced command with real rsync 3.x (set `NANOHPC_TEST_RSYNC` to an rsync 3.x; macOS's own rsync is openrsync and cannot run them; without it those tests are skipped); `tests/test_cluster_health.py` (health checks as metrics, with fake commands); `tests/test_prometheus_rules.py` (alert rules with promtool, when promtool is on PATH).
 - Real VMs: the everyday test runs a backup to the backup machine (owners kept, deletions mirrored, a restore, the key refused for anything but rsync) and checks Slack alerts with a stand-in Slack server on the front node (a failing check on a machine, then its recovery).
 
+### Automatic deploys
+
+- Fast: `tests/test_auto_deploy.py` (the run with real Git and a fake nanoHPC: lock, fast-forward from the deployed commit, a failed commit not retried, metrics), `tests/test_deploy_hook.py` (the webhook listener over real HTTP, with GitHub's signature), `tests/test_nanohpc_install.py` (the installer with a fake uv).
+- Real VMs: `uv run python -m unittest tests.test_sim.SimAutoDeployTest` (sim file `auto-deploy.yml`, with its own cluster name so it can run next to the other test clusters). A bare Git repository of a cluster user on the front node stands in for GitHub. The front node deploys its commits by itself (a new user appears on the other machines), refuses a broken commit without changing anything or retrying it, deploys the fix, accepts root logins only from itself, and a manual deploy afterwards changes nothing; a commit cannot turn automatic deploys off, a manual deploy can.
+
 ## Fake GPUs
 
 A real NVIDIA GPU cannot be simulated. The two things nanoHPC depends on are faked. Which machines have fake GPUs is set in a separate test-only file, so `cluster.yml` only describes real setups.
