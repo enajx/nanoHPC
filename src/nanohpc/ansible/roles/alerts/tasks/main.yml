@@ -24,6 +24,7 @@
     dest: "/var/tmp/alertmanager-{{ nanohpc.metrics.alertmanager.version }}.linux-{{ metrics_arch }}.tar.gz"
     checksum: "sha256:{{ nanohpc.metrics.alertmanager.sha256[metrics_arch] }}"
     mode: "0644"
+  register: alertmanager_download
 
 - name: Unpack Alertmanager (owned by root, whatever the archive says)
   ansible.builtin.unarchive:
@@ -34,6 +35,7 @@
     owner: root
     group: root
     creates: "{{ alertmanager_dir }}/alertmanager"
+  when: not (ansible_check_mode and alertmanager_download is changed)  # dry run: not downloaded yet
 
 - name: Create the Alertmanager folders
   ansible.builtin.file:
@@ -137,6 +139,7 @@
     state: >-
       {{ 'restarted' if (alertmanager_unit.changed or alertmanager_config.changed or slack_webhook.changed
          or slack_webhook_removed.changed) else 'started' }}
+  when: not (ansible_check_mode and alertmanager_unit is changed)  # dry run: the service is not installed yet
 
 - name: Wait until Alertmanager is ready
   ansible.builtin.uri:
@@ -145,6 +148,7 @@
   until: alertmanager_ready.status == 200
   retries: 30
   delay: 2
+  when: not ansible_check_mode  # checks this deploy's result
 
 - name: Check that Prometheus sends its alerts to Alertmanager
   ansible.builtin.uri:
@@ -154,3 +158,4 @@
   until: (prometheus_alertmanagers.json.data.activeAlertmanagers | length) == 1
   retries: 15
   delay: 2
+  when: not ansible_check_mode  # checks this deploy's result

@@ -78,6 +78,7 @@
     daemon_reload: "{{ collector_units.changed }}"
   loop: "{{ ['nanohpc-machine-specs'] + (['nanohpc-gpu-metrics'] if gpu is not none else []) }}"
   changed_when: false  # a one-off run of a collector, not a change to the machine
+  when: not (ansible_check_mode and collector_units is changed)  # dry run: the services are not installed yet
 
 - name: Run the collector timers
   ansible.builtin.systemd_service:
@@ -85,6 +86,7 @@
     enabled: true
     state: started
   loop: "{{ ['nanohpc-machine-specs'] + (['nanohpc-gpu-metrics'] if gpu is not none else []) }}"
+  when: not (ansible_check_mode and collector_units is changed)  # dry run: the timers are not installed yet
 
 - name: Check that the collectors wrote their metrics
   ansible.builtin.stat:
@@ -92,6 +94,7 @@
   register: collector_output
   failed_when: not collector_output.stat.exists
   loop: "{{ ['specs.prom'] + (['gpu.prom'] if gpu is not none else []) }}"
+  when: not ansible_check_mode  # checks this deploy's result
 
 # A machine whose GPUs were removed from cluster.yml loses its GPU collector and its last readings.
 - name: Look for an old GPU collector

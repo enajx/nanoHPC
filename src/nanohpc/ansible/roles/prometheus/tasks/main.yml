@@ -16,6 +16,7 @@
     dest: "/var/tmp/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}.tar.gz"
     checksum: "sha256:{{ nanohpc.metrics.prometheus.sha256[metrics_arch] }}"
     mode: "0644"
+  register: prometheus_download
 
 - name: Unpack Prometheus (owned by root, whatever the archive says)
   ansible.builtin.unarchive:
@@ -26,6 +27,7 @@
     owner: root
     group: root
     creates: "{{ prometheus_dir }}/prometheus"
+  when: not (ansible_check_mode and prometheus_download is changed)  # dry run: not downloaded yet
 
 - name: Create the Prometheus folders
   ansible.builtin.file:
@@ -143,12 +145,14 @@
     daemon_reload: "{{ prometheus_units.changed }}"
     state: >-
       {{ 'restarted' if (prometheus_units.changed or detail_config.changed or daily_rules.changed or alert_rules.changed) else 'started' }}
+  when: not (ansible_check_mode and prometheus_units is changed)  # dry run: the service is not installed yet
 
 - name: Run the history Prometheus
   ansible.builtin.systemd_service:
     name: nanohpc-history
     enabled: true
     state: "{{ 'restarted' if (prometheus_units.changed or history_config.changed) else 'started' }}"
+  when: not (ansible_check_mode and prometheus_units is changed)  # dry run: the service is not installed yet
 
 - name: Wait until both are ready
   ansible.builtin.uri:
@@ -158,6 +162,7 @@
   retries: 90  # a large database can take minutes to load after a restart
   delay: 2
   loop: [9090, 9091]
+  when: not ansible_check_mode  # checks this deploy's result
 
 - name: Check that every machine's metrics are collected (over TLS for all but the front node)
   ansible.builtin.uri:
@@ -170,3 +175,4 @@
         == (nanohpc.machines | length)
   retries: 15
   delay: 4
+  when: not ansible_check_mode  # checks this deploy's result

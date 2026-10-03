@@ -10,6 +10,7 @@
     name: nginx
     state: present
     install_recommends: false
+  register: nginx_package
 
 - name: Remove nginx's default site
   ansible.builtin.file:
@@ -50,6 +51,7 @@
     mode: "0644"
     directory_mode: "0755"
   when: nanohpc.website.build == 'package'
+  register: website_copy
 
 - name: Build the website on the front node
   ansible.builtin.include_tasks: build.yml
@@ -62,6 +64,7 @@
     state: link
     owner: root
     group: root
+  when: not (ansible_check_mode and (website_copy is changed or (website_built is defined and not website_built.stat.exists)))  # dry run: no such build yet
 
 - name: Install the cluster's site data
   ansible.builtin.copy:
@@ -141,6 +144,7 @@
     openssl x509 -noout -ext subjectAltName -in {{ letsencrypt_live }}/fullchain.pem | grep -qiw 'DNS:{{ nanohpc.website.hostname }}' && echo ok || echo other
   register: letsencrypt_current
   changed_when: false
+  check_mode: false
   when: nanohpc.website.https == 'letsencrypt'
 
 # Until a certificate exists, nginx serves only port 80 (the challenge files Let's Encrypt checks).
@@ -168,6 +172,7 @@
         UV_TOOL_DIR: "/opt/nanohpc-certbot/{{ nanohpc.website.certbot.version }}/tools"
         UV_TOOL_BIN_DIR: "/opt/nanohpc-certbot/{{ nanohpc.website.certbot.version }}/bin"
         UV_PYTHON_INSTALL_DIR: "/opt/nanohpc-certbot/{{ nanohpc.website.certbot.version }}/python"
+      register: certbot_install
 
     - name: Use this certbot version
       ansible.builtin.file:
@@ -175,6 +180,7 @@
         dest: /opt/nanohpc-certbot/current
         state: link
         force: true
+      when: not (ansible_check_mode and certbot_install is changed)  # dry run: not installed yet
 
     - name: Install the reload command run after each new certificate
       ansible.builtin.copy:
@@ -254,6 +260,7 @@
         enabled: true
         state: started
         daemon_reload: "{{ renewal_units.changed }}"
+      when: not (ansible_check_mode and renewal_units is changed)  # dry run: the timer is not installed yet
 
 # A cluster that moved to its own certificate stops asking Let's Encrypt.
 - name: Look for a Let's Encrypt renewal timer
@@ -294,7 +301,7 @@
   ansible.builtin.systemd_service:
     name: nginx
     state: reloaded
-  when: own_certificate is changed
+  when: own_certificate is changed and not (ansible_check_mode and nginx_package is changed)
 
 - name: Record the website's address for cluster-health
   ansible.builtin.copy:
@@ -320,3 +327,4 @@
   retries: 5
   delay: 2
   changed_when: false
+  when: not ansible_check_mode  # checks this deploy's result

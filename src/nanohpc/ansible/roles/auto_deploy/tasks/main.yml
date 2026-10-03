@@ -24,6 +24,7 @@
   ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-config@{{ inventory_hostname }}" -f /etc/nanohpc/auto-deploy/repository_ed25519
   args:
     creates: /etc/nanohpc/auto-deploy/repository_ed25519
+  register: repository_keygen
 
 # GitHub's published host keys are pinned; another host's key is learned once (and kept).
 - name: Pin GitHub's SSH host keys
@@ -157,6 +158,7 @@
   ansible.builtin.command: /opt/nanohpc-tool/bin/nanohpc --version
   register: installed_nanohpc
   changed_when: false
+  check_mode: false
   failed_when: false
 
 - name: Install the pinned nanoHPC version
@@ -228,6 +230,7 @@
     name: nanohpc-auto-deploy.timer
     enabled: true
     daemon_reload: "{{ auto_deploy_units.changed }}"
+  when: not (ansible_check_mode and auto_deploy_units is changed)  # dry run: the timer is not installed yet
 
 # Started again after this deploy's pause (see pause.yml), so not a change of its own.
 - name: Run the automatic deploy timer
@@ -235,6 +238,7 @@
     name: nanohpc-auto-deploy.timer
     state: started
   changed_when: false
+  when: not (ansible_check_mode and auto_deploy_units is changed)  # dry run: the timer is not installed yet
 
 - name: Set up the webhook listener
   ansible.builtin.include_tasks: webhook.yml
@@ -248,6 +252,7 @@
   ansible.builtin.slurp:
     src: /etc/nanohpc/auto-deploy/repository_ed25519.pub
   register: repository_public_key
+  when: not ansible_check_mode  # dry run: the key may not be made yet, and the check below is skipped
 
 # Read-only: can the front node read the repository yet?
 - name: Check that the front node can read the configuration repository
@@ -256,6 +261,7 @@
   register: repository_readable
   changed_when: false
   failed_when: false
+  when: not ansible_check_mode  # checks this deploy's result
 
 - name: Say how to let the front node read the configuration repository
   ansible.builtin.debug:
@@ -263,4 +269,4 @@
       The front node cannot read {{ nanohpc.auto_deploy.repository }} (branch {{ nanohpc.auto_deploy.branch }}) yet,
       so automatic deploys will fail until it can. Add this read-only key to the repository (on GitHub: Settings,
       Deploy keys, Add deploy key, without write access): {{ repository_public_key.content | b64decode | trim }}
-  when: repository_readable.rc != 0 or (repository_readable.stdout | length) == 0
+  when: not ansible_check_mode and (repository_readable.rc != 0 or (repository_readable.stdout | length) == 0)

@@ -1,6 +1,12 @@
 # nanoHPC deploy playbook. `nanohpc deploy` generates the inventory, the `nanohpc` variables,
 # and the configuration files, then runs this playbook. Machines that fail a check are dropped
 # from the rest of the run without further changes; the others continue.
+#
+# Every deploy runs it twice: first in check mode (the dry run, `--check`: nothing changes), then for real
+# only if the dry run passed on every machine. Read-only commands whose output later tasks use also run in
+# the dry run (`check_mode: false` with `changed_when: false`). A task that only makes sense after an earlier
+# change is skipped in the dry run while that change is still to be made (`ansible_check_mode and ...`), so a
+# first deploy of a new machine can only be partly previewed. The preflight checks always run in full.
 
 - name: Check every machine before changing anything
   hosts: all
@@ -142,26 +148,30 @@
 
 # Fails the deploy only for broken services and mounts (cluster-health FAIL lines). A drained node or a
 # full disk is a WARN line, shown but not a deploy error. Services can take a few seconds to settle after
-# a fresh start, so a failing check is retried briefly.
+# a fresh start, so a failing check is retried briefly. It checks the result of the real run, so the dry run
+# skips it.
 - name: Check that every machine works
   hosts: all
   become: true
   tasks:
-    - name: Run cluster-health
-      ansible.builtin.command: /usr/local/bin/cluster-health
-      register: health
-      changed_when: false
-      failed_when: false
-      until: health.rc == 0
-      retries: 6
-      delay: 10
+    - name: Check this deploy's result
+      when: not ansible_check_mode
+      block:
+        - name: Run cluster-health
+          ansible.builtin.command: /usr/local/bin/cluster-health
+          register: health
+          changed_when: false
+          failed_when: false
+          until: health.rc == 0
+          retries: 6
+          delay: 10
 
-    - name: Show the health report
-      ansible.builtin.debug:
-        msg: "{{ health.stdout_lines }}"
+        - name: Show the health report
+          ansible.builtin.debug:
+            msg: "{{ health.stdout_lines }}"
 
-    - name: Stop if a check failed
-      ansible.builtin.assert:
-        that: health.rc == 0
-        fail_msg: "{{ inventory_hostname }}: {{ health.stdout_lines | select('match', '^FAIL') | join('; ') }}"
-        quiet: true
+        - name: Stop if a check failed
+          ansible.builtin.assert:
+            that: health.rc == 0
+            fail_msg: "{{ inventory_hostname }}: {{ health.stdout_lines | select('match', '^FAIL') | join('; ') }}"
+            quiet: true

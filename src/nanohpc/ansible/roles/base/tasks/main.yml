@@ -21,15 +21,20 @@
     group: root
     mode: "0644"
 
+# Also in the dry run, which needs the lists to know what the package tasks would install. The lists are
+# apt's copy of what the package sources offer: refreshing them changes no installed package or setting.
 - name: Refresh the package lists
   ansible.builtin.apt:
     update_cache: true
     cache_valid_time: 3600
+  changed_when: false
+  check_mode: false
 
 - name: Require synchronized time (Munge refuses credentials across clock differences)
   ansible.builtin.command: timedatectl show -p NTPSynchronized --value
   register: clock_sync
   changed_when: false
+  check_mode: false
   until: clock_sync.stdout | trim == 'yes'
   retries: 12
   delay: 5

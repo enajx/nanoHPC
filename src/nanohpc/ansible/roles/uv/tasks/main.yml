@@ -25,6 +25,7 @@
     dest: "/var/tmp/uv-{{ nanohpc.uv.version }}-{{ uv_arch }}.tar.gz"
     checksum: "sha256:{{ nanohpc.uv.sha256[uv_arch] }}"
     mode: "0644"
+  register: uv_download
 
 - name: Unpack uv
   ansible.builtin.unarchive:
@@ -36,6 +37,8 @@
     owner: root
     group: root
     creates: "{{ uv_home }}/uv"
+  register: uv_unpack
+  when: not (ansible_check_mode and uv_download is changed)  # dry run: not downloaded yet
 
 - name: Put uv and uvx on every user's path
   ansible.builtin.file:
@@ -43,6 +46,7 @@
     dest: "/usr/local/bin/{{ item }}"
     state: link
   loop: [uv, uvx]
+  when: not (ansible_check_mode and (uv_download is changed or uv_unpack is changed))  # dry run: not unpacked yet
 
 - name: Check the uv version
   ansible.builtin.command: /usr/local/bin/uv --version

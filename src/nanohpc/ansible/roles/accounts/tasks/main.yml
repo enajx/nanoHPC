@@ -97,18 +97,21 @@
     line: "auth sufficient pam_ssh_agent_auth.so file=/etc/security/nanohpc-sudo-keys/%u"
     insertbefore: "^@include common-auth"
     firstmatch: true
+  register: sudo_pam_line
 
 - name: Read sudo's PAM setup
   ansible.builtin.slurp:
     src: /etc/pam.d/sudo
   register: sudo_pam
 
+# In the dry run, a line still to be added can only be checked for the line it goes before.
 - name: Require the forwarded-key check before the password check in sudo's PAM setup
   ansible.builtin.assert:
     that: >-
-      (sudo_pam.content | b64decode).find('pam_ssh_agent_auth.so') != -1
-      and (sudo_pam.content | b64decode).find('@include common-auth') != -1
-      and (sudo_pam.content | b64decode).find('pam_ssh_agent_auth.so') < (sudo_pam.content | b64decode).find('@include common-auth')
+      (sudo_pam.content | b64decode).find('@include common-auth') != -1
+      and ((ansible_check_mode and sudo_pam_line is changed)
+           or ((sudo_pam.content | b64decode).find('pam_ssh_agent_auth.so') != -1
+               and (sudo_pam.content | b64decode).find('pam_ssh_agent_auth.so') < (sudo_pam.content | b64decode).find('@include common-auth')))
     fail_msg: >-
       {{ inventory_hostname }}: /etc/pam.d/sudo does not have the usual '@include common-auth' line, so nanoHPC cannot put
       the forwarded-key check before the password check. Administrators' sudo by key would not work here.
@@ -167,16 +170,18 @@
     mode: "0644"
     modification_time: preserve
     access_time: preserve
+  register: deploy_accounts_list
 
 - name: Read the accounts that have deployed to this machine
   ansible.builtin.slurp:
     src: /etc/nanohpc/deploy-accounts
   register: deploy_accounts
+  when: not (ansible_check_mode and deploy_accounts_list is changed)  # dry run: the list is not there yet
 
 - name: Name the deploy accounts that are not users from cluster.yml
   ansible.builtin.set_fact:
     deploy_account_names: >-
-      {{ (((deploy_accounts.content | b64decode).split() + [nanohpc_login_user]) | unique)
+      {{ (((deploy_accounts.content | default('') | b64decode).split() + [nanohpc_login_user]) | unique)
          | reject('in', nanohpc.users | map(attribute='name')) | reject('equalto', 'root') | list }}
 
 # The deploy accounts (for example `ubuntu`) are not in cluster.yml. Their SSH keys are copied out of
@@ -264,11 +269,14 @@
 
     # sshd -T prints the settings sshd would really use for this login, after every included file
     # and Match block, so a setting overridden elsewhere is caught before sshd is reloaded.
+    # The dry run cannot check settings it has not written yet.
     - name: Read the effective SSH settings for the login account
       ansible.builtin.command: >-
         /usr/sbin/sshd -T -C user={{ nanohpc_login_user }},host={{ ansible_facts.hostname }},addr={{ nanohpc.machines[inventory_hostname].address }}
       register: ssh_effective
       changed_when: false
+      check_mode: false
+      when: not (ansible_check_mode and ssh_access is changed)
 
     - name: Require key-only login and the allowed accounts in the effective settings
       ansible.builtin.assert:
@@ -287,6 +295,7 @@
           the login account '{{ nanohpc_login_user }}' not allowed, or an AllowGroups rule). Check /etc/ssh/sshd_config
           and /etc/ssh/sshd_config.d/. The previous SSH settings were put back.
         quiet: true
+      when: not (ansible_check_mode and ssh_access is changed)
 
     - name: Remove the backup of the previous SSH settings
       ansible.builtin.file:
