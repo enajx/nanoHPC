@@ -4,6 +4,7 @@ The unit tests need no VMs. `SimClusterTest` starts real Lima VMs and runs only 
 because it takes minutes and several GB of memory.
 """
 
+import asyncio
 import json
 import os
 import shlex
@@ -20,9 +21,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from textual.widgets import DataTable
 
+from nanohpc import fixuid, probe, wizard
 from nanohpc.config import check_config, load_config
+from nanohpc.probe import probe_machine
 from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config
+from nanohpc.wizard.state import checklist
 
 ROOT = Path(__file__).resolve().parents[1]
 SIM = ROOT / "tests" / "sim"
@@ -1151,6 +1156,98 @@ class SimAutoDeployTest(SimUsersBase):
             self.assertNotIn("root", self.ssh("cpu1", "sudo sshd -T | grep -i ^allowusers").stdout)
             self.assertNotEqual(
                 self.ssh("front", "systemctl is-enabled nanohpc-auto-deploy.timer").stdout.strip(), "enabled"
+            )
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimSetupTest(SimUsersBase):
+    """What the setup wizard does on real machines, before any deploy: the read-only probe, and fix-uid (a dry
+    run that changes nothing, then --apply). On the small cluster of the variations sim file. Real Lima VMs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "variations.yml"
+        self.state = ROOT / ".nanohpc-sim" / "variations"
+        super().setUp()
+
+    async def probe_in_wizard(self, path: Path, ssh_config: Path, machines: list[str]) -> None:
+        """Open the wizard (headless, with the real probe and fix-uid functions, as cli.py passes them), probe each
+        machine with p as an administrator would, check the results and the checklist, and quit with q."""
+        dependencies = wizard.Dependencies(
+            probe.probe_machine, probe.user_ids, probe.uid_problems, probe.uid_owner, fixuid.plan_fix, fixuid.apply_fix
+        )
+        app = wizard.WizardApp(path, ssh_config, dependencies)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            table = app.screen.query_one("#machine-table", DataTable)
+            for name in machines:
+                table.move_cursor(row=table.get_row_index(name))
+                table.focus()
+                await pilot.press("p")
+                await pilot.pause()
+            for _ in range(3):
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+            for name in machines:
+                self.assertTrue(str(table.get_row(name)[-1]).startswith("✓"), table.get_row(name))
+                items = {item.key: item.ok for item in checklist(app.state, name)}
+                self.assertTrue(items["ssh"] and items["ubuntu"], (name, items))
+            await pilot.press("q")
+            await pilot.pause()
+        self.assertFalse(app.saved)
+
+    def test_probe_and_fix_uid(self) -> None:
+        self.remove_at_end()
+        result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(self.sim))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        ssh_config = self.state / "ssh_config"
+        cluster = yaml.safe_load((self.state / "cluster.yml").read_text())
+
+        with self.subTest("the probe reads each machine without changing it"):
+            for name, machine in cluster["machines"].items():
+                facts = probe_machine(name, ssh_config)
+                self.assertIsNone(facts.error, name)
+                self.assertEqual(facts.ubuntu, "24.04", name)
+                self.assertTrue(facts.sudo_ok, name)
+                self.assertIn(machine["address"], facts.addresses, name)
+                self.assertEqual(facts.cpus, 2 if name == "front" else 1, name)
+                self.assertGreater(facts.memory_mb, (2500 if name == "front" else 700), name)
+                self.assertEqual(facts.gpus, [], name)  # fake GPUs have no nvidia-smi
+            disks = {disk.path: disk for disk in probe_machine("gpu4", ssh_config).disks}
+            self.assertIn("/dev/vdb", disks)  # the scratch disk sim up attached
+            self.assertEqual(disks["/dev/vdb"].fstype, "ext4")
+
+        with (
+            self.subTest("the wizard probes every machine from the Machines step and changes nothing"),
+            tempfile.TemporaryDirectory() as folder,
+        ):
+            path = Path(folder) / "cluster.yml"
+            shutil.copy(self.state / "cluster.yml", path)
+            asyncio.run(self.probe_in_wizard(path, ssh_config, list(cluster["machines"])))
+            self.assertEqual(path.read_bytes(), (self.state / "cluster.yml").read_bytes())
+
+        with self.subTest("fix-uid: a read-only plan, then the renumbering after --apply"):
+            self.assertEqual(self.ssh("gpu4", "sudo useradd -u 3005 -U -m alice").returncode, 0)
+            self.assertEqual(self.ssh("gpu4", "sudo -u alice touch /tmp/alice-file").returncode, 0)
+            command = [
+                "uv",
+                "run",
+                "nanohpc",
+                "fix-uid",
+                str(self.state / "cluster.yml"),
+                "alice",
+                "gpu4",
+                "--ssh-config",
+                str(ssh_config),
+            ]
+            dry = self.run_command(*command)
+            self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+            self.assertIn("nothing was changed", dry.stdout)
+            self.assertIn("alice:x:3005:3005:", self.ssh("gpu4", "getent passwd alice").stdout)
+            applied = self.run_command(*command, "--apply")
+            self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+            self.assertIn("alice:x:2000:2000:", self.ssh("gpu4", "getent passwd alice").stdout)
+            self.assertEqual(
+                self.ssh("gpu4", "stat -c %u:%g /tmp/alice-file /home/alice").stdout.split(), ["2000:2000", "2000:2000"]
             )
 
 
