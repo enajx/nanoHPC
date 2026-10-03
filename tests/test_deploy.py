@@ -1,10 +1,18 @@
 """Tests for what `nanohpc deploy` prepares before running Ansible (inventory, variables, files)."""
 
+import contextlib
+import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -12,6 +20,8 @@ from nanohpc.config import load_config
 from nanohpc.deploy import (
     NANOHPC_REPOSITORY,
     SLURM,
+    ansible_cfg,
+    check_then_apply,
     install_source,
     monitor_machines,
     nanohpc_wheel,
@@ -291,6 +301,140 @@ class PrepareTest(unittest.TestCase):
         self.assertIn(f"-F {ssh_config}", (self.work / "ansible.cfg").read_text())
         prepare(self.config, self.hostnames, None, False, [], False, self.work)
         self.assertNotIn("-F ", (self.work / "ansible.cfg").read_text())
+
+
+class DryRunTest(unittest.TestCase):
+    """Every deploy runs the playbook in check mode first; the real run follows only if the dry run passed."""
+
+    def setUp(self) -> None:
+        self.machines = ["front", "gpu4", "cpu1"]
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.folder = Path(temporary.name)
+        self.calls: list[list[str]] = []
+
+    def fake_runner(self, results: list[tuple[int, dict[str, Any] | None]]) -> Callable[[list[str], Path], int]:
+        """A stand-in for ansible-playbook (mocked: no Ansible runs): each call writes the next record and returns
+        its exit code. A record of None writes nothing."""
+
+        def run(arguments: list[str], record: Path) -> int:
+            code, written = results[len(self.calls)]
+            self.calls.append(arguments)
+            if written is not None:
+                record.write_text(json.dumps(written))
+            return code
+
+        return run
+
+    def run_flow(self, results: list[tuple[int, dict[str, Any] | None]], dry_run_only: bool) -> tuple[int, str]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            code = check_then_apply(self.fake_runner(results), self.machines, self.folder, dry_run_only)
+        return code, output.getvalue()
+
+    def test_dry_run_passes_then_real_run(self) -> None:
+        record = {"changed": {"front": ["base : Record roles", "accounts : Create users"]}, "failed": {}}
+        code, output = self.run_flow([(0, record), (0, {"changed": {}, "failed": {}})], False)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.calls, [["--check"], []])
+        self.assertIn("Dry run: front would change 2 things: base : Record roles; accounts : Create users\n", output)
+        self.assertIn("Dry run: gpu4 has nothing to change\n", output)
+        self.assertIn("Dry run: cpu1 has nothing to change\n", output)
+        self.assertIn("Dry run passed: applying the changes.", output)
+
+    def test_real_run_exit_code_is_returned(self) -> None:
+        code, _ = self.run_flow([(0, {"changed": {}, "failed": {}}), (2, {"changed": {}, "failed": {}})], False)
+        self.assertEqual(code, 2)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_failed_dry_run_stops_before_any_change(self) -> None:
+        record = {
+            "changed": {"front": ["base : Record roles"]},
+            "failed": {"gpu4": "preflight : Check the scratch disk: gpu4: /dev/vdb has no filesystem."},
+        }
+        code, output = self.run_flow([(2, record)], False)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.calls, [["--check"]])
+        self.assertIn("Dry run: front would change 1 thing: base : Record roles\n", output)
+        self.assertIn(
+            "Dry run: gpu4 failed: preflight : Check the scratch disk: gpu4: /dev/vdb has no filesystem.", output
+        )
+        self.assertIn("Dry run failed: nothing was changed.", output)
+
+    def test_dry_run_only(self) -> None:
+        code, output = self.run_flow([(0, {"changed": {"cpu1": ["scratch : Mount"]}, "failed": {}})], True)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.calls, [["--check"]])
+        self.assertIn("Dry run: cpu1 would change 1 thing: scratch : Mount", output)
+        self.assertIn("Dry run passed. Nothing was changed (--dry-run).", output)
+
+    def test_unclear_dry_run_never_applies(self) -> None:
+        """An Ansible error with no failed machine, or no record at all, stops like a failed dry run."""
+        code, output = self.run_flow([(4, {"changed": {}, "failed": {}})], False)
+        self.assertNotEqual(code, 0)
+        self.assertIn("Dry run failed: nothing was changed.", output)
+        self.assertIn("exit code 4", output)
+        self.calls = []
+        code, output = self.run_flow([(0, None)], False)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.calls, [["--check"]])
+        self.assertIn("Dry run failed: nothing was changed.", output)
+
+    def test_record_from_real_ansible(self) -> None:
+        """The record comes from nanoHPC's callback in a real ansible-playbook run on this machine, in check mode."""
+        target = self.folder / "file"
+        playbook = self.folder / "play.yml"
+        playbook.write_text(
+            textwrap.dedent(f"""\
+                - hosts: all
+                  gather_facts: false
+                  tasks:
+                    - name: Write a file
+                      ansible.builtin.copy:
+                        dest: {target}
+                        content: hello
+                    - name: Read nothing
+                      ansible.builtin.debug:
+                        msg: hi
+                    - name: Stop here
+                      ansible.builtin.assert:
+                        that: false
+                        fail_msg: the check failed
+                      when: stop | bool
+            """)
+        )
+        (self.folder / "ansible.cfg").write_text(ansible_cfg(None))
+        playbook_command = str(Path(sys.executable).parent / "ansible-playbook")
+
+        def run(arguments: list[str], record: Path) -> int:
+            command = [playbook_command, "-i", "local,", "-c", "local", str(playbook), *arguments]
+            environment = {
+                **os.environ,
+                "ANSIBLE_CONFIG": str(self.folder / "ansible.cfg"),
+                "NANOHPC_RECORD": str(record),
+                "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+            }
+            self.calls.append(arguments)
+            result = subprocess.run(
+                [*command, "-e", f"stop={self.stop}"], env=environment, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, check=False,
+            )  # fmt: skip
+            return result.returncode
+
+        self.stop = False
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            code = check_then_apply(run, ["local"], self.folder, True)
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertIn("Dry run: local would change 1 thing: Write a file\n", output.getvalue())
+        self.assertFalse(target.exists())
+        self.stop = True
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            code = check_then_apply(run, ["local"], self.folder, False)
+        self.assertNotEqual(code, 0)
+        self.assertIn("Dry run: local failed: Stop here: the check failed", output.getvalue())
+        self.assertFalse(target.exists())
 
 
 if __name__ == "__main__":

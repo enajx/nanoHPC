@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.parse
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib import metadata, resources
@@ -427,6 +428,9 @@ def ansible_cfg(ssh_config: Path | None) -> str:
         "timeout = 60\n"
         "interpreter_python = auto_silent\n"
         "retry_files_enabled = False\n"
+        # Records the changed and failed tasks for the dry run's summary (callback_plugins/nanohpc_record.py).
+        f"callback_plugins = {ANSIBLE / 'callback_plugins'}\n"
+        "callbacks_enabled = nanohpc_record\n"
         "\n[privilege_escalation]\n"
         # Ansible's default adds -n, which skips authentication by forwarded key.
         "become_flags = -H -S\n"
@@ -479,11 +483,61 @@ Options:
     with your key loaded in your SSH agent (ssh-add). nanoHPC forwards it, so no password is needed."""
 
 
+def dry_run_summary(machines: list[str], record: dict[str, Any]) -> list[str]:
+    """Return one line per machine: what the dry run would change there, or why it failed."""
+    lines = []
+    for machine in machines:
+        changed = record["changed"].get(machine, [])
+        if machine in record["failed"]:
+            lines.append(f"Dry run: {machine} failed: {record['failed'][machine]}")
+        elif changed:
+            things = "thing" if len(changed) == 1 else "things"
+            lines.append(f"Dry run: {machine} would change {len(changed)} {things}: {'; '.join(changed)}")
+        else:
+            lines.append(f"Dry run: {machine} has nothing to change")
+    return lines
+
+
+# Runs ansible-playbook with extra arguments, its callback writing the record file; returns the exit code.
+PlaybookRunner = Callable[[list[str], Path], int]
+
+
+def check_then_apply(run: PlaybookRunner, machines: list[str], folder: Path, dry_run_only: bool) -> int:
+    """Run the playbook in check mode (the dry run: nothing changes) and print what it would change on each
+    machine. Run it for real only if the dry run passed on every machine, and `dry_run_only` is off.
+    Return the exit code (the real run's when it ran). The records go into `folder`."""
+    record_path = folder / "dry-run.json"
+    record_path.unlink(missing_ok=True)  # only this dry run's record counts
+    print("Dry run: checking every machine without changing anything (ansible-playbook --check)", flush=True)
+    code = run(["--check"], record_path)
+    if not record_path.is_file():
+        print(f"Dry run failed: nothing was changed. The dry run (exit code {code}) left no record.", file=sys.stderr)
+        return code or 1
+    record = json.loads(record_path.read_text())
+    print("\n".join(["", *dry_run_summary(machines, record), ""]), flush=True)
+    if code != 0 or record["failed"]:
+        print(
+            f"Dry run failed: nothing was changed. Fix what failed above and deploy again (exit code {code}).",
+            file=sys.stderr,
+        )
+        return code or 1
+    if dry_run_only:
+        print("Dry run passed. Nothing was changed (--dry-run).")
+        return 0
+    print("Dry run passed: applying the changes.", flush=True)
+    return run([], folder / "run.json")
+
+
 def deploy(
-    config: dict[str, Any], ssh_config: Path | None, simulated: bool, fake_gpus: list[str], automatic: bool
+    config: dict[str, Any],
+    ssh_config: Path | None,
+    simulated: bool,
+    fake_gpus: list[str],
+    automatic: bool,
+    dry_run_only: bool,
 ) -> int:
-    """Set up the cluster. Return the exit code of the Ansible run. `automatic`: run by the front node's
-    automatic deploy."""
+    """Set up the cluster: a dry run first, then the real run if the dry run passed (unless `dry_run_only`).
+    Return the exit code of the Ansible run. `automatic`: run by the front node's automatic deploy."""
     refused = refusal(config, automatic, metadata.version("nanohpc"))
     if refused is not None:
         print(f"Nothing was changed: {refused}", file=sys.stderr)
@@ -537,9 +591,16 @@ def deploy(
             password_file.touch(mode=0o600)
             password_file.write_text(getpass.getpass(prompt))
             command += ["--become-password-file", str(password_file)]
-        # Ansible refuses non-blocking terminal handles, so it gets a plain stdin.
-        code = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL, check=False).returncode
-        # The secrets are on the front node now; no copy stays in the work folder.
+
+        def run(arguments: list[str], record: Path) -> int:
+            # Ansible refuses non-blocking terminal handles, so it gets a plain stdin.
+            run_environment = {**environment, "NANOHPC_RECORD": str(record)}
+            return subprocess.run(
+                [*command, *arguments], env=run_environment, stdin=subprocess.DEVNULL, check=False
+            ).returncode
+
+        code = check_then_apply(run, list(config["machines"]), Path(private), dry_run_only)
+        # No copy of the secrets stays in the work folder (the real run put them on the front node).
         (work / "secrets.json").unlink()
         # Close the shared SSH connections now, so none keeps the forwarded agent open after the run.
         for socket in Path(private).iterdir():
