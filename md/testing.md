@@ -85,6 +85,7 @@ Which ones to run (agreed 2026-10-03), on Ubuntu 24.04 while developing:
 - The everyday test (`SimDeployTest`) and the test of the feature being built, once from a new cluster at the end of each milestone.
 - `SimHomeOnStorageTest` when storage, accounts, or backup change; `SimReleaseTest` with `NANOHPC_SIM_FILE=variations` (the less common settings) when the website or its certificates change; `SimAlertsTest` (stale GPU readings and Slack alerts, with up to half an hour of waiting) when alerts or metrics change. `SimRedeployTest` (the safety checks that each need another deploy: a missing certificate issued again, a drained node, an administrator's forwarded key, the stop with no key, a removed user, a UID conflict) when accounts, SSH, sudo, preflight, `deploy.py`, or the certificates change.
 - While fixing something, `NANOHPC_SIM_KEEP=1` keeps the simulated cluster up after the test, and the next run deploys onto it again, which is much quicker. A cluster that already ran a test may not behave like a new one, so the milestone still ends with a run from scratch.
+- `SimSetupTest` (about half a minute once the Ubuntu image is cached) when the setup wizard, the probe, or fix-uid change: it probes fresh machines, runs the real wizard against them, and renumbers a user with fix-uid.
 - Before the release: everything, also on Ubuntu 22.04 and 26.04 (`NANOHPC_SIM_FILE=ubuntu-2204` and `ubuntu-2604`).
 
 
