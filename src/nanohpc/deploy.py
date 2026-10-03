@@ -484,6 +484,16 @@ Options:
     with your key loaded in your SSH agent (ssh-add). nanoHPC forwards it, so no password is needed."""
 
 
+def needed_machines(config: dict[str, Any]) -> dict[str, str]:
+    """Return the machines every other machine depends on, each with what it is: the front node and the home
+    machine (the same machine when /home is on the front node)."""
+    front, _ = front_machine(config)
+    home = home_server(config)
+    if front == home:
+        return {front: "the front node and the home machine"}
+    return {front: "the front node", home: "the home machine"}
+
+
 def dry_run_summary(machines: list[str], record: dict[str, Any]) -> list[str]:
     """Return one line per machine: what the dry run would change there, or why it failed."""
     lines = []
@@ -502,31 +512,98 @@ def dry_run_summary(machines: list[str], record: dict[str, Any]) -> list[str]:
 # Runs ansible-playbook with extra arguments, its callback writing the record file; returns the exit code.
 PlaybookRunner = Callable[[list[str], Path], int]
 
+# Exit codes of a deploy that ran its dry run (1: stopped before it, nothing changed).
+DRY_RUN_FAILED = 3  # the dry run failed on some machines: those were not changed (the others may have been deployed)
+REAL_RUN_FAILED = 4  # the real run failed: the machines it names may be partly changed
 
-def check_then_apply(run: PlaybookRunner, machines: list[str], folder: Path, dry_run_only: bool) -> int:
-    """Run the playbook in check mode (the dry run: nothing changes) and print what it would change on each
-    machine. Run it for real only if the dry run passed on every machine, and `dry_run_only` is off.
-    Return the exit code (the real run's when it ran). The records go into `folder`."""
-    record_path = folder / "dry-run.json"
-    record_path.unlink(missing_ok=True)  # only this dry run's record counts
+
+def read_record(path: Path) -> dict[str, Any] | None:
+    """Return a run's record (see callback_plugins/nanohpc_record.py), or None when the run left none."""
+    return json.loads(path.read_text()) if path.is_file() else None
+
+
+def run_with(
+    run: PlaybookRunner, arguments: list[str], variables: dict[str, Any], folder: Path, name: str
+) -> tuple[int, dict[str, Any] | None]:
+    """Run the playbook with extra arguments and the variables (a file in `folder`); return its exit code and
+    record. Only this run's record counts."""
+    variables_path = folder / f"{name}-vars.json"
+    variables_path.write_text(json.dumps(variables))
+    record_path = folder / f"{name}.json"
+    record_path.unlink(missing_ok=True)
+    code = run([*arguments, "-e", f"@{variables_path}"], record_path)
+    return code, read_record(record_path)
+
+
+def check_then_apply(
+    run: PlaybookRunner, machines: list[str], needed: dict[str, str], folder: Path, dry_run_only: bool
+) -> int:
+    """Run the playbook in check mode (the dry run: nothing changes except apt's package lists) and print what it
+    would change on each machine. Then, unless `dry_run_only`, run it for real on the machines whose dry run
+    passed; the others are left out, unchanged. When a machine in `needed` (the front node, the home machine:
+    every other machine depends on them, named with what they are) fails its dry run, nothing is deployed.
+    Return 0, DRY_RUN_FAILED, or REAL_RUN_FAILED. The records go into `folder`."""
     print("Dry run: checking every machine without changing anything (ansible-playbook --check)", flush=True)
-    code = run(["--check"], record_path)
-    if not record_path.is_file():
+    code, record = run_with(run, ["--check"], {"nanohpc_left_out": [], "nanohpc_dry_run": {}}, folder, "dry-run")
+    if record is None:
         print(f"Dry run failed: nothing was changed. The dry run (exit code {code}) left no record.", file=sys.stderr)
-        return code or 1
-    record = json.loads(record_path.read_text())
+        return DRY_RUN_FAILED
     print("\n".join(["", *dry_run_summary(machines, record), ""]), flush=True)
-    if code != 0 or record["failed"]:
+    failed = [machine for machine in machines if machine in record["failed"]]
+    if code != 0 and not failed:
         print(
-            f"Dry run failed: nothing was changed. Fix what failed above and deploy again (exit code {code}).",
+            f"Dry run failed (ansible-playbook exit code {code}): nothing was deployed, and nothing was changed.",
             file=sys.stderr,
         )
-        return code or 1
+        return DRY_RUN_FAILED
+    blocking = [f"{machine} ({needed[machine]})" for machine in failed if machine in needed]
+    if blocking:
+        print(
+            f"Dry run failed on {', '.join(blocking)}, which every other machine depends on: nothing was deployed,"
+            " and nothing was changed. Fix what failed above and deploy again.",
+            file=sys.stderr,
+        )
+        return DRY_RUN_FAILED
     if dry_run_only:
+        if failed:
+            print(f"Dry run failed on {', '.join(failed)}. Nothing was changed (--dry-run).", file=sys.stderr)
+            return DRY_RUN_FAILED
         print("Dry run passed. Nothing was changed (--dry-run).")
         return 0
-    print("Dry run passed: applying the changes.", flush=True)
-    return run([], folder / "run.json")
+    if failed:
+        print(
+            f"Dry run failed on {', '.join(failed)}: left out of this deploy, unchanged. Applying the changes on the"
+            " others.",
+            flush=True,
+        )
+    else:
+        print("Dry run passed: applying the changes.", flush=True)
+    variables = {"nanohpc_left_out": failed, "nanohpc_dry_run": record["facts"]}
+    code, applied = run_with(run, [], variables, folder, "run")
+    if applied is None:
+        print(
+            f"The deploy failed (exit code {code}) and left no record: machines may be partly changed.", file=sys.stderr
+        )
+        return REAL_RUN_FAILED
+    broken = {machine: text for machine, text in applied["failed"].items() if machine not in failed}
+    if broken or (code != 0 and not failed):
+        lines = [f"  {machine}: {text}" for machine, text in broken.items()] or [
+            f"  (ansible-playbook exit code {code})"
+        ]
+        print(
+            "The deploy failed on these machines, which may be partly changed. Fix the problem and deploy again:\n"
+            + "\n".join(lines),
+            file=sys.stderr,
+        )
+        return REAL_RUN_FAILED
+    if failed:
+        print(
+            "Left out of this deploy (their dry run failed; nothing was changed on them):\n"
+            + "\n".join(f"  {machine}: {record['failed'][machine]}" for machine in failed),
+            file=sys.stderr,
+        )
+        return DRY_RUN_FAILED
+    return 0
 
 
 def deploy(
@@ -537,8 +614,9 @@ def deploy(
     automatic: bool,
     dry_run_only: bool,
 ) -> int:
-    """Set up the cluster: a dry run first, then the real run if the dry run passed (unless `dry_run_only`).
-    Return the exit code of the Ansible run. `automatic`: run by the front node's automatic deploy."""
+    """Set up the cluster: a dry run first, then the real run on the machines whose dry run passed (unless
+    `dry_run_only`). Return 0, 1 (stopped before the dry run), DRY_RUN_FAILED, or REAL_RUN_FAILED.
+    `automatic`: run by the front node's automatic deploy."""
     refused = refusal(config, automatic, metadata.version("nanohpc"))
     if refused is not None:
         print(f"Nothing was changed: {refused}", file=sys.stderr)
@@ -600,7 +678,7 @@ def deploy(
                 [*command, *arguments], env=run_environment, stdin=subprocess.DEVNULL, check=False
             ).returncode
 
-        code = check_then_apply(run, list(config["machines"]), Path(private), dry_run_only)
+        code = check_then_apply(run, list(config["machines"]), needed_machines(config), Path(private), dry_run_only)
         # No copy of the secrets stays in the work folder (the real run put them on the front node).
         (work / "secrets.json").unlink()
         # Close the shared SSH connections now, so none keeps the forwarded agent open after the run.

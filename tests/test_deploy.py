@@ -18,7 +18,9 @@ import yaml
 
 from nanohpc.config import load_config
 from nanohpc.deploy import (
+    DRY_RUN_FAILED,
     NANOHPC_REPOSITORY,
+    REAL_RUN_FAILED,
     SLURM,
     ansible_cfg,
     check_then_apply,
@@ -304,22 +306,26 @@ class PrepareTest(unittest.TestCase):
 
 
 class DryRunTest(unittest.TestCase):
-    """Every deploy runs the playbook in check mode first; the real run follows only if the dry run passed."""
+    """Every deploy runs the playbook in check mode first. Machines whose dry run failed are left out of the real
+    run, unless the front node or the home machine failed: then nothing is deployed."""
 
     def setUp(self) -> None:
         self.machines = ["front", "gpu4", "cpu1"]
+        self.needed = {"front": "the front node and the home machine"}
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.folder = Path(temporary.name)
         self.calls: list[list[str]] = []
+        self.variables: list[dict[str, Any]] = []
 
     def fake_runner(self, results: list[tuple[int, dict[str, Any] | None]]) -> Callable[[list[str], Path], int]:
-        """A stand-in for ansible-playbook (mocked: no Ansible runs): each call writes the next record and returns
-        its exit code. A record of None writes nothing."""
+        """A stand-in for ansible-playbook (mocked: no Ansible runs): each call keeps the variables file it was
+        given, writes the next record, and returns its exit code. A record of None writes nothing."""
 
         def run(arguments: list[str], record: Path) -> int:
             code, written = results[len(self.calls)]
             self.calls.append(arguments)
+            self.variables.append(json.loads(Path(arguments[arguments.index("-e") + 1][1:]).read_text()))
             if written is not None:
                 record.write_text(json.dumps(written))
             return code
@@ -329,56 +335,110 @@ class DryRunTest(unittest.TestCase):
     def run_flow(self, results: list[tuple[int, dict[str, Any] | None]], dry_run_only: bool) -> tuple[int, str]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-            code = check_then_apply(self.fake_runner(results), self.machines, self.folder, dry_run_only)
+            code = check_then_apply(self.fake_runner(results), self.machines, self.needed, self.folder, dry_run_only)
         return code, output.getvalue()
 
     def test_dry_run_passes_then_real_run(self) -> None:
-        record = {"changed": {"front": ["base : Record roles", "accounts : Create users"]}, "failed": {}}
-        code, output = self.run_flow([(0, record), (0, {"changed": {}, "failed": {}})], False)
+        record = {
+            "changed": {"front": ["base : Record roles", "accounts : Create users"]},
+            "failed": {},
+            "facts": {"front": {"nanohpc_dry_run_auto_deploy_state": "abc"}},
+        }
+        code, output = self.run_flow([(0, record), (0, {"changed": {}, "failed": {}, "facts": {}})], False)
         self.assertEqual(code, 0)
-        self.assertEqual(self.calls, [["--check"], []])
+        self.assertEqual([call[0] for call in self.calls], ["--check", "-e"])
+        self.assertEqual(self.variables[0], {"nanohpc_left_out": [], "nanohpc_dry_run": {}})
+        # The real run gets what the dry run read (for example the last automatic deploy, to compare).
+        self.assertEqual(
+            self.variables[1],
+            {"nanohpc_left_out": [], "nanohpc_dry_run": {"front": {"nanohpc_dry_run_auto_deploy_state": "abc"}}},
+        )
         self.assertIn("Dry run: front would change 2 things: base : Record roles; accounts : Create users\n", output)
         self.assertIn("Dry run: gpu4 has nothing to change\n", output)
         self.assertIn("Dry run: cpu1 has nothing to change\n", output)
         self.assertIn("Dry run passed: applying the changes.", output)
 
-    def test_real_run_exit_code_is_returned(self) -> None:
-        code, _ = self.run_flow([(0, {"changed": {}, "failed": {}}), (2, {"changed": {}, "failed": {}})], False)
-        self.assertEqual(code, 2)
-        self.assertEqual(len(self.calls), 2)
-
-    def test_failed_dry_run_stops_before_any_change(self) -> None:
+    def test_machine_that_fails_its_dry_run_is_left_out(self) -> None:
+        """The other machines are deployed; the deploy still fails, with its own exit code, and says why."""
         record = {
             "changed": {"front": ["base : Record roles"]},
             "failed": {"gpu4": "preflight : Check the scratch disk: gpu4: /dev/vdb has no filesystem."},
+            "facts": {},
         }
-        code, output = self.run_flow([(2, record)], False)
-        self.assertNotEqual(code, 0)
-        self.assertEqual(self.calls, [["--check"]])
+        real = {"changed": {}, "failed": {"gpu4": "Leave out: gpu4 is left out"}, "facts": {}}
+        code, output = self.run_flow([(2, record), (2, real)], False)
+        self.assertEqual(code, DRY_RUN_FAILED)
+        self.assertEqual(self.variables[1]["nanohpc_left_out"], ["gpu4"])
         self.assertIn("Dry run: front would change 1 thing: base : Record roles\n", output)
         self.assertIn(
             "Dry run: gpu4 failed: preflight : Check the scratch disk: gpu4: /dev/vdb has no filesystem.", output
         )
-        self.assertIn("Dry run failed: nothing was changed.", output)
+        self.assertIn(
+            "Dry run failed on gpu4: left out of this deploy, unchanged. Applying the changes on the others.", output
+        )
+        self.assertIn(
+            "Left out of this deploy (their dry run failed; nothing was changed on them):\n"
+            "  gpu4: preflight : Check the scratch disk: gpu4: /dev/vdb has no filesystem.",
+            output,
+        )
+
+    def test_front_or_home_machine_failing_stops_everything(self) -> None:
+        record = {"changed": {}, "failed": {"front": "preflight : Require Ubuntu: no", "cpu1": "x: y"}, "facts": {}}
+        code, output = self.run_flow([(2, record)], False)
+        self.assertEqual(code, DRY_RUN_FAILED)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn(
+            "Dry run failed on front (the front node and the home machine), which every other machine depends on: "
+            "nothing was deployed, and nothing was changed.",
+            output,
+        )
+
+    def test_real_run_failure(self) -> None:
+        """A failure after the dry run passed: the machines may be partly changed, with another exit code."""
+        passed = {"changed": {}, "failed": {}, "facts": {}}
+        real = {
+            "changed": {"cpu1": ["slurm : Start"]},
+            "failed": {"cpu1": "slurm_compute : Run slurmd: failed"},
+            "facts": {},
+        }
+        code, output = self.run_flow([(0, passed), (2, real)], False)
+        self.assertEqual(code, REAL_RUN_FAILED)
+        self.assertIn(
+            "The deploy failed on these machines, which may be partly changed. Fix the problem and deploy again:\n"
+            "  cpu1: slurm_compute : Run slurmd: failed",
+            output,
+        )
+        self.calls, self.variables = [], []
+        code, output = self.run_flow([(0, passed), (4, None)], False)
+        self.assertEqual(code, REAL_RUN_FAILED)
+        self.assertIn("left no record", output)
 
     def test_dry_run_only(self) -> None:
-        code, output = self.run_flow([(0, {"changed": {"cpu1": ["scratch : Mount"]}, "failed": {}})], True)
+        code, output = self.run_flow([(0, {"changed": {"cpu1": ["scratch : Mount"]}, "failed": {}, "facts": {}})], True)
         self.assertEqual(code, 0)
-        self.assertEqual(self.calls, [["--check"]])
+        self.assertEqual(len(self.calls), 1)
         self.assertIn("Dry run: cpu1 would change 1 thing: scratch : Mount", output)
         self.assertIn("Dry run passed. Nothing was changed (--dry-run).", output)
+        self.calls = []
+        record = {"changed": {}, "failed": {"cpu1": "a: b"}, "facts": {}}
+        code, output = self.run_flow([(2, record)], True)
+        self.assertEqual(code, DRY_RUN_FAILED)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn("Dry run failed on cpu1. Nothing was changed (--dry-run).", output)
 
     def test_unclear_dry_run_never_applies(self) -> None:
-        """An Ansible error with no failed machine, or no record at all, stops like a failed dry run."""
-        code, output = self.run_flow([(4, {"changed": {}, "failed": {}})], False)
-        self.assertNotEqual(code, 0)
-        self.assertIn("Dry run failed: nothing was changed.", output)
-        self.assertIn("exit code 4", output)
+        """An Ansible error with no failed machine, or no record at all, stops before any change."""
+        code, output = self.run_flow([(4, {"changed": {}, "failed": {}, "facts": {}})], False)
+        self.assertEqual(code, DRY_RUN_FAILED)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn(
+            "Dry run failed (ansible-playbook exit code 4): nothing was deployed, and nothing was changed.", output
+        )
         self.calls = []
         code, output = self.run_flow([(0, None)], False)
-        self.assertNotEqual(code, 0)
-        self.assertEqual(self.calls, [["--check"]])
-        self.assertIn("Dry run failed: nothing was changed.", output)
+        self.assertEqual(code, DRY_RUN_FAILED)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn("left no record", output)
 
     def test_record_from_real_ansible(self) -> None:
         """The record comes from nanoHPC's callback in a real ansible-playbook run on this machine, in check mode."""
@@ -396,6 +456,25 @@ class DryRunTest(unittest.TestCase):
                     - name: Read nothing
                       ansible.builtin.debug:
                         msg: hi
+                    - name: Run a command that changes something
+                      ansible.builtin.command: touch {target}
+                    - name: Run commands that change something
+                      ansible.builtin.command: touch {target}
+                      loop: [1, 2]
+                    - name: Run a command that may change something
+                      ansible.builtin.command: echo changed
+                      register: maybe
+                      changed_when: "'changed' in maybe.stdout"
+                    - name: Run a command that only reads
+                      ansible.builtin.command: echo read
+                      changed_when: false
+                    - name: Skip a command
+                      ansible.builtin.command: touch {target}
+                      when: false
+                    - name: Keep something for the real run
+                      ansible.builtin.set_fact:
+                        nanohpc_dry_run_example: kept
+                        other_fact: not kept
                     - name: Stop here
                       ansible.builtin.assert:
                         that: false
@@ -424,15 +503,23 @@ class DryRunTest(unittest.TestCase):
         self.stop = False
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-            code = check_then_apply(run, ["local"], self.folder, True)
+            code = check_then_apply(run, ["local"], {"local": "this machine"}, self.folder, True)
         self.assertEqual(code, 0, output.getvalue())
-        self.assertIn("Dry run: local would change 1 thing: Write a file\n", output.getvalue())
+        # Commands skipped in check mode count as changes, unless they are marked as never changing anything.
+        self.assertIn(
+            "Dry run: local would change 4 things: Write a file; Run a command that changes something;"
+            " Run commands that change something; Run a command that may change something\n",
+            output.getvalue(),
+        )
         self.assertFalse(target.exists())
+        record = json.loads((self.folder / "dry-run.json").read_text())
+        self.assertEqual(record["facts"], {"local": {"nanohpc_dry_run_example": "kept"}})
         self.stop = True
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-            code = check_then_apply(run, ["local"], self.folder, False)
-        self.assertNotEqual(code, 0)
+            code = check_then_apply(run, ["local"], {"local": "this machine"}, self.folder, False)
+        self.assertEqual(code, DRY_RUN_FAILED)
+        self.assertEqual(len(self.calls), 2, "no real run")
         self.assertIn("Dry run: local failed: Stop here: the check failed", output.getvalue())
         self.assertFalse(target.exists())
 
