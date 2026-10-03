@@ -130,7 +130,8 @@ flowchart LR
 - Built: nightly `/home` backup to the backup machine or an outside SSH server, and Slack alerts from the front node when a check starts failing or recovers (M6a).
 - Built: automatic deploys (M6b): the front node deploys the whole cluster from a branch of the configuration repository by itself (every few minutes or on a GitHub webhook), with the pinned nanoHPC version, root logins only from the front node, and failed commits reported and not retried.
 - Built: the setup wizard (M7): `nanohpc init`, a full-screen terminal app that probes the machines and writes or edits `cluster.yml`; `nanohpc fix-uid`; [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md) for agents.
-- Next: commands and the release (M8): the dry run before every deploy, add-node and the other commands, key-only root login for administrators, then v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
+- Built: a dry run before every deploy (M8a): every deploy, manual or automatic, previews the changes on every machine first; machines whose dry run fails are left out (nothing is deployed when the front node or the home machine fails).
+- Next (M8): partial deploys (`nanohpc deploy --only ...`), `nanohpc check`, key-only root login for administrators, then v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
