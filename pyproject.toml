@@ -8,6 +8,8 @@ requires-python = ">=3.12"
 dependencies = [
     "ansible-core>=2.21.4",
     "pyyaml>=6",
+    "ruamel-yaml>=0.19.1",
+    "textual>=8.2.8",
 ]
 
 [project.scripts]

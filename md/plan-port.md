@@ -127,6 +127,7 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
 - The wizard is for people. Agents write `cluster.yml` from the examples, following `SETUP-for-AGENTS.md`, which lists the same steps as the wizard; AGENTS.md links to it.
 - Steps: machines (SSH check and probe, roles, GPU types), storage (where /home lives, scratch, the commands to make filesystems with the option to skip, storage advice), users (names, UIDs, SSH keys, administrators, UID check on every machine), partitions and policy (simple defaults), website (hostname, path, HTTPS, logo, access; a private network such as WireGuard or Tailscale recommended, not required), extras (backup, Slack, automatic deploys, the pinned nanoHPC version), review (the cluster.yml, validated, the next step `nanohpc deploy`, and the `ssh-add -c` tip). Opening an existing cluster.yml shows the same steps, filled in.
 - Layout (agreed 2026-10-03): the seven steps in a sidebar on the left with their state, the current step's form on the right, and a footer with the keys; a second footer line says that for an installation by an AI agent, see `<path>/SETUP-for-AGENTS.md`.
+- (Agent's choice, to review) `cluster.yml` is read and written with ruamel.yaml, so editing an existing file keeps its comments and order; Textual 8.2.8 for the terminal app.
 - `nanohpc fix-uid` is built in M7: the wizard explains a UID conflict and, after the administrator confirms, renumbers that user on that machine (after a read-only check).
 
 ## Simulated cluster
