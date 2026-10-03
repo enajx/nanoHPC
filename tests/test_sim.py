@@ -4,6 +4,7 @@ The unit tests need no VMs. `SimClusterTest` starts real Lima VMs and runs only 
 because it takes minutes and several GB of memory.
 """
 
+import asyncio
 import json
 import os
 import shlex
@@ -20,10 +21,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from textual.widgets import DataTable
 
+from nanohpc import fixuid, probe, wizard
 from nanohpc.config import check_config, load_config
 from nanohpc.probe import probe_machine
 from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config
+from nanohpc.wizard.state import checklist
 
 ROOT = Path(__file__).resolve().parents[1]
 SIM = ROOT / "tests" / "sim"
@@ -1165,6 +1169,32 @@ class SimSetupTest(SimUsersBase):
         self.state = ROOT / ".nanohpc-sim" / "variations"
         super().setUp()
 
+    async def probe_in_wizard(self, path: Path, ssh_config: Path, machines: list[str]) -> None:
+        """Open the wizard (headless, with the real probe and fix-uid functions, as cli.py passes them), probe each
+        machine with p as an administrator would, check the results and the checklist, and quit with q."""
+        dependencies = wizard.Dependencies(
+            probe.probe_machine, probe.user_ids, probe.uid_problems, probe.uid_owner, fixuid.plan_fix, fixuid.apply_fix
+        )
+        app = wizard.WizardApp(path, ssh_config, dependencies)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            table = app.screen.query_one("#machine-table", DataTable)
+            for name in machines:
+                table.move_cursor(row=table.get_row_index(name))
+                table.focus()
+                await pilot.press("p")
+                await pilot.pause()
+            for _ in range(3):
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+            for name in machines:
+                self.assertTrue(str(table.get_row(name)[-1]).startswith("✓"), table.get_row(name))
+                items = {item.key: item.ok for item in checklist(app.state, name)}
+                self.assertTrue(items["ssh"] and items["ubuntu"], (name, items))
+            await pilot.press("q")
+            await pilot.pause()
+        self.assertFalse(app.saved)
+
     def test_probe_and_fix_uid(self) -> None:
         self.remove_at_end()
         result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(self.sim))
@@ -1185,6 +1215,15 @@ class SimSetupTest(SimUsersBase):
             disks = {disk.path: disk for disk in probe_machine("gpu4", ssh_config).disks}
             self.assertIn("/dev/vdb", disks)  # the scratch disk sim up attached
             self.assertEqual(disks["/dev/vdb"].fstype, "ext4")
+
+        with (
+            self.subTest("the wizard probes every machine from the Machines step and changes nothing"),
+            tempfile.TemporaryDirectory() as folder,
+        ):
+            path = Path(folder) / "cluster.yml"
+            shutil.copy(self.state / "cluster.yml", path)
+            asyncio.run(self.probe_in_wizard(path, ssh_config, list(cluster["machines"])))
+            self.assertEqual(path.read_bytes(), (self.state / "cluster.yml").read_bytes())
 
         with self.subTest("fix-uid: a read-only plan, then the renumbering after --apply"):
             self.assertEqual(self.ssh("gpu4", "sudo useradd -u 3005 -U -m alice").returncode, 0)
