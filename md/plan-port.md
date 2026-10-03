@@ -125,6 +125,8 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
 - The administrator lists the machines (names or addresses, or hosts from their ~/.ssh/config); the wizard checks SSH and probes each one.
 - It writes a new `cluster.yml` or opens an existing one to change it.
 - The wizard is for people. Agents write `cluster.yml` from the examples, following `SETUP.md`, which lists the same steps as the wizard; AGENTS.md links to it.
+- Steps: machines (SSH check and probe, roles, GPU types), storage (where /home lives, scratch, the commands to make filesystems with the option to skip, storage advice), users (names, UIDs, SSH keys, administrators, UID check on every machine), partitions and policy (simple defaults), website (hostname, path, HTTPS, logo, access; a private network such as WireGuard or Tailscale recommended, not required), extras (backup, Slack, automatic deploys, the pinned nanoHPC version), review (the cluster.yml, validated, the next step `nanohpc deploy`, and the `ssh-add -c` tip). Opening an existing cluster.yml shows the same steps, filled in.
+- `nanohpc fix-uid` is built in M7: the wizard explains a UID conflict and, after the administrator confirms, renumbers that user on that machine (after a read-only check).
 
 ## Simulated cluster
 
