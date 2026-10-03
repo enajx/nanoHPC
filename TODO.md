@@ -145,6 +145,7 @@ flowchart LR
 - [ ] A full setup is tested on real x86 machines, and once on a real GPU machine for the NVIDIA driver and CUDA.
 - [ ] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option.
 - [ ] The repository is published under the MIT license.
+- [ ] Once released: a "Buy me a coffee" link in the repository, for people who find nanoHPC useful.
 - [ ] A nice retro-style and/or ASCII animation of the project exists, to use as promo on LinkedIn when sharing the project in the open.
 
 ### Later
