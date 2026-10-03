@@ -2,8 +2,9 @@
 
 These tests use fakes: a fake `ssh` program put first on PATH runs the remote command locally with `sh -c`, and fake
 machine tools (hostname, nproc, lscpu, ip, lsblk, nvidia-smi, sudo, getent, pgrep, who, findmnt, find, usermod,
-groupmod, unshare, umount) read and write a fake machine folder (FAKE_ROOT). The only seam is in the fake ssh: it
-rewrites the paths /etc/os-release and /proc/meminfo in the remote command to files in the fake machine folder.
+groupmod, unshare, umount, df) read and write a fake machine folder (FAKE_ROOT). The only seam is in the fake ssh:
+it rewrites the paths /etc/os-release, /proc/meminfo, and /var/lib/nanohpc in the remote command to the fake machine
+folder. Timeouts are tested by patching the timeout constants down to one second.
 The real check on machines is the simulated cluster test (tests/test_sim.py).
 """
 
@@ -16,11 +17,12 @@ from pathlib import Path
 from unittest import mock
 
 from nanohpc.config import GPU_TYPE
-from nanohpc.probe import Disk, probe_machine, suggest_gpu_type, uid_owner, user_ids
+from nanohpc.probe import Disk, probe_machine, suggest_gpu_type, uid_owner, uid_problems, user_ids
 
 FAKE_SSH = f"""#!{sys.executable}
-# Fake ssh (test only): runs the remote command locally. A target named "unreachable" fails like a refused connection.
-import os, subprocess, sys
+# Fake ssh (test only): runs the remote command locally. A target named "unreachable" fails like a refused connection,
+# "newhost" like an unknown host key, and "slow" never answers.
+import os, subprocess, sys, time
 args = sys.argv[1:]
 index = 0
 while args[index].startswith("-"):
@@ -32,7 +34,12 @@ with open(os.path.join(root, "ssh.log"), "a") as log:
 if target == "unreachable":
     sys.stderr.write(f"ssh: connect to host {{target}} port 22: Connection refused\\n")
     sys.exit(255)
-for path in ("/etc/os-release", "/proc/meminfo"):
+if target == "newhost":
+    sys.stderr.write("Host key verification failed.\\n")
+    sys.exit(255)
+if target == "slow":
+    time.sleep(30)
+for path in ("/etc/os-release", "/proc/meminfo", "/var/lib/nanohpc"):
     command = command.replace(path, root + path)
 sys.exit(subprocess.run(["sh", "-c", command]).returncode)
 """
@@ -53,12 +60,16 @@ os.execvp(args[3], args[3:])
 """
 
 FAKE_GETENT = """#!/bin/sh
-# Fake getent (test only): looks up names or numbers in the fake machine's passwd or group file.
-file="$FAKE_ROOT/etc/$1"
+# Fake getent (test only): looks up names or numbers in the fake machine's passwd or group file, and then in
+# passwd.ldap or group.ldap (accounts from a directory) unless called with -s files.
+sources=all
+if [ "$1" = -s ]; then sources=$2; shift 2; fi
+files="$FAKE_ROOT/etc/$1"
+if [ "$sources" = all ] && [ -e "$FAKE_ROOT/etc/$1.ldap" ]; then files="$files $FAKE_ROOT/etc/$1.ldap"; fi
 shift
 status=0
 for key in "$@"; do
-  line=$(awk -F: -v k="$key" '$1 == k || $3 == k { print; exit }' "$file")
+  line=$(cat $files | awk -F: -v k="$key" '$1 == k || $3 == k { print; exit }')
   if [ -n "$line" ]; then echo "$line"; else status=2; fi
 done
 exit $status
@@ -87,7 +98,9 @@ else:
 COMMANDS = {
     "hostname": 'cat "$FAKE_ROOT/hostname"\n',
     "nproc": 'cat "$FAKE_ROOT/nproc"\n',
-    "lscpu": 'cat "$FAKE_ROOT/lscpu"\n',
+    # lscpu answers in German unless LC_ALL=C.
+    "lscpu": 'if [ "$LC_ALL" = C ]; then cat "$FAKE_ROOT/lscpu"; else echo "Sockel:  9"; fi\n',
+    "df": 'cat "$FAKE_ROOT/df"\n',
     "ip": 'cat "$FAKE_ROOT/ip"\n',
     "lsblk": 'cat "$FAKE_ROOT/lsblk.json"\n',
     # pgrep -l -u UID: lines "uid pid name" of the fake process list; exit 1 when none match.
@@ -117,19 +130,42 @@ LSCPU = "Architecture:  x86_64\nCPU(s):  32\nThread(s) per core:  2\nCore(s) per
 LSBLK = {
     "blockdevices": [
         {"name": "loop0", "path": "/dev/loop0", "size": 4096, "fstype": "squashfs", "mountpoint": "/snap/x",
-         "model": None, "type": "loop"},
+         "model": None, "type": "loop", "pttype": None},
         {"name": "nvme0n1", "path": "/dev/nvme0n1", "size": 1000204886016, "fstype": None, "mountpoint": None,
-         "model": "Samsung SSD 980 PRO 1TB             ", "type": "disk", "children": [
+         "model": "Samsung SSD 980 PRO 1TB             ", "type": "disk", "pttype": "gpt", "children": [
              {"name": "nvme0n1p1", "path": "/dev/nvme0n1p1", "size": 1127219200, "fstype": "vfat",
-              "mountpoint": "/boot/efi", "model": None, "type": "part"},
+              "mountpoint": "/boot/efi", "model": None, "type": "part", "pttype": "gpt"},
              {"name": "nvme0n1p2", "path": "/dev/nvme0n1p2", "size": 999073579008, "fstype": "ext4",
-              "mountpoint": "/", "model": None, "type": "part"}]},
+              "mountpoint": "/", "model": None, "type": "part", "pttype": "gpt"}]},
+        # An LVM member partition with an unmounted logical volume.
         {"name": "sda", "path": "/dev/sda", "size": 4000787030016, "fstype": None, "mountpoint": None,
-         "model": "WDC WD40EFZX", "type": "disk"},
+         "model": "WDC WD40EFZX", "type": "disk", "pttype": "gpt", "children": [
+             {"name": "sda1", "path": "/dev/sda1", "size": 4000785960960, "fstype": "LVM2_member",
+              "mountpoint": None, "model": None, "type": "part", "pttype": "gpt", "children": [
+                  {"name": "data-lv", "path": "/dev/mapper/data-lv", "size": 4000000000000, "fstype": None,
+                   "mountpoint": None, "model": None, "type": "lvm", "pttype": None}]}]},
+        # An empty disk, and an empty partition on a disk with a partition table.
+        {"name": "sdb", "path": "/dev/sdb", "size": 2000398934016, "fstype": None, "mountpoint": None,
+         "model": "WD Red", "type": "disk", "pttype": None},
+        {"name": "sdc", "path": "/dev/sdc", "size": 2000398934016, "fstype": None, "mountpoint": None,
+         "model": "WD Red", "type": "disk", "pttype": "gpt", "children": [
+             {"name": "sdc1", "path": "/dev/sdc1", "size": 2000397795328, "fstype": None, "mountpoint": None,
+              "model": None, "type": "part", "pttype": "gpt"}]},
+        # Two RAID members: the RAID device is listed once.
+        {"name": "sdd", "path": "/dev/sdd", "size": 1000204886016, "fstype": "linux_raid_member", "mountpoint": None,
+         "model": "ST1000", "type": "disk", "pttype": None, "children": [
+             {"name": "md0", "path": "/dev/md0", "size": 1000069595136, "fstype": None, "mountpoint": None,
+              "model": None, "type": "raid1", "pttype": None}]},
+        {"name": "sde", "path": "/dev/sde", "size": 1000204886016, "fstype": "linux_raid_member", "mountpoint": None,
+         "model": "ST1000", "type": "disk", "pttype": None, "children": [
+             {"name": "md0", "path": "/dev/md0", "size": 1000069595136, "fstype": None, "mountpoint": None,
+              "model": None, "type": "raid1", "pttype": None}]},
+        {"name": "sdf", "path": "/dev/sdf", "size": 16000000000, "fstype": "swap", "mountpoint": "[SWAP]",
+         "model": "Swap disk", "type": "disk", "pttype": None},
         {"name": "sr0", "path": "/dev/sr0", "size": 1073741312, "fstype": None, "mountpoint": None,
-         "model": "DVD", "type": "rom"},
+         "model": "DVD", "type": "rom", "pttype": None},
         {"name": "zram0", "path": "/dev/zram0", "size": 8589934592, "fstype": "swap", "mountpoint": "[SWAP]",
-         "model": None, "type": "disk"},
+         "model": None, "type": "disk", "pttype": None},
     ]
 }  # fmt: skip
 
@@ -162,10 +198,12 @@ def fake_machine(folder: Path, gpus: list[str], os_release: str) -> dict[str, st
     (root / "hostname").write_text("node7\n")
     (root / "nproc").write_text("32\n")
     (root / "lscpu").write_text(LSCPU)
+    (root / "df").write_text("       Avail\n123456789012\n")
     (root / "ip").write_text(IP)
     (root / "lsblk.json").write_text(json.dumps(LSBLK))
     (root / "etc/os-release").write_text(os_release)
     (root / "proc/meminfo").write_text("MemTotal:       65843724 kB\nMemFree:         1000 kB\n")
+    (root / "var/lib/nanohpc").mkdir(parents=True)
     (root / "etc/passwd").write_text(
         "root:x:0:0:root:/root:/bin/bash\n"
         "ubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n"
@@ -194,7 +232,7 @@ class ProbeMachineTest(unittest.TestCase):
 
     def test_gpu_machine(self) -> None:
         environment = fake_machine(self.folder, ["NVIDIA RTX A6000", "NVIDIA RTX A6000"], UBUNTU)
-        with mock.patch.dict(os.environ, environment):
+        with mock.patch.dict(os.environ, {**environment, "LC_ALL": "de_DE.UTF-8"}):
             facts = probe_machine("node7.lab", self.folder / "ssh_config")
         self.assertIsNone(facts.error)
         self.assertEqual(facts.target, "node7.lab")
@@ -204,21 +242,32 @@ class ProbeMachineTest(unittest.TestCase):
         self.assertEqual((facts.sockets, facts.cores_per_socket, facts.threads_per_core), (2, 8, 2))
         self.assertEqual(facts.memory_mb, 65843724 // 1024)
         self.assertEqual(facts.gpus, ["NVIDIA RTX A6000", "NVIDIA RTX A6000"])
+        nvme = ["/dev/nvme0n1p1", "/dev/nvme0n1p2"]
         self.assertEqual(
             facts.disks,
             [
-                Disk("/dev/nvme0n1", 1000.2, None, None, "Samsung SSD 980 PRO 1TB", "disk"),
-                Disk("/dev/nvme0n1p1", 1.1, "vfat", "/boot/efi", None, "part"),
-                Disk("/dev/nvme0n1p2", 999.1, "ext4", "/", None, "part"),
-                Disk("/dev/sda", 4000.8, None, None, "WDC WD40EFZX", "disk"),
+                Disk("/dev/nvme0n1", 1000.2, None, None, "Samsung SSD 980 PRO 1TB", "disk", "gpt", nvme, True),
+                Disk("/dev/nvme0n1p1", 1.1, "vfat", "/boot/efi", None, "part", "gpt", [], True),
+                Disk("/dev/nvme0n1p2", 999.1, "ext4", "/", None, "part", "gpt", [], True),
+                Disk("/dev/sda", 4000.8, None, None, "WDC WD40EFZX", "disk", "gpt", ["/dev/sda1"], True),
+                Disk("/dev/sda1", 4000.8, "LVM2_member", None, None, "part", "gpt", ["/dev/mapper/data-lv"], True),
+                Disk("/dev/mapper/data-lv", 4000.0, None, None, None, "lvm", None, [], False),
+                Disk("/dev/sdb", 2000.4, None, None, "WD Red", "disk", None, [], False),
+                Disk("/dev/sdc", 2000.4, None, None, "WD Red", "disk", "gpt", ["/dev/sdc1"], False),
+                Disk("/dev/sdc1", 2000.4, None, None, None, "part", "gpt", [], False),
+                Disk("/dev/sdd", 1000.2, "linux_raid_member", None, "ST1000", "disk", None, ["/dev/md0"], True),
+                Disk("/dev/md0", 1000.1, None, None, None, "raid1", None, [], False),
+                Disk("/dev/sde", 1000.2, "linux_raid_member", None, "ST1000", "disk", None, ["/dev/md0"], True),
+                Disk("/dev/sdf", 16.0, "swap", "[SWAP]", "Swap disk", "disk", None, [], True),
             ],
         )
-        self.assertEqual((facts.os_id, facts.ubuntu), ("ubuntu", "24.04"))
+        self.assertEqual(facts.free_gb, 123.5)
+        self.assertEqual((facts.os_id, facts.ubuntu, facts.supported), ("ubuntu", "24.04", True))
         self.assertTrue(facts.sudo_ok)
         self.assertEqual(facts.notes, [])
-        # One SSH call, with the SSH config and deploy's options.
+        # One SSH call, with the SSH config and deploy's options, without forwarding the SSH agent.
         log = (self.folder / "root/ssh.log").read_text().splitlines()
-        self.assertEqual(log, [f"-F {self.folder / 'ssh_config'} -A -o BatchMode=yes -o ConnectTimeout=15 | node7.lab"])
+        self.assertEqual(log, [f"-F {self.folder / 'ssh_config'} -o BatchMode=yes -o ConnectTimeout=15 | node7.lab"])
 
     def test_cpu_only_machine(self) -> None:
         environment = fake_machine(self.folder, [], UBUNTU)
@@ -245,7 +294,13 @@ class ProbeMachineTest(unittest.TestCase):
         with mock.patch.dict(os.environ, environment):
             facts = probe_machine("old", None)
         self.assertIsNone(facts.error)
-        self.assertEqual((facts.os_id, facts.ubuntu), ("debian", ""))
+        self.assertEqual((facts.os_id, facts.ubuntu, facts.supported), ("debian", "", False))
+
+    def test_unsupported_ubuntu(self) -> None:
+        environment = fake_machine(self.folder, [], UBUNTU.replace("24.04", "20.04"))
+        with mock.patch.dict(os.environ, environment):
+            facts = probe_machine("old", None)
+        self.assertEqual((facts.os_id, facts.ubuntu, facts.supported), ("ubuntu", "20.04", False))
 
     def test_ssh_failure(self) -> None:
         environment = fake_machine(self.folder, [], UBUNTU)
@@ -255,6 +310,22 @@ class ProbeMachineTest(unittest.TestCase):
             facts.error, "SSH failed: `ssh unreachable`: ssh: connect to host unreachable port 22: Connection refused"
         )
         self.assertEqual((facts.hostname, facts.cpus, facts.disks, facts.sudo_ok), ("", 0, [], False))
+
+    def test_unknown_host_key(self) -> None:
+        environment = fake_machine(self.folder, [], UBUNTU)
+        with mock.patch.dict(os.environ, environment):
+            facts = probe_machine("newhost", None)
+        self.assertEqual(
+            facts.error,
+            "SSH failed: `ssh newhost`: Host key verification failed. Run `ssh newhost` once in a terminal to check "
+            "and accept the machine's host key.",
+        )
+
+    def test_timeout_is_an_error(self) -> None:
+        environment = fake_machine(self.folder, [], UBUNTU)
+        with mock.patch.dict(os.environ, environment), mock.patch("nanohpc.probe.PROBE_TIMEOUT", 1):
+            facts = probe_machine("slow", None)
+        self.assertEqual(facts.error, "SSH failed: `ssh slow`: no answer within 1 seconds")
 
     def test_failing_tool_is_an_error(self) -> None:
         environment = fake_machine(self.folder, [], UBUNTU)
@@ -294,6 +365,24 @@ class UserIdsTest(unittest.TestCase):
         with mock.patch.dict(os.environ, self.environment):
             self.assertEqual(uid_owner("node7", None, 2002), "carol")
             self.assertIsNone(uid_owner("node7", None, 2000))
+
+    def test_uid_problems(self) -> None:
+        root = Path(self.environment["FAKE_ROOT"])
+        with (root / "etc/group").open("a") as group:
+            group.write("erin:x:3000:\n")
+        users = [("alice", 2000), ("carol", 2002), ("dave", 1000), ("erin", 2005)]
+        with mock.patch.dict(os.environ, self.environment):
+            problems = uid_problems("node7", None, users)
+        self.assertEqual(
+            problems,
+            [
+                "alice has UID 1001 and primary group ID 1001 on node7, but cluster.yml says 2000 for both",
+                "the group alice has group ID 1001 on node7, but nanoHPC gives it 2000 (the user's UID)",
+                "UID 1000 (for dave in cluster.yml) already belongs to ubuntu on node7",
+                "group ID 1000 (for dave) already belongs to the group ubuntu on node7",
+                "the group erin has group ID 3000 on node7, but nanoHPC gives it 2005 (the user's UID)",
+            ],
+        )
 
 
 class SuggestGpuTypeTest(unittest.TestCase):

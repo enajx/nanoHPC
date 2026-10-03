@@ -1,9 +1,10 @@
 """What the setup wizard learns about a machine over SSH. Everything here only reads; nothing is changed.
 
-Each machine is reached with plain `ssh` (optionally `-F ssh_config`), as `nanohpc deploy` does. The facts come from
-one SSH call that runs a small Python program on the machine (python3 is part of Ubuntu); it runs the usual tools
-(`hostname`, `nproc`, `lscpu`, `ip`, `lsblk`, `nvidia-smi`, `sudo`) and prints their raw output as JSON, which is
-parsed here.
+Each machine is reached with plain `ssh` (optionally `-F ssh_config`), as `nanohpc deploy` does, but without
+forwarding the SSH agent: only `nanohpc fix-uid` needs sudo through it. The facts come from one SSH call that runs a
+small Python program on the machine (python3 is part of Ubuntu); it runs the usual tools (`hostname`, `nproc`,
+`lscpu`, `ip`, `lsblk`, `df`, `nvidia-smi`, `sudo`) in the C locale and prints their raw output as JSON, which is
+parsed here. Every SSH call has a time limit, so a machine that does not answer gives an error, not a hang.
 """
 
 import json
@@ -14,23 +15,58 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nanohpc.config import GPU_TYPE
-from nanohpc.deploy import ssh_command
+
+PROBE_TIMEOUT = 60  # seconds, for the probe and for each quick lookup (getent, pgrep, ...)
+TIMED_OUT = 124  # the exit code run_remote gives a command that ran out of time (as timeout(1) does)
+SUPPORTED_UBUNTU = ("22.04", "24.04", "26.04")
 
 
 class SSHError(RuntimeError):
-    """`ssh` could not reach the machine (it exited with 255)."""
+    """`ssh` could not reach the machine, or the command ran out of time."""
 
 
-def run_remote(target: str, ssh_config: Path | None, command: str) -> subprocess.CompletedProcess[str]:
-    """Run a shell command on a machine over SSH and return the result (exit code 255: SSH failed)."""
-    return subprocess.run(ssh_command(ssh_config, target, command), capture_output=True, text=True, check=False)
+def ssh_args(ssh_config: Path | None, target: str, command: str, forward_agent: bool) -> list[str]:
+    """Return the ssh command line that runs `command` on a machine without prompts (deploy's options). With
+    `forward_agent`, the SSH agent is forwarded (-A), so an administrator's key can unlock sudo."""
+    config = ["-F", str(ssh_config)] if ssh_config else []
+    agent = ["-A"] if forward_agent else []
+    return ["ssh", *config, *agent, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", target, command]
 
 
-def remote(target: str, ssh_config: Path | None, command: str) -> subprocess.CompletedProcess[str]:
-    """Run a shell command on a machine over SSH; raise SSHError when SSH itself fails."""
-    result = run_remote(target, ssh_config, command)
-    if result.returncode == 255:
-        raise SSHError(f"cannot connect with `ssh {target}`: {result.stderr.strip() or 'no output'}")
+def run_remote(
+    target: str, ssh_config: Path | None, command: str, forward_agent: bool, timeout: int
+) -> subprocess.CompletedProcess[str]:
+    """Run a shell command on a machine over SSH and return the result. Exit code 255: SSH failed; TIMED_OUT: no
+    answer within `timeout` seconds (ssh is stopped)."""
+    arguments = ssh_args(ssh_config, target, command, forward_agent)
+    try:
+        return subprocess.run(arguments, capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # A time limit is reported like a failed command, so callers report it instead of hanging.
+        return subprocess.CompletedProcess(arguments, TIMED_OUT, "", f"no answer within {timeout} seconds")
+
+
+def ssh_failure(target: str, result: subprocess.CompletedProcess[str]) -> str | None:
+    """Return why SSH failed (it could not connect, an unknown host key, no answer in time), or None."""
+    if result.returncode not in (255, TIMED_OUT):
+        return None
+    message = result.stderr.strip() or "no output"
+    if "Host key verification failed" in message:
+        message = (
+            f"Host key verification failed. Run `ssh {target}` once in a terminal to check and accept the machine's "
+            "host key."
+        )
+    return f"SSH failed: `ssh {target}`: {message}"
+
+
+def remote(
+    target: str, ssh_config: Path | None, command: str, forward_agent: bool, timeout: int
+) -> subprocess.CompletedProcess[str]:
+    """Run a shell command on a machine over SSH; raise SSHError when SSH fails or the command runs out of time."""
+    result = run_remote(target, ssh_config, command, forward_agent, timeout)
+    failure = ssh_failure(target, result)
+    if failure is not None:
+        raise SSHError(failure)
     return result
 
 
@@ -44,6 +80,9 @@ class Disk:
     mountpoint: str | None  # where it is mounted, None when it is not
     model: str | None  # the disk's model (whole disks only)
     kind: str  # lsblk's TYPE: disk, part, lvm, raid1, crypt, ...
+    pttype: str | None  # partition table (gpt, dos), None when there is none
+    children: list[str]  # paths of its partitions and of the devices built on it (LVM, RAID, LUKS)
+    in_use: bool  # it or a child has a filesystem, is mounted or swap, or is part of LVM, RAID, or LUKS
 
 
 @dataclass(frozen=True)
@@ -62,21 +101,25 @@ class MachineFacts:
     disks: list[Disk]  # whole disks and partitions, without loop, rom, and zram devices
     os_id: str  # ID from /etc/os-release: ubuntu, debian, ...
     ubuntu: str  # VERSION_ID from /etc/os-release (24.04), or "" when the machine is not Ubuntu
-    sudo_ok: bool  # sudo works without a password (passwordless, or unlocked by the forwarded SSH key)
+    sudo_ok: bool  # sudo works without a password (the probe does not forward the SSH agent)
     notes: list[str]  # things the administrator should know (sudo asks for a password, nvidia-smi fails)
-    error: str | None  # why the machine could not be probed (SSH failed, the probe failed), or None
+    error: str | None  # why the machine could not be probed (SSH failed, no answer, the probe failed), or None
+    free_gb: float  # free space on the root filesystem in GB (10^9 bytes), one decimal
+    supported: bool  # Ubuntu in a version nanoHPC supports (SUPPORTED_UBUNTU)
 
 
 # Runs on the machine. Required tools fail loudly (check=True); nvidia-smi is optional. The sudo check is the
 # one `nanohpc deploy` uses: an empty stdin, so a forwarded key unlocks it and a password prompt fails at once.
 PROBE_PROGRAM = r"""
-import json, shutil, subprocess
+import json, os, shutil, subprocess
+
+ENVIRONMENT = dict(os.environ, LC_ALL="C")
 
 def run(command):
-    return subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    return subprocess.run(command, capture_output=True, text=True, check=True, env=ENVIRONMENT).stdout
 
 def optional(command):
-    result = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    result = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, env=ENVIRONMENT)
     return {"code": result.returncode, "out": result.stdout, "err": result.stderr}
 
 def read(path):
@@ -90,7 +133,8 @@ facts = {
     "meminfo": read("/proc/meminfo"),
     "os_release": read("/etc/os-release"),
     "ip": run(["ip", "-4", "-o", "addr", "show"]),
-    "lsblk": run(["lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,FSTYPE,MOUNTPOINT,MODEL,TYPE"]),
+    "lsblk": run(["lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,FSTYPE,MOUNTPOINT,MODEL,TYPE,PTTYPE"]),
+    "df": run(["df", "-B1", "--output=avail", "/"]),
     "nvidia_smi": None,
     "sudo": optional(["sudo", "-S", "-p", "", "true"]),
 }
@@ -102,14 +146,15 @@ print(json.dumps(facts))
 
 def empty_facts(target: str, error: str) -> MachineFacts:
     """Return the facts of a machine that could not be probed."""
-    return MachineFacts(target, "", [], 0, None, None, None, 0, [], [], "", "", False, [], error)
+    return MachineFacts(target, "", [], 0, None, None, None, 0, [], [], "", "", False, [], error, 0.0, False)
 
 
 def probe_machine(target: str, ssh_config: Path | None) -> MachineFacts:
     """Probe one machine over SSH (one call, read-only) and return what it is."""
-    result = run_remote(target, ssh_config, f"python3 -c {shlex.quote(PROBE_PROGRAM)}")
-    if result.returncode == 255:
-        return empty_facts(target, f"SSH failed: `ssh {target}`: {result.stderr.strip() or 'no output'}")
+    result = run_remote(target, ssh_config, f"python3 -c {shlex.quote(PROBE_PROGRAM)}", False, PROBE_TIMEOUT)
+    failure = ssh_failure(target, result)
+    if failure is not None:
+        return empty_facts(target, failure)
     if result.returncode != 0:
         lines = result.stderr.strip().splitlines()
         return empty_facts(target, f"the probe failed on {target}: {lines[-1] if lines else 'no output'}")
@@ -134,6 +179,7 @@ def probe_machine(target: str, ssh_config: Path | None) -> MachineFacts:
             message = (smi["out"] + smi["err"]).strip().splitlines()
             notes.append(f"nvidia-smi is installed but failed: {message[0] if message else 'no output'}")
     cpu = parse_lscpu(raw["lscpu"])
+    ubuntu = os_release.get("VERSION_ID", "") if os_id == "ubuntu" else ""
     return MachineFacts(
         target=target,
         hostname=raw["hostname"].strip(),
@@ -146,10 +192,12 @@ def probe_machine(target: str, ssh_config: Path | None) -> MachineFacts:
         gpus=gpus,
         disks=parse_disks(raw["lsblk"]),
         os_id=os_id,
-        ubuntu=os_release.get("VERSION_ID", "") if os_id == "ubuntu" else "",
+        ubuntu=ubuntu,
         sudo_ok=sudo_ok,
         notes=notes,
         error=None,
+        free_gb=round(int(raw["df"].split()[-1]) / 1e9, 1),
+        supported=ubuntu in SUPPORTED_UBUNTU,
     )
 
 
@@ -194,41 +242,61 @@ def parse_addresses(ip_output: str) -> list[str]:
     return addresses
 
 
+def device_in_use(device: dict[str, object]) -> bool:
+    """Whether an lsblk device holds something: a filesystem or any other signature (swap, LVM2_member,
+    linux_raid_member, crypto_LUKS), a mount, a device built on it (LVM, RAID, LUKS), or a partition that does."""
+    if device.get("fstype") or device.get("mountpoint"):
+        return True
+    children = device.get("children")
+    if not isinstance(children, list):
+        return False
+    return any(child["type"] != "part" or device_in_use(child) for child in children)
+
+
 def parse_disks(lsblk_json: str) -> list[Disk]:
     """Return the block devices from `lsblk -J -b`, children after their parent, without loop, rom, and zram
-    devices (nor anything on top of them)."""
+    devices (nor anything on top of them). A device under several parents (RAID, LVM) is listed once."""
     disks: list[Disk] = []
+    seen: set[str] = set()
 
     def visit(device: dict[str, object]) -> None:
         kind = str(device["type"])
-        if kind in ("loop", "rom") or str(device["name"]).startswith("zram"):
+        path = str(device["path"])
+        if kind in ("loop", "rom") or str(device["name"]).startswith("zram") or path in seen:
             return
+        seen.add(path)
         model = device.get("model")
         fstype = device.get("fstype")
         mountpoint = device.get("mountpoint")
+        pttype = device.get("pttype")
+        children = device.get("children")
+        children = children if isinstance(children, list) else []
         disks.append(
             Disk(
-                path=str(device["path"]),
+                path=path,
                 size_gb=round(int(str(device["size"])) / 1e9, 1),
                 fstype=str(fstype) if fstype else None,
                 mountpoint=str(mountpoint) if mountpoint else None,
                 model=str(model).strip() if model else None,
                 kind=kind,
+                pttype=str(pttype) if pttype else None,
+                children=[str(child["path"]) for child in children],
+                in_use=device_in_use(device),
             )
         )
-        children = device.get("children")
-        if isinstance(children, list):
-            for child in children:
-                visit(child)
+        for child in children:
+            visit(child)
 
     for device in json.loads(lsblk_json)["blockdevices"]:
         visit(device)
     return disks
 
 
-def getent(target: str, ssh_config: Path | None, database: str, keys: list[str]) -> list[list[str]]:
-    """Return the entries (split on ':') `getent DATABASE KEYS...` finds on a machine; missing keys are left out."""
-    result = remote(target, ssh_config, shlex.join(["getent", database, *keys]))
+def getent(target: str, ssh_config: Path | None, database: str, keys: list[str], local_only: bool) -> list[list[str]]:
+    """Return the entries (split on ':') `getent DATABASE KEYS...` finds on a machine; missing keys are left out.
+    `local_only`: only the local files (/etc/passwd, /etc/group), not LDAP or another directory."""
+    sources = ["-s", "files"] if local_only else []
+    result = remote(target, ssh_config, shlex.join(["getent", *sources, database, *keys]), False, PROBE_TIMEOUT)
     # getent: 0 all found, 2 some key not found.
     if result.returncode not in (0, 2):
         raise RuntimeError(f"getent {database} on {target} failed: {result.stderr.strip() or 'no output'}")
@@ -237,14 +305,50 @@ def getent(target: str, ssh_config: Path | None, database: str, keys: list[str])
 
 def user_ids(target: str, ssh_config: Path | None, names: list[str]) -> dict[str, tuple[int, int] | None]:
     """Return each user's (UID, primary GID) on a machine, or None for a user that has no account there."""
-    found = {entry[0]: (int(entry[2]), int(entry[3])) for entry in getent(target, ssh_config, "passwd", names)}
+    entries = getent(target, ssh_config, "passwd", names, False)
+    found = {entry[0]: (int(entry[2]), int(entry[3])) for entry in entries}
     return {name: found.get(name) for name in names}
 
 
 def uid_owner(target: str, ssh_config: Path | None, uid: int) -> str | None:
     """Return the name of the account with this UID on a machine, or None when no account has it."""
-    entries = getent(target, ssh_config, "passwd", [str(uid)])
+    entries = getent(target, ssh_config, "passwd", [str(uid)], False)
     return entries[0][0] if entries else None
+
+
+def uid_problems(target: str, ssh_config: Path | None, users: list[tuple[str, int]]) -> list[str]:
+    """Return what would stop `nanohpc deploy` on a machine for these (name, UID) users from cluster.yml, in plain
+    English: the same conditions as the deploy's preflight checks. An empty list means no problem.
+
+    Per user: the account has another UID or primary group ID; the UID belongs to another account; the group named
+    after the user has another group ID; the group ID (the same number as the UID) belongs to another group."""
+    keys = [name for name, _ in users] + [str(uid) for _, uid in users]
+    accounts = getent(target, ssh_config, "passwd", keys, False)
+    groups = getent(target, ssh_config, "group", keys, False)
+    account_by_name = {entry[0]: entry for entry in accounts}
+    group_by_name = {entry[0]: entry for entry in groups}
+    problems: list[str] = []
+    for name, uid in users:
+        account = account_by_name.get(name)
+        if account is not None and (int(account[2]), int(account[3])) != (uid, uid):
+            problems.append(
+                f"{name} has UID {account[2]} and primary group ID {account[3]} on {target}, "
+                f"but cluster.yml says {uid} for both"
+            )
+        owners = sorted({entry[0] for entry in accounts if int(entry[2]) == uid and entry[0] != name})
+        if owners:
+            problems.append(f"UID {uid} (for {name} in cluster.yml) already belongs to {', '.join(owners)} on {target}")
+        group = group_by_name.get(name)
+        if group is not None and int(group[2]) != uid:
+            problems.append(
+                f"the group {name} has group ID {group[2]} on {target}, but nanoHPC gives it {uid} (the user's UID)"
+            )
+        group_owners = sorted({entry[0] for entry in groups if int(entry[2]) == uid and entry[0] != name})
+        if group_owners:
+            problems.append(
+                f"group ID {uid} (for {name}) already belongs to the group {', '.join(group_owners)} on {target}"
+            )
+    return problems
 
 
 # Words in nvidia-smi names that are brands, not models.
