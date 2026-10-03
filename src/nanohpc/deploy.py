@@ -3,8 +3,8 @@
 nanoHPC reaches each machine with `ssh <machine name>`, so the administrator's SSH config decides
 the user, address, and key (`--ssh-config` points at another SSH config file, as for the simulated
 cluster). It reads each machine's real hostname first, generates every configuration file, then
-runs the playbook in `nanohpc/ansible/`: first as a dry run (check mode, nothing changes), then for real
-if the dry run passed. Work files go to ~/.cache/nanohpc/clusters/<cluster name>/.
+runs the playbook in `nanohpc/ansible/`: first as a dry run (check mode; nothing changes except apt's package
+lists), then for real on the machines whose dry run passed (none when the front node or the home machine failed). Work files go to ~/.cache/nanohpc/clusters/<cluster name>/.
 """
 
 import getpass
@@ -515,6 +515,8 @@ PlaybookRunner = Callable[[list[str], Path], int]
 # Exit codes of a deploy that ran its dry run (1: stopped before it, nothing changed).
 DRY_RUN_FAILED = 3  # the dry run failed on some machines: those were not changed (the others may have been deployed)
 REAL_RUN_FAILED = 4  # the real run failed: the machines it names may be partly changed
+# The words the real run's pause stops with (roles/auto_deploy/tasks/pause.yml).
+AUTO_DEPLOY_IN_BETWEEN = "An automatic deploy ran during this deploy's dry run"
 
 
 def read_record(path: Path) -> dict[str, Any] | None:
@@ -586,24 +588,35 @@ def check_then_apply(
         )
         return REAL_RUN_FAILED
     broken = {machine: text for machine, text in applied["failed"].items() if machine not in failed}
+    # The real run's pause stops before any change when an automatic deploy ran during the dry run.
+    out_of_date = [text for text in broken.values() if AUTO_DEPLOY_IN_BETWEEN in text]
+    if out_of_date:
+        print(f"{out_of_date[0]}\n{left_out_list(failed, record)}", file=sys.stderr)
+        return DRY_RUN_FAILED
     if broken or (code != 0 and not failed):
         lines = [f"  {machine}: {text}" for machine, text in broken.items()] or [
             f"  (ansible-playbook exit code {code})"
         ]
         print(
             "The deploy failed on these machines, which may be partly changed. Fix the problem and deploy again:\n"
-            + "\n".join(lines),
+            + "\n".join(lines)
+            + ("\n" + left_out_list(failed, record) if failed else ""),
             file=sys.stderr,
         )
         return REAL_RUN_FAILED
     if failed:
-        print(
-            "Left out of this deploy (their dry run failed; nothing was changed on them):\n"
-            + "\n".join(f"  {machine}: {record['failed'][machine]}" for machine in failed),
-            file=sys.stderr,
-        )
+        print(left_out_list(failed, record), file=sys.stderr)
         return DRY_RUN_FAILED
     return 0
+
+
+def left_out_list(failed: list[str], record: dict[str, Any]) -> str:
+    """Return the closing list of the machines left out after their dry run failed (empty when none)."""
+    if not failed:
+        return ""
+    return "Left out of this deploy (their dry run failed; nothing was changed on them):\n" + "\n".join(
+        f"  {machine}: {record['failed'][machine]}" for machine in failed
+    )
 
 
 def deploy(

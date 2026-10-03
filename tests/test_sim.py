@@ -984,7 +984,7 @@ class SimDeployTest(SimUsersBase):
 class SimRedeployTest(SimUsersBase):
     """The safety checks that each need another deploy, on the everyday cluster: a missing certificate issued
     again, a drained node as a warning only, a deploy by an administrator's forwarded key, the stop with no key
-    and no terminal, a removed user's login taken away, and a UID conflict that stops the deploy at its dry run. Run
+    and no terminal, a removed user's login taken away, and a UID conflict that leaves that machine out after its dry run. Run
     when accounts, SSH, sudo, preflight, deploy.py, or the certificates change, and before the release. Real
     Lima VMs."""
 

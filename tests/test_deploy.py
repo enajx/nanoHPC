@@ -413,6 +413,38 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(code, REAL_RUN_FAILED)
         self.assertIn("left no record", output)
 
+    def test_left_out_machines_listed_again_when_the_real_run_fails(self) -> None:
+        record = {"changed": {}, "failed": {"gpu4": "preflight : Check the disk: no filesystem"}, "facts": {}}
+        real = {
+            "changed": {},
+            "failed": {"gpu4": "Leave out", "cpu1": "slurm_compute : Run slurmd: failed"},
+            "facts": {},
+        }
+        code, output = self.run_flow([(2, record), (2, real)], False)
+        self.assertEqual(code, REAL_RUN_FAILED)
+        self.assertIn("  cpu1: slurm_compute : Run slurmd: failed", output)
+        self.assertTrue(
+            output.rstrip().endswith(
+                "Left out of this deploy (their dry run failed; nothing was changed on them):\n"
+                "  gpu4: preflight : Check the disk: no filesystem"
+            ),
+            output,
+        )
+
+    def test_automatic_deploy_in_between(self) -> None:
+        """An automatic deploy ran between the dry run and the real run: the real run stops at the pause, before
+        changing anything, and says to deploy again (not "may be partly changed")."""
+        passed = {"changed": {}, "failed": {}, "facts": {}}
+        message = (
+            "auto_deploy : Stop if an automatic deploy ran during the dry run: An automatic deploy ran during this "
+            "deploy's dry run, so the dry run is out of date. Nothing was changed; run nanohpc deploy again."
+        )
+        real = {"changed": {}, "failed": {"front": message}, "facts": {}}
+        code, output = self.run_flow([(0, passed), (2, real)], False)
+        self.assertEqual(code, DRY_RUN_FAILED)
+        self.assertIn("An automatic deploy ran during this deploy's dry run", output)
+        self.assertNotIn("may be partly changed", output)
+
     def test_dry_run_only(self) -> None:
         code, output = self.run_flow([(0, {"changed": {"cpu1": ["scratch : Mount"]}, "failed": {}, "facts": {}})], True)
         self.assertEqual(code, 0)
