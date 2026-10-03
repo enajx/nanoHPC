@@ -156,5 +156,7 @@ def main() -> None:
         # Imported here: the terminal app (Textual) is only needed by this command.
         from nanohpc import wizard
 
-        dependencies = wizard.Dependencies(probe.probe_machine, probe.user_ids, fixuid.plan_fix, fixuid.apply_fix)
+        dependencies = wizard.Dependencies(
+            probe.probe_machine, probe.user_ids, probe.uid_problems, probe.uid_owner, fixuid.plan_fix, fixuid.apply_fix
+        )
         sys.exit(wizard.run(arguments.path, arguments.ssh_config, dependencies))

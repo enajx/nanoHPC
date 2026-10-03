@@ -140,5 +140,24 @@ class NewFileTest(unittest.TestCase):
         self.assertIn("#", file.as_text())
 
 
+class ValidateInFolderTest(unittest.TestCase):
+    """validate_in reports what `nanohpc validate` reports: also missing website files and .env secrets."""
+
+    def test_missing_logo_and_slack_secret_are_errors_until_they_exist(self) -> None:
+        file = clusterfile.load(MINIMAL)
+        file.set_value(["cluster", "website", "logo"], "logo.png")
+        file.set_value(["alerts"], {"slack": True})
+        self.assertEqual(file.validate(), [])
+        with tempfile.TemporaryDirectory() as name:
+            folder = Path(name)
+            errors = file.validate_in(folder)
+            self.assertEqual(len(errors), 2, errors)
+            self.assertIn("cluster.website.logo", errors[0])
+            self.assertIn("NANOHPC_SLACK_WEBHOOK", errors[1])
+            (folder / "logo.png").write_bytes(b"png")
+            (folder / ".env").write_text("NANOHPC_SLACK_WEBHOOK=https://hooks.slack.com/services/x\n")
+            self.assertEqual(file.validate_in(folder), [])
+
+
 if __name__ == "__main__":
     unittest.main()

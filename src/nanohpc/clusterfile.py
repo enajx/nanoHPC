@@ -32,6 +32,8 @@ from nanohpc.config import (
     TOP_FIELDS,
     UniqueKeyLoader,
     check_config,
+    secrets,
+    website_files,
 )
 
 # Machine fields written on one line, like `cpu: {sockets: 1, ...}` in the examples.
@@ -299,14 +301,27 @@ class ClusterFile:
         os.chmod(temporary, 0o644)
         os.replace(temporary, path)
 
-    def validate(self) -> list[str]:
-        """Return the errors config.check_config finds in the current content, read back the way
-        `nanohpc deploy` reads the file (duplicate keys included)."""
+    def checked(self) -> tuple[dict[str, Any], list[str]]:
+        """Return the configuration config.check_config makes of the current content, read back the way
+        `nanohpc deploy` reads the file, and its errors (duplicate keys included)."""
         loader = UniqueKeyLoader(self.as_text())
         raw = loader.get_single_data()
         loader.dispose()
-        _, errors = check_config(raw)
-        return loader.duplicates + errors
+        config, errors = check_config(raw)
+        return config, loader.duplicates + errors
+
+    def validate(self) -> list[str]:
+        """Return the errors config.check_config finds in the current content (duplicate keys included)."""
+        return self.checked()[1]
+
+    def validate_in(self, folder: Path) -> list[str]:
+        """Return the errors `nanohpc validate` reports for the current content saved as a cluster.yml in
+        `folder`: those of validate(), then (when there are none) missing or wrong website files (certificate,
+        key, logo, relative to `folder`) and missing or malformed secrets in `folder`/.env."""
+        config, errors = self.checked()
+        if errors:
+            return errors
+        return website_files(config["cluster"]["website"], folder) + secrets(config, folder)
 
     def get(self, path: Sequence[str | int]) -> Any:
         """Return the value at `path` (keys, or indexes in lists) as plain Python data; None when it or one

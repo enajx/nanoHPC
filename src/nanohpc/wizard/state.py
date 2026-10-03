@@ -1,16 +1,19 @@
 """What the setup wizard keeps while it runs, and the plain rules it uses (no widgets here).
 
 The wizard edits one cluster.yml (a `ClusterFile`) in memory, and remembers what it learned from the machines
-(probe facts, UID checks) for this session only: none of that is written to the file.
+(probe facts, UID checks, skipped preparation items) for this session only: none of that is written to the file.
 """
 
+import datetime
+import os
+import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from nanohpc.clusterfile import ClusterFile
-from nanohpc.config import MACHINE_FIELDS, is_ipv4
+from nanohpc.config import MACHINE_FIELDS, SCRATCH_DEFAULTS, is_ipv4
 from nanohpc.fixuid import FixPlan
 from nanohpc.probe import Disk, MachineFacts, suggest_gpu_type
 
@@ -29,17 +32,31 @@ STEPS: tuple[tuple[str, str], ...] = (
 MACHINES, STORAGE, USERS, PARTITIONS, WEBSITE, EXTRAS, REVIEW = range(len(STEPS))
 FIRST_UID = 2000
 COMPUTE_ONLY = ("cpu", "memory_mb", "gpu", "partitions", "scratch")
+# Filesystem types that mean a disk belongs to something else (swap, LVM, software RAID, encryption, ZFS).
+MEMBER_FSTYPES = ("swap", "LVM2_member", "linux_raid_member", "crypto_LUKS", "zfs_member", "bcache")
+SAFE_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
 @dataclass(frozen=True)
 class Dependencies:
     """The functions the wizard uses to reach the machines. The CLI passes the real ones (probe.py and
-    fixuid.py); tests pass fakes."""
+    fixuid.py); tests pass fakes. Only apply_fix changes a machine."""
 
     probe_machine: Callable[[str, Path | None], MachineFacts]
     user_ids: Callable[[str, Path | None, list[str]], dict[str, tuple[int, int] | None]]
+    uid_problems: Callable[[str, Path | None, list[tuple[str, int]]], list[str]]
+    uid_owner: Callable[[str, Path | None, int], str | None]
     plan_fix: Callable[[str, Path | None, str, int], FixPlan]
-    apply_fix: Callable[[str, Path | None, FixPlan], int]
+    apply_fix: Callable[[str, Path | None, FixPlan], list[str]]
+
+
+@dataclass(frozen=True)
+class UidCheck:
+    """What the UID check found on one machine: each user's (UID, GID) there, or None when the user has no
+    account there; and the other problems (a UID owned by another account, group conflicts)."""
+
+    ids: dict[str, tuple[int, int] | None]
+    problems: list[str]
 
 
 @dataclass
@@ -50,22 +67,111 @@ class WizardState:
     ssh_config: Path | None
     deps: Dependencies
     file: ClusterFile
+    saved_text: str | None  # the text on disk; None for a new file not saved yet
     # How the wizard reaches each machine with ssh: what the administrator typed, or the machine's name
     # (which is what `nanohpc deploy` uses).
-    targets: dict[str, str] = field(default_factory=dict)
-    facts: dict[str, MachineFacts] = field(default_factory=dict)
-    probing: set[str] = field(default_factory=set)
-    # UID check: machine -> user -> (UID, GID) on that machine, or None when the user has no account there.
-    uid_checks: dict[str, dict[str, tuple[int, int] | None]] = field(default_factory=dict)
-    uid_errors: dict[str, str] = field(default_factory=dict)
+    targets: dict[str, str]
+    facts: dict[str, MachineFacts]
+    probing: set[str]
+    uid_checks: dict[str, UidCheck]
+    uid_errors: dict[str, str]
+    skipped: set[tuple[str, str]]  # (machine, preparation item) the administrator will do later
 
     def target(self, machine: str) -> str:
         """Return the ssh target for a machine: the one typed when it was added, or its name."""
         return self.targets.get(machine, machine)
 
+    def dirty(self) -> bool:
+        """Return whether the file in memory differs from the file on disk."""
+        return self.file.as_text() != self.saved_text
+
+    def probed(self) -> list[str]:
+        """Return the machines in the file that were probed without an error."""
+        return [name for name in self.file.machines() if name in self.facts and self.facts[name].error is None]
+
+    def forget(self, machine: str) -> None:
+        """Drop everything the session learned about a machine (after it is removed from the file)."""
+        for store in (self.targets, self.facts, self.uid_checks, self.uid_errors):
+            store.pop(machine, None)
+        self.probing.discard(machine)
+        self.skipped = {item for item in self.skipped if item[0] != machine}
+
+
+def new_state(
+    path: Path, ssh_config: Path | None, deps: Dependencies, file: ClusterFile, saved: str | None
+) -> WizardState:
+    """Return the state of a wizard that has just opened `file`."""
+    return WizardState(path, ssh_config, deps, file, saved, {}, {}, set(), {}, {}, set())
+
+
+def widget_id(prefix: str, name: str) -> str:
+    """Return a widget id for a machine, user, or partition name; names with other characters than letters,
+    digits, _ and - (allowed in machine names in a hand-written file) are written in hex."""
+    return f"{prefix}-{name}" if SAFE_ID.fullmatch(name) else f"{prefix}-x{name.encode().hex()}"
+
+
+def unsupported_values(value: Any, path: str) -> list[str]:
+    """Return the places in the file holding values the wizard cannot edit (such as dates)."""
+    if isinstance(value, dict):
+        return [problem for key, item in value.items() for problem in unsupported_values(item, f"{path}.{key}")]
+    if isinstance(value, list):
+        return [problem for index, item in enumerate(value) for problem in unsupported_values(item, f"{path}[{index}]")]
+    if value is None or isinstance(value, (str, int, float, bool)) and not isinstance(value, datetime.date):
+        return []
+    return [f"{path.lstrip('.')}: {value!r} is not text, a number, or true/false (write it in quotes)"]
+
+
+def shape_problems(data: Any) -> list[str]:
+    """Return why the wizard cannot show this file (sections or fields of the wrong kind, or values such as
+    dates); an empty list when it can. Other mistakes are shown in the steps as validation errors."""
+    if not isinstance(data, dict):
+        return ["the file must be a mapping with the sections of cluster.yml"]
+    problems = unsupported_values(data, "")
+
+    def expect(value: Any, kind: type, path: str) -> bool:
+        if value is None or isinstance(value, kind):
+            return True
+        problems.append(f"{path} must be a {'mapping' if kind is dict else 'list'}")
+        return False
+
+    for section in (
+        "cluster",
+        "machines",
+        "partitions",
+        "policy",
+        "home",
+        "scratch",
+        "backup",
+        "alerts",
+        "auto_deploy",
+    ):
+        expect(data.get(section), dict, section)
+    expect(data.get("users"), list, "users")
+    cluster = data.get("cluster")
+    if isinstance(cluster, dict):
+        expect(cluster.get("website"), dict, "cluster.website")
+        expect(cluster.get("admins"), list, "cluster.admins")
+    machines = data.get("machines")
+    for name, machine in machines.items() if isinstance(machines, dict) else []:
+        if expect(machine, dict, f"machines.{name}") and isinstance(machine, dict):
+            for key in ("cpu", "gpu", "home", "scratch", "backup"):
+                expect(machine.get(key), dict, f"machines.{name}.{key}")
+            for key in ("roles", "partitions", "aliases"):
+                expect(machine.get(key), list, f"machines.{name}.{key}")
+    users = data.get("users")
+    for index, user in enumerate(users if isinstance(users, list) else []):
+        if expect(user, dict, f"users[{index}]") and isinstance(user, dict):
+            expect(user.get("ssh_keys"), list, f"users[{index}].ssh_keys")
+    partitions = data.get("partitions")
+    for name, partition in partitions.items() if isinstance(partitions, dict) else []:
+        expect(partition, dict, f"partitions.{name}")
+    return problems
+
 
 def error_step(error: str) -> int:
-    """Return the step where a validation error from clusterfile.validate() is fixed."""
+    """Return the step where a validation error is fixed."""
+    if ".env" in error or error.startswith("NANOHPC_"):
+        return EXTRAS
     head = error.split(" ", 1)[0].rstrip(":")
     parts = head.split(".")
     section = parts[0].split("[")[0]
@@ -94,11 +200,52 @@ def error_step(error: str) -> int:
     return REVIEW
 
 
+def wizard_errors(state: WizardState) -> list[str]:
+    """Return every error that makes `nanohpc validate` fail for the file as it would be saved (website
+    files and .env secrets included), and the placeholder website hostname of a new file."""
+    errors = state.file.validate_in(state.path.parent)
+    name = state.file.get(["cluster", "name"])
+    hostname = state.file.get(["cluster", "website", "hostname"])
+    if isinstance(name, str) and hostname == f"{name}.example.org":
+        errors.append(f"cluster.website.hostname {hostname} is a placeholder: write the website's real hostname")
+    for machine, values in state.file.machines().items():
+        image = ((values or {}).get("scratch") or {}).get("image_gb")
+        free = free_gb(state.facts.get(machine))
+        if isinstance(image, int) and free is not None and image > free:
+            errors.append(
+                f"machines.{machine}.scratch.image_gb {image} GB is more than the {free:g} GB free on its root disk"
+            )
+    return errors
+
+
+def free_gb(facts: MachineFacts | None) -> float | None:
+    """Return the free space on a probed machine's root disk in GB, or None when it is not known."""
+    if facts is None or facts.error is not None:
+        return None
+    return facts.free_gb
+
+
 def next_free_uid(users: list[dict[str, Any]]) -> int:
     """Return the lowest UID from 2000 up that no user in the file has."""
     used = {user.get("uid") for user in users}
     uid = FIRST_UID
     while uid in used:
+        uid += 1
+    return uid
+
+
+def suggest_uid(users: list[dict[str, Any]], found: list[tuple[int, int] | None], taken: Callable[[int], bool]) -> int:
+    """Return the UID to suggest for a new user: the UID the user already has on the probed machines (`found`,
+    one entry per machine) when it is the same on every machine that has the account and no other user in the
+    file has it; else the lowest UID from 2000 up that is free in the file and, by `taken`, on the machines."""
+    used = {user.get("uid") for user in users}
+    existing = {ids[0] for ids in found if ids is not None}
+    if len(existing) == 1:
+        uid = existing.pop()
+        if uid not in used:
+            return uid
+    uid = FIRST_UID
+    while uid in used or taken(uid):
         uid += 1
     return uid
 
@@ -141,15 +288,22 @@ def ordered(machine: dict[str, Any]) -> dict[str, Any]:
     return {**known, **{key: value for key, value in machine.items() if key not in known}}
 
 
+def needs_address(machine: dict[str, Any], facts: MachineFacts) -> bool:
+    """Return whether the administrator must choose the machine's address among several probed ones."""
+    address = machine.get("address")
+    has_address = isinstance(address, str) and is_ipv4(address)
+    return facts.error is None and not has_address and len(facts.addresses) > 1
+
+
 def fill_from_facts(machine: dict[str, Any], facts: MachineFacts, partition: str | None) -> dict[str, Any]:
     """Return the machine with what the probe found filled in where the file has nothing yet: the address
-    (the first probed one), and for a compute machine cpu, memory_mb, gpu, and partitions. Values already
-    in the file are kept."""
+    (when the probe found exactly one; with several, the administrator chooses), and for a compute machine
+    cpu, memory_mb, gpu, and partitions. Values already in the file are kept."""
     result = dict(machine)
     if facts.error is not None:
         return result
     address = result.get("address")
-    if facts.addresses and not (isinstance(address, str) and is_ipv4(address)):
+    if len(facts.addresses) == 1 and not (isinstance(address, str) and is_ipv4(address)):
         result["address"] = facts.addresses[0]
     if "compute" in (result.get("roles") or []):
         result.setdefault("cpu", cpu_from_facts(facts))
@@ -175,6 +329,18 @@ def with_roles(machine: dict[str, Any], roles: list[str]) -> dict[str, Any]:
     return result
 
 
+def ssh_hint(error: str, target: str) -> str:
+    """Return what to do when ssh to a machine failed."""
+    if "Host key verification failed" in error or "REMOTE HOST IDENTIFICATION HAS CHANGED" in error:
+        return (
+            f"Accept the machine's host key once: run ssh {target} in a terminal, check the fingerprint, answer "
+            "yes; then probe again (p)."
+        )
+    if "Permission denied" in error:
+        return f"Put your public key on the machine (ssh-copy-id {target}) and load it (ssh-add); then probe again (p)."
+    return f"Check that ssh {target} works in a terminal (address, the machine is on, your key); then probe again (p)."
+
+
 def probe_summary(facts: MachineFacts | None, probing: bool) -> str:
     """Return the probe column of the machines table."""
     if probing:
@@ -186,37 +352,54 @@ def probe_summary(facts: MachineFacts | None, probing: bool) -> str:
     parts = [f"✓ {facts.cpus}c", f"{facts.memory_mb // 1024}G"]
     if facts.gpus:
         parts.append(f"{len(facts.gpus)} GPU")
-    parts.append(f"Ubuntu {facts.ubuntu}" if facts.ubuntu else f"not Ubuntu ({facts.os_id or 'unknown'})")
+    if not facts.supported:
+        parts.append(f"! {facts.os_id or 'unknown OS'} {facts.ubuntu} not supported".replace("  ", " "))
+    else:
+        parts.append(f"Ubuntu {facts.ubuntu}")
     if not facts.sudo_ok:
-        parts.append("! sudo asks for a password")
+        parts.append("sudo asks for a password")
     return " · ".join(parts)
 
 
-def facts_details(facts: MachineFacts) -> list[str]:
+def facts_details(facts: MachineFacts, target: str) -> list[str]:
     """Return the lines that describe a probed machine in full."""
     if facts.error is not None:
-        return [f"✗ {facts.target}: {facts.error}"]
+        return [f"✗ {facts.target}: {facts.error}", ssh_hint(facts.error, target)]
     lines = [
         f"{facts.target}: hostname {facts.hostname}, addresses {', '.join(facts.addresses) or 'none'}",
-        f"CPUs {facts.cpus}, memory {facts.memory_mb} MiB, Ubuntu {facts.ubuntu or 'no'}",
+        (
+            f"CPUs {facts.cpus}, memory {facts.memory_mb} MiB, {facts.os_id} {facts.ubuntu}, "
+            f"{facts.free_gb:g} GB free on the root disk"
+        ),
         f"GPUs: {', '.join(facts.gpus) if facts.gpus else 'none'}",
         "Disks: " + ("; ".join(disk_label(disk) for disk in facts.disks) or "none"),
     ]
-    if not facts.sudo_ok:
-        lines.append(
-            "! sudo asks for a password here: load your key with ssh-add (sudo by forwarded key), "
-            "or nanohpc deploy will ask for the password once"
-        )
     lines += [f"! {note}" for note in facts.notes]
     return lines
 
 
+def disk_in_use(disk: Disk) -> str | None:
+    """Return why a disk is in use (so it cannot become /home or scratch), or None when it is free."""
+    if disk.mountpoint is not None:
+        return f"mounted at {disk.mountpoint}"
+    if disk.fstype in MEMBER_FSTYPES:
+        return f"part of {disk.fstype}"
+    if disk.pttype is not None:
+        return f"has a partition table ({disk.pttype})"
+    if disk.children:
+        return f"{', '.join(disk.children)} on it"
+    if disk.in_use and disk.fstype is None:
+        return "in use"
+    return None
+
+
 def disk_label(disk: Disk) -> str:
-    """Return a disk as shown in the wizard: path, size, filesystem, and mount point."""
+    """Return a disk as shown in the wizard: path, size, filesystem, and mount point (or why it is in use)."""
     filesystem = disk.fstype or "no filesystem"
-    mounted = f"mounted at {disk.mountpoint}" if disk.mountpoint else "not mounted"
+    use = disk_in_use(disk)
+    state = f"in use: {use}" if use else "free"
     model = f", {disk.model}" if disk.model else ""
-    return f"{disk.path} ({disk.size_gb:g} GB, {filesystem}, {mounted}{model})"
+    return f"{disk.path} ({disk.size_gb:g} GB, {filesystem}, {state}{model})"
 
 
 def mkfs_command(device: str, home: bool) -> str:
@@ -224,22 +407,123 @@ def mkfs_command(device: str, home: bool) -> str:
     return f"sudo mkfs.ext4 -O quota {device}" if home else f"sudo mkfs.ext4 {device}"
 
 
-def disk_advice(facts: MachineFacts | None, device: str, home: bool) -> str | None:
-    """Return what the administrator must do before the deploy for the chosen disk, or None. The wizard
-    never formats a disk: it only shows the command."""
+def disk_problem(facts: MachineFacts | None, device: str, home: bool) -> str | None:
+    """Return what keeps the chosen disk from being ready for /home or scratch (with the command to run for
+    an empty disk), or None when it is ready or the machine was not probed. The wizard never formats a disk:
+    it only shows the command."""
     if facts is None or facts.error is not None:
         return None
     disk = next((disk for disk in facts.disks if disk.path == device), None)
     if disk is None:
         return f"{device} was not found on {facts.target}"
-    if disk.mountpoint is not None:
-        return f"{device} is mounted at {disk.mountpoint}: choose a spare disk"
+    use = disk_in_use(disk)
+    if use is not None:
+        return f"{device} is in use ({use}), so it cannot be used for /home or scratch: choose a spare disk."
     if disk.fstype is None:
         return (
             f"{device} has no filesystem. On {facts.target}, run: {mkfs_command(device, home)}\n"
             "The wizard never formats a disk; run this yourself, or skip and do it later (before the deploy)."
         )
+    if disk.fstype not in ("ext4", "xfs"):
+        return f"{device} has a {disk.fstype} filesystem: nanoHPC needs ext4 or XFS. Choose another disk."
     return None
+
+
+def scratch_warning(facts: MachineFacts | None, device: str, cleanup_days: Any) -> str | None:
+    """Return a warning for a scratch disk that already has a filesystem: its old files will be deleted."""
+    if facts is None or facts.error is not None:
+        return None
+    disk = next((disk for disk in facts.disks if disk.path == device), None)
+    if disk is None or disk.fstype not in ("ext4", "xfs") or disk_in_use(disk) is not None:
+        return None
+    days = cleanup_days if cleanup_days is not None else SCRATCH_DEFAULTS["cleanup_days"]
+    return (
+        f"{device} already has a filesystem ({disk.fstype}). It becomes /scratch, and the daily cleanup deletes "
+        f"files there that are older than {days} days (scratch.cleanup_days). Copy off anything you need first."
+    )
+
+
+@dataclass(frozen=True)
+class CheckItem:
+    """One item of a machine's preparation checklist. An `info` item is something to know, not to fix."""
+
+    key: str
+    label: str
+    ok: bool
+    hint: str
+    info: bool
+
+
+def checklist(state: WizardState, machine: str) -> list[CheckItem]:
+    """Return the preparation checklist of a probed machine (empty when it was not probed): SSH, sudo through
+    the administrator's agent, a supported Ubuntu, the NVIDIA driver when GPUs are expected, and the disks for
+    /home and scratch."""
+    facts = state.facts.get(machine)
+    if facts is None:
+        return []
+    target = state.target(machine)
+    items = [
+        CheckItem(
+            "ssh", "SSH works (host key accepted)", facts.error is None, ssh_hint(facts.error or "", target), False
+        )
+    ]
+    if facts.error is not None:
+        return items
+    values = state.file.machines().get(machine) or {}
+    if not facts.sudo_ok:
+        items.append(
+            CheckItem(
+                "sudo",
+                "sudo asks for a password: the first nanohpc deploy asks for it once, in a terminal; after that, "
+                "administrators' SSH keys unlock sudo",
+                True,
+                "",
+                True,
+            )
+        )
+    items.append(
+        CheckItem(
+            "ubuntu",
+            "Ubuntu 22.04, 24.04, or 26.04",
+            facts.supported,
+            f"This machine runs {facts.os_id} {facts.ubuntu}: install Ubuntu 22.04, 24.04, or 26.04.",
+            False,
+        )
+    )
+    if values.get("gpu") is not None:
+        items.append(
+            CheckItem(
+                "nvidia",
+                "NVIDIA driver works (nvidia-smi lists the GPUs)",
+                bool(facts.gpus),
+                "Install the NVIDIA driver (for example sudo ubuntu-drivers install), reboot, then probe again (p).",
+                False,
+            )
+        )
+    roles = values.get("roles") or []
+    home = (values.get("home") or {}).get("device") if "home" in roles else None
+    scratch = (values.get("scratch") or {}).get("device") if "compute" in roles else None
+    for key, device, is_home in (("home-disk", home, True), ("scratch-disk", scratch, False)):
+        if isinstance(device, str):
+            problem = disk_problem(facts, device, is_home)
+            what = "/home" if is_home else "scratch"
+            items.append(CheckItem(key, f"{what} disk {device} is ready", problem is None, problem or "", False))
+    return items
+
+
+def preparation(state: WizardState) -> list[str]:
+    """Return what is left to prepare on the machines, for the review: open items, skipped items, and
+    machines not probed."""
+    lines = []
+    for machine in state.file.machines():
+        if machine not in state.facts:
+            lines.append(f"{machine}: not probed (step 1)")
+            continue
+        for item in checklist(state, machine):
+            if not item.ok:
+                done_later = (machine, item.key) in state.skipped
+                lines.append(f"{machine}: {item.label}: {'skipped, to do later' if done_later else 'to do'}")
+    return lines
 
 
 def field_text(value: Any) -> str:
@@ -252,8 +536,8 @@ def field_text(value: Any) -> str:
 
 
 def parse_field(text: str, kind: str) -> Any:
-    """Return the value to write for an input field's text. `kind`: text, int (a whole number, or the
-    text as typed so validation names it), or list (comma-separated)."""
+    """Return the value to write for an input field's text. `kind`: int (a whole number, or the text as typed
+    so validation names it), list (comma-separated), or any other kind for text."""
     if kind == "list":
         return [part.strip() for part in text.split(",") if part.strip()]
     if kind == "int":
@@ -274,15 +558,35 @@ def remove_value(file: ClusterFile, path: list[str]) -> None:
 
 
 def write_field(file: ClusterFile, path: list[str], text: str, kind: str) -> bool:
-    """Write an input field's text to the file; empty text removes the setting. Return whether the file
-    changed (text equal to what the file has already changes nothing)."""
-    if text == field_text(file.get(path)):
+    """Write an input field's text to the file and return whether the file changed (text equal to what the
+    file has changes nothing). Empty text: a `required` setting is written empty (it keeps its place, and
+    validation names it), an `optional` one becomes null (it keeps its place), any other is removed so
+    nanoHPC's default applies."""
+    current = file.get(path)
+    if text == field_text(current):
         return False
-    if text == "":
+    if current == "":
+        file.set_value(path, None)  # so the new text is not written in the quotes of the empty value
+    if text == "" and kind == "required":
+        file.set_value(path, "")
+    elif text == "" and kind == "optional":
+        file.set_value(path, None)
+    elif text == "":
         remove_value(file, path)
     else:
         file.set_value(path, parse_field(text, kind))
     return True
+
+
+def save_text(path: Path, text: str) -> None:
+    """Write the file safely: through a symlink to its target, keeping the target's permissions (0644 for a
+    new file), first to a temporary file next to it and then renamed over it."""
+    target = path.resolve()
+    mode = target.stat().st_mode & 0o7777 if target.exists() else 0o644
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.write_text(text)
+    os.chmod(temporary, mode)
+    os.replace(temporary, target)
 
 
 def uid_conflicts(state: WizardState) -> list[tuple[str, str, tuple[int, int]]]:
@@ -290,8 +594,8 @@ def uid_conflicts(state: WizardState) -> list[tuple[str, str, tuple[int, int]]]:
     from the UID in cluster.yml. A missing account is not a conflict: the deploy creates it."""
     expected = {user["name"]: user["uid"] for user in state.file.users() if "name" in user and "uid" in user}
     conflicts = []
-    for machine, found in state.uid_checks.items():
-        for user, ids in found.items():
+    for machine, check in state.uid_checks.items():
+        for user, ids in check.ids.items():
             if ids is not None and user in expected and ids != (expected[user], expected[user]):
                 conflicts.append((machine, user, ids))
     return conflicts

@@ -17,7 +17,7 @@ ModalScreen {
 }
 
 #sidebar {
-    width: 22;
+    width: 20;
     border-right: heavy #172322;
     background: #faf9f6;
 }
@@ -71,7 +71,7 @@ ModalScreen {
 }
 
 #footer {
-    height: 4;
+    height: auto;
     border: heavy #172322;
     border-top: none;
     background: #faf9f6;
@@ -289,4 +289,37 @@ DataTable > .datatable--cursor {
 
 .dialog.wide {
     width: 110;
+}
+
+#checklist {
+    height: auto;
+}
+
+.check-row {
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.check {
+    width: 1fr;
+}
+
+.check.todo {
+    color: #b3361a;
+}
+
+Button.skip {
+    min-width: 12;
+}
+
+#working {
+    text-style: bold;
+}
+
+.dialog.tall {
+    height: 90%;
+}
+
+.dialog-body {
+    height: 1fr;
 }
