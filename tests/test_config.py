@@ -122,7 +122,10 @@ class HeterogeneousClusterTest(unittest.TestCase):
         self.assertEqual(config["scratch"], {"cleanup_days": 14})
         self.assertIsNone(config["backup"])
         self.assertEqual(config["alerts"], {"slack": False})
-        self.assertEqual(config["auto_deploy"], {"enabled": False, "repository": None})
+        self.assertEqual(
+            config["auto_deploy"],
+            {"enabled": False, "repository": None, "branch": "main", "every_minutes": 10, "webhook": False},
+        )
         self.assertEqual(config["cluster"]["website"]["login_address"], "cluster.mylab.example.org")
         website = config["cluster"]["website"]
         self.assertEqual(website["path"], "/cluster/")
@@ -163,7 +166,7 @@ class WebsiteFilesTest(unittest.TestCase):
                 "certificate_key": "tls/key.pem",
                 "logo": "logo.png",
             }
-            config, errors = load_config(self.write(folder, website), True)
+            config, errors = load_config(self.write(folder, website), True, False)
             self.assertEqual(errors, [])
             resolved = config["cluster"]["website"]
             self.assertEqual(resolved["certificate"], str(folder.resolve() / "tls/cert.pem"))
@@ -185,32 +188,122 @@ class WebsiteFilesTest(unittest.TestCase):
             self.make_certificate(folder, "good", "cluster.example.org", "90")
             self.make_certificate(folder, "other", "other.example.org", "90")
             good = {"https": "own", "certificate": "good.pem", "certificate_key": "good.key"}
-            self.assertEqual(load_config(self.write(folder, good), True)[1], [])
+            self.assertEqual(load_config(self.write(folder, good), True, False)[1], [])
             mismatched = {"https": "own", "certificate": "good.pem", "certificate_key": "other.key"}
             self.assertIn(
                 "cluster.website.certificate_key does not match cluster.website.certificate",
-                load_config(self.write(folder, mismatched), True)[1],
+                load_config(self.write(folder, mismatched), True, False)[1],
             )
             wrong_name = {"https": "own", "certificate": "other.pem", "certificate_key": "other.key"}
             self.assertIn(
                 "cluster.website.certificate is not for cluster.example.org (it names other.example.org)",
-                load_config(self.write(folder, wrong_name), True)[1],
+                load_config(self.write(folder, wrong_name), True, False)[1],
             )
             (folder / "broken.pem").write_text("not a certificate")
             broken = {"https": "own", "certificate": "broken.pem", "certificate_key": "good.key"}
             self.assertIn(
-                "cluster.website.certificate is not a PEM certificate", load_config(self.write(folder, broken), True)[1]
+                "cluster.website.certificate is not a PEM certificate",
+                load_config(self.write(folder, broken), True, False)[1],
             )
+
+    def test_automatic_deploy_keeps_the_front_nodes_certificate(self) -> None:
+        """On the front node, the administrator's certificate files are not there: an automatic deploy keeps the
+        certificate and key the last manual deploy installed."""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            website = {
+                "https": "own",
+                "certificate": "/admin/laptop/cert.pem",
+                "certificate_key": "/admin/laptop/key.pem",
+            }
+            config, errors = load_config(self.write(folder, website), True, True)
+            self.assertEqual(errors, [])
+            self.assertIsNone(config["cluster"]["website"]["certificate"])
+            self.assertIsNone(config["cluster"]["website"]["certificate_key"])
 
     def test_missing_files_and_logo_types_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             (folder / "logo.bmp").write_text("x")
             website = {"https": "own", "certificate": "cert.pem", "certificate_key": "/no/key.pem", "logo": "logo.bmp"}
-            _, errors = load_config(self.write(folder, website), True)
+            _, errors = load_config(self.write(folder, website), True, False)
             self.assertIn(f"cluster.website.certificate: {folder.resolve() / 'cert.pem'} not found", errors)
             self.assertIn("cluster.website.certificate_key: /no/key.pem not found", errors)
             self.assertIn("cluster.website.logo must be a .png, .svg, .jpg, or .webp file", errors)
+
+
+class AutoDeployTest(unittest.TestCase):
+    """Automatic deploys: the configuration repository, its branch, how often, the webhook, and the pinned version."""
+
+    def test_defaults(self) -> None:
+        config, errors = check_config(example())
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            config["auto_deploy"],
+            {"enabled": False, "repository": None, "branch": "main", "every_minutes": 10, "webhook": False},
+        )
+        self.assertIsNone(config["nanohpc_version"])
+
+    def test_enabled(self) -> None:
+        raw = example()
+        raw["nanohpc_version"] = "0.1.0"
+        raw["auto_deploy"] = {
+            "enabled": True,
+            "repository": "git@github.com:lab/cluster-config.git",
+            "branch": "stable",
+            "every_minutes": 5,
+        }
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["auto_deploy"]["branch"], "stable")
+        self.assertEqual(config["nanohpc_version"], "0.1.0")
+
+    def test_invalid(self) -> None:
+        def enabled(raw: dict[str, Any]) -> None:
+            raw["auto_deploy"] = {"enabled": True, "repository": "git@github.com:lab/c.git"}
+            raw["nanohpc_version"] = "0.1.0"
+
+        cases: list[tuple[Callable[[dict[str, Any]], None], str]] = [
+            (lambda raw: raw["auto_deploy"].update(enabled=True, repository="git@github.com:lab/c.git"),
+             "nanohpc_version is required when auto_deploy.enabled is true"),
+            (lambda raw: (enabled(raw), raw["auto_deploy"].update(repository="https://github.com/lab/c.git")),
+             "auto_deploy.repository must be a Git repository over SSH"),
+            (lambda raw: (enabled(raw), raw["auto_deploy"].update(branch="main; rm")), "auto_deploy.branch must be a branch name"),
+            (lambda raw: (enabled(raw), raw["auto_deploy"].update(repository="ssh://git@host.example.org:2222/lab/c.git")),
+             "auto_deploy.repository must be a Git repository over SSH"),
+            (lambda raw: (enabled(raw), raw["auto_deploy"].update(every_minutes=0)), "auto_deploy.every_minutes must be"),
+            (lambda raw: (enabled(raw), raw.update(nanohpc_version="latest")), "nanohpc_version must be a version"),
+            (lambda raw: raw["auto_deploy"].update(webhook=True), "auto_deploy.webhook needs auto_deploy.enabled"),
+        ]  # fmt: skip
+        for change, expected in cases:
+            with self.subTest(expected):
+                errors = mutate(change)
+                self.assertTrue(any(expected in error for error in errors), f"expected {expected!r} in {errors}")
+
+    def test_webhook_secret_from_env(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            raw = example()
+            raw["nanohpc_version"] = "0.1.0"
+            raw["auto_deploy"] = {"enabled": True, "repository": "git@github.com:lab/c.git", "webhook": True}
+            path = folder / "cluster.yml"
+            path.write_text(yaml.safe_dump(raw))
+            _, errors = load_config(path, True, False)
+            self.assertIn(
+                f"auto_deploy.webhook is true but {folder.resolve() / '.env'} has no NANOHPC_DEPLOY_WEBHOOK_SECRET",
+                errors,
+            )
+            (folder / ".env").write_text("NANOHPC_DEPLOY_WEBHOOK_SECRET=short\n")
+            _, errors = load_config(path, True, False)
+            self.assertIn(
+                "NANOHPC_DEPLOY_WEBHOOK_SECRET in .env must be at least 32 characters (for example openssl rand -hex 32)",
+                errors,
+            )
+            secret = "s" * 40
+            (folder / ".env").write_text(f"NANOHPC_DEPLOY_WEBHOOK_SECRET={secret}\n")
+            config, errors = load_config(path, True, False)
+            self.assertEqual(errors, [])
+            self.assertEqual(config["secrets"]["deploy_webhook"], secret)
 
 
 class SecretsTest(unittest.TestCase):
@@ -229,23 +322,39 @@ class SecretsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             env = "# alerts\nOTHER=1\nNANOHPC_SLACK_WEBHOOK='https://hooks.slack.com/services/T/B/x'\n"
-            config, errors = load_config(self.write(folder, True, env), True)
+            config, errors = load_config(self.write(folder, True, env), True, False)
             self.assertEqual(errors, [])
-            self.assertEqual(config["secrets"], {"slack_webhook": "https://hooks.slack.com/services/T/B/x"})
+            self.assertEqual(
+                config["secrets"], {"slack_webhook": "https://hooks.slack.com/services/T/B/x", "deploy_webhook": None}
+            )
 
     def test_missing_webhook_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            _, errors = load_config(self.write(folder, True, None), True)
+            _, errors = load_config(self.write(folder, True, None), True, False)
             self.assertIn(f"alerts.slack is true but {folder.resolve() / '.env'} has no NANOHPC_SLACK_WEBHOOK", errors)
-            _, errors = load_config(self.write(folder, True, "NANOHPC_SLACK_WEBHOOK=not a url\n"), True)
+            _, errors = load_config(self.write(folder, True, "NANOHPC_SLACK_WEBHOOK=not a url\n"), True, False)
             self.assertIn("NANOHPC_SLACK_WEBHOOK in .env must be an http(s) URL", errors)
+
+    def test_secrets_are_read_before_their_feature_is_on(self) -> None:
+        """Secrets in .env reach the front node even when their feature is still off, so a later commit can turn
+        Slack alerts or the webhook on in an automatic deploy."""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            secret = "s" * 40
+            env = f"NANOHPC_SLACK_WEBHOOK=https://hooks.slack.com/services/T/B/x\nNANOHPC_DEPLOY_WEBHOOK_SECRET={secret}\n"
+            config, errors = load_config(self.write(folder, False, env), True, False)
+            self.assertEqual(errors, [])
+            self.assertEqual(
+                config["secrets"],
+                {"slack_webhook": "https://hooks.slack.com/services/T/B/x", "deploy_webhook": secret},
+            )
 
     def test_no_secrets_needed_without_slack(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            config, errors = load_config(self.write(Path(directory), False, None), True)
+            config, errors = load_config(self.write(Path(directory), False, None), True, False)
             self.assertEqual(errors, [])
-            self.assertEqual(config["secrets"], {"slack_webhook": None})
+            self.assertEqual(config["secrets"], {"slack_webhook": None, "deploy_webhook": None})
 
 
 class InvalidConfigTest(unittest.TestCase):

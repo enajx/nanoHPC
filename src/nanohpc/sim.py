@@ -79,7 +79,7 @@ def load_sim(path: Path) -> tuple[SimPlan | None, list[str]]:
         checker.fail("cluster:", f"file not found: {cluster_path}")
         return None, checker.errors
     # Without the file checks: for `https: own`, sim up makes the test certificate later.
-    config, errors = load_config(cluster_path, False)
+    config, errors = load_config(cluster_path, False, False)
     if errors:
         return None, [f"{cluster_path.name}: {error}" for error in errors]
     machines: dict[str, dict[str, Any]] = config["machines"]

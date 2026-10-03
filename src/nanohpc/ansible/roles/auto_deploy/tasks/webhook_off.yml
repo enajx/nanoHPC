@@ -1,0 +1,26 @@
+# The webhook is off: stop and remove the listener and its secret (if they were set up before).
+- name: Look for the webhook listener
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-deploy-hook.service
+  register: webhook_listener
+
+- name: Stop the webhook listener
+  ansible.builtin.systemd_service:
+    name: nanohpc-deploy-hook
+    enabled: false
+    state: stopped
+  when: webhook_listener.stat.exists
+
+- name: Remove the webhook listener and its secret
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/nanohpc-deploy-hook.service
+    - /etc/nanohpc/auto-deploy/webhook-secret
+  register: webhook_removed
+
+- name: Forget the removed webhook unit
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: webhook_removed is changed

@@ -1,0 +1,199 @@
+#!/usr/bin/python3
+"""Start the automatic deploy right after GitHub reports a push to the deployed branch.
+
+Runs on the front node and listens on 127.0.0.1 only. nginx forwards POST <website path>deploy-hook to it, so it
+never faces the internet directly. nginx passes the request path unchanged, with the website path in front (for
+example /cluster/deploy-hook), so any path that ends in /deploy-hook is accepted and the listener does not need to
+know the website path. Everything else answers 404 (other paths) or 405 (other methods).
+
+A request is acted on only if its X-Hub-Signature-256 header is GitHub's HMAC-SHA256 of the exact body with the
+shared secret (missing or wrong: 401). Then:
+  ping                                  200 pong
+  push to refs/heads/BRANCH             runs SYSTEMCTL start --no-block UNIT, 202 (500 if systemctl fails)
+  push to another ref, other events     202 ignored
+Nothing else is run, never through a shell, and only "ref" is read from the body. At most one start every 10
+seconds: other valid pushes within that time answer 202 "already starting" (the deploy itself takes a lock).
+The webhook must send application/json (GitHub's default form encoding is refused with 400). Bodies over 1 MiB
+answer 413 without being read. Each request is logged as one line on stderr, without the secret or signature.
+
+Arguments (all required):
+  --listen HOST:PORT    address to listen on, for example 127.0.0.1:9099
+  --secret-file PATH    root-only file holding the webhook secret
+  --branch NAME         only pushes to refs/heads/NAME start a deploy
+  --unit NAME           the systemd unit to start, for example nanohpc-auto-deploy.service
+  --systemctl PATH      the systemctl program, normally /usr/bin/systemctl
+"""
+
+import argparse
+import hashlib
+import hmac
+import json
+import re
+import subprocess
+import sys
+import time
+import urllib.parse
+from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+MAX_BODY = 1024 * 1024
+START_EVERY_SECONDS = 10.0
+DIGITS = re.compile(r"[0-9]+")
+
+
+@dataclass(frozen=True)
+class Settings:
+    """What the listener checks requests against and what it starts."""
+
+    secret: bytes
+    branch: str
+    unit: str
+    systemctl: str
+
+
+class HookServer(HTTPServer):
+    """An HTTP server that keeps the settings and the time of the last start."""
+
+    def __init__(self, address: tuple[str, int], settings: Settings) -> None:
+        super().__init__(address, HookHandler)
+        self.settings = settings
+        self.last_start: float | None = None
+
+
+class HookHandler(BaseHTTPRequestHandler):
+    """Answers one webhook request."""
+
+    # A client that stops sending is dropped after this many seconds, so it cannot hold the single-threaded server.
+    timeout = 10
+    event = ""
+
+    def answer(self, status: int, text: str) -> None:
+        """Send a plain text answer and log the request as one line."""
+        body = (text + "\n").encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        print(
+            f"nanohpc-deploy-hook: {self.command} {self.path!r} event {self.event!r}: {status} {text}", file=sys.stderr
+        )
+
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        """Replace http.server's own request log line with the one written by answer."""
+
+    def path_matches(self) -> bool:
+        """Whether the request path ends in /deploy-hook (nginx keeps the website path in front)."""
+        return urllib.parse.urlsplit(self.path).path.endswith("/deploy-hook")
+
+    def refuse_method(self) -> None:
+        """Answer requests other than POST: 404 on other paths, 405 on the hook path."""
+        if not self.path_matches():
+            self.answer(404, "not found")
+            return
+        self.answer(405, "only POST is allowed")
+
+    do_GET = do_HEAD = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = refuse_method
+
+    def read_body(self) -> bytes | None:
+        """Read the body by a strict Content-Length; answer and return None if it is missing, bad, or too large."""
+        if self.headers.get("Transfer-Encoding") is not None:
+            self.answer(400, "Transfer-Encoding is not accepted, send a Content-Length")
+            return None
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) == 0:
+            self.answer(411, "Content-Length is required")
+            return None
+        if len(lengths) > 1 or not DIGITS.fullmatch(lengths[0]):
+            self.answer(400, "bad Content-Length")
+            return None
+        length = int(lengths[0])
+        if length > MAX_BODY:
+            self.answer(413, "body larger than 1 MiB")
+            return None
+        body = self.rfile.read(length)
+        if len(body) != length:
+            self.answer(400, "body shorter than Content-Length")
+            return None
+        return body
+
+    def do_POST(self) -> None:
+        """Check the path, size, and signature, then act on ping and push events."""
+        self.event = self.headers.get("X-GitHub-Event", "")
+        if not self.path_matches():
+            self.answer(404, "not found")
+            return
+        body = self.read_body()
+        if body is None:
+            return
+        server = self.server
+        assert isinstance(server, HookServer)
+        settings = server.settings
+        expected = "sha256=" + hmac.new(settings.secret, body, hashlib.sha256).hexdigest()
+        signature = self.headers.get("X-Hub-Signature-256", "")
+        # Headers are decoded as latin-1, so encoding them back cannot fail.
+        if not hmac.compare_digest(expected.encode(), signature.encode("latin-1")):
+            self.answer(401, "missing or wrong signature")
+            return
+        if self.event == "ping":
+            self.answer(200, "pong")
+            return
+        if self.event != "push":
+            self.answer(202, "ignored: other event")
+            return
+        if self.headers.get_content_type() != "application/json":
+            self.answer(400, "set the webhook's content type to application/json")
+            return
+        payload = json.loads(body)
+        ref = payload.get("ref") if isinstance(payload, dict) else None
+        if ref != "refs/heads/" + settings.branch:
+            self.answer(202, "ignored: other branch")
+            return
+        now = time.monotonic()
+        if server.last_start is not None and now - server.last_start < START_EVERY_SECONDS:
+            self.answer(202, "already starting")
+            return
+        server.last_start = now
+        started = subprocess.run(
+            [settings.systemctl, "start", "--no-block", settings.unit], stdin=subprocess.DEVNULL, check=False
+        )
+        if started.returncode != 0:
+            self.answer(500, f"systemctl start {settings.unit} failed with exit code {started.returncode}")
+            return
+        self.answer(202, "started " + settings.unit)
+
+
+def listen_address(value: str) -> tuple[str, int]:
+    """Parse HOST:PORT for argparse."""
+    host, separator, port = value.rpartition(":")
+    if separator == "" or host == "" or not DIGITS.fullmatch(port) or not 0 < int(port) < 65536:
+        raise argparse.ArgumentTypeError(f"expected HOST:PORT, got {value!r}")
+    return host, int(port)
+
+
+def main() -> None:
+    """Read the arguments and the secret, then answer requests until stopped."""
+    parser = argparse.ArgumentParser(description="Start the automatic deploy after a signed GitHub push.")
+    parser.add_argument("--listen", required=True, type=listen_address, help="HOST:PORT, for example 127.0.0.1:9099")
+    parser.add_argument("--secret-file", required=True, type=Path, help="root-only file with the webhook secret")
+    parser.add_argument("--branch", required=True, help="only pushes to refs/heads/BRANCH start a deploy")
+    parser.add_argument("--unit", required=True, help="systemd unit to start")
+    parser.add_argument("--systemctl", required=True, help="the systemctl program")
+    arguments = parser.parse_args()
+    secret = arguments.secret_file.read_text().strip()
+    if secret == "":
+        sys.exit(f"nanohpc-deploy-hook: the secret file {arguments.secret_file} is empty")
+    settings = Settings(secret.encode(), arguments.branch, arguments.unit, arguments.systemctl)
+    server = HookServer(arguments.listen, settings)
+    host, port = arguments.listen
+    print(
+        f"nanohpc-deploy-hook: listening on {host}:{port}, pushes to {arguments.branch} start {arguments.unit}",
+        file=sys.stderr,
+    )
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

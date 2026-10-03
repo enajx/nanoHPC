@@ -6,6 +6,7 @@ because it takes minutes and several GB of memory.
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ import time
 import unittest
 import urllib.parse
 from datetime import datetime
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -136,7 +138,7 @@ class SimOutputTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
             (state / "cluster.yml").write_text(render_cluster(plan, addresses, state))
-            config, errors = load_config(state / "cluster.yml", True)
+            config, errors = load_config(state / "cluster.yml", True, False)
             self.assertEqual(errors, [])
             website = config["cluster"]["website"]
             self.assertEqual(website["https"], "own")
@@ -308,11 +310,19 @@ class SimUsersBase(unittest.TestCase):
             "uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--ssh-config", str(ssh_config), agent=agent
         )  # fmt: skip
 
+    def remove_at_end(self) -> None:
+        """Remove the simulated cluster when the test ends, unless NANOHPC_SIM_KEEP=1: then it stays up, and the
+        next run deploys onto it again (quicker while fixing something; a cluster that already ran a test may
+        not behave like a new one, so a milestone ends with a run from scratch)."""
+        if os.environ.get("NANOHPC_SIM_KEEP") == "1":
+            return
+        self.addCleanup(self.run_command, "uv", "run", "nanohpc", "sim", "down", str(self.sim))
+
     def up_with_test_key(self) -> tuple[Path, dict[str, Any], str]:
         """Bring the sim cluster up and give its users the test key. Return the cluster file, its config,
         and the test public key. The VMs are removed when the test ends."""
         # Registered first, so VMs are removed even when `sim up` itself fails.
-        self.addCleanup(self.run_command, "uv", "run", "nanohpc", "sim", "down", str(self.sim))
+        self.remove_at_end()
         result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(self.sim))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         # Give the users the test key, in the generated cluster.yml that `sim deploy` reads.
@@ -328,7 +338,7 @@ class SimUsersBase(unittest.TestCase):
         """Bring the sim cluster up with the test key and deploy it."""
         cluster, config, public_key = self.up_with_test_key()
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
-        self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr)
+        self.assertEqual(result.returncode, 0, self.failure(result))
         return cluster, config, public_key
 
     def finished_job(self, job: str) -> tuple[str, str]:
@@ -423,14 +433,22 @@ class SimUsersBase(unittest.TestCase):
         result = subprocess.run(
             ["npm", "run", "test:live"], cwd=source, env=environment, capture_output=True, text=True, check=False
         )
-        self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr[-2000:])
+        self.assertEqual(result.returncode, 0, self.failure(result)[-2000:])
         tunnel.terminate()
         after = int(self.on_front(refused).strip() or 0)
         self.assertEqual(after, before, self.on_front("sudo tail -20 /var/log/nginx/error.log"))
 
+    @staticmethod
+    def failure(result: subprocess.CompletedProcess[str]) -> str:
+        """What a failed deploy says: every fatal and unreachable line (which can be far from the end of the
+        output), then the end of the output and the errors."""
+        lines = result.stdout.splitlines()
+        reasons = [line for line in lines if line.startswith(("fatal:", "[ERROR]")) or "UNREACHABLE" in line]
+        return "\n".join(reasons[:20]) + "\n...\n" + result.stdout[-4000:] + result.stderr
+
     def assert_no_changes(self, result: subprocess.CompletedProcess[str], machines: int) -> None:
         """Require a successful deploy that changed nothing on any machine."""
-        self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+        self.assertEqual(result.returncode, 0, self.failure(result))
         recap = [line for line in result.stdout.splitlines() if " : ok=" in line]
         self.assertEqual(len(recap), machines, result.stdout[-4000:])
         changed = []
@@ -466,7 +484,7 @@ class SimReleaseTest(SimUsersBase):
         self.assertEqual(self.ssh("gpu4", "sudo blkid /dev/vdb").returncode, 2)
         self.assertEqual(self.ssh("gpu4", "sudo mkfs.ext4 -q /dev/vdb").returncode, 0)
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
-        self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr)
+        self.assertEqual(result.returncode, 0, self.failure(result))
         version = yaml.safe_load(self.sim.read_text())["ubuntu"]
         self.assertIn(version, self.ssh("front", "cat /etc/os-release").stdout)
         nodes = sorted(line for line in self.on_front("sinfo -h -N -o '%N %P %T'").split("\n") if line)
@@ -499,7 +517,7 @@ class SimReleaseTest(SimUsersBase):
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assert_no_changes(result, len(config["machines"]))
         result = self.deploy(self.ssh_config_for("alice"), agent=True)
-        self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+        self.assertEqual(result.returncode, 0, self.failure(result))
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
@@ -509,7 +527,7 @@ class SimDeployTest(SimUsersBase):
     cached packages. The users get a key generated for the test, so real logins can be tried."""
 
     def test_deploy(self) -> None:
-        cluster, config, public_key = self.up_and_deploy()
+        _, config, _ = self.up_and_deploy()
         machines = config["machines"]
 
         with self.subTest("users and UIDs on every machine"):
@@ -664,12 +682,6 @@ class SimDeployTest(SimUsersBase):
             # Right after a deploy the front node's health report has no warnings.
             report = self.ssh("front", "sudo cluster-health").stdout
             self.assertNotIn("WARN", report, report)
-            # GPU readings that stop arriving are reported as stale.
-            self.assertEqual(self.ssh("gpu2", "sudo systemctl stop nanohpc-gpu-metrics.timer").returncode, 0)
-            time.sleep(130)
-            report = self.ssh("front", "sudo cluster-health").stdout
-            self.assertIn("WARN  GPU readings are fresh (under 2 minutes old) (gpu2)", report, report)
-            self.assertEqual(self.ssh("gpu2", "sudo systemctl start nanohpc-gpu-metrics.timer").returncode, 0)
             # Without the front node's client certificate, a machine's exporter refuses the connection.
             gpu4 = machines["gpu4"]["address"]
             self.assertNotEqual(self.ssh("front", f"curl -sk --max-time 5 https://{gpu4}:9100/metrics").returncode, 0)
@@ -854,16 +866,28 @@ class SimDeployTest(SimUsersBase):
             result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
             self.assert_no_changes(result, len(machines))
 
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimRedeployTest(SimUsersBase):
+    """The safety checks that each need another deploy, on the everyday cluster: a missing certificate issued
+    again, a drained node as a warning only, a deploy by an administrator's forwarded key, the stop with no key
+    and no terminal, a removed user's login taken away, and a UID conflict that stops only that machine. Run
+    when accounts, SSH, sudo, preflight, deploy.py, or the certificates change, and before the release. Real
+    Lima VMs."""
+
+    def test_redeploys(self) -> None:
+        cluster, _, public_key = self.up_and_deploy()
+
         with self.subTest("a missing metrics certificate is issued again by the next deploy"):
             self.assertEqual(self.ssh("gpu2", "sudo rm /etc/nanohpc/metrics-tls/node.crt").returncode, 0)
             result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
-            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            self.assertEqual(result.returncode, 0, self.failure(result))
             self.assertEqual(self.ssh("gpu2", "test -s /etc/nanohpc/metrics-tls/node.crt").returncode, 0)
 
         with self.subTest("a drained node is a warning in the health report, not a failed deploy"):
             self.on_front("sudo scontrol update nodename=cpu1 state=drain reason=maintenance-test")
             result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
-            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            self.assertEqual(result.returncode, 0, self.failure(result))
             self.assertIn(
                 "WARN  no Slurm node is down, drained, not responding, or in maintenance (cpu1", result.stdout
             )
@@ -871,7 +895,7 @@ class SimDeployTest(SimUsersBase):
 
         with self.subTest("a later deploy by an administrator through the forwarded key, without a password"):
             result = self.deploy(self.ssh_config_for("alice"), agent=True)
-            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            self.assertEqual(result.returncode, 0, self.failure(result))
             # The VM's default account that deployed first is still allowed.
             self.assertEqual(self.ssh("gpu4", "true").returncode, 0)
 
@@ -887,9 +911,44 @@ class SimDeployTest(SimUsersBase):
             without_bob["users"] = [user for user in without_bob["users"] if user["name"] != "bob"]
             cluster.write_text(yaml.safe_dump(without_bob))
             result = self.deploy(self.state / "ssh_config", agent=False)
-            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            self.assertEqual(result.returncode, 0, self.failure(result))
             self.assertNotEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
             self.assertEqual(self.ssh("front", "test -e /etc/ssh/authorized_keys/bob").returncode, 1)
+
+        with self.subTest("a UID conflict stops that machine only"):
+            self.assertEqual(self.ssh("gpu2", "sudo useradd -u 3005 carol").returncode, 0)
+            changed = yaml.safe_load(cluster.read_text())
+            changed["users"] += [
+                {"name": "carol", "uid": 2005, "ssh_keys": [public_key]},
+                {"name": "dave", "uid": 2006, "ssh_keys": [public_key]},
+            ]
+            cluster.write_text(yaml.safe_dump(changed))
+            result = self.deploy(self.state / "ssh_config", agent=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "gpu2: user carol has UID 3005 and primary group ID 3005, but cluster.yml says 2005", result.stdout
+            )
+            self.assertIn("carol:x:3005:", self.ssh("gpu2", "getent passwd carol").stdout)
+            # gpu2 was left unchanged: the other new user was not created there, but was elsewhere.
+            self.assertEqual(self.ssh("gpu2", "getent passwd dave").returncode, 2)
+            self.assertIn("dave:x:2006:", self.ssh("gpu4", "getent passwd dave").stdout)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimAlertsTest(SimUsersBase):
+    """The slow alert checks, on the everyday cluster: stale GPU readings, and Slack alerts with a stand-in Slack
+    server (a failing check, then its recovery; up to half an hour of waiting). Run when alerts or metrics
+    change, and before the release. Real Lima VMs."""
+
+    def test_alerts(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+
+        with self.subTest("GPU readings that stop arriving are reported as stale"):
+            self.assertEqual(self.ssh("gpu2", "sudo systemctl stop nanohpc-gpu-metrics.timer").returncode, 0)
+            time.sleep(130)
+            report = self.ssh("front", "sudo cluster-health").stdout
+            self.assertIn("WARN  GPU readings are fresh (under 2 minutes old) (gpu2)", report, report)
+            self.assertEqual(self.ssh("gpu2", "sudo systemctl start nanohpc-gpu-metrics.timer").returncode, 0)
 
         with self.subTest("Slack alerts from the front node: a failing check on a machine, and its recovery"):
             # A stand-in for Slack on the front node records what Alertmanager posts.
@@ -916,7 +975,7 @@ class SimDeployTest(SimUsersBase):
             cluster.write_text(yaml.safe_dump(with_slack))
             (cluster.parent / ".env").write_text("NANOHPC_SLACK_WEBHOOK=http://127.0.0.1:18080/slack\n")
             result = self.deploy(self.state / "ssh_config", agent=False)
-            self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+            self.assertEqual(result.returncode, 0, self.failure(result))
             # The webhook is a secret: not in the deploy's output, its variables, or a file left behind.
             self.assertNotIn("18080", result.stdout + result.stderr)
             work = Path.home() / ".cache/nanohpc/clusters/labcluster"
@@ -959,23 +1018,140 @@ class SimDeployTest(SimUsersBase):
                 posted("Resolved", "scratch cleanup timer", "cpu1"), self.ssh("front", "cat /tmp/slack.log").stdout
             )
 
-        with self.subTest("a UID conflict stops that machine only"):
-            self.assertEqual(self.ssh("gpu2", "sudo useradd -u 3005 carol").returncode, 0)
-            changed = yaml.safe_load(cluster.read_text())
-            changed["users"] += [
-                {"name": "carol", "uid": 2005, "ssh_keys": [public_key]},
-                {"name": "dave", "uid": 2006, "ssh_keys": [public_key]},
-            ]
-            cluster.write_text(yaml.safe_dump(changed))
-            result = self.deploy(self.state / "ssh_config", agent=False)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(
-                "gpu2: user carol has UID 3005 and primary group ID 3005, but cluster.yml says 2005", result.stdout
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimAutoDeployTest(SimUsersBase):
+    """Automatic deploys: the front node deploys the whole cluster from a configuration repository by itself.
+    The repository is a bare Git repository of the cluster user bob on the front node, standing in for GitHub;
+    the front node reads it with its own read-only key. Real Lima VMs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "auto-deploy.yml"
+        self.state = ROOT / ".nanohpc-sim" / "auto-deploy"
+        super().setUp()
+
+    def push(self, config: dict[str, Any], message: str) -> str:
+        """Commit cluster.yml to the stand-in repository as bob; return the new commit."""
+        script = textwrap.dedent(f"""
+            set -e
+            rm -rf /tmp/config-work && git clone -q /home/bob/config.git /tmp/config-work 2>/dev/null
+            cd /tmp/config-work
+            cat > cluster.yml
+            git add cluster.yml
+            git -c user.name=bob -c user.email=bob@example.org commit -qm '{message}'
+            git push -q /home/bob/config.git HEAD:main
+            git rev-parse HEAD
+        """)
+        command = f"cd /tmp && sudo -u bob bash -c {shlex.quote(script)}"
+        result = self.ssh("front", command, stdin=yaml.safe_dump(config, sort_keys=False))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout.strip().splitlines()[-1]
+
+    def run_auto_deploy(self) -> subprocess.CompletedProcess[str]:
+        """Start one automatic deploy on the front node and wait for it (the timer does the same)."""
+        return self.ssh("front", "sudo systemctl start nanohpc-auto-deploy.service")
+
+    def test_front_node_deploys_from_the_repository(self) -> None:
+        cluster, config, public_key = self.up_with_test_key()
+        front = config["machines"]["front"]["address"]
+        config["nanohpc_version"] = metadata.version("nanohpc")
+        config["auto_deploy"] = {
+            "enabled": True,
+            "repository": f"bob@{front}:/home/bob/config.git",
+            "branch": "main",
+            "every_minutes": 1440,  # the test starts each run itself
+        }
+        cluster.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        with self.subTest("first deploy: the front node's keys, and how to let it read the repository"):
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            self.assertIn("cannot read", result.stdout)
+            # Every machine accepts the front node's key for root, from the front node only.
+            for machine in config["machines"]:
+                keys = self.ssh(machine, "sudo cat /etc/ssh/authorized_keys/root").stdout
+                self.assertIn(f'from="{front}"', keys, machine)
+            self.assertIn(config["nanohpc_version"], self.on_front("sudo /opt/nanohpc-tool/bin/nanohpc --version"))
+
+        with self.subTest("the repository key is added: the front node deploys its newest commit"):
+            repository_key = self.on_front("sudo cat /etc/nanohpc/auto-deploy/repository_ed25519.pub").strip()
+            for user in config["users"]:
+                if user["name"] == "bob":
+                    user["ssh_keys"] = [*user["ssh_keys"], repository_key]
+            cluster.write_text(yaml.safe_dump(config, sort_keys=False))
+            self.on_front("cd /tmp && sudo -u bob git init -q --bare --initial-branch=main /home/bob/config.git")
+            commit = self.push(config, "first")
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            self.assertNotIn("cannot read", result.stdout)
+            run = self.run_auto_deploy()
+            self.assertEqual(
+                run.returncode, 0, self.on_front("sudo journalctl -u nanohpc-auto-deploy -n 80 --no-pager")
             )
-            self.assertIn("carol:x:3005:", self.ssh("gpu2", "getent passwd carol").stdout)
-            # gpu2 was left unchanged: the other new user was not created there, but was elsewhere.
-            self.assertEqual(self.ssh("gpu2", "getent passwd dave").returncode, 2)
-            self.assertIn("dave:x:2006:", self.ssh("gpu4", "getent passwd dave").stdout)
+            self.assertEqual(self.on_front("sudo cat /var/lib/nanohpc/auto-deploy/state/deployed").strip(), commit)
+            metrics = self.on_front("cat /var/lib/nanohpc/metrics-textfile/auto-deploy.prom")
+            self.assertIn("cluster_auto_deploy_last_exit_code 0", metrics)
+
+        with self.subTest("a new commit changes the cluster with no one logging in"):
+            config["users"].append({"name": "carol", "uid": 2010, "ssh_keys": [public_key]})
+            self.push(config, "add carol")
+            self.assertEqual(self.run_auto_deploy().returncode, 0)
+            self.assertIn("carol:x:2010:", self.ssh("cpu1", "getent passwd carol").stdout)
+
+        with self.subTest("a broken commit changes nothing, is reported, and is not retried"):
+            broken = {**config, "unknown_field": True}
+            bad = self.push(broken, "broken")
+            self.assertNotEqual(self.run_auto_deploy().returncode, 0)
+            self.assertEqual(self.on_front("sudo cat /var/lib/nanohpc/auto-deploy/state/failed").strip(), bad)
+            self.assertNotIn(
+                "cluster_auto_deploy_last_exit_code 0",
+                self.on_front("cat /var/lib/nanohpc/metrics-textfile/auto-deploy.prom"),
+            )
+            self.assertIn("carol:x:2010:", self.ssh("cpu1", "getent passwd carol").stdout)
+            self.assertEqual(self.run_auto_deploy().returncode, 0)  # the same commit: waits for a newer one
+            self.assertIn("WARN  the last automatic deploy worked", self.ssh("front", "sudo cluster-health").stdout)
+
+        with self.subTest("a fixed commit deploys again"):
+            fixed = self.push(config, "fixed")
+            self.assertEqual(self.run_auto_deploy().returncode, 0)
+            self.assertEqual(self.on_front("sudo cat /var/lib/nanohpc/auto-deploy/state/deployed").strip(), fixed)
+
+        with self.subTest("root logs in only from the front node, with the front node's key"):
+            gpu4 = config["machines"]["gpu4"]["address"]
+            self.on_front("sudo ssh -F /etc/nanohpc/auto-deploy/ssh_config gpu4 true")
+            key = self.on_front("sudo cat /etc/nanohpc/auto-deploy/id_ed25519")
+            self.assertEqual(self.ssh("cpu1", "umask 077 && cat > /tmp/front-key", stdin=key).returncode, 0)
+            elsewhere = self.ssh(
+                "cpu1",
+                f"ssh -i /tmp/front-key -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{gpu4} true",
+            )
+            self.assertNotEqual(elsewhere.returncode, 0)
+            self.ssh("cpu1", "rm -f /tmp/front-key")
+
+        with self.subTest("a manual deploy after automatic ones changes nothing, and pauses them while it runs"):
+            # The administrator's cluster.yml is the repository's (with carol from the commits above).
+            cluster.write_text(yaml.safe_dump(config, sort_keys=False))
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assert_no_changes(result, len(config["machines"]))
+            self.assertEqual(self.on_front("systemctl is-active nanohpc-auto-deploy.timer").strip(), "active")
+
+        with self.subTest("a commit cannot turn automatic deploys off; a manual deploy can"):
+            off = {**config, "auto_deploy": {**config["auto_deploy"], "enabled": False}}
+            self.push(off, "turn off")
+            self.assertNotEqual(self.run_auto_deploy().returncode, 0)
+            self.assertIn(
+                "turn them off with nanohpc deploy",
+                self.on_front("sudo journalctl -u nanohpc-auto-deploy -n 40 --no-pager"),
+            )
+            self.assertEqual(self.ssh("cpu1", "sudo test -e /etc/ssh/authorized_keys/root").returncode, 0)
+            cluster.write_text(yaml.safe_dump(off, sort_keys=False))
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            self.assertEqual(self.ssh("cpu1", "sudo test -e /etc/ssh/authorized_keys/root").returncode, 1)
+            self.assertNotIn("root", self.ssh("cpu1", "sudo sshd -T | grep -i ^allowusers").stdout)
+            self.assertNotEqual(
+                self.ssh("front", "systemctl is-enabled nanohpc-auto-deploy.timer").stdout.strip(), "enabled"
+            )
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
@@ -989,7 +1165,7 @@ class SimHomeOnStorageTest(SimUsersBase):
 
     def test_home_on_storage_machine(self) -> None:
         # A machine whose local /home holds data stops before the shared /home could hide it.
-        self.addCleanup(self.run_command, "uv", "run", "nanohpc", "sim", "down", str(self.sim))
+        self.remove_at_end()
         result = self.run_command("uv", "run", "nanohpc", "sim", "up", str(self.sim))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.ssh("gpu2", "sudo mkdir /home/olddata").returncode, 0)
@@ -999,7 +1175,7 @@ class SimHomeOnStorageTest(SimUsersBase):
         self.assertNotIn("nfs", self.ssh("gpu2", "findmnt -n -o FSTYPE --target /home").stdout)
         self.assertEqual(self.ssh("gpu2", "sudo rmdir /home/olddata").returncode, 0)
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
-        self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr)
+        self.assertEqual(result.returncode, 0, self.failure(result))
         store = yaml.safe_load((self.state / "cluster.yml").read_text())["machines"]["store"]["address"]
         for machine in ("front", "gpu4", "gpu2"):
             self.assertEqual(

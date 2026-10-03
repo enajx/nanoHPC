@@ -183,3 +183,25 @@ tests:
               machine: c3
             exp_annotations:
               summary: "The health checks on c3 have never reported."
+
+  # An automatic deploy that failed, then a newer commit that worked.
+  - interval: 1m
+    input_series:
+      - series: 'cluster_auto_deploy_last_exit_code{job="node",machine="front"}'
+        values: '0 0 2 2 2 2 0 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AutoDeployFailed
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: AutoDeployFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              machine: front
+            exp_annotations:
+              summary: "The automatic deploy on front failed (exit code 2). See journalctl -u nanohpc-auto-deploy there."
+      - eval_time: 7m
+        alertname: AutoDeployFailed
+        exp_alerts: []

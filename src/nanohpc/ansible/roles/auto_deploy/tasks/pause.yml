@@ -1,0 +1,24 @@
+# A manual deploy pauses automatic deploys: it stops the timer and waits for a running automatic deploy to
+# finish, so two deploys never run at once. The auto_deploy role starts the timer again at the end; a manual
+# deploy that stops halfway leaves it stopped, which cluster-health reports.
+- name: Look for the automatic deploy timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-auto-deploy.timer
+  register: auto_deploy_timer_unit
+
+- name: Pause automatic deploys during this deploy
+  ansible.builtin.systemd_service:
+    name: nanohpc-auto-deploy.timer
+    state: stopped
+  when: auto_deploy_timer_unit.stat.exists
+  changed_when: false  # a pause for this deploy only; the auto_deploy role starts the timer again
+
+- name: Wait for a running automatic deploy to finish
+  ansible.builtin.command: systemctl is-active nanohpc-auto-deploy.service
+  register: auto_deploy_running
+  until: auto_deploy_running.stdout != 'activating' and auto_deploy_running.stdout != 'active'
+  retries: 360  # up to an hour
+  delay: 10
+  changed_when: false
+  failed_when: false
+  when: auto_deploy_timer_unit.stat.exists

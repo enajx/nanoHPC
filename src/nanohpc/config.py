@@ -28,6 +28,7 @@ TOP_FIELDS = (
     "backup",
     "alerts",
     "auto_deploy",
+    "nanohpc_version",
 )
 
 POLICY_DEFAULTS: dict[str, Any] = {
@@ -43,10 +44,22 @@ POLICY_DEFAULTS: dict[str, Any] = {
 HOME_DEFAULTS: dict[str, Any] = {"quota_soft_gb": 300, "quota_hard_gb": 400, "quota_grace": "7days"}
 SCRATCH_DEFAULTS: dict[str, Any] = {"cleanup_days": 14}
 ALERTS_DEFAULTS: dict[str, Any] = {"slack": False}
-AUTO_DEPLOY_DEFAULTS: dict[str, Any] = {"enabled": False, "repository": None}
+AUTO_DEPLOY_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "repository": None,
+    "branch": "main",
+    "every_minutes": 10,
+    "webhook": False,
+}
 
 CLUSTER_NAME = re.compile(r"[a-z][a-z0-9-]{0,39}")
 DNS_NAME = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*")
+VERSION = re.compile(r"\d+\.\d+\.\d+")
+# user@host:path or ssh://user@host/path, on SSH's own port (the host key is learned for port 22).
+GIT_SSH_URL = re.compile(
+    r"(ssh://[a-z_][a-z0-9_-]*@[a-zA-Z0-9][a-zA-Z0-9_.-]*/|[a-z_][a-z0-9_-]*@[a-zA-Z0-9][a-zA-Z0-9_.-]*:)[A-Za-z0-9_.~/-]+"
+)
+BRANCH_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
 URL_PATH = re.compile(r"/([A-Za-z0-9._~-]+/)*([A-Za-z0-9._~-]+)?")
 
 
@@ -673,6 +686,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "backup": check_backup(checker, top.get("backup"), machines),
         "alerts": with_defaults(checker, top.get("alerts"), "alerts", ALERTS_DEFAULTS),
         "auto_deploy": with_defaults(checker, top.get("auto_deploy"), "auto_deploy", AUTO_DEPLOY_DEFAULTS),
+        "nanohpc_version": top.get("nanohpc_version"),
     }
     check_capacity(checker, machines, partitions, config["policy"])
     home = config["home"]
@@ -689,19 +703,52 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
     )
     checker.positive(config["scratch"]["cleanup_days"], "scratch.cleanup_days")
     checker.boolean(config["alerts"]["slack"], "alerts.slack")
-    deploy = config["auto_deploy"]
-    if checker.boolean(deploy["enabled"], "auto_deploy.enabled") and not isinstance(deploy["repository"], str):
-        checker.fail("auto_deploy.repository", "is required when auto_deploy.enabled is true")
+    check_auto_deploy(checker, config)
     return config, checker.errors
 
 
-def load_config(path: Path, check_files: bool) -> tuple[dict[str, Any], list[str]]:
+def check_auto_deploy(checker: Checker, config: dict[str, Any]) -> None:
+    """Check automatic deploys: a Git repository over SSH, a branch, minutes between checks, the optional
+    webhook, and the nanoHPC version the front node installs."""
+    deploy = config["auto_deploy"]
+    version = config["nanohpc_version"]
+    if version is not None and not (isinstance(version, str) and VERSION.fullmatch(version)):
+        checker.fail("nanohpc_version", 'must be a version such as "0.1.0", in quotes')
+    enabled = checker.boolean(deploy["enabled"], "auto_deploy.enabled")
+    webhook = checker.boolean(deploy["webhook"], "auto_deploy.webhook")
+    if webhook and not enabled:
+        checker.fail("auto_deploy.webhook", "needs auto_deploy.enabled: true")
+    if not enabled:
+        return
+    if not isinstance(deploy["repository"], str):
+        checker.fail("auto_deploy.repository", "is required when auto_deploy.enabled is true")
+    elif not GIT_SSH_URL.fullmatch(deploy["repository"]):
+        checker.fail(
+            "auto_deploy.repository", "must be a Git repository over SSH, like git@github.com:lab/cluster-config.git"
+        )
+    if version is None:
+        checker.fail(
+            "nanohpc_version", "is required when auto_deploy.enabled is true (the version the front node installs)"
+        )
+    if not (isinstance(deploy["branch"], str) and BRANCH_NAME.fullmatch(deploy["branch"])):
+        checker.fail("auto_deploy.branch", "must be a branch name, like main or stable")
+    minutes = deploy["every_minutes"]
+    if not (isinstance(minutes, int) and not isinstance(minutes, bool) and 1 <= minutes <= 1440):
+        checker.fail("auto_deploy.every_minutes", "must be a whole number of minutes from 1 to 1440")
+
+
+def load_config(path: Path, check_files: bool, automatic: bool) -> tuple[dict[str, Any], list[str]]:
     """Read and validate a cluster.yml file. Duplicate keys are reported as errors. With `check_files`, the
-    website's certificate, key, and logo paths are resolved against the file's folder and must exist."""
+    website's certificate, key, and logo paths are resolved against the file's folder and must exist.
+    `automatic` (an automatic deploy on the front node): the administrator's own certificate files are not
+    there, so they are left out and the front node keeps the certificate it has."""
     loader = UniqueKeyLoader(path.read_text())
     raw = loader.get_single_data()
     loader.dispose()
     config, errors = check_config(raw)
+    if automatic and not errors and config["cluster"]["website"]["https"] == "own":
+        config["cluster"]["website"]["certificate"] = None
+        config["cluster"]["website"]["certificate_key"] = None
     if check_files and not errors:
         errors = website_files(config["cluster"]["website"], path.parent) + secrets(config, path.parent)
     return config, loader.duplicates + errors
@@ -727,13 +774,22 @@ def secrets(config: dict[str, Any], folder: Path) -> list[str]:
     (never committed). Report missing or malformed ones."""
     env_path = (folder / ".env").resolve()
     env = read_env(env_path) if env_path.is_file() else {}
-    webhook = env.get("NANOHPC_SLACK_WEBHOOK") if config["alerts"]["slack"] is True else None
-    config["secrets"] = {"slack_webhook": webhook}
+    # Read whether or not their feature is on yet, so the front node has them when a commit turns it on.
+    webhook = env.get("NANOHPC_SLACK_WEBHOOK")
+    deploy_secret = env.get("NANOHPC_DEPLOY_WEBHOOK_SECRET")
+    config["secrets"] = {"slack_webhook": webhook, "deploy_webhook": deploy_secret}
+    errors = []
     if config["alerts"]["slack"] is True and not webhook:
-        return [f"alerts.slack is true but {env_path} has no NANOHPC_SLACK_WEBHOOK"]
+        errors.append(f"alerts.slack is true but {env_path} has no NANOHPC_SLACK_WEBHOOK")
     if webhook is not None and not re.fullmatch(r"https?://[^\s'\"]+", webhook):
-        return ["NANOHPC_SLACK_WEBHOOK in .env must be an http(s) URL"]
-    return []
+        errors.append("NANOHPC_SLACK_WEBHOOK in .env must be an http(s) URL")
+    if config["auto_deploy"]["webhook"] is True and not deploy_secret:
+        errors.append(f"auto_deploy.webhook is true but {env_path} has no NANOHPC_DEPLOY_WEBHOOK_SECRET")
+    if deploy_secret is not None and len(deploy_secret) < 32:
+        errors.append(
+            "NANOHPC_DEPLOY_WEBHOOK_SECRET in .env must be at least 32 characters (for example openssl rand -hex 32)"
+        )
+    return errors
 
 
 LOGO_TYPES = (".png", ".svg", ".jpg", ".webp")
@@ -752,7 +808,7 @@ def website_files(website: dict[str, Any], folder: Path) -> list[str]:
             errors.append(f"cluster.website.{key}: {path} not found")
         elif key == "logo" and path.suffix.lower() not in LOGO_TYPES:
             errors.append("cluster.website.logo must be a .png, .svg, .jpg, or .webp file")
-    if website["https"] == "own" and not errors:
+    if website["https"] == "own" and website["certificate"] is not None and not errors:
         errors = own_certificate_errors(website)
     return errors
 

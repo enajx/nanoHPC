@@ -7,6 +7,24 @@
   become: true
   roles: [preflight]
 
+# Automatic deploys: a manual deploy pauses them; the front node's own key, which every machine accepts for
+# root from the front node only.
+- name: Automatic deploy key on the front node
+  hosts: role_front
+  become: true
+  tasks:
+    - name: Pause automatic deploys while this manual deploy runs
+      ansible.builtin.include_role:
+        name: auto_deploy
+        tasks_from: pause
+      when: not nanohpc.automatic
+
+    - name: Make or read the key
+      ansible.builtin.include_role:
+        name: auto_deploy
+        tasks_from: key
+      when: nanohpc.auto_deploy.enabled
+
 - name: Base setup, users, and SSH access
   hosts: all
   become: true
@@ -107,6 +125,15 @@
   hosts: role_front
   become: true
   roles: [website]
+
+- name: Automatic deploys on the front node
+  hosts: role_front
+  become: true
+  tasks:
+    - name: Set up or remove automatic deploys
+      ansible.builtin.include_role:
+        name: auto_deploy
+        tasks_from: "{{ 'main' if nanohpc.auto_deploy.enabled else 'off' }}"
 
 - name: Health checks on every machine
   hosts: all

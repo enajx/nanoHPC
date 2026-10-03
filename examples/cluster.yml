@@ -113,5 +113,12 @@ alerts:
   slack: false                  # true: the webhook is NANOHPC_SLACK_WEBHOOK in .env next to this file
 
 auto_deploy:
-  enabled: false
-  repository: null              # git@github.com:lab/cluster-config.git
+  enabled: false                # true: the front node deploys this file's repository by itself
+  repository: null              # git@github.com:lab/cluster-config.git (this cluster.yml at its root)
+  branch: main                  # or for example stable or release
+  every_minutes: 10             # how often the front node checks the branch
+  webhook: false                # true: GitHub also calls https://<website hostname><path>deploy-hook after a push
+                                #   (secret NANOHPC_DEPLOY_WEBHOOK_SECRET in .env next to this file)
+
+nanohpc_version: null           # the nanoHPC version this cluster is deployed with, like "0.1.0"
+                                #   (needed for auto_deploy: the front node installs exactly this version)

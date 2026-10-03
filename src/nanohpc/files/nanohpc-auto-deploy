@@ -1,0 +1,330 @@
+#!/usr/bin/python3
+"""Deploy the cluster from the newest commit of the configuration repository, once per commit.
+
+Runs as root on the front node, from a systemd timer (every few minutes) and from the deploy webhook listener. One
+run, in order:
+  1. Takes an exclusive lock on STATE/lock. If another run holds it, prints "another deploy is running" and exits 0.
+  2. Refuses (exit 1) when the checkout's `origin` URL is not exactly --remote, or the checkout has local changes
+     (`git status --porcelain` prints anything; files listed in .git/info/exclude, such as .env, do not count).
+  3. Fetches the branch from origin. When that fails, prints git's error and a hint, writes the metrics, and exits
+     with git's code; the commit is not marked as failed, so the next run tries again.
+  4. Exits 0 when the fetched commit is the one in STATE/deployed (nothing to do), or the one in STATE/failed (a
+     commit that failed is not tried again until a newer commit arrives). Only the check time metric changes.
+  5. Checks out the fetched commit as the branch (`git checkout -B`; this also works in a checkout with no commit
+     yet, made with `git init` and `git remote add` before the front node's key could reach the repository). The
+     commit must contain the one in STATE/deployed, when there is one; a commit that does not (the branch history
+     was rewritten past it, or moved back) is refused and marked failed. A failed commit dropped from the branch
+     by a force-push does not block later commits.
+  6. Reads the pinned nanoHPC version from cluster.yml and, when `NANOHPC --version` prints another one, runs
+     `INSTALLER VERSION` and checks the version again. A missing version or a failed install marks the commit failed.
+  7. Runs `NANOHPC deploy cluster.yml --ssh-config SSH_CONFIG` in the checkout, with stdin on /dev/null and
+     NANOHPC_AUTOMATIC=1 in its environment; its output goes to this program's stdout and stderr (the journal).
+     Exit code 0 writes the commit to STATE/deployed and removes STATE/failed; any other code writes STATE/failed.
+The program exits with the deploy's exit code, or the code of the step that stopped it.
+
+cluster.yml is read without a YAML parser (this program uses only Python's standard library): the version must be
+on one top-level line, `nanohpc_version: 1.2.3`, the value plain or in single or double quotes, optionally followed
+by a space and a comment. A file with no such line, with the key written another way, or with the key twice is
+refused.
+
+State files (in --state, each holds one full commit hash):
+  lock       the lock file of step 1.
+  deployed   the last commit deployed with success.
+  failed     the last commit whose run failed after it was fetched; removed by the next success.
+
+Metrics (gauges, in a textfile replaced whole, mode 0644):
+  cluster_auto_deploy_last_exit_code                  exit code of the last run that did more than a check
+  cluster_auto_deploy_last_run_timestamp_seconds      when that run started, in Unix seconds
+  cluster_auto_deploy_last_success_timestamp_seconds  when the last successful deploy finished; kept when a run
+                                                      fails, absent until a deploy has succeeded
+  cluster_auto_deploy_last_check_timestamp_seconds    when the last run (including "nothing to do") started
+  cluster_auto_deploy_info{commit,branch}             1, labelled with the first 12 characters of the commit in
+                                                      STATE/deployed and the branch; absent before the first success
+
+Arguments (all required):
+  --checkout PATH     the front node's clone of the configuration repository, cluster.yml at its root.
+  --branch NAME       the branch to deploy.
+  --remote URL        the URL `origin` must have.
+  --state PATH        folder of the state files (it must exist).
+  --metrics PATH      the .prom file to write, in node_exporter's textfile folder.
+  --installer PATH    program run as `INSTALLER VERSION` to install that nanoHPC version.
+  --nanohpc PATH      the nanohpc command to run.
+  --ssh-config PATH   SSH config passed to `nanohpc deploy --ssh-config`.
+"""
+
+import argparse
+import fcntl
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import NoReturn
+
+BRANCH_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._/-]*")
+VERSION_KEY = re.compile(r"nanohpc_version\b")
+VERSION_LINE = re.compile(
+    r"nanohpc_version:[ \t]+(?P<quote>['\"]?)(?P<version>[0-9][0-9A-Za-z.+-]*)(?P=quote)(?:[ \t]+#.*)?[ \t]*"
+)
+INSTALLED_VERSION = re.compile(r"nanohpc (\S+)\n")
+EXIT_CODE = "cluster_auto_deploy_last_exit_code"
+RUN = "cluster_auto_deploy_last_run_timestamp_seconds"
+SUCCESS = "cluster_auto_deploy_last_success_timestamp_seconds"
+CHECK = "cluster_auto_deploy_last_check_timestamp_seconds"
+INFO = "cluster_auto_deploy_info"
+MEANINGS = {
+    EXIT_CODE: "Exit code of the last automatic deploy run (0 is success).",
+    RUN: "When the last automatic deploy run started.",
+    SUCCESS: "When the last successful automatic deploy finished.",
+    CHECK: "When the configuration repository was last checked.",
+}
+
+
+def say(message: str) -> None:
+    """Print a progress line on stdout, at once, so it stays in order with the output of the programs run."""
+    print("nanohpc-auto-deploy: " + message, flush=True)
+
+
+def warn(message: str) -> None:
+    """Print an error line on stderr, at once."""
+    print("nanohpc-auto-deploy: " + message, file=sys.stderr, flush=True)
+
+
+def exit_code(code: int) -> int:
+    """Turn a subprocess return code into an exit code (128 + N for a program killed by signal N)."""
+    return 128 - code if code < 0 else code
+
+
+def git(checkout: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run git in the checkout, never reading stdin, and return its result with the output captured."""
+    return subprocess.run(
+        ["git", "-C", str(checkout), *arguments],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def previous(path: Path, name: str) -> str | None:
+    """Return a metric's value from the previous metrics file, if it has one."""
+    if not path.exists():
+        return None
+    found = re.search(rf"^{name} (\S+)$", path.read_text(encoding="utf-8"), re.MULTILINE)
+    return found.group(1) if found else None
+
+
+def replace_file(path: Path, content: str, mode: int) -> None:
+    """Replace a file whole (temporary file, then rename), so a reader never sees half of it."""
+    temporary = path.with_name("." + path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.chmod(mode)
+    temporary.replace(path)
+
+
+def publish(arguments: argparse.Namespace, values: dict[str, str | None]) -> None:
+    """Write the metrics file: the given values that are set, and the info metric for the deployed commit."""
+    lines = []
+    for name, meaning in MEANINGS.items():
+        value = values[name]
+        if value is not None:
+            lines += [f"# HELP {name} {meaning}", f"# TYPE {name} gauge", f"{name} {value}"]
+    deployed = arguments.state / "deployed"
+    if deployed.exists():
+        commit = deployed.read_text(encoding="utf-8").strip()[:12]
+        lines += [
+            f"# HELP {INFO} The commit of the configuration repository deployed last, and its branch.",
+            f"# TYPE {INFO} gauge",
+            f'{INFO}{{commit="{commit}",branch="{arguments.branch}"}} 1',
+        ]
+    replace_file(arguments.metrics, "\n".join(lines) + "\n", 0o644)
+
+
+def finish(arguments: argparse.Namespace, started: str, code: int, failed_commit: str | None) -> NoReturn:
+    """Record a run's result (marking the commit failed when one is given), write the metrics, and exit with code."""
+    if failed_commit is not None:
+        replace_file(arguments.state / "failed", failed_commit + "\n", 0o644)
+    success = str(time.time()) if code == 0 else previous(arguments.metrics, SUCCESS)
+    publish(arguments, {EXIT_CODE: str(code), RUN: started, SUCCESS: success, CHECK: started})
+    sys.exit(code)
+
+
+def refuse(arguments: argparse.Namespace, started: str, message: str, failed_commit: str | None) -> NoReturn:
+    """Print why the run stops, then record it as a run that exited 1."""
+    warn(message)
+    finish(arguments, started, 1, failed_commit)
+
+
+def checked_only(arguments: argparse.Namespace, started: str) -> NoReturn:
+    """Record that the repository was checked, keep the other metrics as they were, and exit 0."""
+    values = {name: previous(arguments.metrics, name) for name in MEANINGS}
+    values[CHECK] = started
+    publish(arguments, values)
+    sys.exit(0)
+
+
+def pinned_version(cluster_yml: Path) -> tuple[str | None, str]:
+    """Return the version pinned in cluster.yml, or None and the reason it cannot be read."""
+    if not cluster_yml.is_file():
+        return None, f"{cluster_yml.name} not found at the root of the configuration repository"
+    lines = [line for line in cluster_yml.read_text(encoding="utf-8").splitlines() if VERSION_KEY.match(line)]
+    if not lines:
+        return None, "cluster.yml has no top-level nanohpc_version: pin the nanoHPC version to deploy with"
+    if len(lines) > 1:
+        return None, "cluster.yml has nanohpc_version more than once"
+    found = VERSION_LINE.fullmatch(lines[0])
+    if found is None:
+        return None, f"cannot read the line {lines[0]!r} of cluster.yml: write it as `nanohpc_version: 1.2.3`"
+    return found.group("version"), ""
+
+
+def installed_version(nanohpc: str) -> str | None:
+    """Return the version `nanohpc --version` prints, or None when the command is missing or prints no version."""
+    if not Path(nanohpc).exists():
+        return None
+    result = subprocess.run(
+        [nanohpc, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
+    )
+    found = INSTALLED_VERSION.fullmatch(result.stdout)
+    return found.group(1) if result.returncode == 0 and found else None
+
+
+def take_lock(state: Path) -> bool:
+    """Take the exclusive lock for the whole run (kept until the process exits); False when another run holds it."""
+    descriptor = os.open(state / "lock", os.O_RDWR | os.O_CREAT, 0o600)
+    # flock reports a lock held by another process only through this exception.
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        return False
+    return True
+
+
+def move_to(arguments: argparse.Namespace, started: str, commit: str) -> None:
+    """Check out the fetched commit as the branch, if it contains the deployed commit (any commit before a success).
+
+    The comparison is with STATE/deployed, not with the checkout's HEAD: the checkout may be at a commit whose deploy
+    failed and that a later force-push dropped. The checkout has no local changes (checked before), so moving it
+    with `checkout -B` loses nothing; it also works in a checkout that has no commit yet.
+    """
+    checkout = arguments.checkout
+    deployed_file = arguments.state / "deployed"
+    if deployed_file.exists():
+        deployed = deployed_file.read_text(encoding="utf-8").strip()
+        # A deployed commit missing from the repository after the fetch is not in the fetched history either.
+        present = git(checkout, ["cat-file", "-e", deployed + "^{commit}"]).returncode == 0
+        ancestor = git(checkout, ["merge-base", "--is-ancestor", deployed, commit]) if present else None
+        if ancestor is None or ancestor.returncode == 1:
+            refuse(
+                arguments,
+                started,
+                f"{commit} does not contain the deployed commit {deployed}: the branch history was rewritten;"
+                f" push a commit on top of {deployed}, or run nanohpc deploy by hand from the administrator's"
+                " machine",
+                commit,
+            )
+        if ancestor.returncode != 0:
+            warn(ancestor.stderr.strip())
+            warn(f"could not compare commit {commit} with the deployed commit {deployed}")
+            finish(arguments, started, exit_code(ancestor.returncode), commit)
+    result = git(checkout, ["checkout", "--quiet", "-B", arguments.branch, commit])
+    if result.returncode != 0:
+        warn(result.stderr.strip())
+        warn(f"could not check out commit {commit}")
+        finish(arguments, started, exit_code(result.returncode), commit)
+
+
+def install(arguments: argparse.Namespace, started: str, commit: str) -> None:
+    """Install the nanoHPC version pinned in cluster.yml when another one is installed."""
+    version, reason = pinned_version(arguments.checkout / "cluster.yml")
+    if version is None:
+        refuse(arguments, started, reason, commit)
+    installed = installed_version(arguments.nanohpc)
+    if installed == version:
+        return
+    say(f"installing nanoHPC {version} (installed: {installed or 'none'})")
+    code = exit_code(subprocess.run([arguments.installer, version], stdin=subprocess.DEVNULL, check=False).returncode)
+    if code != 0:
+        warn(f"installing nanoHPC {version} failed with exit code {code}; commit {commit} is not deployed")
+        finish(arguments, started, code, commit)
+    installed = installed_version(arguments.nanohpc)
+    if installed != version:
+        refuse(
+            arguments,
+            started,
+            f"after installing nanoHPC {version}, {arguments.nanohpc} --version reports {installed or 'nothing'}",
+            commit,
+        )
+
+
+def main() -> None:
+    """Check, fetch, install, and deploy, as the module docstring describes."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    for name in ["checkout", "state", "metrics"]:
+        parser.add_argument("--" + name, type=Path, required=True)
+    for name in ["branch", "remote", "installer", "nanohpc", "ssh-config"]:
+        parser.add_argument("--" + name, required=True)
+    arguments = parser.parse_args()
+    if not BRANCH_NAME.fullmatch(arguments.branch):
+        parser.error("--branch may hold only letters, digits, and ._/- and must not start with . / or -")
+    if not arguments.state.is_dir():
+        parser.error(f"--state {arguments.state} is not a folder")
+
+    if not take_lock(arguments.state):
+        say("another deploy is running")
+        sys.exit(0)
+    started = str(time.time())
+    checkout = arguments.checkout
+
+    origin = git(checkout, ["config", "--get", "remote.origin.url"])
+    if origin.returncode != 0 or origin.stdout.strip() != arguments.remote:
+        found = origin.stdout.strip() or "not set"
+        refuse(arguments, started, f"origin of {checkout} is {found}, not {arguments.remote}; not deploying", None)
+    status = git(checkout, ["status", "--porcelain"])
+    if status.returncode != 0:
+        refuse(arguments, started, f"git status failed in {checkout}: {status.stderr.strip()}", None)
+    if status.stdout:
+        refuse(arguments, started, f"{checkout} has local changes; not deploying:\n{status.stdout.rstrip()}", None)
+
+    fetch = git(checkout, ["fetch", "--quiet", "origin", "refs/heads/" + arguments.branch])
+    if fetch.returncode != 0:
+        code = exit_code(fetch.returncode)
+        warn(fetch.stderr.strip())
+        warn(
+            f"fetching branch {arguments.branch} from {arguments.remote} failed with exit code {code} (tried again"
+            " next run): is the front node's deploy key added to the repository?"
+        )
+        finish(arguments, started, code, None)
+    commit = git(checkout, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]).stdout.strip()
+
+    deployed, failed = arguments.state / "deployed", arguments.state / "failed"
+    if deployed.exists() and deployed.read_text(encoding="utf-8").strip() == commit:
+        checked_only(arguments, started)
+    if failed.exists() and failed.read_text(encoding="utf-8").strip() == commit:
+        say(f"commit {commit} failed before; waiting for a newer commit")
+        checked_only(arguments, started)
+
+    move_to(arguments, started, commit)
+    install(arguments, started, commit)
+    say(f"deploying commit {commit} of {arguments.branch}")
+    environment = dict(os.environ, NANOHPC_AUTOMATIC="1")
+    command = [arguments.nanohpc, "deploy", "cluster.yml", "--ssh-config", arguments.ssh_config]
+    code = exit_code(
+        subprocess.run(command, cwd=checkout, stdin=subprocess.DEVNULL, env=environment, check=False).returncode
+    )
+    if code != 0:
+        warn(f"deploy of commit {commit} failed with exit code {code}; waiting for a newer commit")
+        finish(arguments, started, code, commit)
+    replace_file(deployed, commit + "\n", 0o644)
+    failed.unlink(missing_ok=True)
+    say(f"deployed commit {commit}")
+    finish(arguments, started, 0, None)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,22 @@
+# The front node's key for automatic deploys: every machine accepts it for root, from the front node only.
+- name: Create the automatic deploy folder
+  ansible.builtin.file:
+    path: /etc/nanohpc/auto-deploy
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Make the automatic deploy key
+  ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-auto-deploy@{{ inventory_hostname }}" -f /etc/nanohpc/auto-deploy/id_ed25519
+  args:
+    creates: /etc/nanohpc/auto-deploy/id_ed25519
+
+- name: Read the automatic deploy key's public half
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/auto-deploy/id_ed25519.pub
+  register: auto_deploy_key_file
+
+- name: Keep the public key for the other machines
+  ansible.builtin.set_fact:
+    auto_deploy_public_key: "{{ auto_deploy_key_file.content | b64decode | trim }}"

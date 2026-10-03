@@ -29,6 +29,7 @@ def website_of(changes: dict[str, Any]) -> dict[str, Any]:
         "allow": [],
         "forwarded_by": None,
         "logo": None,
+        "deploy_hook": False,
     }
     website.update(changes)
     return website
@@ -76,6 +77,15 @@ class WebsiteNginxTest(unittest.TestCase):
         self.assertEqual(len(grafana_routes), 4)
         for route in grafana_routes:
             self.assertIn("deny all;", route.split("limit_except")[0])
+
+    def test_deploy_hook_route(self) -> None:
+        """With the webhook on, GitHub (from anywhere) may POST to <path>deploy-hook, and nothing else there."""
+        self.assertNotIn("deploy-hook", render(website_of({}), "/c.pem"))
+        text = render(website_of({"deploy_hook": True, "allow": ["10.0.0.0/8"]}), "/c.pem")
+        route = text.split("location = /cluster/deploy-hook {")[1].split("\n    }")[0]
+        self.assertIn("allow all;", route)
+        self.assertIn("proxy_pass http://127.0.0.1:9099;", route)
+        self.assertIn("limit_except POST { deny all; }", route)
 
     def test_whole_hostname_and_logo(self) -> None:
         text = render(website_of({"path": "/", "logo": {"source": "/x/l.svg", "name": "logo.svg"}}), "/c.pem")

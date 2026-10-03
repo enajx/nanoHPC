@@ -116,7 +116,15 @@
   loop_control:
     label: "{{ item.name }}"
   register: own_certificate
-  when: nanohpc.website.https == 'own'
+  when: nanohpc.website.https == 'own' and nanohpc.website.certificate is not none
+
+# An automatic deploy (on the front node) has no certificate files: it keeps the ones installed last time.
+- name: Check that the front node has its own certificate from an earlier deploy
+  ansible.builtin.stat:
+    path: /etc/nanohpc/website/tls/privkey.pem
+  register: kept_certificate
+  failed_when: not kept_certificate.stat.exists
+  when: nanohpc.website.https == 'own' and nanohpc.website.certificate is none
 
 - name: Name the certificate files
   ansible.builtin.set_fact:
