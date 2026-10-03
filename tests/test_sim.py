@@ -340,10 +340,12 @@ class SimUsersBase(unittest.TestCase):
         return cluster, config, public_key
 
     def up_and_deploy(self) -> tuple[Path, dict[str, Any], str]:
-        """Bring the sim cluster up with the test key and deploy it."""
+        """Bring the sim cluster up with the test key and deploy it. The deploy's output is kept in
+        self.first_deploy."""
         cluster, config, public_key = self.up_with_test_key()
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assertEqual(result.returncode, 0, self.failure(result))
+        self.first_deploy = result
         return cluster, config, public_key
 
     def finished_job(self, job: str) -> tuple[str, str]:
@@ -451,14 +453,31 @@ class SimUsersBase(unittest.TestCase):
         reasons = [line for line in lines if line.startswith(("fatal:", "[ERROR]")) or "UNREACHABLE" in line]
         return "\n".join(reasons[:20]) + "\n...\n" + result.stdout[-4000:] + result.stderr
 
+    def assert_dry_run_stopped(self, result: subprocess.CompletedProcess[str], machine: str) -> None:
+        """Require a deploy that stopped at its dry run, on a failure on `machine`, before the real run."""
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"Dry run: {machine} failed: ", result.stdout)
+        self.assertIn("Dry run failed: nothing was changed.", result.stderr)
+        self.assertNotIn("Dry run passed", result.stdout)
+        self.assertEqual(result.stdout.count("PLAY RECAP"), 1, "only the dry run ran")
+
     def assert_no_changes(self, result: subprocess.CompletedProcess[str], machines: int) -> None:
-        """Require a successful deploy that changed nothing on any machine."""
+        """Require a successful deploy whose dry run found nothing to change, and whose real run changed nothing
+        on any machine."""
         self.assertEqual(result.returncode, 0, self.failure(result))
-        recap = [line for line in result.stdout.splitlines() if " : ok=" in line]
+        dry_run, marker, real_run = result.stdout.partition("Dry run passed: applying the changes.")
+        self.assertTrue(marker, result.stdout[-4000:])
+        summary = [line for line in dry_run.splitlines() if line.startswith("Dry run: ") and " has " in line]
+        self.assertEqual(
+            len(summary), machines, "\n".join(line for line in dry_run.splitlines() if line.startswith("Dry run"))
+        )
+        for line in summary:
+            self.assertTrue(line.endswith(" has nothing to change"), line)
+        recap = [line for line in real_run.splitlines() if " : ok=" in line]
         self.assertEqual(len(recap), machines, result.stdout[-4000:])
         changed = []
         task = ""
-        for line in result.stdout.splitlines():
+        for line in real_run.splitlines():
             if line.startswith("TASK ["):
                 task = line
             elif line.startswith("changed: "):
@@ -482,11 +501,15 @@ class SimReleaseTest(SimUsersBase):
         _, config, _ = self.up_with_test_key()
         # A scratch disk without a filesystem stops that machine with the command to run; nanoHPC never formats it.
         self.assertEqual(self.ssh("gpu4", "sudo wipefs -q -a /dev/vdb").returncode, 0)
+        # The stop comes in the dry run, so no machine was changed at all.
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
-        self.assertNotEqual(result.returncode, 0)
+        self.assert_dry_run_stopped(result, "gpu4")
         self.assertIn("gpu4: /dev/vdb has no filesystem. nanoHPC never formats a disk.", result.stdout)
         self.assertIn("mkfs.ext4 /dev/vdb", result.stdout)
         self.assertEqual(self.ssh("gpu4", "sudo blkid /dev/vdb").returncode, 2)
+        for machine in config["machines"]:
+            self.assertEqual(self.ssh(machine, "test -e /etc/nanohpc").returncode, 1, machine)
+            self.assertEqual(self.ssh(machine, "getent passwd alice").returncode, 2, machine)
         self.assertEqual(self.ssh("gpu4", "sudo mkfs.ext4 -q /dev/vdb").returncode, 0)
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assertEqual(result.returncode, 0, self.failure(result))
@@ -532,8 +555,17 @@ class SimDeployTest(SimUsersBase):
     cached packages. The users get a key generated for the test, so real logins can be tried."""
 
     def test_deploy(self) -> None:
-        _, config, _ = self.up_and_deploy()
+        cluster, config, public_key = self.up_and_deploy()
         machines = config["machines"]
+
+        with self.subTest("the first deploy runs a dry run on every machine, then the real run"):
+            output = self.first_deploy.stdout
+            for machine in machines:
+                self.assertRegex(output, rf"\nDry run: {machine} would change \d+ things: ", machine)
+            dry_run, marker, real_run = output.partition("Dry run passed: applying the changes.")
+            self.assertTrue(marker)
+            self.assertEqual(dry_run.count("PLAY RECAP"), 1)
+            self.assertEqual(real_run.count("PLAY RECAP"), 1)
 
         with self.subTest("users and UIDs on every machine"):
             for machine in machines:
@@ -871,12 +903,27 @@ class SimDeployTest(SimUsersBase):
             result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
             self.assert_no_changes(result, len(machines))
 
+        with self.subTest("--dry-run shows a change in cluster.yml and does not apply it"):
+            original = cluster.read_text()
+            changed = yaml.safe_load(original)
+            changed["users"].append({"name": "carol", "uid": 2005, "ssh_keys": [public_key]})
+            cluster.write_text(yaml.safe_dump(changed))
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--dry-run")
+            cluster.write_text(original)
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            front = next(line for line in result.stdout.splitlines() if line.startswith("Dry run: front "))
+            self.assertIn("accounts : Create the users with their fixed UIDs", front)
+            self.assertIn("Dry run passed. Nothing was changed (--dry-run).", result.stdout)
+            self.assertEqual(result.stdout.count("PLAY RECAP"), 1, "only the dry run ran")
+            for machine in machines:
+                self.assertEqual(self.ssh(machine, "getent passwd carol").returncode, 2, machine)
+
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimRedeployTest(SimUsersBase):
     """The safety checks that each need another deploy, on the everyday cluster: a missing certificate issued
     again, a drained node as a warning only, a deploy by an administrator's forwarded key, the stop with no key
-    and no terminal, a removed user's login taken away, and a UID conflict that stops only that machine. Run
+    and no terminal, a removed user's login taken away, and a UID conflict that stops the deploy at its dry run. Run
     when accounts, SSH, sudo, preflight, deploy.py, or the certificates change, and before the release. Real
     Lima VMs."""
 
@@ -920,7 +967,7 @@ class SimRedeployTest(SimUsersBase):
             self.assertNotEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
             self.assertEqual(self.ssh("front", "test -e /etc/ssh/authorized_keys/bob").returncode, 1)
 
-        with self.subTest("a UID conflict stops that machine only"):
+        with self.subTest("a UID conflict stops the deploy at its dry run, with no machine changed"):
             self.assertEqual(self.ssh("gpu2", "sudo useradd -u 3005 carol").returncode, 0)
             changed = yaml.safe_load(cluster.read_text())
             changed["users"] += [
@@ -929,14 +976,14 @@ class SimRedeployTest(SimUsersBase):
             ]
             cluster.write_text(yaml.safe_dump(changed))
             result = self.deploy(self.state / "ssh_config", agent=False)
-            self.assertNotEqual(result.returncode, 0)
+            self.assert_dry_run_stopped(result, "gpu2")
             self.assertIn(
                 "gpu2: user carol has UID 3005 and primary group ID 3005, but cluster.yml says 2005", result.stdout
             )
             self.assertIn("carol:x:3005:", self.ssh("gpu2", "getent passwd carol").stdout)
-            # gpu2 was left unchanged: the other new user was not created there, but was elsewhere.
-            self.assertEqual(self.ssh("gpu2", "getent passwd dave").returncode, 2)
-            self.assertIn("dave:x:2006:", self.ssh("gpu4", "getent passwd dave").stdout)
+            # No machine was changed: the other new user was created nowhere.
+            for machine in ("gpu2", "gpu4", "front"):
+                self.assertEqual(self.ssh(machine, "getent passwd dave").returncode, 2, machine)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
@@ -1096,6 +1143,10 @@ class SimAutoDeployTest(SimUsersBase):
             self.assertEqual(self.on_front("sudo cat /var/lib/nanohpc/auto-deploy/state/deployed").strip(), commit)
             metrics = self.on_front("cat /var/lib/nanohpc/metrics-textfile/auto-deploy.prom")
             self.assertIn("cluster_auto_deploy_last_exit_code 0", metrics)
+            # An automatic deploy runs the dry run first too.
+            self.on_front(
+                "sudo journalctl -u nanohpc-auto-deploy --no-pager -o cat | grep -F 'Dry run passed: applying'"
+            )
 
         with self.subTest("a new commit changes the cluster with no one logging in"):
             config["users"].append({"name": "carol", "uid": 2010, "ssh_keys": [public_key]})
@@ -1115,6 +1166,20 @@ class SimAutoDeployTest(SimUsersBase):
             self.assertIn("carol:x:2010:", self.ssh("cpu1", "getent passwd carol").stdout)
             self.assertEqual(self.run_auto_deploy().returncode, 0)  # the same commit: waits for a newer one
             self.assertIn("WARN  the last automatic deploy worked", self.ssh("front", "sudo cluster-health").stdout)
+
+        with self.subTest("a commit whose dry run fails changes nothing and is reported"):
+            # dave's UID is taken on cpu1, so the preflight check stops the dry run there.
+            self.assertEqual(self.ssh("cpu1", "sudo useradd -u 3011 dave").returncode, 0)
+            conflict = {**config, "users": [*config["users"], {"name": "dave", "uid": 2011, "ssh_keys": [public_key]}]}
+            bad = self.push(conflict, "dave")
+            self.assertNotEqual(self.run_auto_deploy().returncode, 0)
+            self.assertEqual(self.on_front("sudo cat /var/lib/nanohpc/auto-deploy/state/failed").strip(), bad)
+            journal = self.on_front("sudo journalctl -u nanohpc-auto-deploy -n 400 --no-pager")
+            self.assertIn("Dry run: cpu1 failed: preflight", journal)
+            self.assertIn("Dry run failed: nothing was changed.", journal)
+            for machine in ("front", "gpu4"):
+                self.assertEqual(self.ssh(machine, "getent passwd dave").returncode, 2, machine)
+            self.assertEqual(self.ssh("cpu1", "sudo userdel dave").returncode, 0)
 
         with self.subTest("a fixed commit deploys again"):
             fixed = self.push(config, "fixed")
@@ -1267,7 +1332,7 @@ class SimHomeOnStorageTest(SimUsersBase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.ssh("gpu2", "sudo mkdir /home/olddata").returncode, 0)
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
-        self.assertNotEqual(result.returncode, 0)
+        self.assert_dry_run_stopped(result, "gpu2")
         self.assertIn("gpu2: /home holds olddata", result.stdout)
         self.assertNotIn("nfs", self.ssh("gpu2", "findmnt -n -o FSTYPE --target /home").stdout)
         self.assertEqual(self.ssh("gpu2", "sudo rmdir /home/olddata").returncode, 0)

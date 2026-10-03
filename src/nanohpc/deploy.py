@@ -3,7 +3,8 @@
 nanoHPC reaches each machine with `ssh <machine name>`, so the administrator's SSH config decides
 the user, address, and key (`--ssh-config` points at another SSH config file, as for the simulated
 cluster). It reads each machine's real hostname first, generates every configuration file, then
-runs the playbook in `nanohpc/ansible/`. Work files go to ~/.cache/nanohpc/clusters/<cluster name>/.
+runs the playbook in `nanohpc/ansible/`: first as a dry run (check mode, nothing changes), then for real
+if the dry run passed. Work files go to ~/.cache/nanohpc/clusters/<cluster name>/.
 """
 
 import getpass
