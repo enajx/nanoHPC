@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from nanohpc import deploy, sim
+from nanohpc import deploy, fixuid, sim
 from nanohpc.config import load_config
 from nanohpc.render import render_forwarding_rules
 
@@ -130,6 +130,14 @@ def main() -> None:
     simulation.add_argument(
         "--ssh-config", type=Path, help="deploy only: SSH config to reach the VMs (default: the one sim up wrote)"
     )
+    fix = commands.add_parser(
+        "fix-uid", help="renumber a user on a machine to their UID in cluster.yml (dry run unless --apply)"
+    )
+    fix.add_argument("path", type=Path, help="path to cluster.yml")
+    fix.add_argument("user", help="user name in cluster.yml")
+    fix.add_argument("machine", help="machine name in cluster.yml")
+    fix.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machine (default: your own)")
+    fix.add_argument("--apply", action="store_true", help="apply the plan (without it, nothing is changed)")
     arguments = parser.parse_args()
     if arguments.command == "validate":
         sys.exit(validate(arguments.path))
@@ -139,3 +147,5 @@ def main() -> None:
         sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":
         sys.exit(simulate(arguments.action, arguments.path, arguments.ssh_config))
+    if arguments.command == "fix-uid":
+        sys.exit(fixuid.run(arguments.path, arguments.user, arguments.machine, arguments.ssh_config, arguments.apply))
