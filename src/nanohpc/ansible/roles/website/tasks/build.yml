@@ -66,6 +66,7 @@
       delegate_to: localhost
       become: false
       changed_when: false
+      when: not ansible_check_mode  # writes on this machine: real run only
 
     - name: Remove a release copy that stopped halfway
       ansible.builtin.file:
@@ -110,6 +111,7 @@
       register: built_hash
       changed_when: false
       failed_when: built_hash.stdout | trim != nanohpc.website.source_hash
+      when: not ansible_check_mode  # nothing is built in the dry run
 
     # Copied under a temporary name and renamed, so a copy that stopped halfway is never taken as a release.
     - name: Keep this build as a release

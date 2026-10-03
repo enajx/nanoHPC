@@ -46,12 +46,16 @@
     if test -f "$known" && ssh-keygen -F {{ nanohpc.auto_deploy.repository_host | quote }} -f "$known" >/dev/null; then
       exit 0
     fi
+    if [ "$DRY_RUN" = True ]; then echo learned; exit 0; fi
     ssh-keyscan -T 15 {{ nanohpc.auto_deploy.repository_host | quote }} > "$known.partial"
     test -s "$known.partial"
     mv "$known.partial" "$known"
     echo learned
+  environment:
+    DRY_RUN: "{{ ansible_check_mode }}"  # the dry run only looks, and writes nothing
   register: repository_host_key
   changed_when: "'learned' in repository_host_key.stdout"
+  check_mode: false
   when: nanohpc.auto_deploy.repository_host != 'github.com'
 
 # The machines' SSH host keys and how the front node reaches each machine as root.
@@ -92,6 +96,17 @@
     state=/var/lib/nanohpc/auto-deploy/state
     # Another branch (or repository) starts a fresh checkout and forgets what was deployed from the old one.
     wanted={{ (nanohpc.auto_deploy.repository ~ ' ' ~ nanohpc.auto_deploy.branch) | quote }}
+    command='ssh -i /etc/nanohpc/auto-deploy/repository_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/nanohpc/auto-deploy/repository_known_hosts'
+    if [ "$DRY_RUN" = True ]; then
+      # The dry run only compares what the steps below would change, and writes nothing.
+      if ! test -d "$checkout/.git" || test "$(cat "$state/source" 2>/dev/null)" != "$wanted" \
+          || test "$(git -C "$checkout" config --get remote.origin.url || true)" != {{ nanohpc.auto_deploy.repository | quote }} \
+          || test "$(git -C "$checkout" config --get core.sshCommand || true)" != "$command" \
+          || ! grep -qx '.env' "$checkout/.git/info/exclude" 2>/dev/null; then
+        echo changed
+      fi
+      exit 0
+    fi
     if test -f "$state/source" && test "$(cat "$state/source")" != "$wanted"; then
       rm -rf "$checkout" "$state/deployed" "$state/failed"
     fi
@@ -105,12 +120,14 @@
       git remote add origin {{ nanohpc.auto_deploy.repository | quote }}
       changed=yes
     fi
-    command='ssh -i /etc/nanohpc/auto-deploy/repository_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/nanohpc/auto-deploy/repository_known_hosts'
     if test "$(git config --get core.sshCommand || true)" != "$command"; then git config core.sshCommand "$command"; changed=yes; fi
     grep -qx '.env' .git/info/exclude 2>/dev/null || { echo '.env' >> .git/info/exclude; changed=yes; }
     test -z "$changed" || echo changed
+  environment:
+    DRY_RUN: "{{ ansible_check_mode }}"
   register: checkout
   changed_when: "'changed' in checkout.stdout"
+  check_mode: false
 
 - name: Put the secrets next to the checkout's cluster.yml (kept out of Git)
   ansible.builtin.copy:

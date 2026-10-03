@@ -39,14 +39,17 @@
   ansible.builtin.shell: |
     set -eu
     if printf '%s' "$KEY" | base64 -d | cmp -s - /etc/munge/munge.key; then exit 0; fi
+    if [ "$DRY_RUN" = True ]; then echo changed; exit 0; fi
     printf '%s' "$KEY" | base64 -d > /etc/munge/munge.key.new
     install -o munge -g munge -m 0400 /etc/munge/munge.key.new /etc/munge/munge.key
     rm -f /etc/munge/munge.key.new
     echo changed
   environment:
     KEY: "{{ front_munge_key.content }}"
+    DRY_RUN: "{{ ansible_check_mode }}"  # the dry run only compares, and writes nothing
   register: munge_key
   changed_when: "'changed' in munge_key.stdout"
+  check_mode: false
   no_log: true
   when: not munge_key_pending
 
@@ -56,7 +59,10 @@
     enabled: true
     state: "{{ 'restarted' if munge_key.changed else 'started' }}"
   when: not (ansible_check_mode and munge_package is changed)  # dry run: not installed yet
+  register: munge_service
 
 - name: Check that Munge works on this machine
   ansible.builtin.shell: munge -n | unmunge
   changed_when: false
+  check_mode: false
+  when: not (ansible_check_mode and (munge_key_pending or munge_service is changed or munge_service is skipped))  # dry run: Munge or its key not set up yet

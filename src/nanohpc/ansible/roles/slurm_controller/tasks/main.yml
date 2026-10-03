@@ -89,6 +89,7 @@
       GRANT ALL PRIVILEGES ON slurm_acct_db.* TO 'slurm'@'localhost';
   changed_when: false
   no_log: true
+  when: not ansible_check_mode  # changes the database user: real run only
 
 - name: Check that the accounting user can log in to the database
   ansible.builtin.command:
@@ -96,7 +97,9 @@
   environment:
     MYSQL_PWD: "{{ slurmdbd_password }}"
   changed_when: false
+  check_mode: false
   no_log: true
+  when: not (ansible_check_mode and (controller_packages is changed or not database_secret_file.stat.exists))  # dry run: no database or password yet
 
 - name: Configure the Slurm accounting daemon
   ansible.builtin.copy:
@@ -129,6 +132,15 @@
     mode: "0644"
   loop: [slurm.conf, cgroup.conf]
   register: controller_configuration
+
+- name: Check the job submission rules with luac (dry run)
+  ansible.builtin.include_role:
+    name: dry_run_check
+  vars:
+    check_content: null
+    check_source: "{{ nanohpc.files }}/job_submit.lua"
+    check_command: /usr/bin/luac5.3 -p %s
+  when: ansible_check_mode and not (controller_packages is changed)
 
 - name: Install the job submission rules
   ansible.builtin.copy:

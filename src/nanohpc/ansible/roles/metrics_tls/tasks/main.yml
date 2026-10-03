@@ -131,6 +131,7 @@
         -subj "/CN=nanohpc-metrics-{{ inventory_hostname }}"
       register: tls_request
       changed_when: false
+      when: not ansible_check_mode  # the dry run signs nothing
 
     - name: Sign it on the front node (valid for one year)
       ansible.builtin.shell: |
@@ -147,6 +148,7 @@
         ADDRESS: "{{ tls_address }}"
       register: tls_signed
       delegate_to: "{{ groups['role_front'][0] }}"
+      when: not ansible_check_mode  # the dry run signs nothing
 
     - name: Keep a copy on the front node, for expiry warnings
       ansible.builtin.copy:

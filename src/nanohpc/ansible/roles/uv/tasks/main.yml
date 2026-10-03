@@ -52,4 +52,6 @@
   ansible.builtin.command: /usr/local/bin/uv --version
   register: uv_version
   changed_when: false
+  check_mode: false
   failed_when: not uv_version.stdout.startswith('uv ' ~ nanohpc.uv.version ~ ' ')
+  when: not (ansible_check_mode and (uv_download is changed or uv_unpack is changed))  # dry run: not unpacked yet

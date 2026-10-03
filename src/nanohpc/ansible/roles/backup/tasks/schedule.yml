@@ -32,19 +32,23 @@
     if test -f /etc/nanohpc/backup/known_hosts && ssh-keygen -F {{ nanohpc.backup.address | quote }} -f /etc/nanohpc/backup/known_hosts >/dev/null; then
       exit 0
     fi
+    if [ "$DRY_RUN" = True ]; then echo learned; exit 0; fi
     ssh-keyscan -t ed25519 -T 15 {{ nanohpc.backup.address | quote }} > /etc/nanohpc/backup/known_hosts.partial
     test -s /etc/nanohpc/backup/known_hosts.partial
     mv /etc/nanohpc/backup/known_hosts.partial /etc/nanohpc/backup/known_hosts
     echo learned
     ssh-keygen -l -f /etc/nanohpc/backup/known_hosts
+  environment:
+    DRY_RUN: "{{ ansible_check_mode }}"  # the dry run only looks, and writes nothing
   register: outside_host_key
   changed_when: "'learned' in outside_host_key.stdout"
+  check_mode: false
   when: nanohpc.backup.kind == 'outside'
 
 - name: Show the outside server's host key fingerprint to compare
   ansible.builtin.debug:
     msg: "Learned {{ nanohpc.backup.address }}'s SSH host key: {{ outside_host_key.stdout_lines[-1] }}. Compare it with the server's own (ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub there)."
-  when: nanohpc.backup.kind == 'outside' and outside_host_key is changed
+  when: nanohpc.backup.kind == 'outside' and outside_host_key is changed and not ansible_check_mode
 
 - name: Record that backups are set up, and since when (read by cluster-health)
   ansible.builtin.copy:
@@ -125,7 +129,8 @@
   register: backup_reachable
   changed_when: false
   failed_when: backup_reachable.rc != 0 and nanohpc.backup.kind == 'machine'
-  when: not ansible_check_mode  # checks this deploy's result
+  # Checks this deploy's result; not when the backup machine was left out of this deploy (its dry run failed).
+  when: not ansible_check_mode and nanohpc.backup.get('machine') not in nanohpc_left_out
 
 
 - name: Read the backup key's public half

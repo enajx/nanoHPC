@@ -1,6 +1,10 @@
 # A manual deploy pauses automatic deploys: it stops the timer and waits for a running automatic deploy to
 # finish, so two deploys never run at once. The auto_deploy role starts the timer again at the end; a manual
 # deploy that stops halfway leaves it stopped, which cluster-health reports.
+# The dry run does not stop the timer (that would be a change). It waits for a running automatic deploy and
+# reads which commits the automatic deploys last deployed and last failed on; the real run, once the timer is
+# stopped, reads them again. If they differ, an automatic deploy ran between the two runs, so what the dry run
+# checked is out of date: the real run starts the timer again and stops before changing anything.
 - name: Look for the automatic deploy timer
   ansible.builtin.stat:
     path: /etc/systemd/system/nanohpc-auto-deploy.timer
@@ -23,3 +27,31 @@
   check_mode: false
   failed_when: false
   when: auto_deploy_timer_unit.stat.exists
+
+- name: Read the last automatic deploys (deployed and failed commits)
+  ansible.builtin.shell: cat /var/lib/nanohpc/auto-deploy/state/deployed /var/lib/nanohpc/auto-deploy/state/failed 2>/dev/null || true
+  register: auto_deploy_state
+  changed_when: false
+  check_mode: false
+  when: auto_deploy_timer_unit.stat.exists
+
+- name: Keep them for the real run (read by nanohpc deploy)
+  ansible.builtin.set_fact:
+    nanohpc_dry_run_auto_deploy_state: "{{ auto_deploy_state.stdout }}"
+  when: auto_deploy_timer_unit.stat.exists and ansible_check_mode
+
+- name: Stop if an automatic deploy ran after the dry run read them
+  when: >-
+    auto_deploy_timer_unit.stat.exists and not ansible_check_mode
+    and nanohpc_dry_run.get(inventory_hostname, {}).get('nanohpc_dry_run_auto_deploy_state') != auto_deploy_state.stdout
+  block:
+    - name: Start automatic deploys again
+      ansible.builtin.systemd_service:
+        name: nanohpc-auto-deploy.timer
+        state: started
+
+    - name: Stop this deploy
+      ansible.builtin.fail:
+        msg: >-
+          An automatic deploy ran during this deploy's dry run, so the dry run is out of date. Nothing was changed;
+          run nanohpc deploy again.

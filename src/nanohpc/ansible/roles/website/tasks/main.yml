@@ -73,6 +73,7 @@
     owner: root
     group: root
     mode: "0644"
+  register: website_site_data
 
 - name: Install the logo
   ansible.builtin.copy:
@@ -104,6 +105,10 @@
   loop: [docs.md, policy.md]
   register: website_docs
   changed_when: website_docs.stdout == 'changed'
+  # The dry run counts it only when what it is filled from changes (the site data, or a new build).
+  when: >-
+    not (ansible_check_mode and website_site_data is not changed and website_copy is not changed
+         and (website_built is not defined or website_built.stat.exists))
 
 # HTTPS certificate: the administrator's own, or Let's Encrypt's.
 - name: Install the administrator's certificate and key

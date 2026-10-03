@@ -2,22 +2,35 @@
 # and the configuration files, then runs this playbook. Machines that fail a check are dropped
 # from the rest of the run without further changes; the others continue.
 #
-# Every deploy runs it twice: first in check mode (the dry run, `--check`: nothing changes), then for real
-# only if the dry run passed on every machine. Read-only commands whose output later tasks use also run in
-# the dry run (`check_mode: false` with `changed_when: false`). A task that only makes sense after an earlier
-# change is skipped in the dry run while that change is still to be made (`ansible_check_mode and ...`), so a
-# first deploy of a new machine can only be partly previewed. The preflight checks always run in full.
+# Every deploy runs it twice. First in check mode, the dry run (`--check`): it changes nothing on the machines
+# except refreshing apt's package lists, and writes only temporary files in /tmp to check new configuration
+# files with their own checkers (the dry_run_check role). Then for real, on the machines whose dry run passed:
+# the others are left out, unchanged (nanohpc_left_out). If the front node or the home machine fails its dry
+# run, nanohpc deploy deploys nothing, since every other machine depends on them.
+# Read-only commands whose output later tasks use also run in the dry run (`check_mode: false` with
+# `changed_when: false`). A task that only makes sense after an earlier change is skipped in the dry run while
+# that change is still to be made (`ansible_check_mode and ...`), so a first deploy of a new machine can only be
+# partly previewed. The preflight checks always run in full.
+# Variables from nanohpc deploy: nanohpc_left_out (machines left out of this run) and nanohpc_dry_run (per
+# machine, the nanohpc_dry_run_* facts the dry run read, for the real run to compare).
 
 - name: Check every machine before changing anything
   hosts: all
   become: true
+  pre_tasks:
+    # Facts are gathered first, so the other machines can still read this machine's facts (host keys).
+    - name: Leave out the machines whose dry run failed (nothing is changed on them)
+      ansible.builtin.fail:
+        msg: "{{ inventory_hostname }} is left out of this deploy: its dry run failed"
+      when: inventory_hostname in nanohpc_left_out
   roles: [preflight]
 
 # Automatic deploys: a manual deploy pauses them; the front node's own key, which every machine accepts for
-# root from the front node only.
+# root from the front node only. A failure here stops the whole run (nothing is changed yet).
 - name: Automatic deploy key on the front node
   hosts: role_front
   become: true
+  any_errors_fatal: true
   tasks:
     - name: Pause automatic deploys while this manual deploy runs
       ansible.builtin.include_role:

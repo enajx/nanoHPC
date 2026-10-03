@@ -118,13 +118,26 @@
     quiet: true
 
 - name: Keep the forwarded SSH agent visible to sudo
-  ansible.builtin.copy:
-    dest: /etc/sudoers.d/nanohpc-ssh-agent
-    content: "Defaults env_keep += \"SSH_AUTH_SOCK\"\n"
-    owner: root
-    group: root
-    mode: "0440"
-    validate: /usr/sbin/visudo -cf %s
+  vars:
+    sudo_agent_rule: "Defaults env_keep += \"SSH_AUTH_SOCK\"\n"
+  block:
+    - name: Check the sudo rule with visudo (dry run)
+      ansible.builtin.include_role:
+        name: dry_run_check
+      vars:
+        check_content: "{{ sudo_agent_rule }}"
+        check_source: null
+        check_command: /usr/sbin/visudo -cf %s
+      when: ansible_check_mode
+
+    - name: Install the sudo rule (checked with visudo first)
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/nanohpc-ssh-agent
+        content: "{{ sudo_agent_rule }}"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
 
 - name: Remove the passwordless sudo rule of earlier nanoHPC versions
   ansible.builtin.file:
@@ -193,14 +206,16 @@
     source="$home/.ssh/authorized_keys"
     test -f "$source" || exit 0
     if ! cmp -s "$source" "/etc/ssh/authorized_keys/$ACCOUNT"; then
-      install -o root -g root -m 0644 "$source" "/etc/ssh/authorized_keys/$ACCOUNT"
+      if [ "$DRY_RUN" != True ]; then install -o root -g root -m 0644 "$source" "/etc/ssh/authorized_keys/$ACCOUNT"; fi
       echo changed
     fi
   environment:
     ACCOUNT: "{{ item }}"
+    DRY_RUN: "{{ ansible_check_mode }}"  # the dry run only compares, and writes nothing
   loop: "{{ deploy_account_names }}"
   register: kept_keys
   changed_when: "'changed' in kept_keys.stdout"
+  check_mode: false
 
 # nanoHPC's own SSH accounts on this machine: the backup machine receives the nightly /home mirror as
 # nanohpc-backup (a key that may only run rsync into the backup folder; the backup role installs it).
@@ -326,6 +341,7 @@
 - name: Apply the SSH access settings
   ansible.builtin.command: systemctl try-reload-or-restart ssh
   changed_when: ssh_access.changed
+  when: not (ansible_check_mode and ssh_access is not changed)  # the dry run counts it only when the settings change
 
 - name: Drop the open connection so the next task logs in fresh
   ansible.builtin.meta: reset_connection

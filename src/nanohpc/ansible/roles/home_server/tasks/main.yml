@@ -32,6 +32,7 @@
 - name: Load the quota modules now
   ansible.builtin.command: modprobe quota_v2
   changed_when: false
+  when: not ansible_check_mode  # loads a kernel module: real run only
 
 - name: Mount the home disk
   when: nanohpc.home.device is not none
@@ -56,7 +57,9 @@
       ansible.builtin.command: findmnt -n -o UUID --mountpoint /home
       register: home_uuid
       changed_when: false
+      check_mode: false
       failed_when: home_uuid.stdout | trim != home_fs.UUID
+      when: not (ansible_check_mode and (home_fstab is changed or (home_mount.stdout | default('')) == ''))  # dry run: not mounted yet
 
 - name: Read the filesystem that holds /home
   ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE,OPTIONS --target /home
@@ -74,6 +77,58 @@
 - name: Turn on user quotas for the root filesystem
   when: nanohpc.home.device is none
   block:
+    # The dry run makes this role's two /etc/fstab changes (usrquota, the /home bind mount below) on a temporary
+    # copy in /tmp and checks it with findmnt, as the real run checks /etc/fstab before writing it. This temporary
+    # copy is the only thing a dry run writes here, besides refreshing apt's package lists.
+    - name: Check the new /etc/fstab with findmnt (dry run)
+      when: ansible_check_mode
+      block:
+        - name: Make a temporary copy of /etc/fstab
+          ansible.builtin.tempfile:
+            path: /tmp
+            suffix: .nanohpc-dry-run
+          register: fstab_check
+          changed_when: false
+          check_mode: false
+
+        - name: Copy /etc/fstab into it
+          ansible.builtin.copy:
+            src: /etc/fstab
+            dest: "{{ fstab_check.path }}"
+            remote_src: true
+            mode: "0600"
+          changed_when: false
+          check_mode: false
+
+        - name: Add usrquota to the copy
+          ansible.builtin.replace:
+            path: "{{ fstab_check.path }}"
+            regexp: '^(\S+\s+/\s+ext4\s+)(?!\S*usrquota)(\S+)'
+            replace: '\1\2,usrquota'
+          changed_when: false
+          check_mode: false
+
+        - name: Add the /home bind mount to the copy
+          ansible.builtin.lineinfile:
+            path: "{{ fstab_check.path }}"
+            regexp: '^\S+\s+/home\s'
+            line: "/home /home none bind,nosuid,nodev 0 0"
+          changed_when: false
+          check_mode: false
+
+        - name: Check the copy with findmnt
+          ansible.builtin.command: findmnt --verify --tab-file {{ fstab_check.path }}
+          changed_when: false
+          check_mode: false
+      always:
+        - name: Remove the temporary copy
+          ansible.builtin.file:
+            path: "{{ fstab_check.path }}"
+            state: absent
+          changed_when: false
+          check_mode: false
+          when: fstab_check.path is defined
+
     - name: Require ext4 for quotas on the root disk
       ansible.builtin.assert:
         that: home_fs_now.stdout.split()[1] == 'ext4'
@@ -95,7 +150,9 @@
       ansible.builtin.command: findmnt -n -s -o OPTIONS --mountpoint /
       register: root_fstab_options
       changed_when: false
+      check_mode: false
       failed_when: "'usrquota' not in root_fstab_options.stdout"
+      when: not (ansible_check_mode and root_fstab is changed)  # dry run: /etc/fstab not changed yet
 
     - name: Apply usrquota to the mounted root filesystem
       ansible.builtin.command: mount -o remount,usrquota /

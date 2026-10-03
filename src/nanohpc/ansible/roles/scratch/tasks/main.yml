@@ -39,7 +39,7 @@
         # nofail: a missing scratch disk must not stop the machine from booting (and so lock out SSH).
         line: "UUID={{ scratch_fs.UUID }} /scratch {{ scratch_fs.TYPE }} defaults,nodev,nosuid,nofail,x-systemd.device-timeout=30s 0 2"
         backup: true
-      register: scratch_fstab
+      register: scratch_disk_fstab
 
 - name: Scratch in an image file
   when: scratch.image_gb is not none
@@ -122,7 +122,7 @@
         regexp: '^\S+\s+/scratch\s'
         line: "{{ scratch_image }} /scratch ext4 loop,nodev,nosuid,nofail 0 0"
         backup: true
-      register: scratch_fstab
+      register: scratch_image_fstab
 
 - name: Create the /scratch mount point
   ansible.builtin.file:
@@ -135,7 +135,7 @@
 
 - name: Mount /scratch now
   ansible.builtin.command: mount /scratch
-  when: scratch_mount.stdout == '' or scratch_fstab.changed
+  when: scratch_mount.stdout == '' or scratch_disk_fstab is changed or scratch_image_fstab is changed
   register: scratch_mounted
   changed_when: true
   failed_when: scratch_mounted.rc != 0 and 'already mounted' not in scratch_mounted.stderr
@@ -143,7 +143,7 @@
 # The dry run cannot check a mount it has not made yet.
 - name: Note whether /scratch is mounted in this run
   ansible.builtin.set_fact:
-    scratch_mount_pending: "{{ ansible_check_mode and (scratch_mount.stdout == '' or scratch_fstab is changed) }}"
+    scratch_mount_pending: "{{ ansible_check_mode and (scratch_mount.stdout == '' or scratch_disk_fstab is changed or scratch_image_fstab is changed) }}"
 
 - name: Check that /scratch is mounted from a local disk
   ansible.builtin.command: findmnt -n -o SOURCE,UUID --mountpoint /scratch
@@ -170,7 +170,7 @@
   register: discard_bytes
   changed_when: false
   failed_when: discard_bytes.stdout | trim != '0'
-  when: scratch.image_gb is not none
+  when: scratch.image_gb is not none and not ansible_check_mode  # triggers udev: real run only
 
 - name: Create the shared scratch folders
   ansible.builtin.file:
