@@ -19,7 +19,7 @@ flowchart LR
   SIM --> S[Slurm + accounts + storage]:::done
   S --> M[Monitoring]:::done
   M --> W[Website from config]:::done
-  S --> BK[Backup + alerts + auto-deploy]:::wip
+  S --> BK[Backup + alerts + auto-deploy]:::done
   C --> WZ[Wizard]:::queued
   S --> N[Add node + redeploy]:::queued
   W --> R[Release v0.1]:::queued
@@ -119,7 +119,7 @@ flowchart LR
 
 - [x] `/home` is copied every night with rsync to the backup machine in the cluster or to an outside SSH server, as one mirror of `/home` (files deleted from `/home` are deleted from the copy). A failed backup is reported.
 - [x] Every machine runs its health checks every few minutes; the front node sends Slack alerts (off by default) when a check starts failing or warning and when it recovers, not on every run, plus failed backups and failed automatic deploys. The Slack webhook is in a `.env` file next to `cluster.yml` (never committed), copied to the front node by the deploy.
-- [ ] The front node can redeploy the whole cluster automatically from the administrator's configuration repository (off by default): it checks a branch every 10 minutes (set in `cluster.yml`; `main` by default, a stable or release branch suggested), pulls it with a read-only key, and deploys every machine itself with no one logging in and no password. A GitHub webhook can trigger it right after a push instead of waiting. The front node gets root SSH access to every machine for this (agreed 2026-10-02). The configuration repository pins the nanoHPC version the front node uses. `nanohpc deploy` from the administrator's machine stays. Until the dry run exists (M8), automatic deploys apply without it; then each one runs the dry run first, applies only if it passed, and otherwise stops and alerts.
+- [x] The front node can redeploy the whole cluster automatically from the administrator's configuration repository (off by default): it checks a branch every 10 minutes (set in `cluster.yml`; `main` by default, a stable or release branch suggested), pulls it with a read-only key, and deploys every machine itself with no one logging in and no password. A GitHub webhook can trigger it right after a push instead of waiting. The front node gets root SSH access to every machine for this (agreed 2026-10-02). The configuration repository pins the nanoHPC version the front node uses. `nanohpc deploy` from the administrator's machine stays. Until the dry run exists (M8), automatic deploys apply without it; then each one runs the dry run first, applies only if it passed, and otherwise stops and alerts.
 
 ### Commands
 
