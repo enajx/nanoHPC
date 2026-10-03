@@ -133,7 +133,7 @@ flowchart LR
 - [x] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid` (built in M7: after the administrator confirms and a read-only check, it renumbers that user on that machine). The deploy's stop on a UID conflict stays as a safety net.
 - [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
 - [ ] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster.
-- [ ] Separate commands, each with its own checks: `nanohpc add-node NAME` (a new machine listed in the configuration), `nanohpc users` (users, keys, quotas), `nanohpc policy` (queue policy), `nanohpc partitions` (partitions and their machines).
+- [ ] Partial deploys instead of separate commands (agreed 2026-10-03): after editing `cluster.yml` (by hand or with the wizard), `nanohpc deploy --only users|policy|partitions` or `--only node NAME` runs just that part, with the same checks and dry run.
 - [ ] `nanohpc check` connects to every machine and reports what differs from `cluster.yml` (services, users, mounts, GPU count), without changing anything.
 
 ### Release

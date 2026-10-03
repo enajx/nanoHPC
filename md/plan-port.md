@@ -130,6 +130,12 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
 - (Agent's choice, to review) `cluster.yml` is read and written with ruamel.yaml, so editing an existing file keeps its comments and order; Textual 8.2.8 for the terminal app.
 - `nanohpc fix-uid` is built in M7: the wizard explains a UID conflict and, after the administrator confirms, renumbers that user on that machine (after a read-only check).
 
+## Agreed for M8 (commands and release), 2026-10-03
+
+- Order: the dry run before every deploy first, then partial deploys, then key-only root login for administrators, then the release work.
+- Partial deploys (`nanohpc deploy --only users|policy|partitions`, `--only node NAME`) replace the separate add-node, users, policy, and partitions commands.
+- `nanohpc check` stays a command of its own: read-only, it reports what differs between the machines and `cluster.yml` (services, users, mounts, GPU count). The dry run before every deploy is separate.
+
 ## Simulated cluster
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).
