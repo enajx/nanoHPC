@@ -75,6 +75,9 @@ def forwarding_rules(path: Path) -> int:
 
 def simulate(action: str, path: Path, ssh_config: Path | None, dry_run_only: bool) -> int:
     """Start (`up`), set up with nanoHPC (`deploy`), or remove (`down`) the simulated test cluster of a sim file."""
+    if dry_run_only and action != "deploy":
+        print("--dry-run works only with nanohpc sim deploy", file=sys.stderr)
+        return 1
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
         return 1

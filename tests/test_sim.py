@@ -10,6 +10,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -173,6 +174,20 @@ class SimOutputTest(unittest.TestCase):
         for machine, port in ports.items():
             self.assertIn(f"Host {machine}\n  HostName 127.0.0.1\n  Port {port}\n  User enaj\n", text)
         self.assertIn("IdentityFile /home/enaj/.lima/_config/user", text)
+
+
+class SimCommandTest(unittest.TestCase):
+    """The `nanohpc sim` command line, without VMs."""
+
+    def test_dry_run_only_with_deploy(self) -> None:
+        for action in ("up", "down"):
+            result = subprocess.run(
+                [sys.executable, "-c", "from nanohpc.cli import main; main()", "sim", action, str(SIM / "everyday.yml"), "--dry-run"],
+                capture_output=True, text=True, check=False,
+            )  # fmt: skip
+            self.assertEqual(result.returncode, 1, action)
+            self.assertIn("--dry-run works only with nanohpc sim deploy", result.stderr)
+            self.assertEqual(result.stdout, "")
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
