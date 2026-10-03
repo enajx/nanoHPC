@@ -125,11 +125,12 @@ flowchart LR
 
 - [ ] `nanohpc` is installed with `uv tool install` and runs from any machine with SSH access to the cluster.
 - [ ] Every deploy runs a read-only dry run first (Ansible check mode on every machine; nothing changes) and continues to the real run on its own only if the dry run passed. A failed dry run stops with the cluster unchanged and says what failed. Every role works in check mode (a first deploy of a new machine can only be partly previewed).
-- [ ] `nanohpc init` is a wizard that writes a whole `cluster.yml` with simple defaults, and probes the machines over SSH for CPUs, memory, and GPU type and count.
+- [ ] `nanohpc init` is a full-screen terminal wizard (Textual) that writes a whole `cluster.yml` with simple defaults, or opens an existing one to change it, and probes the machines over SSH for CPUs, memory, GPU type and count, disks, and Ubuntu version. Its steps: machines, storage, users, partitions and policy, website, extras, review.
+- [ ] `SETUP-for-AGENTS.md` lists the setup steps for agents, matching the wizard's (agents write `cluster.yml` from the examples); AGENTS.md links to it, and the wizard's footer points to it for an installation by an AI agent.
 - [ ] The wizard guides the administrator through preparing the machines (for example making the filesystems on the home and scratch disks), with hints for each step and the option to skip and do it themselves. It mentions `ssh-add -c` (confirm each use of the key, for example to watch an agent) as an option, not the default, and says that a deploy uses the key for every sudo call, so `-c` asks many times during a deploy.
 - [ ] The wizard and the docs explain the three kinds of storage (home: small, safe, backed up; shared scratch: large, fast, cleaned by age; local scratch: per machine, per job), recommend a faster network (10 GbE or more) before adding shared storage, and suggest moving `/home` off the front node to its own storage machine (or a NAS) as the cluster grows.
 - [ ] The wizard asks for the website's hostname, path, HTTPS choice, and who can open it, and recommends (says it is not required) a private network such as WireGuard or Tailscale for security and simpler administrator access.
-- [ ] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid`. The deploy's stop on a UID conflict stays as a safety net.
+- [ ] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid` (built in M7: after the administrator confirms and a read-only check, it renumbers that user on that machine). The deploy's stop on a UID conflict stays as a safety net.
 - [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
 - [ ] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster.
 - [ ] Separate commands, each with its own checks: `nanohpc add-node NAME` (a new machine listed in the configuration), `nanohpc users` (users, keys, quotas), `nanohpc policy` (queue policy), `nanohpc partitions` (partitions and their machines).
@@ -139,6 +140,7 @@ flowchart LR
 
 - [ ] A README, curated by the user (not filled in by the agent): a title for nanoHPC using the same neobrutalism components as the front-end monitor; a description of nanoHPC as a minimalistic Slurm + Slurm monitoring tool for small lab clusters; a features section (a concise list); how to use it; the tech stack; how to contribute, linking to CONTRIBUTING.md; and the license (MIT).
 - [ ] Before the release, the real-VM tests pass on Ubuntu 22.04 and 26.04 too (during development they run on 24.04 only).
+- [ ] Once nanoHPC is released and development slows down, bring the split-out real-VM tests (`SimRedeployTest`, `SimAlertsTest`, and the ones run only when relevant) back into every run, so users get proper tests when deploying on their systems.
 - [ ] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website.
 - [ ] A full setup is tested on real x86 machines, and once on a real GPU machine for the NVIDIA driver and CUDA.
 - [ ] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option.
@@ -157,6 +159,7 @@ flowchart LR
 - [ ] Optional shared scratch on a separate storage machine (not the front node), seen by every compute node: a fast NFS server with NVMe or SSD disks first, BeeGFS later. Files unused for N days (30 to 90) are deleted by a daily cleanup. Needs a fast network; `stage-dataset --shared` builds on it.
 - [ ] A general "Welcome to <cluster name>" login banner (with a small "powered by nanoHPC") and some general info. Below it, notifications for that user only: when they are above the soft limit of their home usage (as defined in `cluster.yml`, the same for all users), they are told to clean up, with a summary of where most of their space is (for example a certain repository or certain worktrees).
 - [ ] See how the terminal login banner looks in SLURM-REAL and use it as inspiration for the login banner above.
+- [ ] A way to use only the cluster monitoring part (metrics, alerts, status snapshot, Grafana, website) without the Slurm part, for people who already have Slurm installed and want to add nanoHPC's monitoring to it.
 - [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.
 
 ## Uncategorized
