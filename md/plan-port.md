@@ -119,6 +119,13 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
 - A run takes a lock (one deploy at a time; a manual `nanohpc deploy` on the front node waits), deploys a new commit once, does not retry a commit that failed until a newer one arrives, and records the result as metrics (an alert when it fails).
 - An own website certificate (`https: own`): its files are on the administrator's machine, so automatic deploys keep the certificate and key already on the front node (from the last `nanohpc deploy`); a new certificate needs a manual deploy. Private keys never go into the configuration repository.
 
+## Agreed for M7 (setup wizard), 2026-10-03
+
+- `nanohpc init` is a full-screen terminal app built with Textual (Python, installed with nanoHPC, tested headless); the look follows the website's neobrutalism style where it fits.
+- The administrator lists the machines (names or addresses, or hosts from their ~/.ssh/config); the wizard checks SSH and probes each one.
+- It writes a new `cluster.yml` or opens an existing one to change it.
+- The wizard is for people. Agents write `cluster.yml` from the examples, following `SETUP.md`, which lists the same steps as the wizard; AGENTS.md links to it.
+
 ## Simulated cluster
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).
