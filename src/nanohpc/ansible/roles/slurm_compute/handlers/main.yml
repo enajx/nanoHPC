@@ -2,3 +2,4 @@
   ansible.builtin.service:
     name: slurmd
     state: restarted
+  when: not slurm_install_pending  # dry run: Slurm not installed yet

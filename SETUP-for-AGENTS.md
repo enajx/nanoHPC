@@ -74,5 +74,9 @@ For each machine the administrator names (a hostname, an address, or a host from
 ## 7. Review and deploy
 
 - `nanohpc validate cluster.yml` must pass. Show the administrator the whole file and agree it.
-- `nanohpc deploy cluster.yml` (it stops before changing anything if a machine is not ready, and says why).
-  Run it in a terminal the first time, if sudo still needs a password.
+- `nanohpc deploy cluster.yml`: it first runs a dry run on every machine (it changes nothing except refreshing
+  apt's package lists), then deploys the machines whose dry run passed. Machines whose dry run failed are left out,
+  unchanged, and listed at the end with what failed (exit code 3); if the front node or the home machine fails its
+  dry run, nothing is deployed. A failure after the dry run passed exits with code 4: those machines may be partly
+  changed. Run it in a terminal the first time, if sudo still needs a password. `nanohpc deploy --dry-run
+  cluster.yml` shows what would change and stops there.

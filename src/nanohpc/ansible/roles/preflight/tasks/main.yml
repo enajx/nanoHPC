@@ -91,6 +91,7 @@
     executable: /bin/bash
   register: gpu_check
   changed_when: false
+  check_mode: false
   when: inventory_hostname in nanohpc.real_gpus
 
 - name: Require the NVIDIA driver and the GPU count from cluster.yml
@@ -112,6 +113,7 @@
   become: false
   register: login_account
   changed_when: false
+  check_mode: false
 
 - name: Remember the login account
   ansible.builtin.set_fact:
@@ -139,12 +141,14 @@
   ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /home
   register: home_mount
   changed_when: false
+  check_mode: false
   failed_when: false
 
 - name: Read the home disk's ID
   ansible.builtin.command: "blkid -s UUID -o value {{ nanohpc.home.device }}"
   register: home_disk_uuid
   changed_when: false
+  check_mode: false
   failed_when: false
   when: inventory_hostname == nanohpc.home.server and nanohpc.home.device is not none
 
@@ -152,6 +156,7 @@
   ansible.builtin.command: findmnt -n -o UUID --mountpoint /home
   register: home_mounted_uuid
   changed_when: false
+  check_mode: false
   failed_when: false
   when: inventory_hostname == nanohpc.home.server and nanohpc.home.device is not none
 
@@ -198,6 +203,7 @@
   ansible.builtin.command: find /home -mindepth 1 -maxdepth 1 -printf '%f\t%l\n'
   register: local_home
   changed_when: false
+  check_mode: false
   when: home_will_mount | bool
 
 - name: Stop if the mount would hide anything else in /home

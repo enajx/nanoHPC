@@ -36,6 +36,7 @@
         checksum: "sha256:{{ pebble.sha256[item + '-' + acme_arch] }}"
         mode: "0644"
       loop: [pebble, pebble-challtestsrv]
+      register: pebble_download
 
     - name: Unpack Pebble and its DNS server
       ansible.builtin.unarchive:
@@ -47,6 +48,8 @@
         group: root
         creates: "/opt/nanohpc-test-acme/{{ item }}"
       loop: [pebble, pebble-challtestsrv]
+      register: pebble_unpack
+      when: not (ansible_check_mode and pebble_download is changed)  # dry run: not downloaded yet
 
     # The release archives hold the programs without the executable bit.
     - name: Make Pebble and its DNS server executable
@@ -56,6 +59,7 @@
         group: root
         mode: "0755"
       loop: [pebble, pebble-challtestsrv]
+      when: not (ansible_check_mode and (pebble_download is changed or pebble_unpack is changed))  # dry run: not unpacked yet
 
     - name: Make the test authority and Pebble's own certificate
       ansible.builtin.shell: |
@@ -136,6 +140,7 @@
         daemon_reload: "{{ pebble_units.changed }}"
         state: "{{ 'restarted' if (pebble_units.changed or pebble_config.changed) else 'started' }}"
       loop: [nanohpc-test-acme-dns, nanohpc-test-acme]
+      when: not (ansible_check_mode and pebble_units is changed)  # dry run: the services are not installed yet
 
     - name: Wait until Pebble answers
       ansible.builtin.command: curl --silent --fail --cacert /etc/nanohpc/test-acme/ca.pem https://127.0.0.1:14000/dir
@@ -144,3 +149,4 @@
       retries: 15
       delay: 2
       changed_when: false
+      when: not ansible_check_mode  # checks this deploy's result

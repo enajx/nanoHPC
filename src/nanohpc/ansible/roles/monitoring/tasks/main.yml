@@ -69,18 +69,21 @@
         state: started
         daemon_reload: "{{ quota_units.changed }}"
       changed_when: false  # a one-off run of the reader, not a change to the machine
+      when: not (ansible_check_mode and quota_units is changed)  # dry run: the service is not installed yet
 
     - name: Run the quota reader timer
       ansible.builtin.systemd_service:
         name: nanohpc-home-quotas.timer
         enabled: true
         state: started
+      when: not (ansible_check_mode and quota_units is changed)  # dry run: the timer is not installed yet
 
     - name: Check that the quota reader wrote its metrics
       ansible.builtin.stat:
         path: /var/lib/nanohpc/metrics-textfile/home-quotas.prom
       register: quota_output
       failed_when: not quota_output.stat.exists
+      when: not ansible_check_mode  # checks this deploy's result
 
 - name: Install the status collector on the front node
   when: inventory_hostname in groups['role_front']
@@ -124,11 +127,13 @@
         group: root
         mode: "0644"
         force: false
+      register: accounting_start_file
 
     - name: Read when accounting started
       ansible.builtin.slurp:
         src: /etc/nanohpc/accounting-start
       register: accounting_start
+      when: not (ansible_check_mode and accounting_start_file is changed)  # dry run: not recorded yet
 
     - name: Install the status collector service and timer
       ansible.builtin.copy:
@@ -152,7 +157,7 @@
             --metrics /var/lib/nanohpc/monitor-textfile/cluster.prom \
             --controller {{ groups['role_front'][0] }} --cluster-name {{ nanohpc.cluster_name }} \
             --machines /etc/nanohpc/monitor-machines.json --refresh-seconds 30 \
-            --accounting-start {{ accounting_start.content | b64decode | trim }} \
+            --accounting-start {{ (accounting_start.content | b64decode | trim) if accounting_start.content is defined else ansible_facts.date_time.date ~ 'T' ~ ansible_facts.date_time.time }} \
             --prometheus-url http://127.0.0.1:9090 \
             --users {{ nanohpc.users | map(attribute='name') | join(' ') }}
           TimeoutStartSec=90
@@ -192,12 +197,14 @@
         state: started
         daemon_reload: "{{ snapshot_units.changed }}"
       changed_when: false  # a one-off run of the collector, not a change to the machine
+      when: not (ansible_check_mode and snapshot_units is changed)  # dry run: the service is not installed yet
 
     - name: Run the status collector timer
       ansible.builtin.systemd_service:
         name: nanohpc-monitor-snapshot.timer
         enabled: true
         state: started
+      when: not (ansible_check_mode and snapshot_units is changed)  # dry run: the timer is not installed yet
 
     - name: Check that the snapshot was written
       ansible.builtin.stat:
@@ -208,3 +215,4 @@
         - /var/lib/nanohpc/monitor/status.json
         - /var/lib/nanohpc/monitor/machines.md
         - /var/lib/nanohpc/monitor-textfile/cluster.prom
+      when: not ansible_check_mode  # checks this deploy's result

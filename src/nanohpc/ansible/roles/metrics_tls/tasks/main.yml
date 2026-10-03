@@ -45,6 +45,7 @@
       ansible.builtin.command: openssl x509 -noout -checkend 31536000 -in /etc/nanohpc/metrics-ca/ca.crt
       register: ca_check
       changed_when: false
+      check_mode: false
       failed_when: false
 
     - name: Create the authority
@@ -61,17 +62,23 @@
         CLUSTER: "{{ nanohpc.cluster_name }}"
       when: ca_check.rc != 0
 
+# In the dry run, an authority still to be made (or renewed) is a stand-in text, never written anywhere.
+- name: Note whether the authority is made in this run
+  ansible.builtin.set_fact:
+    metrics_ca_pending: "{{ ansible_check_mode and hostvars[groups['role_front'][0]].ca_check.rc != 0 }}"
+
 - name: Read the authority's certificate
   ansible.builtin.slurp:
     src: /etc/nanohpc/metrics-ca/ca.crt
   register: metrics_ca
   delegate_to: "{{ groups['role_front'][0] }}"
   run_once: true
+  when: not metrics_ca_pending
 
 - name: Install the authority's certificate on every machine
   ansible.builtin.copy:
     dest: /etc/nanohpc/metrics-tls/ca.crt
-    content: "{{ metrics_ca.content | b64decode }}"
+    content: "{{ '(the authority this deploy makes)' if metrics_ca_pending else metrics_ca.content | b64decode }}"
     owner: root
     group: root
     mode: "0644"
@@ -87,6 +94,7 @@
   ansible.builtin.shell: "umask 077 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out /etc/nanohpc/metrics-tls/{{ tls_name }}.key"
   args:
     creates: "/etc/nanohpc/metrics-tls/{{ tls_name }}.key"
+  register: tls_keygen
 
 - name: Let only the metrics service read the key
   ansible.builtin.file:
@@ -94,6 +102,7 @@
     owner: root
     group: "{{ tls_group }}"
     mode: "0640"
+  when: not (ansible_check_mode and tls_keygen is changed)  # dry run: the key is not made yet
 
 - name: Check this machine's certificate
   ansible.builtin.shell: |
@@ -109,17 +118,20 @@
     ADDRESS: "{{ tls_address }}"
   register: tls_check
   changed_when: false
+  check_mode: false
   failed_when: false
 
 - name: Issue a new certificate
   when: tls_check.rc != 0
   block:
+    # The dry run signs nothing: a stand-in text shows where the new certificate would go.
     - name: Make a signing request
       ansible.builtin.command: >-
         openssl req -new -key /etc/nanohpc/metrics-tls/{{ tls_name }}.key
         -subj "/CN=nanohpc-metrics-{{ inventory_hostname }}"
       register: tls_request
       changed_when: false
+      when: not ansible_check_mode  # the dry run signs nothing
 
     - name: Sign it on the front node (valid for one year)
       ansible.builtin.shell: |
@@ -136,11 +148,12 @@
         ADDRESS: "{{ tls_address }}"
       register: tls_signed
       delegate_to: "{{ groups['role_front'][0] }}"
+      when: not ansible_check_mode  # the dry run signs nothing
 
     - name: Keep a copy on the front node, for expiry warnings
       ansible.builtin.copy:
         dest: "/etc/nanohpc/metrics-ca/issued/{{ inventory_hostname }}.crt"
-        content: "{{ tls_signed.stdout }}\n"
+        content: "{{ '(the certificate this deploy issues)' if ansible_check_mode else tls_signed.stdout }}\n"
         owner: root
         group: root
         mode: "0600"
@@ -149,7 +162,7 @@
     - name: Install the new certificate
       ansible.builtin.copy:
         dest: "/etc/nanohpc/metrics-tls/{{ tls_name }}.crt"
-        content: "{{ tls_signed.stdout }}\n"
+        content: "{{ '(the certificate this deploy issues)' if ansible_check_mode else tls_signed.stdout }}\n"
         owner: root
         group: root
         mode: "0644"

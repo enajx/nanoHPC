@@ -64,10 +64,12 @@ groups:
         annotations:
           summary: "The last successful /home backup from {{ $labels.machine }} is more than 26 hours old."
 
-      # An automatic deploy that failed: the cluster stays as it was until a newer commit deploys.
+      # An automatic deploy that failed; it is not tried again until a newer commit. Exit code 3 (`nanohpc deploy`):
+      # the dry run failed on some machines, which were left out, unchanged. 4: the real run failed, so machines
+      # may be partly changed.
       - alert: AutoDeployFailed
         expr: cluster_auto_deploy_last_exit_code != 0
         labels:
           severity: critical
         annotations:
-          summary: "The automatic deploy on {{ $labels.machine }} failed (exit code {{ $value }}). See journalctl -u nanohpc-auto-deploy there."
+          summary: "The automatic deploy on {{ $labels.machine }} failed{{ if eq $value 3.0 }}: its dry run failed on some machines, which were left out, unchanged{{ else if eq $value 4.0 }}: its real run failed, so machines may be partly changed{{ else }} (exit code {{ $value }}){{ end }}. See journalctl -u nanohpc-auto-deploy there."

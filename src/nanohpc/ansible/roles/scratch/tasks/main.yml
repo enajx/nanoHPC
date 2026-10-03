@@ -11,6 +11,7 @@
   ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /scratch
   register: scratch_mount
   changed_when: false
+  check_mode: false
   failed_when: false
 
 - name: Look at the /scratch folder
@@ -38,7 +39,7 @@
         # nofail: a missing scratch disk must not stop the machine from booting (and so lock out SSH).
         line: "UUID={{ scratch_fs.UUID }} /scratch {{ scratch_fs.TYPE }} defaults,nodev,nosuid,nofail,x-systemd.device-timeout=30s 0 2"
         backup: true
-      register: scratch_fstab
+      register: scratch_disk_fstab
 
 - name: Scratch in an image file
   when: scratch.image_gb is not none
@@ -68,11 +69,14 @@
             owner: root
             group: root
             mode: "0755"
+          register: image_folder
 
+        # Dry run before the folder exists: its parent folder, on the same disk.
         - name: Read the free space on the disk that holds the image
-          ansible.builtin.command: df --output=avail,size -B1 /var/lib/nanohpc
+          ansible.builtin.command: "df --output=avail,size -B1 {{ '/var/lib' if (ansible_check_mode and image_folder is changed) else '/var/lib/nanohpc' }}"
           register: image_disk
           changed_when: false
+          check_mode: false
 
         - name: Require 10% of the disk to stay free after the image
           ansible.builtin.assert:
@@ -118,7 +122,7 @@
         regexp: '^\S+\s+/scratch\s'
         line: "{{ scratch_image }} /scratch ext4 loop,nodev,nosuid,nofail 0 0"
         backup: true
-      register: scratch_fstab
+      register: scratch_image_fstab
 
 - name: Create the /scratch mount point
   ansible.builtin.file:
@@ -131,23 +135,30 @@
 
 - name: Mount /scratch now
   ansible.builtin.command: mount /scratch
-  when: scratch_mount.stdout == '' or scratch_fstab.changed
+  when: scratch_mount.stdout == '' or scratch_disk_fstab is changed or scratch_image_fstab is changed
   register: scratch_mounted
   changed_when: true
   failed_when: scratch_mounted.rc != 0 and 'already mounted' not in scratch_mounted.stderr
+
+# The dry run cannot check a mount it has not made yet.
+- name: Note whether /scratch is mounted in this run
+  ansible.builtin.set_fact:
+    scratch_mount_pending: "{{ ansible_check_mode and (scratch_mount.stdout == '' or scratch_disk_fstab is changed or scratch_image_fstab is changed) }}"
 
 - name: Check that /scratch is mounted from a local disk
   ansible.builtin.command: findmnt -n -o SOURCE,UUID --mountpoint /scratch
   register: scratch_now
   changed_when: false
+  check_mode: false
   failed_when: not scratch_now.stdout.startswith('/dev/')
+  when: not scratch_mount_pending
 
 - name: Check that /scratch is the scratch disk from cluster.yml
   ansible.builtin.assert:
     that: scratch_now.stdout.split()[-1] == scratch_fs.UUID
     fail_msg: "{{ inventory_hostname }}: /scratch is mounted from {{ scratch_now.stdout.split()[0] }}, not from {{ scratch.device }}."
     quiet: true
-  when: scratch.device is not none
+  when: scratch.device is not none and not scratch_mount_pending
 
 - name: Apply the no-discard rule to the scratch image's loop device
   ansible.builtin.shell: |
@@ -159,7 +170,7 @@
   register: discard_bytes
   changed_when: false
   failed_when: discard_bytes.stdout | trim != '0'
-  when: scratch.image_gb is not none
+  when: scratch.image_gb is not none and not ansible_check_mode  # triggers udev: real run only
 
 - name: Create the shared scratch folders
   ansible.builtin.file:
@@ -296,3 +307,4 @@
     enabled: true
     state: started
     daemon_reload: "{{ cleanup_units.changed }}"
+  when: not (ansible_check_mode and cleanup_units is changed)  # dry run: the timer is not installed yet

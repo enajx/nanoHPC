@@ -6,12 +6,14 @@
     name: [nfs-kernel-server, quota]
     state: present
     install_recommends: false
+  register: home_packages
 
 # Quotas need the kernel's quota modules. Ubuntu's cloud kernels ship them in linux-modules-extra.
 - name: Look for the kernel's quota module
   ansible.builtin.command: modinfo quota_v2
   register: quota_module
   changed_when: false
+  check_mode: false
   failed_when: false
 
 - name: Install the kernel's extra modules, which hold the quota modules
@@ -30,6 +32,7 @@
 - name: Load the quota modules now
   ansible.builtin.command: modprobe quota_v2
   changed_when: false
+  when: not ansible_check_mode  # loads a kernel module: real run only
 
 - name: Mount the home disk
   when: nanohpc.home.device is not none
@@ -54,12 +57,15 @@
       ansible.builtin.command: findmnt -n -o UUID --mountpoint /home
       register: home_uuid
       changed_when: false
+      check_mode: false
       failed_when: home_uuid.stdout | trim != home_fs.UUID
+      when: not (ansible_check_mode and (home_fstab is changed or (home_mount.stdout | default('')) == ''))  # dry run: not mounted yet
 
 - name: Read the filesystem that holds /home
   ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE,OPTIONS --target /home
   register: home_fs_now
   changed_when: false
+  check_mode: false
 
 - name: Require ext4 or XFS for /home
   ansible.builtin.assert:
@@ -71,6 +77,58 @@
 - name: Turn on user quotas for the root filesystem
   when: nanohpc.home.device is none
   block:
+    # The dry run makes this role's two /etc/fstab changes (usrquota, the /home bind mount below) on a temporary
+    # copy in /tmp and checks it with findmnt, as the real run checks /etc/fstab before writing it. This temporary
+    # copy is the only thing a dry run writes here, besides refreshing apt's package lists.
+    - name: Check the new /etc/fstab with findmnt (dry run)
+      when: ansible_check_mode
+      block:
+        - name: Make a temporary copy of /etc/fstab
+          ansible.builtin.tempfile:
+            path: /tmp
+            suffix: .nanohpc-dry-run
+          register: fstab_check
+          changed_when: false
+          check_mode: false
+
+        - name: Copy /etc/fstab into it
+          ansible.builtin.copy:
+            src: /etc/fstab
+            dest: "{{ fstab_check.path }}"
+            remote_src: true
+            mode: "0600"
+          changed_when: false
+          check_mode: false
+
+        - name: Add usrquota to the copy
+          ansible.builtin.replace:
+            path: "{{ fstab_check.path }}"
+            regexp: '^(\S+\s+/\s+ext4\s+)(?!\S*usrquota)(\S+)'
+            replace: '\1\2,usrquota'
+          changed_when: false
+          check_mode: false
+
+        - name: Add the /home bind mount to the copy
+          ansible.builtin.lineinfile:
+            path: "{{ fstab_check.path }}"
+            regexp: '^\S+\s+/home\s'
+            line: "/home /home none bind,nosuid,nodev 0 0"
+          changed_when: false
+          check_mode: false
+
+        - name: Check the copy with findmnt
+          ansible.builtin.command: findmnt --verify --tab-file {{ fstab_check.path }}
+          changed_when: false
+          check_mode: false
+      always:
+        - name: Remove the temporary copy
+          ansible.builtin.file:
+            path: "{{ fstab_check.path }}"
+            state: absent
+          changed_when: false
+          check_mode: false
+          when: fstab_check.path is defined
+
     - name: Require ext4 for quotas on the root disk
       ansible.builtin.assert:
         that: home_fs_now.stdout.split()[1] == 'ext4'
@@ -92,16 +150,29 @@
       ansible.builtin.command: findmnt -n -s -o OPTIONS --mountpoint /
       register: root_fstab_options
       changed_when: false
+      check_mode: false
       failed_when: "'usrquota' not in root_fstab_options.stdout"
+      when: not (ansible_check_mode and root_fstab is changed)  # dry run: /etc/fstab not changed yet
 
     - name: Apply usrquota to the mounted root filesystem
       ansible.builtin.command: mount -o remount,usrquota /
       when: "'usrquota' not in home_fs_now.stdout.split()[2] and 'quota' not in home_fs_now.stdout.split()[2]"
 
+# The dry run cannot read the quotas before the quota tools are installed and the filesystem that holds
+# /home is mounted with quotas.
+- name: Note whether the quotas can be read in this run
+  ansible.builtin.set_fact:
+    home_quota_pending: >-
+      {{ ansible_check_mode and (home_packages is changed
+         or (nanohpc.home.device is not none and (home_fstab is changed or (home_mount.stdout | default('')) == ''))
+         or (nanohpc.home.device is none and 'quota' not in home_fs_now.stdout.split()[2])) }}
+
 - name: Read the quota mount point (the filesystem that holds /home)
   ansible.builtin.command: "findmnt -n -o TARGET,FSTYPE --mountpoint {{ '/home' if nanohpc.home.device is not none else '/' }}"
   register: quota_target
   changed_when: false
+  check_mode: false
+  when: not home_quota_pending
 
 # /home on the root disk cannot be mounted nosuid by itself, so it is bind-mounted onto itself with nosuid.
 - name: Mount /home on the root disk onto itself without setuid or device files
@@ -127,26 +198,28 @@
   ansible.builtin.shell: "dumpe2fs -h $(findmnt -n -o SOURCE --target /home) 2>/dev/null | grep -i '^Filesystem features:'"
   register: ext4_features
   changed_when: false
+  check_mode: false
   failed_when: false
-  when: quota_target.stdout.split()[1] == 'ext4'
+  when: not home_quota_pending and quota_target.stdout.split()[1] == 'ext4'
 
 # Without built-in quota support, ext4 keeps quotas in quota files: create them once, then switch quotas on.
 - name: Create the quota files
   ansible.builtin.command: "quotacheck -cum {{ quota_target.stdout.split()[0] }}"
   args:
     creates: "{{ quota_target.stdout.split()[0] | regex_replace('/$', '') }}/aquota.user"
-  when: quota_target.stdout.split()[1] == 'ext4' and ' quota' not in ext4_features.stdout | default('')
+  when: not home_quota_pending and quota_target.stdout.split()[1] == 'ext4' and ' quota' not in ext4_features.stdout | default('')
 
 - name: Read whether user quotas are on
   ansible.builtin.command: "quotaon -p -u {{ quota_target.stdout.split()[0] }}"
   register: quota_state
   changed_when: false
+  check_mode: false
   failed_when: false
-  when: quota_target.stdout.split()[1] == 'ext4'
+  when: not home_quota_pending and quota_target.stdout.split()[1] == 'ext4'
 
 - name: Switch user quotas on
   ansible.builtin.command: "quotaon -u {{ quota_target.stdout.split()[0] }}"
-  when: quota_target.stdout.split()[1] == 'ext4' and ' is on' not in quota_state.stdout
+  when: not home_quota_pending and quota_target.stdout.split()[1] == 'ext4' and ' is on' not in quota_state.stdout
 
 - name: Create private home folders
   ansible.builtin.file:
@@ -163,6 +236,8 @@
   ansible.builtin.command: "repquota -u -O csv {{ quota_target.stdout.split()[0] }}"
   register: quotas_now
   changed_when: false
+  check_mode: false
+  when: not home_quota_pending
 
 - name: Set each user's home quota (1 KiB blocks; no file count limit)
   ansible.builtin.command: "setquota -u {{ item.name }} {{ item.soft_kib }} {{ item.hard_kib }} 0 0 {{ quota_target.stdout.split()[0] }}"
@@ -173,9 +248,9 @@
     columns: "{{ quotas_now.stdout_lines[0].split(',') }}"
     row: "{{ (quotas_now.stdout_lines | select('match', '^' ~ item.name ~ ',') | first | default('')).split(',') }}"
   when: >-
-    row | length != columns | length
+    not home_quota_pending and (row | length != columns | length
     or [row[columns.index('BlockSoftLimit')], row[columns.index('BlockHardLimit')]]
-       != [item.soft_kib | string, item.hard_kib | string]
+       != [item.soft_kib | string, item.hard_kib | string])
 
 - name: Read the grace time last set by nanoHPC
   ansible.builtin.slurp:
@@ -185,7 +260,7 @@
 
 - name: Set the grace time for going over the soft limit
   ansible.builtin.command: "setquota -t {{ nanohpc.home.grace_seconds }} {{ nanohpc.home.grace_seconds }} {{ quota_target.stdout.split()[0] }}"
-  when: (grace_now.content | default('') | b64decode | trim) != nanohpc.home.grace_seconds | string
+  when: not home_quota_pending and (grace_now.content | default('') | b64decode | trim) != nanohpc.home.grace_seconds | string
 
 - name: Record the grace time
   ansible.builtin.copy:
@@ -215,6 +290,7 @@
     name: nfs-kernel-server
     enabled: true
     state: started
+  when: not (ansible_check_mode and home_packages is changed)  # dry run: not installed yet
 
 - name: Apply the exports
   ansible.builtin.command: exportfs -ra

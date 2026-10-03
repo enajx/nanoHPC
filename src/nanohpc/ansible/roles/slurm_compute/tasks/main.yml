@@ -59,3 +59,4 @@
     name: slurmd
     enabled: true
     state: started
+  when: not slurm_install_pending  # dry run: Slurm not installed yet

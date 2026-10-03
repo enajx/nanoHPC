@@ -29,8 +29,9 @@ def validate(path: Path) -> int:
     return 0
 
 
-def run_deploy(path: Path, ssh_config: Path | None) -> int:
-    """Validate a cluster.yml, then set up the cluster it describes."""
+def run_deploy(path: Path, ssh_config: Path | None, dry_run_only: bool) -> int:
+    """Validate a cluster.yml, then set up the cluster it describes (after a dry run; only the dry run with
+    `dry_run_only`)."""
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
         return 1
@@ -46,7 +47,7 @@ def run_deploy(path: Path, ssh_config: Path | None) -> int:
     # service only on simulated clusters; test use).
     simulated = os.environ.get("NANOHPC_SIMULATED") == "1"
     fake_gpus = [name for name in os.environ.get("NANOHPC_FAKE_GPUS", "").split(",") if name] if simulated else []
-    return deploy.deploy(config, ssh_config, simulated, fake_gpus, automatic)
+    return deploy.deploy(config, ssh_config, simulated, fake_gpus, automatic, dry_run_only)
 
 
 def forwarding_rules(path: Path) -> int:
@@ -72,8 +73,11 @@ def forwarding_rules(path: Path) -> int:
     return 0
 
 
-def simulate(action: str, path: Path, ssh_config: Path | None) -> int:
+def simulate(action: str, path: Path, ssh_config: Path | None, dry_run_only: bool) -> int:
     """Start (`up`), set up with nanoHPC (`deploy`), or remove (`down`) the simulated test cluster of a sim file."""
+    if dry_run_only and action != "deploy":
+        print("--dry-run works only with nanohpc sim deploy", file=sys.stderr)
+        return 1
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
         return 1
@@ -102,7 +106,7 @@ def simulate(action: str, path: Path, ssh_config: Path | None) -> int:
         if errors:
             print("\n".join([f"{state / 'cluster.yml'}: {error}" for error in errors]), file=sys.stderr)
             return 1
-        return deploy.deploy(config, ssh_config or state / "ssh_config", True, plan.fake_gpus, False)
+        return deploy.deploy(config, ssh_config or state / "ssh_config", True, plan.fake_gpus, False, dry_run_only)
     state = sim.up(plan)
     print(f"simulated cluster {plan.name} is up: {state}/cluster.yml, {state}/ssh_config")
     return 0
@@ -118,6 +122,9 @@ def main() -> None:
     setup = commands.add_parser("deploy", help="set up the cluster described by a cluster.yml")
     setup.add_argument("path", type=Path, help="path to cluster.yml")
     setup.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
+    setup.add_argument(
+        "--dry-run", action="store_true", help="only the dry run: show what would change, and change nothing"
+    )
     rules = commands.add_parser(
         "forwarding-rules", help="print rules for the lab's own web server to show the cluster website"
     )
@@ -130,6 +137,7 @@ def main() -> None:
     simulation.add_argument(
         "--ssh-config", type=Path, help="deploy only: SSH config to reach the VMs (default: the one sim up wrote)"
     )
+    simulation.add_argument("--dry-run", action="store_true", help="deploy only: only the dry run, change nothing")
     fix = commands.add_parser(
         "fix-uid", help="renumber a user on a machine to their UID in cluster.yml (dry run unless --apply)"
     )
@@ -145,11 +153,11 @@ def main() -> None:
     if arguments.command == "validate":
         sys.exit(validate(arguments.path))
     if arguments.command == "deploy":
-        sys.exit(run_deploy(arguments.path, arguments.ssh_config))
+        sys.exit(run_deploy(arguments.path, arguments.ssh_config, arguments.dry_run))
     if arguments.command == "forwarding-rules":
         sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":
-        sys.exit(simulate(arguments.action, arguments.path, arguments.ssh_config))
+        sys.exit(simulate(arguments.action, arguments.path, arguments.ssh_config, arguments.dry_run))
     if arguments.command == "fix-uid":
         sys.exit(fixuid.run(arguments.path, arguments.user, arguments.machine, arguments.ssh_config, arguments.apply))
     if arguments.command == "init":

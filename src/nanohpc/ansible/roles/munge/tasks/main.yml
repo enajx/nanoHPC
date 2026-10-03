@@ -11,12 +11,19 @@
     name: munge
     state: present
     install_recommends: false
+  register: munge_package
 
 - name: Create the Munge key on the front node if there is none
   ansible.builtin.command: mungekey --create --keyfile /etc/munge/munge.key
   args:
     creates: /etc/munge/munge.key
   when: inventory_hostname in groups['role_front']
+  register: munge_keygen
+
+# The dry run cannot read or copy a key it has not made yet.
+- name: Note whether the front node's Munge key exists in this run
+  ansible.builtin.set_fact:
+    munge_key_pending: "{{ ansible_check_mode and hostvars[groups['role_front'][0]].munge_keygen is changed }}"
 
 - name: Read the front node's Munge key
   ansible.builtin.slurp:
@@ -25,28 +32,37 @@
   delegate_to: "{{ groups['role_front'][0] }}"
   run_once: true
   no_log: true
+  when: not munge_key_pending
 
 # The key is binary, so it travels base64-encoded and is decoded on the machine.
 - name: Install the cluster's Munge key
   ansible.builtin.shell: |
     set -eu
     if printf '%s' "$KEY" | base64 -d | cmp -s - /etc/munge/munge.key; then exit 0; fi
+    if [ "$DRY_RUN" = True ]; then echo changed; exit 0; fi
     printf '%s' "$KEY" | base64 -d > /etc/munge/munge.key.new
     install -o munge -g munge -m 0400 /etc/munge/munge.key.new /etc/munge/munge.key
     rm -f /etc/munge/munge.key.new
     echo changed
   environment:
     KEY: "{{ front_munge_key.content }}"
+    DRY_RUN: "{{ ansible_check_mode }}"  # the dry run only compares, and writes nothing
   register: munge_key
   changed_when: "'changed' in munge_key.stdout"
+  check_mode: false
   no_log: true
+  when: not munge_key_pending
 
 - name: Run Munge
   ansible.builtin.service:
     name: munge
     enabled: true
     state: "{{ 'restarted' if munge_key.changed else 'started' }}"
+  when: not (ansible_check_mode and munge_package is changed)  # dry run: not installed yet
+  register: munge_service
 
 - name: Check that Munge works on this machine
   ansible.builtin.shell: munge -n | unmunge
   changed_when: false
+  check_mode: false
+  when: not (ansible_check_mode and (munge_key_pending or munge_service is changed or munge_service is skipped))  # dry run: Munge or its key not set up yet

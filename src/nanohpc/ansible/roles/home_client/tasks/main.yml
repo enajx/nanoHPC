@@ -37,4 +37,6 @@
   ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /home
   register: home_now
   changed_when: false
+  check_mode: false
   failed_when: home_now.stdout.split() != [nanohpc.home.server_address ~ ':/home', 'nfs4']
+  when: not (ansible_check_mode and (home_fstab is changed or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'))  # dry run: not mounted yet
