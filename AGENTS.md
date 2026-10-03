@@ -91,3 +91,7 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 ## Secrets
 
 - **Keep secrets (API keys, tokens) in `.env`, and keep `.env` in `.gitignore`.** For projects with CI/CD, store the keys as repository secrets.
+
+## Setting up a cluster with nanoHPC
+
+- To set up or change a cluster with nanoHPC (rather than develop nanoHPC), follow [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md): the same steps as the setup wizard, `nanohpc init`.
