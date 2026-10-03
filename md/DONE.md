@@ -97,3 +97,11 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - `SETUP-for-AGENTS.md`: the same steps for agents writing `cluster.yml` from the examples.
 - Checked with headless tests and on the simulated cluster (the probe, fix-uid, and the real wizard probing the machines) and reviewed by a separate agent.
 - Files: `src/nanohpc/wizard/`, `src/nanohpc/{clusterfile,probe,fixuid,cli}.py`, `SETUP-for-AGENTS.md`, tests `test_wizard.py`, `test_clusterfile.py`, `test_probe.py`, `test_fixuid.py`, `test_sim.py` (SimSetupTest).
+
+## 2026-10-04: dry run before every deploy (M8a)
+
+- Every deploy, manual or automatic, first runs the playbook in check mode on every machine and prints what it would change there (including changes made by commands, and the validators such as visudo, promtool, amtool, and the Lua check run on the rendered files). Nothing changes in the dry run except apt's package lists. `nanohpc deploy --dry-run` stops after it.
+- Machines whose dry run fails are left out of the real run and listed at the end (exit code 3); when the front node or the home machine fails, nothing is deployed. A failure in the real run says which machines may be partly changed (exit code 4); the automatic deploy's journal and alert say which run failed. A manual deploy stops before changing anything if an automatic deploy ran during its dry run.
+- A first deploy of new machines can only be partly previewed (services, downloads, the Slurm build, and accounting that depend on earlier changes); the preflight checks always run in full.
+- Checked on the simulated cluster (everyday, redeploy safety checks, automatic deploys, the release cluster, /home on the storage machine; a dry run leaves the machines' files and services unchanged) and verified by separate agents.
+- Files: `src/nanohpc/deploy.py`, `src/nanohpc/cli.py`, `src/nanohpc/ansible/callback_plugins/nanohpc_record.py`, `src/nanohpc/ansible/site.yml`, `src/nanohpc/ansible/roles/*` (check mode, the dry_run_check role), `src/nanohpc/files/{nanohpc-auto-deploy,prometheus-alert-rules.yml}`, tests `test_deploy.py`, `test_playbook_check_mode.py`, `test_sim.py`, `md/testing.md`, `SETUP-for-AGENTS.md`.
