@@ -1,0 +1,292 @@
+/* nanoHPC setup wizard: neobrutalism, like the website. Flat colours, heavy dark borders, no gradients,
+   no rounded corners. Ink #172322 on paper #faf9f6; accent #06d6a0; cards #ff7f50, #ffd166, #118ab2. */
+
+Screen {
+    background: #faf9f6;
+    color: #172322;
+}
+
+ModalScreen {
+    background: #172322 40%;
+    align: center middle;
+}
+
+#body {
+    height: 1fr;
+    border: heavy #172322;
+}
+
+#sidebar {
+    width: 22;
+    border-right: heavy #172322;
+    background: #faf9f6;
+}
+
+#title {
+    background: #172322;
+    color: #faf9f6;
+    text-style: bold;
+    padding: 0 1;
+    height: 1;
+}
+
+#steps {
+    background: #faf9f6;
+    height: auto;
+}
+
+#steps > ListItem {
+    background: #faf9f6;
+    color: #172322;
+    padding: 0 1;
+}
+
+#steps > ListItem.-highlight {
+    background: #faf9f6;
+}
+
+#steps:focus > ListItem.-highlight {
+    background: #ffd166;
+}
+
+#steps > ListItem.current, #steps:focus > ListItem.current.-highlight {
+    background: #06d6a0;
+    text-style: bold;
+}
+
+#steps > ListItem.has-errors Label {
+    color: #b3361a;
+}
+
+#content {
+    width: 1fr;
+    padding: 0 1;
+}
+
+.step {
+    padding: 0 1;
+    scrollbar-color: #172322;
+    scrollbar-background: #e4e2dc;
+    scrollbar-size-vertical: 1;
+}
+
+#footer {
+    height: 4;
+    border: heavy #172322;
+    border-top: none;
+    background: #faf9f6;
+    padding: 0 1;
+}
+
+#keys {
+    text-style: bold;
+}
+
+#agents {
+    color: #118ab2;
+}
+
+.heading {
+    background: #06d6a0;
+    color: #172322;
+    text-style: bold;
+    padding: 0 1;
+    margin: 1 0 1 0;
+    width: auto;
+    border: heavy #172322;
+}
+
+.subheading {
+    background: #ffd166;
+    color: #172322;
+    text-style: bold;
+    padding: 0 1;
+    margin: 1 0 0 0;
+    width: auto;
+}
+
+.hint {
+    color: #4a5856;
+    margin: 0 0 1 0;
+}
+
+.note {
+    background: #ffd166;
+    border: heavy #172322;
+    padding: 0 1;
+    margin: 1 0;
+}
+
+.warning {
+    background: #ff7f50;
+    border: heavy #172322;
+    padding: 0 1;
+    margin: 1 0;
+}
+
+.ok {
+    background: #06d6a0;
+    border: heavy #172322;
+    padding: 0 1;
+    margin: 1 0;
+}
+
+.card {
+    background: #118ab2;
+    color: #faf9f6;
+    border: heavy #172322;
+    padding: 0 1;
+    margin: 1 0;
+}
+
+.command {
+    background: #172322;
+    color: #faf9f6;
+    padding: 1 2;
+}
+
+.form-error {
+    color: #b3361a;
+    text-style: bold;
+}
+
+.row {
+    height: auto;
+    margin: 0 0 0 0;
+}
+
+.field-label {
+    width: 26;
+    padding: 1 1 0 0;
+}
+
+.roles {
+    height: auto;
+}
+
+.buttons {
+    height: auto;
+    margin: 1 0 0 0;
+}
+
+Button {
+    background: #06d6a0;
+    color: #172322;
+    border: heavy #172322;
+    text-style: bold;
+    margin: 0 1 0 0;
+    min-width: 10;
+    height: 3;
+}
+
+Button:hover, Button:focus {
+    background: #ffd166;
+    border: heavy #172322;
+}
+
+Button.secondary {
+    background: #faf9f6;
+}
+
+Button.danger {
+    background: #ff7f50;
+}
+
+Button:disabled {
+    background: #e4e2dc;
+    color: #8a8f8e;
+}
+
+Input {
+    background: #ffffff;
+    color: #172322;
+    border: heavy #172322;
+    width: 1fr;
+}
+
+Input:focus {
+    border: heavy #06d6a0;
+}
+
+Select {
+    width: 1fr;
+}
+
+Select > SelectCurrent {
+    background: #ffffff;
+    color: #172322;
+    border: heavy #172322;
+}
+
+Select:focus > SelectCurrent {
+    border: heavy #06d6a0;
+}
+
+Checkbox {
+    background: #faf9f6;
+    color: #172322;
+    border: none;
+}
+
+Switch {
+    border: heavy #172322;
+}
+
+TextArea {
+    border: heavy #172322;
+    background: #ffffff;
+    height: 8;
+}
+
+#yaml {
+    height: 24;
+}
+
+DataTable {
+    height: auto;
+    max-height: 14;
+    border: heavy #172322;
+    background: #ffffff;
+}
+
+DataTable > .datatable--header {
+    background: #172322;
+    color: #faf9f6;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #06d6a0;
+    color: #172322;
+}
+
+#errors {
+    height: auto;
+    max-height: 12;
+    background: #faf9f6;
+}
+
+#errors > ListItem {
+    background: #ff7f50;
+    color: #172322;
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
+#errors > ListItem.-highlight {
+    background: #ffd166;
+}
+
+.dialog {
+    width: 90;
+    max-width: 95%;
+    height: auto;
+    max-height: 90%;
+    background: #faf9f6;
+    border: heavy #172322;
+    padding: 0 2 1 2;
+}
+
+.dialog.wide {
+    width: 110;
+}
