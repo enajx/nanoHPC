@@ -20,6 +20,8 @@ run, in order:
   7. Runs `NANOHPC deploy cluster.yml --ssh-config SSH_CONFIG` in the checkout, with stdin on /dev/null and
      NANOHPC_AUTOMATIC=1 in its environment; its output goes to this program's stdout and stderr (the journal).
      Exit code 0 writes the commit to STATE/deployed and removes STATE/failed; any other code writes STATE/failed.
+     Exit code 3 means the deploy's dry run failed on some machines (left out, unchanged), 4 that its real run
+     failed (machines may be partly changed); the journal says which.
 The program exits with the deploy's exit code, or the code of the step that stopped it.
 
 cluster.yml is read without a YAML parser (this program uses only Python's standard library): the version must be
@@ -73,6 +75,11 @@ RUN = "cluster_auto_deploy_last_run_timestamp_seconds"
 SUCCESS = "cluster_auto_deploy_last_success_timestamp_seconds"
 CHECK = "cluster_auto_deploy_last_check_timestamp_seconds"
 INFO = "cluster_auto_deploy_info"
+# What `nanohpc deploy`'s exit codes mean, for the journal.
+DEPLOY_FAILURES = {
+    3: " (its dry run failed on some machines, which were left out, unchanged)",
+    4: " (its real run failed, so machines may be partly changed)",
+}
 MEANINGS = {
     EXIT_CODE: "Exit code of the last automatic deploy run (0 is success).",
     RUN: "When the last automatic deploy run started.",
@@ -318,7 +325,7 @@ def main() -> None:
         subprocess.run(command, cwd=checkout, stdin=subprocess.DEVNULL, env=environment, check=False).returncode
     )
     if code != 0:
-        warn(f"deploy of commit {commit} failed with exit code {code}; waiting for a newer commit")
+        warn(f"deploy of commit {commit} failed with exit code {code}{DEPLOY_FAILURES.get(code, '')}; waiting for a newer commit")
         finish(arguments, started, code, commit)
     replace_file(deployed, commit + "\n", 0o644)
     failed.unlink(missing_ok=True)
