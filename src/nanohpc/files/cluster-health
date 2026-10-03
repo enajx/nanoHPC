@@ -159,6 +159,16 @@ if has front; then
     check "service $service" systemctl is-active --quiet "$service"
   done
   check "the Slurm controller answers" scontrol ping
+  if test -f /etc/systemd/system/nanohpc-auto-deploy.timer; then
+    check "automatic deploy timer" systemctl is-active --quiet nanohpc-auto-deploy.timer
+    note "the last automatic deploy worked (journalctl -u nanohpc-auto-deploy)" sh -c \
+      '! grep -q "^cluster_auto_deploy_last_exit_code [1-9]" /var/lib/nanohpc/metrics-textfile/auto-deploy.prom 2>/dev/null'
+    # A run that was killed (timeout, out of memory) writes no result; the service is then failed.
+    note "the last automatic deploy run finished" sh -c '! systemctl is-failed --quiet nanohpc-auto-deploy.service'
+  fi
+  if test -f /etc/systemd/system/nanohpc-deploy-hook.service; then
+    check "service nanohpc-deploy-hook (GitHub webhook)" systemctl is-active --quiet nanohpc-deploy-hook
+  fi
   if test -f /etc/nanohpc/website/address; then
     read -r web_host web_path < /etc/nanohpc/website/address
     check "service nginx (website)" systemctl is-active --quiet nginx

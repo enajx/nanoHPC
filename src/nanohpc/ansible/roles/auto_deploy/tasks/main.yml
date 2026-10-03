@@ -1,0 +1,266 @@
+# Automatic deploys on the front node: every few minutes (and, with the webhook, right after a push) the
+# front node fetches the configuration repository's branch with its own read-only key, installs the pinned
+# nanoHPC version, and runs `nanohpc deploy` for every machine as root with its own key (accepted only from
+# the front node's address). See nanohpc-auto-deploy for the run itself (lock, fast-forward only, a failed
+# commit is not retried, the result as metrics).
+
+- name: Install Git
+  ansible.builtin.apt:
+    name: git
+    state: present
+    install_recommends: false
+
+- name: Create the automatic deploy state folder
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: [/var/lib/nanohpc/auto-deploy, /var/lib/nanohpc/auto-deploy/state]
+
+# The configuration repository's read-only key ("deploy key" on GitHub).
+- name: Make the repository key
+  ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-config@{{ inventory_hostname }}" -f /etc/nanohpc/auto-deploy/repository_ed25519
+  args:
+    creates: /etc/nanohpc/auto-deploy/repository_ed25519
+
+# GitHub's published host keys are pinned; another host's key is learned once (and kept).
+- name: Pin GitHub's SSH host keys
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/auto-deploy/repository_known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+      github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+      github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+  when: nanohpc.auto_deploy.repository_host == 'github.com'
+
+- name: Learn the repository host's SSH key (first deploy to this host only)
+  ansible.builtin.shell: |
+    set -eu
+    known=/etc/nanohpc/auto-deploy/repository_known_hosts
+    if test -f "$known" && ssh-keygen -F {{ nanohpc.auto_deploy.repository_host | quote }} -f "$known" >/dev/null; then
+      exit 0
+    fi
+    ssh-keyscan -T 15 {{ nanohpc.auto_deploy.repository_host | quote }} > "$known.partial"
+    test -s "$known.partial"
+    mv "$known.partial" "$known"
+    echo learned
+  register: repository_host_key
+  changed_when: "'learned' in repository_host_key.stdout"
+  when: nanohpc.auto_deploy.repository_host != 'github.com'
+
+# The machines' SSH host keys and how the front node reaches each machine as root.
+- name: Pin every machine's SSH host key
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/auto-deploy/machines_known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name in nanohpc.machines %}
+      {{ nanohpc.machines[name].address }} ssh-ed25519 {{ hostvars[name].ansible_facts.ssh_host_key_ed25519_public }}
+      {% endfor %}
+
+- name: Write the SSH config for automatic deploys
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/auto-deploy/ssh_config
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name in nanohpc.machines %}
+      Host {{ name }}
+        HostName {{ nanohpc.machines[name].address }}
+        User root
+        IdentityFile /etc/nanohpc/auto-deploy/id_ed25519
+        IdentitiesOnly yes
+        StrictHostKeyChecking yes
+        UserKnownHostsFile /etc/nanohpc/auto-deploy/machines_known_hosts
+
+      {% endfor %}
+
+# The checkout is made without network access, so a deploy works before the key is added to the repository.
+- name: Create the checkout of the configuration repository
+  ansible.builtin.shell: |
+    set -eu
+    checkout=/var/lib/nanohpc/auto-deploy/config
+    state=/var/lib/nanohpc/auto-deploy/state
+    # Another branch (or repository) starts a fresh checkout and forgets what was deployed from the old one.
+    wanted={{ (nanohpc.auto_deploy.repository ~ ' ' ~ nanohpc.auto_deploy.branch) | quote }}
+    if test -f "$state/source" && test "$(cat "$state/source")" != "$wanted"; then
+      rm -rf "$checkout" "$state/deployed" "$state/failed"
+    fi
+    printf '%s\n' "$wanted" > "$state/source.partial" && mv "$state/source.partial" "$state/source"
+    mkdir -p "$checkout"
+    cd "$checkout"
+    changed=""
+    if ! test -d .git; then git init -q; changed=yes; fi
+    if test "$(git config --get remote.origin.url || true)" != {{ nanohpc.auto_deploy.repository | quote }}; then
+      git remote remove origin 2>/dev/null || true
+      git remote add origin {{ nanohpc.auto_deploy.repository | quote }}
+      changed=yes
+    fi
+    command='ssh -i /etc/nanohpc/auto-deploy/repository_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/nanohpc/auto-deploy/repository_known_hosts'
+    if test "$(git config --get core.sshCommand || true)" != "$command"; then git config core.sshCommand "$command"; changed=yes; fi
+    grep -qx '.env' .git/info/exclude 2>/dev/null || { echo '.env' >> .git/info/exclude; changed=yes; }
+    test -z "$changed" || echo changed
+  register: checkout
+  changed_when: "'changed' in checkout.stdout"
+
+- name: Put the secrets next to the checkout's cluster.yml (kept out of Git)
+  ansible.builtin.copy:
+    dest: /var/lib/nanohpc/auto-deploy/config/.env
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      # Secrets for automatic deploys, copied from the administrator's .env by nanohpc deploy.
+      {% if nanohpc_secrets.slack_webhook %}NANOHPC_SLACK_WEBHOOK={{ nanohpc_secrets.slack_webhook }}
+      {% endif %}{% if nanohpc_secrets.deploy_webhook %}NANOHPC_DEPLOY_WEBHOOK_SECRET={{ nanohpc_secrets.deploy_webhook }}
+      {% endif %}
+  no_log: true
+
+# nanoHPC itself, installed the way the administrator installed it.
+- name: Install the nanoHPC installer
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-install"
+    dest: /usr/local/sbin/nanohpc-install
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Say where nanoHPC comes from
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/auto-deploy/install.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      KIND={{ nanohpc.auto_deploy.install.kind }}
+      URL={{ nanohpc.auto_deploy.install.url if nanohpc.auto_deploy.install.kind == 'git' else '' }}
+  when: not nanohpc.automatic  # an automatic deploy keeps how the administrator's deploy said to install
+
+- name: Copy the nanoHPC wheel (nanoHPC from a local checkout)
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/nanohpc-wheel/"
+    dest: /var/lib/nanohpc/auto-deploy/wheels/
+    owner: root
+    group: root
+    mode: "0644"
+  when: nanohpc.auto_deploy.install.kind == 'wheel' and not nanohpc.automatic
+
+- name: Read the installed nanoHPC version
+  ansible.builtin.command: /opt/nanohpc-tool/bin/nanohpc --version
+  register: installed_nanohpc
+  changed_when: false
+  failed_when: false
+
+- name: Install the pinned nanoHPC version
+  ansible.builtin.command: /usr/local/sbin/nanohpc-install {{ nanohpc.auto_deploy.version }}
+  when: installed_nanohpc.stdout != 'nanohpc ' ~ nanohpc.auto_deploy.version and not nanohpc.automatic
+
+# The Slurm packages built for this cluster, so the front node's deploys do not build Slurm again.
+- name: Copy the cached Slurm packages to the front node
+  ansible.builtin.copy:
+    src: "{{ nanohpc.slurm.cache }}/"
+    dest: "/root/.cache/nanohpc/slurm/{{ nanohpc.slurm.version }}/"
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Install the automatic deploy command
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-auto-deploy"
+    dest: /usr/local/sbin/nanohpc-auto-deploy
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the automatic deploy service and timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/nanohpc-auto-deploy.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if item == 'service' %}
+      [Unit]
+      Description=Deploy the cluster from {{ nanohpc.auto_deploy.repository }} ({{ nanohpc.auto_deploy.branch }}) (nanoHPC)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      Environment=HOME=/root
+      {% if nanohpc.auto_deploy.simulated %}
+      # Simulated cluster: deploy like nanohpc sim deploy (fake GPUs, test certificates).
+      Environment=NANOHPC_SIMULATED=1
+      Environment=NANOHPC_FAKE_GPUS={{ nanohpc.auto_deploy.fake_gpus | join(',') }}
+      {% endif %}
+      ExecStart=/usr/local/sbin/nanohpc-auto-deploy --checkout /var/lib/nanohpc/auto-deploy/config \
+        --branch {{ nanohpc.auto_deploy.branch }} --remote {{ nanohpc.auto_deploy.repository }} \
+        --state /var/lib/nanohpc/auto-deploy/state --metrics /var/lib/nanohpc/metrics-textfile/auto-deploy.prom \
+        --installer /usr/local/sbin/nanohpc-install --nanohpc /opt/nanohpc-tool/bin/nanohpc \
+        --ssh-config /etc/nanohpc/auto-deploy/ssh_config
+      TimeoutStartSec=3h
+      {% else %}
+      [Unit]
+      Description=Check {{ nanohpc.auto_deploy.repository }} every {{ nanohpc.auto_deploy.every_minutes }} minutes (nanoHPC)
+
+      [Timer]
+      OnActiveSec={{ nanohpc.auto_deploy.every_minutes }}min
+      OnUnitInactiveSec={{ nanohpc.auto_deploy.every_minutes }}min
+      AccuracySec=30s
+
+      [Install]
+      WantedBy=timers.target
+      {% endif %}
+  loop: [service, timer]
+  register: auto_deploy_units
+
+- name: Enable the automatic deploy timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-auto-deploy.timer
+    enabled: true
+    daemon_reload: "{{ auto_deploy_units.changed }}"
+
+# Started again after this deploy's pause (see pause.yml), so not a change of its own.
+- name: Run the automatic deploy timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-auto-deploy.timer
+    state: started
+  changed_when: false
+
+- name: Set up the webhook listener
+  ansible.builtin.include_tasks: webhook.yml
+  when: nanohpc.auto_deploy.webhook
+
+- name: Remove the webhook listener
+  ansible.builtin.include_tasks: webhook_off.yml
+  when: not nanohpc.auto_deploy.webhook
+
+- name: Read the repository key's public half
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/auto-deploy/repository_ed25519.pub
+  register: repository_public_key
+
+# Read-only: can the front node read the repository yet?
+- name: Check that the front node can read the configuration repository
+  ansible.builtin.command:
+    argv: [git, -C, /var/lib/nanohpc/auto-deploy/config, ls-remote, --heads, origin, "{{ nanohpc.auto_deploy.branch }}"]
+  register: repository_readable
+  changed_when: false
+  failed_when: false
+
+- name: Say how to let the front node read the configuration repository
+  ansible.builtin.debug:
+    msg: >-
+      The front node cannot read {{ nanohpc.auto_deploy.repository }} (branch {{ nanohpc.auto_deploy.branch }}) yet,
+      so automatic deploys will fail until it can. Add this read-only key to the repository (on GitHub: Settings,
+      Deploy keys, Add deploy key, without write access): {{ repository_public_key.content | b64decode | trim }}
+  when: repository_readable.rc != 0 or (repository_readable.stdout | length) == 0

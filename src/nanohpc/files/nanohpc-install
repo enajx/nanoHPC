@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Install nanoHPC VERSION on the front node for automatic deploys, the way the administrator installed
+# nanoHPC (/etc/nanohpc/auto-deploy/install.conf, written by the deploy):
+#   KIND=pypi   nanohpc==VERSION from PyPI
+#   KIND=git    the Git repository URL at tag vVERSION
+#   KIND=wheel  the wheel the deploy copied (nanoHPC from a local checkout)
+# The tool goes to /opt/nanohpc-tool (its command: /opt/nanohpc-tool/bin/nanohpc), with uv's own Python 3.12
+# when the machine has no suitable Python. NANOHPC_INSTALL_CONF and NANOHPC_INSTALL_WHEELS are for tests.
+set -euo pipefail
+
+version=${1:-}
+if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "nanohpc-install: not a version: '$version' (usage: nanohpc-install VERSION)" >&2
+  exit 2
+fi
+conf=${NANOHPC_INSTALL_CONF:-/etc/nanohpc/auto-deploy/install.conf}
+wheels=${NANOHPC_INSTALL_WHEELS:-/var/lib/nanohpc/auto-deploy/wheels}
+kind=$(sed -n 's/^KIND=//p' "$conf")
+url=$(sed -n 's/^URL=//p' "$conf")
+
+case "$kind" in
+  pypi) spec="nanohpc==$version" ;;
+  git) spec="git+$url@v$version" ;;
+  wheel)
+    spec="$wheels/nanohpc-$version-py3-none-any.whl"
+    if [[ ! -f $spec ]]; then
+      echo "nanohpc-install: no wheel for nanoHPC $version in $wheels (deploy that version from the administrator's machine)" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "nanohpc-install: unknown install kind '$kind' in $conf" >&2
+    exit 2
+    ;;
+esac
+
+export UV_TOOL_DIR=/opt/nanohpc-tool/tools UV_TOOL_BIN_DIR=/opt/nanohpc-tool/bin UV_PYTHON_INSTALL_DIR=/opt/nanohpc-tool/python
+uv tool install --force --python 3.12 "$spec"

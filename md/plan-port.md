@@ -108,6 +108,27 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
 - Backup to an outside SSH server (`user@host:/path`): the deploy prints the home machine's public backup key to install there; owners are kept only if that account can keep them.
 - The backup's result (time of the last success, exit code) is a metric; `cluster-health` on the home machine warns when the last successful backup is more than 26 hours old.
 
+## Agreed for M6b (automatic deploys), 2026-10-02
+
+- The front node installs the nanoHPC version pinned in the configuration repository the same way the administrator installed nanoHPC: from the nanoHPC GitHub repository at tag `v<version>` (the default; public by then), from PyPI, or, for a local checkout (development, the simulated cluster), from a wheel the deploy copies. A small install script on the front node does it.
+- The front node logs in to every other machine as root with its own key, accepted only from the front node's address (key-only root login, keys on local disk).
+
+## M6b: choices made by the agent, to review
+
+- The configuration repository is any Git repository over SSH (`git@github.com:lab/cluster-config.git`), with `cluster.yml` at its root; the front node reads it with its own read-only key (GitHub "deploy key"; the deploy prints it to add). The front node's checkout stays clean and fast-forwards only; the `.env` with the secrets is copied next to it by `nanohpc deploy` and kept out of Git.
+- A run takes a lock (one deploy at a time; a manual `nanohpc deploy` on the front node waits), deploys a new commit once, does not retry a commit that failed until a newer one arrives, and records the result as metrics (an alert when it fails).
+- An own website certificate (`https: own`): its files are on the administrator's machine, so automatic deploys keep the certificate and key already on the front node (from the last `nanohpc deploy`); a new certificate needs a manual deploy. Private keys never go into the configuration repository.
+
+## Agreed for M7 (setup wizard), 2026-10-03
+
+- `nanohpc init` is a full-screen terminal app built with Textual (Python, installed with nanoHPC, tested headless); the look follows the website's neobrutalism style where it fits.
+- The administrator lists the machines (names or addresses, or hosts from their ~/.ssh/config); the wizard checks SSH and probes each one.
+- It writes a new `cluster.yml` or opens an existing one to change it.
+- The wizard is for people. Agents write `cluster.yml` from the examples, following `SETUP-for-AGENTS.md`, which lists the same steps as the wizard; AGENTS.md links to it.
+- Steps: machines (SSH check and probe, roles, GPU types), storage (where /home lives, scratch, the commands to make filesystems with the option to skip, storage advice), users (names, UIDs, SSH keys, administrators, UID check on every machine), partitions and policy (simple defaults), website (hostname, path, HTTPS, logo, access; a private network such as WireGuard or Tailscale recommended, not required), extras (backup, Slack, automatic deploys, the pinned nanoHPC version), review (the cluster.yml, validated, the next step `nanohpc deploy`, and the `ssh-add -c` tip). Opening an existing cluster.yml shows the same steps, filled in.
+- Layout (agreed 2026-10-03): the seven steps in a sidebar on the left with their state, the current step's form on the right, and a footer with the keys; a second footer line says that for an installation by an AI agent, see `<path>/SETUP-for-AGENTS.md`.
+- `nanohpc fix-uid` is built in M7: the wizard explains a UID conflict and, after the administrator confirms, renumbers that user on that machine (after a read-only check).
+
 ## Simulated cluster
 
 - **Lima** VMs, on macOS (Apple Silicon) and Linux (x86).

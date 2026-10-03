@@ -63,3 +63,11 @@ groups:
           severity: warning
         annotations:
           summary: "The last successful /home backup from {{ $labels.machine }} is more than 26 hours old."
+
+      # An automatic deploy that failed: the cluster stays as it was until a newer commit deploys.
+      - alert: AutoDeployFailed
+        expr: cluster_auto_deploy_last_exit_code != 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The automatic deploy on {{ $labels.machine }} failed (exit code {{ $value }}). See journalctl -u nanohpc-auto-deploy there."

@@ -3,12 +3,21 @@
 import json
 import tempfile
 import unittest
+from importlib import metadata
 from pathlib import Path
 
 import yaml
 
 from nanohpc.config import load_config
-from nanohpc.deploy import SLURM, monitor_machines, prepare
+from nanohpc.deploy import (
+    NANOHPC_REPOSITORY,
+    SLURM,
+    install_source,
+    monitor_machines,
+    nanohpc_wheel,
+    prepare,
+    refusal,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -17,7 +26,7 @@ class PrepareTest(unittest.TestCase):
     """The work folder holds everything Ansible needs, generated from cluster.yml."""
 
     def setUp(self) -> None:
-        config, errors = load_config(ROOT / "examples" / "cluster.yml", True)
+        config, errors = load_config(ROOT / "examples" / "cluster.yml", True, False)
         assert errors == [], errors
         self.config = config
         self.hostnames = {name: f"host-{name}" for name in config["machines"]}
@@ -28,7 +37,7 @@ class PrepareTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_inventory_groups_follow_roles(self) -> None:
-        prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], self.work)
+        prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], False, self.work)
         groups = yaml.safe_load((self.work / "inventory.yml").read_text())["all"]["children"]
         self.assertEqual(sorted(groups["role_front"]["hosts"]), ["front"])
         self.assertEqual(sorted(groups["role_home"]["hosts"]), ["front"])
@@ -40,7 +49,7 @@ class PrepareTest(unittest.TestCase):
         self.assertNotIn("vars", yaml.safe_load((self.work / "inventory.yml").read_text())["all"])
 
     def test_variables(self) -> None:
-        prepare(self.config, self.hostnames, None, True, ["gpu2"], self.work)
+        prepare(self.config, self.hostnames, None, True, ["gpu2"], False, self.work)
         variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
         self.assertEqual(variables["cluster_name"], "labcluster")
         self.assertEqual([user["name"] for user in variables["users"]], ["alice", "bob"])
@@ -54,7 +63,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(variables["files"], str(self.work / "files"))
 
     def test_home_and_scratch_variables(self) -> None:
-        prepare(self.config, self.hostnames, None, True, [], self.work)
+        prepare(self.config, self.hostnames, None, True, [], False, self.work)
         variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
         home = variables["home"]
         self.assertEqual(home["server"], "front")
@@ -74,7 +83,7 @@ class PrepareTest(unittest.TestCase):
         self.assertIn("node-store", (self.work / "files" / "prometheus.yml").read_text())
 
     def test_metrics_variables(self) -> None:
-        prepare(self.config, self.hostnames, None, True, ["gpu2"], self.work)
+        prepare(self.config, self.hostnames, None, True, ["gpu2"], False, self.work)
         metrics = json.loads((self.work / "vars.json").read_text())["nanohpc"]["metrics"]
         self.assertEqual(metrics["front_address"], "192.168.104.10")
         self.assertEqual(metrics["gpus"]["gpu2"], {"count": 2, "type": "rtx6000ada", "fake": True})
@@ -85,7 +94,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(set(metrics["grafana"]["sha256"]), {"amd64", "arm64"})
 
     def test_website_variables_and_site_data(self) -> None:
-        prepare(self.config, self.hostnames, None, False, [], self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, self.work)
         website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
         self.assertEqual(website["hostname"], "cluster.example.org")
         self.assertEqual(website["path"], "/cluster/")
@@ -116,7 +125,7 @@ class PrepareTest(unittest.TestCase):
         """build: front builds the source shipped in the package; its hash names the release, and matches the
         prebuilt site's, since both come from the same source."""
         self.config["cluster"]["website"]["build"] = "front"
-        prepare(self.config, self.hostnames, None, False, [], self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, self.work)
         website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
         self.assertEqual(website["build"], "front")
         self.assertTrue((Path(website["source"]) / "package-lock.json").is_file())
@@ -126,14 +135,14 @@ class PrepareTest(unittest.TestCase):
 
     def test_simulated_cluster_uses_the_test_certificate_server(self) -> None:
         """A simulated cluster cannot reach Let's Encrypt: it asks Pebble, its test server, on the front node."""
-        prepare(self.config, self.hostnames, None, True, [], self.work)
+        prepare(self.config, self.hostnames, None, True, [], False, self.work)
         website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
         self.assertEqual(website["acme"]["server"], "https://127.0.0.1:14000/dir")
         self.assertEqual(website["acme"]["ca_bundle"], "/etc/nanohpc/test-acme/ca.pem")
 
     def test_logo_name_in_site_data(self) -> None:
         self.config["cluster"]["website"]["logo"] = "/somewhere/Lab Logo.SVG"
-        prepare(self.config, self.hostnames, None, False, [], self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, self.work)
         self.assertEqual(json.loads((self.work / "files" / "site.json").read_text())["logo"], "logo.svg")
         website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
         self.assertEqual(website["logo"], {"source": "/somewhere/Lab Logo.SVG", "name": "logo.svg"})
@@ -141,7 +150,7 @@ class PrepareTest(unittest.TestCase):
     def test_backup_and_alert_variables(self) -> None:
         self.config["secrets"] = {"slack_webhook": "https://hooks.slack.com/services/T/B/x"}
         self.config["alerts"]["slack"] = True
-        prepare(self.config, self.hostnames, None, False, [], self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, self.work)
         variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
         self.assertEqual(
             variables["backup"],
@@ -168,15 +177,71 @@ class PrepareTest(unittest.TestCase):
 
     def test_backup_to_an_outside_server(self) -> None:
         self.config["backup"]["to"] = "lab@backup.example.org:/srv/cluster"
-        prepare(self.config, self.hostnames, None, False, [], self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, self.work)
         backup = json.loads((self.work / "vars.json").read_text())["nanohpc"]["backup"]
         self.assertEqual(backup["kind"], "outside")
         self.assertEqual(backup["destination"], "lab@backup.example.org:/srv/cluster/")
         self.assertEqual(backup["address"], "backup.example.org")
 
+    def test_install_source_follows_how_nanohpc_was_installed(self) -> None:
+        """The front node installs the pinned version the way the administrator installed nanoHPC."""
+        self.assertEqual(install_source(None), {"kind": "pypi", "url": None})
+        git = '{"url": "https://github.com/enajx/nanoHPC", "vcs_info": {"vcs": "git", "commit_id": "abc"}}'
+        self.assertEqual(install_source(git), {"kind": "git", "url": "https://github.com/enajx/nanoHPC"})
+        local = '{"url": "file:///home/admin/nanoHPC", "dir_info": {"editable": true}}'
+        self.assertEqual(install_source(local), {"kind": "wheel", "url": "file:///home/admin/nanoHPC"})
+        # Anything else: the nanoHPC repository on GitHub, at the version's tag.
+        archive = '{"url": "file:///tmp/nanohpc-0.1.0-py3-none-any.whl", "archive_info": {}}'
+        self.assertEqual(install_source(archive), {"kind": "git", "url": NANOHPC_REPOSITORY})
+
+    def test_wheel_for_a_local_checkout(self) -> None:
+        """From a local checkout, the deploy builds the wheel the front node installs; only of its own version."""
+        version = metadata.version("nanohpc")
+        source = {"kind": "wheel", "url": ROOT.as_uri()}
+        self.assertEqual(nanohpc_wheel(source, version, self.work), None)
+        wheels = list((self.work / "files" / "nanohpc-wheel").glob("*.whl"))
+        self.assertEqual([wheel.name for wheel in wheels], [f"nanohpc-{version}-py3-none-any.whl"])
+        error = nanohpc_wheel(source, "9.9.9", self.work)
+        self.assertEqual(
+            error,
+            f"cluster.yml pins nanoHPC 9.9.9, but this nanoHPC (a local checkout) is {version}: "
+            "set nanohpc_version to it, or deploy from nanoHPC 9.9.9",
+        )
+        self.assertIsNone(nanohpc_wheel({"kind": "pypi", "url": None}, "9.9.9", self.work))
+
+    def test_refusals_before_any_change(self) -> None:
+        """With automatic deploys on, every deploy uses the pinned nanoHPC version; an automatic deploy cannot
+        turn automatic deploys off (that would remove the root login it runs on, halfway)."""
+        self.config["nanohpc_version"] = "0.1.0"
+        self.config["auto_deploy"].update(enabled=True, repository="git@github.com:lab/c.git")
+        self.assertIsNone(refusal(self.config, False, "0.1.0"))
+        self.assertEqual(
+            refusal(self.config, False, "0.2.0"),
+            "cluster.yml pins nanoHPC 0.1.0 (nanohpc_version), but this is nanoHPC 0.2.0: "
+            "deploy with nanoHPC 0.1.0, or change nanohpc_version",
+        )
+        self.config["auto_deploy"]["enabled"] = False
+        self.assertIsNone(refusal(self.config, False, "0.2.0"))
+        self.assertEqual(
+            refusal(self.config, True, "0.1.0"),
+            "this commit turns automatic deploys off: turn them off with nanohpc deploy from the administrator's machine",
+        )
+
+    def test_auto_deploy_variables(self) -> None:
+        self.config["nanohpc_version"] = "0.1.0"
+        self.config["auto_deploy"].update(enabled=True, repository="git@github.com:lab/cluster-config.git")
+        prepare(self.config, self.hostnames, None, False, [], False, self.work)
+        deploy = json.loads((self.work / "vars.json").read_text())["nanohpc"]["auto_deploy"]
+        self.assertEqual(deploy["repository"], "git@github.com:lab/cluster-config.git")
+        self.assertEqual(deploy["repository_host"], "github.com")
+        self.assertEqual(deploy["branch"], "main")
+        self.assertEqual(deploy["every_minutes"], 10)
+        self.assertEqual(deploy["version"], "0.1.0")
+        self.assertIn(deploy["install"]["kind"], ["pypi", "git", "wheel"])
+
     def test_monitor_machines(self) -> None:
         """The status collector checks each machine's role, required services, and mounts."""
-        prepare(self.config, self.hostnames, None, True, [], self.work)
+        prepare(self.config, self.hostnames, None, True, [], False, self.work)
         machines = json.loads((self.work / "files" / "monitor-machines.json").read_text())
         self.assertEqual(
             machines["front"],
@@ -200,7 +265,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(machines["store"], {"role": "storage", "units": [], "mounts": ["/"]})
         self.assertEqual(sorted(machines), sorted(self.config["machines"]))
         # With /home on a storage machine, that machine runs the NFS server and the front node mounts /home.
-        config, errors = load_config(ROOT / "tests" / "sim" / "cluster-home-on-storage.yml", True)
+        config, errors = load_config(ROOT / "tests" / "sim" / "cluster-home-on-storage.yml", True, False)
         assert errors == [], errors
         machines = monitor_machines(config)
         storage = [name for name, machine in config["machines"].items() if "home" in machine["roles"]]
@@ -212,7 +277,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(machines[front]["mounts"], ["/", "/home"])
 
     def test_files_are_written(self) -> None:
-        prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], self.work)
+        prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], False, self.work)
         files = self.work / "files"
         self.assertIn("NodeHostname=host-gpu4", (files / "slurm.conf").read_text())
         self.assertEqual((files / "gres" / "gpu2.conf").read_text(), "Name=gpu Type=rtx6000ada File=/dev/nvidia[0-1]\n")
@@ -222,9 +287,9 @@ class PrepareTest(unittest.TestCase):
 
     def test_ssh_config_is_passed_to_ansible(self) -> None:
         ssh_config = self.work / "ssh_config"
-        prepare(self.config, self.hostnames, ssh_config, True, [], self.work)
+        prepare(self.config, self.hostnames, ssh_config, True, [], False, self.work)
         self.assertIn(f"-F {ssh_config}", (self.work / "ansible.cfg").read_text())
-        prepare(self.config, self.hostnames, None, False, [], self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, self.work)
         self.assertNotIn("-F ", (self.work / "ansible.cfg").read_text())
 
 

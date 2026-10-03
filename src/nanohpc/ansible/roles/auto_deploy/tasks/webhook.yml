@@ -1,0 +1,61 @@
+# GitHub calls https://<website hostname><path>deploy-hook after a push; nginx forwards it to this listener
+# on localhost, which checks GitHub's signature with the shared secret and starts an automatic deploy.
+- name: Install the webhook secret (root only)
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/auto-deploy/webhook-secret
+    content: "{{ nanohpc_secrets.deploy_webhook }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  register: webhook_secret
+
+- name: Install the webhook listener
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-deploy-hook"
+    dest: /usr/local/sbin/nanohpc-deploy-hook
+    owner: root
+    group: root
+    mode: "0755"
+  register: webhook_program
+
+- name: Install the webhook listener service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nanohpc-deploy-hook.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Start an automatic deploy when GitHub reports a push (nanoHPC)
+      After=network-online.target
+
+      [Service]
+      ExecStart=/usr/local/sbin/nanohpc-deploy-hook --listen 127.0.0.1:9099 \
+        --secret-file /etc/nanohpc/auto-deploy/webhook-secret --branch {{ nanohpc.auto_deploy.branch }} \
+        --unit nanohpc-auto-deploy.service --systemctl /usr/bin/systemctl
+      Restart=on-failure
+      RestartSec=5
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      MemoryMax=64M
+
+      [Install]
+      WantedBy=multi-user.target
+  register: webhook_unit
+
+- name: Run the webhook listener
+  ansible.builtin.systemd_service:
+    name: nanohpc-deploy-hook
+    enabled: true
+    daemon_reload: "{{ webhook_unit.changed }}"
+    state: "{{ 'restarted' if (webhook_unit.changed or webhook_secret.changed or webhook_program.changed) else 'started' }}"
+
+- name: Say how to set up the webhook on GitHub
+  ansible.builtin.debug:
+    msg: >-
+      On GitHub, in the configuration repository: Settings, Webhooks, Add webhook. Payload URL
+      https://{{ nanohpc.website.hostname }}{{ nanohpc.website.path }}deploy-hook, content type application/json,
+      secret NANOHPC_DEPLOY_WEBHOOK_SECRET from your .env, just the push event.
+  when: webhook_unit is changed
