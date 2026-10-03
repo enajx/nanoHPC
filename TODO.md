@@ -158,6 +158,7 @@ flowchart LR
 - [ ] Optional shared scratch on a separate storage machine (not the front node), seen by every compute node: a fast NFS server with NVMe or SSD disks first, BeeGFS later. Files unused for N days (30 to 90) are deleted by a daily cleanup. Needs a fast network; `stage-dataset --shared` builds on it.
 - [ ] A general "Welcome to <cluster name>" login banner (with a small "powered by nanoHPC") and some general info. Below it, notifications for that user only: when they are above the soft limit of their home usage (as defined in `cluster.yml`, the same for all users), they are told to clean up, with a summary of where most of their space is (for example a certain repository or certain worktrees).
 - [ ] See how the terminal login banner looks in SLURM-REAL and use it as inspiration for the login banner above.
+- [ ] A way to use only the cluster monitoring part (metrics, alerts, status snapshot, Grafana, website) without the Slurm part, for people who already have Slurm installed and want to add nanoHPC's monitoring to it.
 - [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.
 
 ## Uncategorized
