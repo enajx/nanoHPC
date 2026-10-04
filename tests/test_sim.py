@@ -1049,6 +1049,110 @@ class SimRedeployTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimPartialDeployTest(SimUsersBase):
+    """Partial deploys (`--only`) on the everyday cluster, first deployed without gpu4i: a new user with --only
+    users (while a partition change waits in cluster.yml), the partition change with --only partitions, gpu4i with
+    --only node gpu4i, then a full deploy that finds nothing left to change. Real Lima VMs."""
+
+    def only(self, *words: str) -> subprocess.CompletedProcess[str]:
+        """Run `nanohpc sim deploy --only ...`."""
+        return self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--only", *words)
+
+    @staticmethod
+    def dry_run_lines(result: subprocess.CompletedProcess[str]) -> dict[str, str]:
+        """Return the dry run's summary, one line per machine, by machine name."""
+        lines = [line for line in result.stdout.splitlines() if line.startswith("Dry run: ")]
+        return {line.split()[2]: line for line in lines if " would change " in line or " has nothing " in line}
+
+    def test_partial_deploys(self) -> None:
+        cluster, config, public_key = self.up_with_test_key()
+        machines = config["machines"]
+        changed = yaml.safe_load(yaml.safe_dump(config))
+        changed["machines"].pop("gpu4i")
+        cluster.write_text(yaml.safe_dump(changed))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+
+        with self.subTest("--only users adds a user everywhere; a partition change in cluster.yml waits"):
+            changed["users"].append({"name": "carol", "uid": 2005, "ssh_keys": [public_key]})
+            changed["partitions"]["main"]["max_time"] = "12:00:00"
+            cluster.write_text(yaml.safe_dump(changed))
+            result = self.only("users")
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            summary = self.dry_run_lines(result)
+            self.assertEqual(sorted(summary), ["cpu1", "front", "gpu2", "gpu4", "store"], result.stdout[-4000:])
+            for line in summary.values():
+                self.assertRegex(line, r"^Dry run: \S+ would change \d+ things?: ", line)
+                for other in ("slurm.conf", "job submission", "QoS", "/etc/hosts", "exports"):
+                    self.assertNotIn(other, line)
+            self.assertIn("accounts : Create the users with their fixed UIDs", summary["store"])
+            self.assertIn("scratch : Create each user's private scratch folder", summary["gpu2"])
+            self.assertIn("slurm_controller : Add the users as job submitters", summary["front"])
+            self.assertIn("home_server : Set each user's home quota", summary["front"])
+            for machine in changed["machines"]:
+                self.assertIn("carol:x:2005:2005:", self.ssh(machine, "getent passwd carol").stdout, machine)
+            quotas = self.on_front("sudo repquota -u -O csv /home")
+            self.assertIn("carol,", quotas)
+            self.assertIn(f",{300 * 1024 * 1024},{400 * 1024 * 1024},", quotas.split("carol,", 1)[1].splitlines()[0])
+            self.assertIn("carol", self.on_front("sacctmgr -n -P show assoc user=carol format=User"))
+            self.assertEqual(self.ssh("gpu2", "stat -c '%U %a' /scratch/carol").stdout.strip(), "carol 700")
+            self.assertEqual(self.as_user("carol", "front", "true", agent=False).returncode, 0)
+            # The partition was not changed.
+            self.assertIn("MaxTime=1-00:00:00", self.on_front("scontrol show partition main"))
+
+        with self.subTest("--only partitions changes a partition's time limit on the Slurm machines"):
+            result = self.only("partitions")
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            summary = self.dry_run_lines(result)
+            self.assertEqual(sorted(summary), ["cpu1", "front", "gpu2", "gpu4"], result.stdout[-4000:])
+            self.assertIn("slurm_controller : Install slurm.conf and cgroup.conf", summary["front"])
+            self.assertIn("slurm_compute : Install slurm.conf and cgroup.conf", summary["cpu1"])
+            self.assertIn("MaxTime=12:00:00", self.on_front("scontrol show partition main"))
+            self.assertEqual(self.on_front("sinfo -h -p main -o %l").split()[0], "12:00:00")
+            self.assertIn("12:00:00", self.on_front("sacctmgr -n -P show qos main format=MaxWall"))
+
+        with self.subTest("--only node gpu4i adds a machine to the cluster"):
+            changed["machines"]["gpu4i"] = machines["gpu4i"]
+            cluster.write_text(yaml.safe_dump(changed))
+            # Every other part needs every machine deployed first.
+            refused = self.only("users")
+            self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+            self.assertIn("gpu4i has not been deployed yet: deploy it first with --only node gpu4i", refused.stderr)
+            self.assertNotIn("PLAY", refused.stdout)
+            result = self.only("node", "gpu4i")
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            self.assertRegex(result.stdout, r"\nDry run: gpu4i would change \d+ things: ")
+            nodes = self.on_front("sinfo -h -N -n gpu4i -o '%N %P %T'").split("\n")
+            self.assertEqual([line for line in nodes if line], ["gpu4i interactive idle"])
+            # The interactive partition accepts only the interactive shell.
+            shell = self.run_command(
+                "ssh", "-tt", "-F", str(self.state / "ssh_config"), "front",
+                "cd /tmp && sudo -u alice srun -p interactive -w gpu4i --gpus=1 --pty bash -l", stdin="hostname\nexit\n",
+            )  # fmt: skip
+            self.assertEqual(shell.returncode, 0, shell.stdout + shell.stderr)
+            self.assertIn(self.ssh("gpu4i", "hostname").stdout.strip(), shell.stdout)
+            front = machines["front"]["address"]
+            self.assertEqual(
+                self.ssh("gpu4i", "findmnt -n -o SOURCE,FSTYPE --mountpoint /home").stdout.split(),
+                [f"{front}:/home", "nfs4"],
+            )
+            self.assertIn("gpu4i", self.ssh("gpu2", "getent hosts gpu4i").stdout)
+            query = urllib.parse.quote('up{machine="gpu4i"}')
+            answer = json.loads(self.on_front(f"curl -sf 'http://127.0.0.1:9090/api/v1/query?query={query}'"))
+            self.assertEqual([series["value"][1] for series in answer["data"]["result"]], ["1"])
+            website = config["cluster"]["website"]
+            host, path = website["hostname"], website.get("path", "/cluster/")
+            status = json.loads(
+                self.on_front(f"curl -sfk --resolve {host}:443:127.0.0.1 https://{host}{path}data/status.json")
+            )
+            self.assertIn("gpu4i", [node["name"] for node in status["nodes"]])
+
+        with self.subTest("a full deploy afterwards changes nothing"):
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assert_no_changes(result, len(machines))
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimAlertsTest(SimUsersBase):
     """The slow alert checks, on the everyday cluster: stale GPU readings, and Slack alerts with a stand-in Slack
     server (a failing check, then its recovery; up to half an hour of waiting). Run when alerts or metrics
