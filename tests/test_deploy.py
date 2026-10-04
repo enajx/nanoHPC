@@ -93,6 +93,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(scratch["machines"]["gpu4"], {"device": "/dev/vdb", "image_gb": None})
         self.assertEqual(scratch["machines"]["gpu2"], {"device": None, "image_gb": 2})
         self.assertEqual(scratch["cleanup_days"], 14)
+        self.assertEqual(scratch["job_retention_days"], 7)
         self.assertIn("/home 192.168.104.11(rw", (self.work / "files" / "exports").read_text())
         self.assertIn("node-store", (self.work / "files" / "prometheus.yml").read_text())
 

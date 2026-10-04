@@ -332,6 +332,7 @@ def variables(
             "scratch": {
                 "machines": {name: machine["scratch"] for name, machine in compute_machines(config).items()},
                 "cleanup_days": config["scratch"]["cleanup_days"],
+                "job_retention_days": config["scratch"]["job_retention_days"],
             },
             "files": str(work / "files"),
             "package_files": str(resources.files("nanohpc").joinpath("files")),

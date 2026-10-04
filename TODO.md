@@ -85,7 +85,7 @@ flowchart LR
 
 - [x] Health checks report stale GPU readings, stale machine specs, missing metrics, and failing daily rules (`cluster-health` on the front node).
 - [ ] `stage-dataset --shared` stages datasets from a shared datasets area (needs that area first).
-- [ ] Scratch copies that `cluster-submit` keeps after a failed job (`/scratch/<user>/cluster-jobs/job-*`, kept so the user can look at them) are cleaned up after some days; today only the user can remove them, and the daily cleanup only handles staged data. The source deployment added this on 2026-10-02 (`scratch-job-cleanup`: copies removed 7 days after their job ended), to port.
+- [x] Daily cleanup removes kept failed `cluster-submit` job copies after `scratch.job_retention_days` days from their Slurm end time (7 by default), while keeping recent, running, and unknown jobs.
 - [ ] When the mount options of a mounted disk change in `/etc/fstab` (the scratch disk or image, the home disk, the shared `/home`), the deploy remounts it; today the new options take effect only at the next reboot.
 - [ ] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on the simulated cluster; no test reboots a machine yet).
 - [ ] XFS home and scratch disks, and quota enforcement over NFS (a user over the hard limit cannot write), are checked on the simulated cluster.

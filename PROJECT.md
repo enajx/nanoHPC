@@ -58,7 +58,7 @@ Tech stack. Most of it comes from the source deployment; changes from it are not
 - **Root for deploys**: nanoHPC connects with `ssh <machine>` (the administrator's own SSH config) and adds no passwordless sudo rules. Administrators' forwarded SSH keys unlock sudo (`pam_ssh_agent_auth`); the first setup of a machine needs root the normal way. Administrators in `cluster.yml` also have key-only root login on every machine for recovery, with their keys on local disk in `/etc/ssh/authorized_keys/root`.
 - **systemd** services and timers for the collector, quotas, scratch cleanup, backup, and health checks.
 - **NFS** for the shared `/home`, with **disk quotas**, served from the front node or from a separate storage machine, on the administrator's disk (never formatted by nanoHPC) or the root disk. Exported `no_root_squash`, with `/home` mounted `nosuid,nodev` on every machine.
-- **Local scratch** on each compute node, with automatic cleanup of old files.
+- **Local scratch** on each compute node. Daily cleanup removes staged data unused for `scratch.cleanup_days` days and kept job copies `scratch.job_retention_days` days after their Slurm job ended (defaults: 14 and 7 days).
 - **rsync** backup of `/home` to a backup machine in the cluster or to an outside SSH server.
 - **uv** (pinned, checksum checked) installed for users' Python environments; `cluster-submit` runs jobs in a private scratch copy of a project; `cluster-health` checks each machine and runs at the end of every deploy.
 - **Prometheus** with **node_exporter** and GPU metrics. The front node scrapes the other machines over mutually authenticated TLS. A second Prometheus keeps daily summaries for 5 years.
@@ -134,6 +134,7 @@ flowchart LR
 - Built: partial deploys (M8b): `nanohpc deploy --only users|policy|partitions|node NAME` runs one part, with the same checks and dry run first.
 - Built: `nanohpc check` (M8b): a read-only report on every machine against `cluster.yml` (SSH, health, users, mounts, GPUs, Slurm, deployed version), problems first.
 - Built: key-only root login for administrators (M8b): their keys from `cluster.yml` work directly on every machine, even when `/home` is unavailable; the dry run stops before replacing root keys that would lose access. Checked on Ubuntu 24.04 VMs with the redeploy and automatic deploy tests. See [DONE.md](md/DONE.md).
+- Built: daily cleanup of kept `cluster-submit` job copies, with a separate seven-day default. The full deploy and `--only users` paths passed on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md).
 - Next: v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):

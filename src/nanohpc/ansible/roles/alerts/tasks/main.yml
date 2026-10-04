@@ -24,6 +24,7 @@
     dest: "/var/tmp/alertmanager-{{ nanohpc.metrics.alertmanager.version }}.linux-{{ metrics_arch }}.tar.gz"
     checksum: "sha256:{{ nanohpc.metrics.alertmanager.sha256[metrics_arch] }}"
     mode: "0644"
+    timeout: 120
   register: alertmanager_download
 
 - name: Unpack Alertmanager (owned by root, whatever the archive says)

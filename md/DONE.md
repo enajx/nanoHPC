@@ -140,3 +140,10 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - Rewrote Features as seven short bullets, without bold lead-ins: one `cluster.yml`, Slurm scheduling, the front-end monitor, health checks, playbooks for cluster changes and backups, shared and scratch storage, and Slack notifications.
 - Checked the claims against `PROJECT.md` and `TODO.md`; the text describes supported policy changes without claiming system package updates.
 - File: `README.md`.
+
+## 2026-10-04: kept scratch job cleanup
+
+- The daily scratch cleanup runs as each user on compute machines. It removes only kept `cluster-submit` job folders whose Slurm job ended more than `scratch.job_retention_days` days ago (7 by default). Recent, running, and unknown jobs stay. A failed accounting query stops before any deletion and makes the service fail. There is no preview mode.
+- `cluster.yml` validation, the example, and the wizard expose the separate retention setting. A full deploy and `--only users` install the command, settings, wrapper, and service. Slurm job IDs are queried in batches.
+- Direct command, config, deploy, and wizard tests passed. `SimDeployTest` and `SimPartialDeployTest` passed on Ubuntu 24.04 VMs: the first ran a failed job and its daily cleanup service, and the second restored the command and service through `--only users`. A separate agent reviewed the feature. The VM runs also led to a longer Alertmanager download timeout and a dry-run snapshot filter for the on-demand `fwupd` service.
+- Files: `src/nanohpc/files/scratch-job-cleanup`, `src/nanohpc/ansible/roles/scratch/tasks/{main,users}.yml`, `src/nanohpc/{config,deploy}.py`, `src/nanohpc/wizard/{machines,state}.py`, `src/nanohpc/ansible/roles/alerts/tasks/main.yml`, `examples/cluster.yml`, `tests/{test_scratch_job_cleanup,test_config,test_deploy,test_sim,test_wizard}.py`, `md/testing.md`.

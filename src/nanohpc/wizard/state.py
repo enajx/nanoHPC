@@ -429,7 +429,7 @@ def disk_problem(facts: MachineFacts | None, device: str, home: bool) -> str | N
     return None
 
 
-def scratch_warning(facts: MachineFacts | None, device: str, cleanup_days: Any) -> str | None:
+def scratch_warning(facts: MachineFacts | None, device: str, cleanup_days: Any, job_retention_days: Any) -> str | None:
     """Return a warning for a scratch disk that already has a filesystem: its old files will be deleted."""
     if facts is None or facts.error is not None:
         return None
@@ -437,9 +437,11 @@ def scratch_warning(facts: MachineFacts | None, device: str, cleanup_days: Any) 
     if disk is None or disk.fstype not in ("ext4", "xfs") or disk_in_use(disk) is not None:
         return None
     days = cleanup_days if cleanup_days is not None else SCRATCH_DEFAULTS["cleanup_days"]
+    job_days = job_retention_days if job_retention_days is not None else SCRATCH_DEFAULTS["job_retention_days"]
     return (
-        f"{device} already has a filesystem ({disk.fstype}). It becomes /scratch, and the daily cleanup deletes "
-        f"files there that are older than {days} days (scratch.cleanup_days). Copy off anything you need first."
+        f"{device} already has a filesystem ({disk.fstype}). It becomes /scratch. The daily cleanup removes staged "
+        f"data unused for {days} days (scratch.cleanup_days) and kept job copies {job_days} days after their jobs "
+        "ended (scratch.job_retention_days). Copy off anything you need first."
     )
 
 

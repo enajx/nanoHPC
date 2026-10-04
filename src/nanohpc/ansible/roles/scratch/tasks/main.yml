@@ -1,6 +1,6 @@
 # Local /scratch on each compute machine: the administrator's disk (never formatted by nanoHPC), or
-# an image file nanoHPC creates. Per-user folders, cache settings, and a daily cleanup of unused staged
-# data.
+# an image file nanoHPC creates. Per-user folders, cache settings, and daily cleanup of unused staged
+# data and old kept job copies.
 
 - name: Name this machine's scratch
   ansible.builtin.set_fact:
@@ -195,9 +195,6 @@
     force: false
   loop: [cleanup.lock, capacity.lock]
 
-- name: Each user's scratch folders, caches, and cleanup
-  ansible.builtin.import_tasks: users.yml
-
 - name: Point uv, Hugging Face, and PyTorch caches to scratch
   ansible.builtin.copy:
     dest: /etc/profile.d/nanohpc-scratch-cache.sh
@@ -208,18 +205,6 @@
         export HF_HOME="/scratch/$(id -un)/hf-cache"
         export TORCH_HOME="/scratch/$(id -un)/torch-cache"
       fi
-    mode: "0644"
-
-- name: Write the scratch settings
-  ansible.builtin.copy:
-    dest: /etc/nanohpc/scratch.conf
-    # Read by the cleanup, cluster-submit, and stage-dataset. A copy to scratch must leave at least
-    # 1 GiB and 15% of the disk free, and 10,000 inodes.
-    content: |
-      SCRATCH_CLEANUP_DAYS={{ nanohpc.scratch.cleanup_days }}
-      STAGE_MIN_FREE_BYTES=1073741824
-      STAGE_CAPACITY_PERCENT=85
-      STAGE_MIN_FREE_INODES=10000
     mode: "0644"
 
 - name: Install stage-dataset
@@ -234,44 +219,5 @@
     dest: /usr/local/bin/scratch-cleanup
     mode: "0755"
 
-- name: Install the scratch cleanup service and daily timer
-  ansible.builtin.copy:
-    dest: "/etc/systemd/system/{{ item.name }}"
-    content: "{{ item.content }}"
-    mode: "0644"
-  loop:
-    - name: nanohpc-scratch-cleanup.service
-      content: |
-        [Unit]
-        Description=Remove unused staged scratch data (nanoHPC)
-        RequiresMountsFor=/scratch
-
-        [Service]
-        Type=oneshot
-        EnvironmentFile=/etc/nanohpc/scratch.conf
-        ProtectSystem=strict
-        ProtectHome=read-only
-        ReadWritePaths=/scratch/staged /scratch/locks
-        ExecStart=/usr/local/sbin/scratch-cleanup-users
-    - name: nanohpc-scratch-cleanup.timer
-      content: |
-        [Unit]
-        Description=Remove unused staged scratch data daily (nanoHPC)
-
-        [Timer]
-        OnCalendar=daily
-        Persistent=true
-
-        [Install]
-        WantedBy=timers.target
-  loop_control:
-    label: "{{ item.name }}"
-  register: cleanup_units
-
-- name: Run the cleanup timer
-  ansible.builtin.systemd_service:
-    name: nanohpc-scratch-cleanup.timer
-    enabled: true
-    state: started
-    daemon_reload: "{{ cleanup_units.changed }}"
-  when: not (ansible_check_mode and cleanup_units is changed)  # dry run: the timer is not installed yet
+- name: Each user's scratch folders, caches, and cleanup
+  ansible.builtin.import_tasks: users.yml
