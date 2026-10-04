@@ -301,15 +301,19 @@ class SimUsersBase(unittest.TestCase):
 
     def ssh_config_for(self, user: str) -> Path:
         """Write an SSH config that logs in to every machine as `user` with the test key and agent forwarding."""
+        return self.ssh_config_with_key(user, self.keys / "id")
+
+    def ssh_config_with_key(self, user: str, key: Path) -> Path:
+        """Write an SSH config that logs in to every machine as `user` with only `key`, and agent forwarding."""
         text = (self.state / "ssh_config").read_text()
         lines = []
         for line in text.splitlines():
             if line.strip().startswith("User "):
                 line = f"  User {user}"
             elif line.strip().startswith("IdentityFile "):
-                line = f"  IdentityFile {self.keys / 'id'}\n  ForwardAgent yes"
+                line = f"  IdentityFile {key}\n  ForwardAgent yes"
             lines.append(line)
-        path = self.keys / f"ssh_config_{user}"
+        path = self.keys / f"ssh_config_{user}_{key.name}"
         path.write_text("\n".join(lines) + "\n")
         return path
 
@@ -984,7 +988,8 @@ class SimDeployTest(SimUsersBase):
 class SimRedeployTest(SimUsersBase):
     """The safety checks that each need another deploy, on the everyday cluster: a missing certificate issued
     again, a drained node as a warning only, a deploy by an administrator's forwarded key, the stop with no key
-    and no terminal, a removed user's login taken away, and a UID conflict that leaves that machine out after its dry run. Run
+    and no terminal, administrators' root login (also with the home machine's NFS server stopped), a removed
+    user's login taken away, and a UID conflict that leaves that machine out after its dry run. Run
     when accounts, SSH, sudo, preflight, deploy.py, or the certificates change, and before the release. Real
     Lima VMs."""
 
@@ -1017,6 +1022,57 @@ class SimRedeployTest(SimUsersBase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("Nothing was changed: sudo needs a password on", result.stderr)
             self.assertNotIn("PLAY", result.stdout)
+
+        with self.subTest("administrators log in as root with their keys everywhere, also with /home down"):
+            # bob (not an administrator) gets a key of his own.
+            bob_key = self.keys / "bob"
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "nanohpc-test-bob", "-f", str(bob_key)], check=True)  # fmt: skip
+            bob_public = (self.keys / "bob.pub").read_text().strip()
+            with_bob_key = yaml.safe_load(cluster.read_text())
+            for user in with_bob_key["users"]:
+                if user["name"] == "bob":
+                    user["ssh_keys"] = [bob_public]
+            cluster.write_text(yaml.safe_dump(with_bob_key))
+            result = self.deploy(self.state / "ssh_config", agent=False)
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            as_root_bob = self.ssh_config_with_key("root", bob_key)
+
+            def bob_as_root(machine: str) -> subprocess.CompletedProcess[str]:
+                return self.run_command("ssh", "-F", str(as_root_bob), "-o", "BatchMode=yes", machine, "true")
+
+            self.assertEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)  # bob's key works
+            for machine in with_bob_key["machines"]:
+                root = self.as_user("root", machine, "whoami", agent=False)
+                self.assertEqual((root.returncode, root.stdout.strip()), (0, "root"), f"{machine}: {root.stderr}")
+                self.assertNotEqual(bob_as_root(machine).returncode, 0, machine)
+            # A key in /root/.ssh/authorized_keys is ignored: sshd reads root's keys only from nanoHPC's file.
+            plant = (
+                f"sudo install -d -m 0700 /root/.ssh && echo '{bob_public}' | sudo tee -a /root/.ssh/authorized_keys"
+            )
+            self.assertEqual(self.ssh("gpu4", plant).returncode, 0)
+            self.assertNotEqual(bob_as_root("gpu4").returncode, 0)
+            self.ssh("gpu4", "sudo sed -i '/nanohpc-test-bob$/d' /root/.ssh/authorized_keys")
+            # With the home machine's NFS server stopped, root login on a compute node still works, quickly.
+            self.on_front("sudo systemctl stop nfs-server")
+            try:
+                started = time.monotonic()
+                login = subprocess.run(
+                    ["ssh", "-F", str(self.ssh_config_for("root")), "-o", "BatchMode=yes", "gpu4", "whoami"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=20,
+                    env={key: value for key, value in os.environ.items() if key != "SSH_AUTH_SOCK"},
+                )
+                seconds = time.monotonic() - started
+            finally:
+                self.on_front("sudo systemctl start nfs-server")
+            self.assertEqual(login.returncode, 0, login.stderr)
+            self.assertEqual(login.stdout.strip(), "root")
+            self.assertLess(seconds, 20)
+            # /home answers again on gpu4 before the next deploy (the NFS client retries on its own).
+            wait = "for i in $(seq 24); do timeout -s KILL 10 sudo -u alice ls /home/alice >/dev/null && exit 0; sleep 5; done; exit 1"  # fmt: skip
+            self.assertEqual(self.ssh("gpu4", wait).returncode, 0)
 
         with self.subTest("removing a user from cluster.yml takes away their login"):
             self.assertEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
@@ -1257,7 +1313,7 @@ class SimAutoDeployTest(SimUsersBase):
             self.assertEqual(self.run_auto_deploy().returncode, 0)
             self.assertEqual(self.on_front("sudo cat /var/lib/nanohpc/auto-deploy/state/deployed").strip(), fixed)
 
-        with self.subTest("root logs in only from the front node, with the front node's key"):
+        with self.subTest("the front node's key logs in as root only from the front node"):
             gpu4 = config["machines"]["gpu4"]["address"]
             self.on_front("sudo ssh -F /etc/nanohpc/auto-deploy/ssh_config gpu4 true")
             key = self.on_front("sudo cat /etc/nanohpc/auto-deploy/id_ed25519")
@@ -1308,12 +1364,14 @@ class SimAutoDeployTest(SimUsersBase):
                 "turn them off with nanohpc deploy",
                 self.on_front("sudo journalctl -u nanohpc-auto-deploy -n 40 --no-pager"),
             )
-            self.assertEqual(self.ssh("cpu1", "sudo test -e /etc/ssh/authorized_keys/root").returncode, 0)
+            self.assertIn("nanohpc-auto-deploy@", self.ssh("cpu1", "sudo cat /etc/ssh/authorized_keys/root").stdout)
             cluster.write_text(yaml.safe_dump(off, sort_keys=False))
             result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
             self.assertEqual(result.returncode, 0, self.failure(result))
-            self.assertEqual(self.ssh("cpu1", "sudo test -e /etc/ssh/authorized_keys/root").returncode, 1)
-            self.assertNotIn("root", self.ssh("cpu1", "sudo sshd -T | grep -i ^allowusers").stdout)
+            # The front node's key is gone from root's keys; the administrators' keys stay.
+            root_keys = self.ssh("cpu1", "sudo cat /etc/ssh/authorized_keys/root").stdout
+            self.assertNotIn("nanohpc-auto-deploy@", root_keys)
+            self.assertIn(public_key, root_keys)
             self.assertNotEqual(
                 self.ssh("front", "systemctl is-enabled nanohpc-auto-deploy.timer").stdout.strip(), "enabled"
             )
