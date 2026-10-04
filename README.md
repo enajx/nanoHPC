@@ -3,12 +3,13 @@
 </p>
 
 <p align="center">
-  <img src="assets/cluster.gif" alt="Animated cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="640">
+  <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="640">
 </p>
 
-`nanoHPC` is a ready-made minimalistic Slurm cluster with monitoring, aimed at small lab clusters. The whole
-cluster is defined in a single file, `cluster.yml` (the machines, the users, the partitions, and the queue policy),
-and one command sets up every machine.
+`nanoHPC` is a lightweight Slurm cluster and monitoring tool for small computational labs.
+
+The whole cluster is defined in a single file, `cluster.yml` (the machines, the users, the partitions, and the queue
+policy), and one command sets up every machine.
 
 - A single `cluster.yml` to define machines, users, partitions, and queue policy.
 - Slurm scheduling for GPU and CPU jobs, with fair-share and per-user limits.
@@ -18,7 +19,7 @@ and one command sets up every machine.
 - Shared `/home` and local scratch, with optional copy-back of job results.
 - Optional Slack notifications when checks, backups, or automatic deploys fail, and when checks recover.
 
-## How to use it
+## Set up
 
 You need:
 
@@ -56,6 +57,10 @@ nanohpc check cluster.yml                    # report every machine against clus
 
 AI agents setting up a cluster follow [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md).
 
+### Deploy Monitor only (without Slurm)
+
+TBA
+
 ## Tech stack
 
 ![Ansible](https://img.shields.io/badge/Ansible-EE0000?logo=ansible&logoColor=white) ![Slurm](https://img.shields.io/badge/Slurm-0B3D91) ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) ![nginx](https://img.shields.io/badge/nginx-009639?logo=nginx&logoColor=white) ![Let's Encrypt](https://img.shields.io/badge/Let%27s_Encrypt-003A70?logo=letsencrypt&logoColor=white) ![Textual](https://img.shields.io/badge/Textual-121212) ![Lima](https://img.shields.io/badge/Lima-5C2D91)
@@ -68,10 +73,6 @@ AI agents setting up a cluster follow [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md)
 - `React`, `TypeScript`, and `Vite` for the website, served by `nginx` with `Let's Encrypt`.
 - `Textual` for the setup wizard.
 - `Lima` VMs for the simulated test cluster; Python `unittest` and `Playwright` for the tests.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

@@ -128,12 +128,12 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - `SimRedeployTest` and `SimAutoDeployTest` each passed on Ubuntu 24.04 VMs. The redeploy test checked root login on every machine and on a compute machine while the front node's NFS server was stopped. A separate agent reviewed the feature, and its findings were fixed before these runs. The automatic deploy VM test now expects exit code 3 when a manual deploy stops before changes because an automatic deploy ran during its dry run.
 - Files: `src/nanohpc/ansible/roles/{accounts,preflight}/`, `tests/test_root_login.py`, `tests/test_sim.py`, `SETUP-for-AGENTS.md`, `md/testing.md`.
 
-## 2026-10-04: README cluster animation
+## 2026-10-04: README cluster image
 
-- The user chose turquoise pipes from three GIF previews using the website's default coral theme. The README now shows one animation: Threadripper (a two-layer CPU machine), three 4-GPU machines all labelled H100 in the center, and FPGA on the right with no GPU bar. The live website map was not changed.
-- Checked the rendered map in Chromium and decoded frames from the selected GIF. It is 720 × 471 pixels, 64 frames, and 6.4 seconds long.
+- The user chose turquoise pipes from three GIF previews using the website's default coral theme, then chose a static image with a transparent background. The README image shows Threadripper (a two-layer CPU machine), three 4-GPU machines all labelled H100 in the center, and FPGA on the right with no GPU bar. The live website map was not changed.
+- The original GIF was checked in Chromium and decoded; it has been replaced by `assets/cluster.png`.
 - The Tech stack badges sit on one source line, so Markdown readers do not turn each badge into a separate row. The user removed the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges.
-- Files: `README.md`, `assets/cluster.gif`.
+- Files: `README.md`, `assets/cluster.png`.
 
 ## 2026-10-04: README feature descriptions
 
