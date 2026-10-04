@@ -135,6 +135,20 @@
       Deploy as a current administrator.
     quiet: true
 
+# The address is this machine's own, as in the accounts role's check of root's settings.
+- name: Read the effective SSH settings for root
+  ansible.builtin.command: >-
+    /usr/sbin/sshd -T -C user=root,host={{ ansible_facts.hostname }},addr={{ nanohpc.machines[inventory_hostname].address }}
+  register: sshd_root
+  changed_when: false
+  check_mode: false
+
+- name: Check root's own SSH keys
+  ansible.builtin.include_tasks: root_keys.yml
+  vars:
+    sshd_root_settings: "{{ sshd_root.stdout_lines }}"
+    root_key_files: [/root/.ssh/authorized_keys, /root/.ssh/authorized_keys2]
+
 # /home: the shared /home (NFS) or the home disk is mounted over the local /home folder. Stop if that
 # would hide anything other than the home folders of the accounts nanoHPC deploys with.
 - name: Read where /home comes from now

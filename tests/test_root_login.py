@@ -1,15 +1,22 @@
 """Key-only root login for administrators: the root key file and nanoHPC's sshd settings, rendered from their
 templates as the deploy does. When this machine has an sshd, it also reads the effective settings with
-`sshd -T`, as the deploy's own check does on every machine."""
+`sshd -T`, as the deploy's own check does on every machine. The preflight check of root's own key files runs in
+real ansible-playbook on this machine."""
 
+import json
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 
 import jinja2
+import yaml
+
+from nanohpc.deploy import ansible_cfg
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "src/nanohpc/ansible/roles/accounts/templates"
 USERS = [
@@ -130,6 +137,109 @@ class SshdSettingsTest(unittest.TestCase):
             self.assertTrue({"permitrootlogin prohibit-password", "permitrootlogin without-password"} & set(root))
             self.assertIn("allowusers root", root)
             self.assertIn("authorizedkeysfile .ssh/authorized_keys /etc/ssh/authorized_keys/%u", effective("alice"))
+
+
+def public_key(folder: Path, name: str, comment: str) -> tuple[str, str]:
+    """Make an ed25519 key pair in `folder` and return its public key line and its SHA256 fingerprint, as
+    ssh-keygen prints them."""
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(folder / name)], check=True)
+    listing = subprocess.run(
+        ["ssh-keygen", "-l", "-f", str(folder / f"{name}.pub")], capture_output=True, text=True, check=True
+    )
+    return (folder / f"{name}.pub").read_text().strip(), listing.stdout.split()[1]
+
+
+class RootKeysPreflightTest(unittest.TestCase):
+    """The preflight check of root's own key files (roles/preflight/tasks/root_keys.yml), run by real
+    ansible-playbook on this machine in check mode, as the dry run does, with key files in a temporary folder in
+    place of /root/.ssh. Until nanoHPC's root setting is active, a key there that is not an administrator's key in
+    cluster.yml stops that machine, naming each such key; with the setting active, those files are not read."""
+
+    def test_keys_that_would_stop_working_stop_the_machine(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            alice_key, alice_fingerprint = public_key(folder, "alice", "alice@laptop")
+            bob_key, bob_fingerprint = public_key(folder, "bob", "bob@laptop")
+            backup_key, backup_fingerprint = public_key(folder, "backup", "")
+            alice_type, alice_data = alice_key.split()[:2]
+            backup_type, backup_data = backup_key.split()[:2]
+            files = {
+                # Settings active: the files are not read, whatever they hold.
+                "active": {"authorized_keys": f"{bob_key}\n"},
+                # An administrator's key with options and another comment, and comment lines.
+                "admins": {
+                    "authorized_keys": (
+                        f'# keys\n\nfrom="10.0.0.1",command="echo hi there" {alice_type} {alice_data} other comment\n'
+                    )
+                },
+                # A user who is not an administrator, a key nobody in cluster.yml has, and a line that is no key.
+                "outsiders": {
+                    "authorized_keys": f"{alice_key}\n{bob_key}\n",
+                    "authorized_keys2": f'no-pty,command="rsync --server x" {backup_type} {backup_data}\nnot a key\n',
+                },
+            }
+            from_home = ["authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2", "permitrootlogin yes"]
+            hosts: dict[str, Any] = {}
+            for host, contents in files.items():
+                (folder / host).mkdir()
+                for name, text in contents.items():
+                    (folder / host / name).write_text(text)
+                hosts[host] = {
+                    "root_key_files": [str(folder / host / "authorized_keys"), str(folder / host / "authorized_keys2")],
+                    "sshd_root_settings": (
+                        ["authorizedkeysfile /etc/ssh/authorized_keys/root"] if host == "active" else from_home
+                    ),
+                }
+            inventory = {
+                "all": {
+                    "vars": {
+                        "ansible_connection": "local",
+                        "ansible_python_interpreter": sys.executable,
+                        "nanohpc": {
+                            "admins": ["alice"],
+                            "users": [
+                                {"name": "alice", "uid": 2000, "ssh_keys": [alice_key]},
+                                {"name": "bob", "uid": 2001, "ssh_keys": [bob_key]},
+                            ],
+                        },
+                    },
+                    "hosts": hosts,
+                }
+            }
+            (folder / "inventory.yml").write_text(yaml.safe_dump(inventory))
+            play = {
+                "hosts": "all",
+                "gather_facts": False,
+                "tasks": [
+                    {
+                        "name": "Check root's own keys",
+                        "ansible.builtin.include_role": {"name": "preflight", "tasks_from": "root_keys"},
+                    }
+                ],
+            }
+            (folder / "play.yml").write_text(yaml.safe_dump([play]))
+            (folder / "ansible.cfg").write_text(ansible_cfg(None))
+            result = subprocess.run(
+                [str(Path(sys.executable).parent / "ansible-playbook"), "-i", str(folder / "inventory.yml"),
+                 str(folder / "play.yml"), "--check"],
+                env={**os.environ, "ANSIBLE_CONFIG": str(folder / "ansible.cfg"),
+                     "NANOHPC_RECORD": str(folder / "record.json")},
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
+            )  # fmt: skip
+            output = result.stdout + result.stderr
+            self.assertTrue((folder / "record.json").exists(), output)
+            failed = json.loads((folder / "record.json").read_text())["failed"]
+            self.assertEqual(sorted(failed), ["outsiders"], output)
+            message = failed["outsiders"]
+            self.assertIn(f"{folder}/outsiders/authorized_keys: ssh-ed25519 {bob_fingerprint} bob@laptop", message)
+            self.assertIn(
+                f"{folder}/outsiders/authorized_keys2: ssh-ed25519 {backup_fingerprint} (no comment)", message
+            )
+            self.assertIn(f"{folder}/outsiders/authorized_keys2 line 2: not a key line", message)
+            self.assertNotIn(alice_fingerprint, message)
+            self.assertIn("These keys will stop working for root after this deploy", message)
+            self.assertIn("Delete them from that file, or add the key to an administrator in cluster.yml.", message)
+            self.assertIn("Nothing was changed on this machine.", message)
 
 
 if __name__ == "__main__":
