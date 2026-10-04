@@ -316,6 +316,8 @@ def variables(
     return {
         "nanohpc": {
             "cluster_name": config["cluster"]["name"],
+            # The nanoHPC version running this deploy, recorded on every machine (/etc/nanohpc/version).
+            "version": metadata.version("nanohpc"),
             "users": [{"name": u["name"], "uid": u["uid"], "ssh_keys": u["ssh_keys"]} for u in config["users"]],
             "admins": config["cluster"]["admins"],
             "machines": {

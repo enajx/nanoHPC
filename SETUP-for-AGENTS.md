@@ -85,3 +85,6 @@ For each machine the administrator names (a hostname, an address, or a host from
   `--only node NAME` sets up a new or changed compute machine (plus `/etc/hosts`, Slurm's configuration, the `/home`
   exports, and the monitoring lists on the others), with the same checks and dry run. Anything else (a new front node, home machine, or backup machine, or changed roles) needs a
   full `nanohpc deploy cluster.yml`.
+- `nanohpc check cluster.yml` (any time, changes nothing): one line per machine with SSH, the cluster-health
+  result, users and UIDs, mounts, GPU count, Slurm node state, and the nanoHPC version deployed, then the
+  problems (exit code 1 when there are any), warnings, and notes.

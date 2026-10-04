@@ -136,7 +136,7 @@ flowchart LR
 - [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
 - [ ] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster.
 - [x] Partial deploys instead of separate commands (agreed 2026-10-03): `nanohpc deploy --only users|policy|partitions` or `--only node NAME`, with the same checks and dry run (see [DONE.md](md/DONE.md)).
-- [ ] `nanohpc check` connects to every machine and reports, without changing anything: reachable, the cluster-health result, users and UIDs against `cluster.yml`, mounts, GPU count against `cluster.yml`, Slurm node state, and the nanoHPC version deployed; problems first, non-zero exit code on problems.
+- [x] `nanohpc check` reports, without changing anything, every machine against `cluster.yml`: problems first, non-zero exit code on problems (see [DONE.md](md/DONE.md)).
 
 ### Release
 

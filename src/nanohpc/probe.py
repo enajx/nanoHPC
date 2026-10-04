@@ -325,6 +325,14 @@ def uid_problems(target: str, ssh_config: Path | None, users: list[tuple[str, in
     keys = [name for name, _ in users] + [str(uid) for _, uid in users]
     accounts = getent(target, ssh_config, "passwd", keys, False)
     groups = getent(target, ssh_config, "group", keys, False)
+    return account_problems(target, users, accounts, groups)
+
+
+def account_problems(
+    target: str, users: list[tuple[str, int]], accounts: list[list[str]], groups: list[list[str]]
+) -> list[str]:
+    """Return uid_problems' list from the passwd and group entries (split on ':') that `getent` found on a machine
+    for the users' names and UIDs."""
     account_by_name = {entry[0]: entry for entry in accounts}
     group_by_name = {entry[0]: entry for entry in groups}
     problems: list[str] = []

@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from nanohpc import deploy, fixuid, probe, sim
+from nanohpc import check, deploy, fixuid, probe, sim
 from nanohpc.config import load_config
 from nanohpc.render import render_forwarding_rules
 
@@ -148,8 +148,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="nanohpc", description="Slurm cluster with monitoring, from one cluster.yml.")
     parser.add_argument("--version", action="version", version=f"nanohpc {importlib.metadata.version('nanohpc')}")
     commands = parser.add_subparsers(dest="command", required=True)
-    check = commands.add_parser("validate", help="check a cluster.yml without touching any machine")
-    check.add_argument("path", type=Path, help="path to cluster.yml")
+    validation = commands.add_parser("validate", help="check a cluster.yml without touching any machine")
+    validation.add_argument("path", type=Path, help="path to cluster.yml")
     setup = commands.add_parser("deploy", help="set up the cluster described by a cluster.yml")
     setup.add_argument("path", type=Path, help="path to cluster.yml")
     setup.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
@@ -157,6 +157,11 @@ def main() -> None:
         "--dry-run", action="store_true", help="only the dry run: show what would change, and change nothing"
     )
     setup.add_argument("--only", nargs="+", metavar="PART", help=ONLY_HELP)
+    report = commands.add_parser(
+        "check", help="report how every machine compares with cluster.yml, without changing anything"
+    )
+    report.add_argument("path", type=Path, help="path to cluster.yml")
+    report.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
     rules = commands.add_parser(
         "forwarding-rules", help="print rules for the lab's own web server to show the cluster website"
     )
@@ -187,6 +192,8 @@ def main() -> None:
         sys.exit(validate(arguments.path))
     if arguments.command == "deploy":
         sys.exit(run_deploy(arguments.path, arguments.ssh_config, arguments.dry_run, arguments.only))
+    if arguments.command == "check":
+        sys.exit(check.run(arguments.path, arguments.ssh_config))
     if arguments.command == "forwarding-rules":
         sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":
