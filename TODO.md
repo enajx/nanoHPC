@@ -162,6 +162,7 @@ flowchart LR
 
 ### Later
 
+- [ ] Review features and setup decisions added in SLURM-REAL since the nanoHPC port began, then decide with the user which ones to bring into nanoHPC.
 - [ ] Explore whether nanoHPC can be sold as a commercial product while it stays fully open source. Very exploratory. Ideas to look at: providing some of the infrastructure on the server side, or an app to see the cluster status (the current view is that the website is the best way to do this).
 - [ ] restic backups with dated snapshots, and S3-style storage as a backup destination.
 - [ ] Users from an existing directory (LDAP) instead of local users.
