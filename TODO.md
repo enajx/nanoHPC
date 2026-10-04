@@ -135,8 +135,8 @@ flowchart LR
 - [x] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid` (built in M7: after the administrator confirms and a read-only check, it renumbers that user on that machine). The deploy's stop on a UID conflict stays as a safety net.
 - [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
 - [ ] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster.
-- [ ] Partial deploys instead of separate commands (agreed 2026-10-03): after editing `cluster.yml` (by hand or with the wizard), `nanohpc deploy --only users|policy|partitions` or `--only node NAME` runs just that part, with the same checks and dry run.
-- [ ] `nanohpc check` connects to every machine and reports what differs from `cluster.yml` (services, users, mounts, GPU count), without changing anything.
+- [ ] Partial deploys instead of separate commands (agreed 2026-10-03): after editing `cluster.yml` (by hand or with the wizard), `nanohpc deploy --only users|policy|partitions` or `--only node NAME` runs just that part, with the same checks and dry run (`--only node` deploys everything on that machine plus the shared parts on the others: hosts, slurm.conf and a Slurm reconfigure, NFS exports, Prometheus targets).
+- [ ] `nanohpc check` connects to every machine and reports, without changing anything: reachable, the cluster-health result, users and UIDs against `cluster.yml`, mounts, GPU count against `cluster.yml`, Slurm node state, and the nanoHPC version deployed; problems first, non-zero exit code on problems.
 
 ### Release
 

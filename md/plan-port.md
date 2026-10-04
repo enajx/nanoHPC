@@ -134,6 +134,7 @@ The user said to go ahead (2026-10-01). These follow the source deployment's des
 
 - Order: the dry run before every deploy first, then partial deploys, then key-only root login for administrators, then the release work.
 - Partial deploys (`nanohpc deploy --only users|policy|partitions`, `--only node NAME`) replace the separate add-node, users, policy, and partitions commands.
+- (2026-10-04) `--only node NAME` deploys everything on that machine plus only the shared parts on the others (hosts, slurm.conf and a Slurm reconfigure, NFS exports, Prometheus targets), with the dry run first. `nanohpc check` reports per machine: reachable, the cluster-health result, users and UIDs against cluster.yml, mounts, GPU count against cluster.yml, Slurm node state, and the nanoHPC version deployed, problems first, non-zero exit code on problems. Key-only root login for administrators: each administrator's keys from cluster.yml in /etc/ssh/authorized_keys/root on every machine, from anywhere; the front node's automatic-deploy key keeps its front-only limit.
 - `nanohpc check` stays a command of its own: read-only, it reports what differs between the machines and `cluster.yml` (services, users, mounts, GPU count). The dry run before every deploy is separate.
 
 ## Simulated cluster
