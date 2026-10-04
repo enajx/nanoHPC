@@ -122,7 +122,8 @@ class CheckTest(unittest.TestCase):
         )
         (root / "etc" / "group").write_text("root:x:0:\nubuntu:x:1000:\nalice:x:2000:\nbob:x:2001:\n")
         (root / "etc" / "nanohpc" / "version").write_text(f"{VERSION}\n")
-        (root / "mounts").write_text("/ /dev/vda1 ext4\n" + mounts)
+        # A short line (a field left empty) is read without failing.
+        (root / "mounts").write_text("/ /dev/vda1 ext4\n/sys/fs/bpf bpf\n" + mounts)
         (root / "health.txt").write_text(HEALTHY_REPORT)
         (root / "health.code").write_text("0\n")
 
@@ -291,6 +292,13 @@ class CheckTest(unittest.TestCase):
             result.stdout,
         )
         self.assertNotIn("gpu4: cluster-health", (self.cluster / "sudo.log").read_text())
+
+    def test_no_gpus_and_nvidia_smi_finds_none(self) -> None:
+        # nvidia-smi exits non-zero when it finds no GPU; that matches cluster.yml on a CPU-only machine.
+        write_command(self.cluster / "cpu1" / "bin", "nvidia-smi", "echo 'No devices were found'\nexit 6\n")
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.row(result.stdout, "cpu1")[5], "0/0")
 
     def test_unknown_version(self) -> None:
         (self.cluster / "gpu2" / "etc" / "nanohpc" / "version").unlink()

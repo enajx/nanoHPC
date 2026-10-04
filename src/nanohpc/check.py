@@ -24,9 +24,9 @@ from nanohpc.config import load_config
 from nanohpc.probe import account_problems, run_remote, ssh_failure
 from nanohpc.render import front_machine, gpu_count, home_server
 
-CHECK_TIMEOUT = 200  # seconds for the whole SSH call to one machine
+CHECK_TIMEOUT = 300  # seconds for the whole SSH call to one machine (more than all the limits below together)
 HEALTH_TIMEOUT = 150  # seconds for cluster-health on the machine (it limits its own slow checks to 10 seconds each)
-TOOL_TIMEOUT = 30  # seconds for each other tool on the machine
+TOOL_TIMEOUT = 20  # seconds for each other tool on the machine (6 at most: 150 + 6 * 20 < 300)
 COLUMNS = ("machine", "ssh", "health", "users", "mounts", "gpus", "slurm", "version")
 # Slurm node states that need no attention (sinfo %T, lowercase).
 SLURM_OK = ("idle", "mixed", "allocated", "completing")
@@ -150,9 +150,9 @@ def mounts_result(facts: dict[str, Any], config: dict[str, Any], name: str, repo
         report.problems.append(f"findmnt failed: {first_line(facts['mounts'])}")
         report.cells["mounts"] = "FAIL"
         return
-    # findmnt -r: one line per mount, fields split by one space. A later line for the same mount point is
-    # mounted on top of the earlier one.
-    lines = [line.split(" ") for line in facts["mounts"]["out"].splitlines() if line]
+    # findmnt -r: one line per mount, fields split by one space; a short line (a field left empty) is padded. A
+    # later line for the same mount point is mounted on top of the earlier one.
+    lines = [[*line.split(" "), "", ""] for line in facts["mounts"]["out"].splitlines() if line]
     mounts = {fields[0]: (fields[1], fields[2]) for fields in lines}
     roles = config["machines"][name]["roles"]
     server = home_server(config)
@@ -180,6 +180,10 @@ def gpus_result(facts: dict[str, Any], machine: dict[str, Any], report: Report) 
     """Fill the gpus cell of a compute machine: the GPUs found against cluster.yml's count."""
     expected = gpu_count(machine)
     smi = facts["nvidia_smi"]
+    # nvidia-smi fails when it finds no GPU, as cluster.yml expects on a CPU-only machine.
+    if smi is not None and smi["code"] != 0 and expected == 0:
+        report.cells["gpus"] = "0/0"
+        return
     if smi is not None:
         if smi["code"] != 0:
             report.problems.append(f"nvidia-smi fails: {first_line(smi)}")

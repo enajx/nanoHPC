@@ -989,7 +989,8 @@ class SimDeployTest(SimUsersBase):
             self.assertEqual(sorted(rows), sorted(machines), result.stdout)
             for row in rows.values():
                 self.assertTrue(row.endswith(f"  {metadata.version('nanohpc')}"), row)
-                self.assertIn("  ok (sudo)  ", row)
+                # Right after a deploy, the front node can warn about metrics that are not fresh yet.
+                self.assertRegex(row, r"  (ok|WARN) \(sudo\)  ")
             self.assertIn("  4/4 (devices)  ", rows["gpu4"])
             self.assertIn("  0/0  ", rows["cpu1"])
             for machine in machines:
