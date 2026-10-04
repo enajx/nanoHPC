@@ -66,15 +66,6 @@
     group: root
   when: not (ansible_check_mode and (website_copy is changed or (website_built is defined and not website_built.stat.exists)))  # dry run: no such build yet
 
-- name: Install the cluster's site data
-  ansible.builtin.copy:
-    src: "{{ nanohpc.files }}/site.json"
-    dest: /srv/nanohpc-web/config/site.json
-    owner: root
-    group: root
-    mode: "0644"
-  register: website_site_data
-
 - name: Install the logo
   ansible.builtin.copy:
     src: "{{ nanohpc.website.logo.source }}"
@@ -84,31 +75,9 @@
     mode: "0644"
   when: nanohpc.website.logo is not none
 
-- name: Install the user guide filler
-  ansible.builtin.copy:
-    src: "{{ nanohpc.package_files }}/cluster-website-docs"
-    dest: /usr/local/bin/cluster-website-docs
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Fill the user guide and policy pages with the cluster's values
-  ansible.builtin.command:
-    argv:
-      - /usr/local/bin/cluster-website-docs
-      - --site
-      - /srv/nanohpc-web/config/site.json
-      - --template
-      - "/srv/nanohpc-web/current/{{ item }}"
-      - --output
-      - "/srv/nanohpc-web/config/{{ item }}"
-  loop: [docs.md, policy.md]
-  register: website_docs
-  changed_when: website_docs.stdout == 'changed'
-  # The dry run counts it only when what it is filled from changes (the site data, or a new build).
-  when: >-
-    not (ansible_check_mode and website_site_data is not changed and website_copy is not changed
-         and (website_built is not defined or website_built.stat.exists))
+# The cluster's site data, and the pages filled from it (also run alone by --only users).
+- name: The cluster's site data and the pages filled from it
+  ansible.builtin.import_tasks: site_data.yml
 
 # HTTPS certificate: the administrator's own, or Let's Encrypt's.
 - name: Install the administrator's certificate and key

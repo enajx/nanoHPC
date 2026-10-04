@@ -1,0 +1,41 @@
+# One QoS per partition with its time limit, and the per-user submission limit (also run alone by --only policy,
+# partitions, and node). Needs a running accounting daemon.
+
+- name: Read the existing QoS names
+  ansible.builtin.command: sacctmgr --noheader --parsable2 show qos format=Name
+  register: existing_qos
+  changed_when: false
+  check_mode: false
+
+- name: Create one QoS per partition
+  ansible.builtin.command: "sacctmgr -i add qos {{ item.name }}"
+  loop: "{{ nanohpc.qos }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in existing_qos.stdout_lines
+
+- name: Read the QoS settings
+  ansible.builtin.command: sacctmgr --noheader --parsable2 show qos format=Name,MaxWall,MaxTRESPJ,MaxTRESPU,MaxSubmitPU,Flags
+  register: qos_rows
+  changed_when: false
+  check_mode: false
+
+# sacctmgr reports "Modified" even when nothing differs, so each setting is compared first.
+- name: Index the QoS settings by name
+  ansible.builtin.set_fact:
+    qos_now: >-
+      {% set rows = {} %}{% for line in qos_rows.stdout_lines %}{% set fields = line.split('|') %}{% set _ = rows.update({fields[0]: fields}) %}{% endfor %}{{ rows }}
+
+- name: Set each partition's time limit, refusing requests that cannot fit
+  ansible.builtin.command: "sacctmgr -i modify qos {{ item.name }} set MaxWall={{ item.max_wall }} Flags=DenyOnLimit"
+  loop: "{{ nanohpc.qos }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: >-
+    item.name not in qos_now
+    or qos_now[item.name][1] != item.max_wall
+    or qos_now[item.name][5].split(',') | sort != ['DenyOnLimit']
+
+- name: Set the per-user submission limit
+  ansible.builtin.command: "sacctmgr -i modify qos normal set MaxSubmitJobsPerUser={{ nanohpc.max_submit_jobs_per_user }}"
+  when: qos_now['normal'][4] != nanohpc.max_submit_jobs_per_user | string

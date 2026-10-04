@@ -110,13 +110,8 @@
       loop_control:
         label: "{{ item.name }}"
 
-    - name: Install the list of machines and what each must run and mount
-      ansible.builtin.copy:
-        src: "{{ nanohpc.files }}/monitor-machines.json"
-        dest: /etc/nanohpc/monitor-machines.json
-        owner: root
-        group: root
-        mode: "0644"
+    - name: The list of machines and what each must run and mount
+      ansible.builtin.import_tasks: machines.yml
 
     # GPU-hour totals count from the cluster's first deploy. Recorded once, in local time, as sacct reads it.
     - name: Record when accounting started (once)

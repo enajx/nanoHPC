@@ -49,7 +49,7 @@ class PrepareTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_inventory_groups_follow_roles(self) -> None:
-        prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], False, self.work)
+        prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], False, None, self.work)
         groups = yaml.safe_load((self.work / "inventory.yml").read_text())["all"]["children"]
         self.assertEqual(sorted(groups["role_front"]["hosts"]), ["front"])
         self.assertEqual(sorted(groups["role_home"]["hosts"]), ["front"])
@@ -61,7 +61,7 @@ class PrepareTest(unittest.TestCase):
         self.assertNotIn("vars", yaml.safe_load((self.work / "inventory.yml").read_text())["all"])
 
     def test_variables(self) -> None:
-        prepare(self.config, self.hostnames, None, True, ["gpu2"], False, self.work)
+        prepare(self.config, self.hostnames, None, True, ["gpu2"], False, None, self.work)
         variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
         self.assertEqual(variables["cluster_name"], "labcluster")
         self.assertEqual([user["name"] for user in variables["users"]], ["alice", "bob"])
@@ -75,7 +75,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(variables["files"], str(self.work / "files"))
 
     def test_home_and_scratch_variables(self) -> None:
-        prepare(self.config, self.hostnames, None, True, [], False, self.work)
+        prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
         variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
         home = variables["home"]
         self.assertEqual(home["server"], "front")
@@ -95,7 +95,7 @@ class PrepareTest(unittest.TestCase):
         self.assertIn("node-store", (self.work / "files" / "prometheus.yml").read_text())
 
     def test_metrics_variables(self) -> None:
-        prepare(self.config, self.hostnames, None, True, ["gpu2"], False, self.work)
+        prepare(self.config, self.hostnames, None, True, ["gpu2"], False, None, self.work)
         metrics = json.loads((self.work / "vars.json").read_text())["nanohpc"]["metrics"]
         self.assertEqual(metrics["front_address"], "192.168.104.10")
         self.assertEqual(metrics["gpus"]["gpu2"], {"count": 2, "type": "rtx6000ada", "fake": True})
@@ -106,7 +106,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(set(metrics["grafana"]["sha256"]), {"amd64", "arm64"})
 
     def test_website_variables_and_site_data(self) -> None:
-        prepare(self.config, self.hostnames, None, False, [], False, self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, None, self.work)
         website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
         self.assertEqual(website["hostname"], "cluster.example.org")
         self.assertEqual(website["path"], "/cluster/")
@@ -137,7 +137,7 @@ class PrepareTest(unittest.TestCase):
         """build: front builds the source shipped in the package; its hash names the release, and matches the
         prebuilt site's, since both come from the same source."""
         self.config["cluster"]["website"]["build"] = "front"
-        prepare(self.config, self.hostnames, None, False, [], False, self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, None, self.work)
         website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
         self.assertEqual(website["build"], "front")
         self.assertTrue((Path(website["source"]) / "package-lock.json").is_file())
@@ -147,14 +147,14 @@ class PrepareTest(unittest.TestCase):
 
     def test_simulated_cluster_uses_the_test_certificate_server(self) -> None:
         """A simulated cluster cannot reach Let's Encrypt: it asks Pebble, its test server, on the front node."""
-        prepare(self.config, self.hostnames, None, True, [], False, self.work)
+        prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
         website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
         self.assertEqual(website["acme"]["server"], "https://127.0.0.1:14000/dir")
         self.assertEqual(website["acme"]["ca_bundle"], "/etc/nanohpc/test-acme/ca.pem")
 
     def test_logo_name_in_site_data(self) -> None:
         self.config["cluster"]["website"]["logo"] = "/somewhere/Lab Logo.SVG"
-        prepare(self.config, self.hostnames, None, False, [], False, self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, None, self.work)
         self.assertEqual(json.loads((self.work / "files" / "site.json").read_text())["logo"], "logo.svg")
         website = json.loads((self.work / "vars.json").read_text())["nanohpc"]["website"]
         self.assertEqual(website["logo"], {"source": "/somewhere/Lab Logo.SVG", "name": "logo.svg"})
@@ -162,7 +162,7 @@ class PrepareTest(unittest.TestCase):
     def test_backup_and_alert_variables(self) -> None:
         self.config["secrets"] = {"slack_webhook": "https://hooks.slack.com/services/T/B/x"}
         self.config["alerts"]["slack"] = True
-        prepare(self.config, self.hostnames, None, False, [], False, self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, None, self.work)
         variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
         self.assertEqual(
             variables["backup"],
@@ -189,7 +189,7 @@ class PrepareTest(unittest.TestCase):
 
     def test_backup_to_an_outside_server(self) -> None:
         self.config["backup"]["to"] = "lab@backup.example.org:/srv/cluster"
-        prepare(self.config, self.hostnames, None, False, [], False, self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, None, self.work)
         backup = json.loads((self.work / "vars.json").read_text())["nanohpc"]["backup"]
         self.assertEqual(backup["kind"], "outside")
         self.assertEqual(backup["destination"], "lab@backup.example.org:/srv/cluster/")
@@ -242,7 +242,7 @@ class PrepareTest(unittest.TestCase):
     def test_auto_deploy_variables(self) -> None:
         self.config["nanohpc_version"] = "0.1.0"
         self.config["auto_deploy"].update(enabled=True, repository="git@github.com:lab/cluster-config.git")
-        prepare(self.config, self.hostnames, None, False, [], False, self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, None, self.work)
         deploy = json.loads((self.work / "vars.json").read_text())["nanohpc"]["auto_deploy"]
         self.assertEqual(deploy["repository"], "git@github.com:lab/cluster-config.git")
         self.assertEqual(deploy["repository_host"], "github.com")
@@ -253,7 +253,7 @@ class PrepareTest(unittest.TestCase):
 
     def test_monitor_machines(self) -> None:
         """The status collector checks each machine's role, required services, and mounts."""
-        prepare(self.config, self.hostnames, None, True, [], False, self.work)
+        prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
         machines = json.loads((self.work / "files" / "monitor-machines.json").read_text())
         self.assertEqual(
             machines["front"],
@@ -289,7 +289,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(machines[front]["mounts"], ["/", "/home"])
 
     def test_files_are_written(self) -> None:
-        prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], False, self.work)
+        prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], False, None, self.work)
         files = self.work / "files"
         self.assertIn("NodeHostname=host-gpu4", (files / "slurm.conf").read_text())
         self.assertEqual((files / "gres" / "gpu2.conf").read_text(), "Name=gpu Type=rtx6000ada File=/dev/nvidia[0-1]\n")
@@ -299,9 +299,9 @@ class PrepareTest(unittest.TestCase):
 
     def test_ssh_config_is_passed_to_ansible(self) -> None:
         ssh_config = self.work / "ssh_config"
-        prepare(self.config, self.hostnames, ssh_config, True, [], False, self.work)
+        prepare(self.config, self.hostnames, ssh_config, True, [], False, None, self.work)
         self.assertIn(f"-F {ssh_config}", (self.work / "ansible.cfg").read_text())
-        prepare(self.config, self.hostnames, None, False, [], False, self.work)
+        prepare(self.config, self.hostnames, None, False, [], False, None, self.work)
         self.assertNotIn("-F ", (self.work / "ansible.cfg").read_text())
 
 
@@ -388,7 +388,7 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(code, DRY_RUN_FAILED)
         self.assertEqual(len(self.calls), 1)
         self.assertIn(
-            "Dry run failed on front (the front node and the home machine), which every other machine depends on: "
+            "Dry run failed on front (the front node and the home machine), which the rest of this deploy depends on: "
             "nothing was deployed, and nothing was changed.",
             output,
         )

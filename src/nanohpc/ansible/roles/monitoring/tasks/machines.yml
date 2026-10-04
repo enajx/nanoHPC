@@ -1,0 +1,9 @@
+# The status collector's list of machines, read at each snapshot (also run alone by --only node).
+
+- name: Install the list of machines and what each must run and mount
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/monitor-machines.json"
+    dest: /etc/nanohpc/monitor-machines.json
+    owner: root
+    group: root
+    mode: "0644"
