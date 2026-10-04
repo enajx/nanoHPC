@@ -179,19 +179,19 @@ ONLY: dict[str, Part] = {
     "policy": Part(
         "policy",
         ("front", "compute"),
-        "QoS, fair-share, and limits (slurm.conf, job_submit.lua, Slurm's QoS), then Slurm reloads them",
+        "QoS, fair-share, and limits (slurm.conf, job_submit.lua, Slurm's QoS); Slurm restarts where they changed",
     ),
     "partitions": Part(
         "partitions",
         ("front", "compute"),
-        "partitions and GPUs (slurm.conf and gres.conf on every Slurm machine, job_submit.lua, Slurm's QoS), then"
-        " Slurm reloads them, and the website's policy data",
+        "partitions and GPUs (slurm.conf and gres.conf on every Slurm machine, job_submit.lua, Slurm's QoS; Slurm"
+        " restarts where they changed), and the website's policy data",
     ),
     "node": Part(
         "node",
         EVERY_ROLE,
         "everything on the machine, and the shared parts on the others: /etc/hosts, slurm.conf and Slurm's"
-        " reload, the /home exports, the Prometheus targets, and the machine lists of the status collector and of"
+        " restart, the /home exports, the Prometheus targets, and the machine lists of the status collector and of"
         " automatic deploys",
     ),
 }
@@ -615,9 +615,10 @@ Options:
     with your key loaded in your SSH agent (ssh-add). nanoHPC forwards it, so no password is needed."""
 
 
-def needed_machines(config: dict[str, Any], machines: list[str]) -> dict[str, str]:
-    """Return the machines every other machine depends on, among `machines` (the machines of this run), each with
-    what it is: the front node and the home machine (the same machine when /home is on the front node)."""
+def needed_machines(config: dict[str, Any], machines: list[str], node: str | None) -> dict[str, str]:
+    """Return the machines the rest of a deploy depends on, among `machines` (the machines of this run), each with
+    what it is: the front node and the home machine (the same machine when /home is on the front node), and the
+    machine of `--only node` (`node`), whose shared parts the other machines get."""
     front, _ = front_machine(config)
     home = home_server(config)
     needed = (
@@ -625,6 +626,8 @@ def needed_machines(config: dict[str, Any], machines: list[str]) -> dict[str, st
         if front == home
         else {front: "the front node", home: "the home machine"}
     )
+    if node is not None:
+        needed[node] = "the machine of --only node"
     return {machine: what for machine, what in needed.items() if machine in machines}
 
 
@@ -676,8 +679,9 @@ def check_then_apply(
 ) -> int:
     """Run the playbook in check mode (the dry run: nothing changes except apt's package lists) and print what it
     would change on each machine. Then, unless `dry_run_only`, run it for real on the machines whose dry run
-    passed; the others are left out, unchanged. When a machine in `needed` (the front node, the home machine:
-    every other machine depends on them, named with what they are) fails its dry run, nothing is deployed.
+    passed; the others are left out, unchanged. When a machine in `needed` (the front node, the home machine, the
+    machine of --only node: the rest of the deploy depends on them, named with what they are) fails its dry run,
+    nothing is deployed.
     Return 0, DRY_RUN_FAILED, or REAL_RUN_FAILED. The records go into `folder`."""
     print("Dry run: checking every machine without changing anything (ansible-playbook --check)", flush=True)
     code, record = run_with(run, ["--check"], {"nanohpc_left_out": [], "nanohpc_dry_run": {}}, folder, "dry-run")
@@ -695,7 +699,7 @@ def check_then_apply(
     blocking = [f"{machine} ({needed[machine]})" for machine in failed if machine in needed]
     if blocking:
         print(
-            f"Dry run failed on {', '.join(blocking)}, which every other machine depends on: nothing was deployed,"
+            f"Dry run failed on {', '.join(blocking)}, which the rest of this deploy depends on: nothing was deployed,"
             " and nothing was changed. Fix what failed above and deploy again.",
             file=sys.stderr,
         )
@@ -789,7 +793,8 @@ def deploy(
         return 1
     work = CACHE / "clusters" / config["cluster"]["name"]
     work.mkdir(parents=True, exist_ok=True)
-    if config["auto_deploy"]["enabled"] is True:
+    # The front node's nanoHPC for automatic deploys is installed by a full deploy only.
+    if config["auto_deploy"]["enabled"] is True and only is None:
         install = install_source(metadata.distribution("nanohpc").read_text("direct_url.json"))
         error = nanohpc_wheel(install, config["nanohpc_version"], work)
         if error is not None:
@@ -841,7 +846,13 @@ def deploy(
                 [*command, *arguments], env=run_environment, stdin=subprocess.DEVNULL, check=False
             ).returncode
 
-        code = check_then_apply(run, machines, needed_machines(config, machines), Path(private), dry_run_only)
+        code = check_then_apply(
+            run,
+            machines,
+            needed_machines(config, machines, None if only is None else only.node),
+            Path(private),
+            dry_run_only,
+        )
         # No copy of the secrets stays in the work folder (the real run put them on the front node).
         (work / "secrets.json").unlink()
         # Close the shared SSH connections now, so none keeps the forwarded agent open after the run.

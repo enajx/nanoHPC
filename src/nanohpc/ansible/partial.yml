@@ -13,7 +13,8 @@
 #   machine; scratch folders and caches on the compute machines; Slurm accounting users on the front node;
 #   the user lists of the status collector (front node) and the quota reader (home machine).
 # - policy, partitions: slurm.conf (and gres.conf) on every Slurm machine, job_submit.lua and Slurm's QoS on the
-#   front node, Slurm restarted where its configuration changed, then a fresh status snapshot for the website.
+#   front node, Slurm restarted where its configuration changed (as a full deploy does), then a fresh status
+#   snapshot for the website.
 # - node: everything on the machine in the only_node group (inventory), as site.yml would set up a compute
 #   machine; on the others only the shared parts: /etc/hosts, slurm.conf and the Slurm restart, the /home
 #   exports, the Prometheus targets, and the machine lists of the status collector and of automatic deploys.

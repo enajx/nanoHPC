@@ -61,6 +61,7 @@
 - name: Every machine's SSH host key, and how the front node reaches each machine as root
   ansible.builtin.import_tasks: machines.yml
 
+# The checkout is made without network access, so a deploy works before the key is added to the repository.
 - name: Create the checkout of the configuration repository
   ansible.builtin.shell: |
     set -eu

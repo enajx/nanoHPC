@@ -388,7 +388,7 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(code, DRY_RUN_FAILED)
         self.assertEqual(len(self.calls), 1)
         self.assertIn(
-            "Dry run failed on front (the front node and the home machine), which every other machine depends on: "
+            "Dry run failed on front (the front node and the home machine), which the rest of this deploy depends on: "
             "nothing was deployed, and nothing was changed.",
             output,
         )

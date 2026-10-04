@@ -29,5 +29,3 @@
         UserKnownHostsFile /etc/nanohpc/auto-deploy/machines_known_hosts
 
       {% endfor %}
-
-# The checkout is made without network access, so a deploy works before the key is added to the repository.

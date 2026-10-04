@@ -11,7 +11,16 @@ from typing import Any
 import yaml
 
 from nanohpc.config import load_config
-from nanohpc.deploy import ONLY, Only, deployed_problems, only_machines, only_refusal, parse_only, prepare
+from nanohpc.deploy import (
+    ONLY,
+    Only,
+    deployed_problems,
+    needed_machines,
+    only_machines,
+    only_refusal,
+    parse_only,
+    prepare,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 ANSIBLE = ROOT / "src" / "nanohpc" / "ansible"
@@ -67,6 +76,19 @@ class OnlyMachinesTest(unittest.TestCase):
         self.assertEqual(only_machines(config, Only("partitions", None)), slurm)
         # The new machine, and the shared parts on all the others (/etc/hosts is on every machine).
         self.assertEqual(only_machines(config, Only("node", "gpu4i")), everyone)
+
+    def test_nothing_is_deployed_when_the_new_machine_fails_its_dry_run(self) -> None:
+        """The shared parts on the other machines are for the new machine: if its dry run fails, they wait too."""
+        config = example("examples/cluster.yml")
+        machines = only_machines(config, Only("node", "gpu4i"))
+        self.assertEqual(
+            needed_machines(config, machines, "gpu4i"),
+            {"front": "the front node and the home machine", "gpu4i": "the machine of --only node"},
+        )
+        slurm = only_machines(config, Only("policy", None))
+        storage = example("tests/sim/cluster-home-on-storage.yml")
+        self.assertEqual(needed_machines(storage, slurm, None), {"front": "the front node"})
+        self.assertEqual(needed_machines(config, slurm, None), {"front": "the front node and the home machine"})
 
     def test_every_part_has_its_plays(self) -> None:
         """Each part's tag is on plays in partial.yml, and partial.yml uses no other tag."""
