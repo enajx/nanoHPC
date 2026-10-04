@@ -80,9 +80,10 @@ For each machine the administrator names (a hostname, an address, or a host from
   dry run, nothing is deployed. A failure after the dry run passed exits with code 4: those machines may be partly
   changed. Run it in a terminal the first time, if sudo still needs a password. `nanohpc deploy --dry-run
   cluster.yml` shows what would change and stops there.
-- The deploy makes sshd read root's keys only from the administrators' keys in `cluster.yml`. A machine with
-  another key in `/root/.ssh/authorized_keys` (or `authorized_keys2`) fails its dry run, naming the key: ask the
-  administrator to delete it there, or to add it to an administrator in `cluster.yml`.
+- The deploy makes sshd read root's keys only from the administrators' keys in `cluster.yml`. A machine where
+  root has another key today (in `/root/.ssh/authorized_keys`, or another file sshd reads for root) fails its dry
+  run, naming the key: ask the administrator to delete it there, or to add it to an administrator in `cluster.yml`.
+  cloud-init's root key that only says "Please login as the user ..." does not count.
 - Later changes: after editing `cluster.yml`, `nanohpc deploy cluster.yml --only users` (or `policy`,
   `partitions`) applies only that part (`users` includes the website's quota and cleanup values), and
   `--only node NAME` sets up a new or changed compute machine (plus `/etc/hosts`, Slurm's configuration, the `/home`

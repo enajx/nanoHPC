@@ -100,7 +100,7 @@ Which ones to run (agreed 2026-10-03), on Ubuntu 24.04 while developing:
 
 ### Root login for administrators
 
-- Fast: `tests/test_root_login.py` (root's key file and nanoHPC's sshd settings from their templates; when the machine running the tests has an sshd, `sshd -T` shows that root reads its keys only from `/etc/ssh/authorized_keys/root`; the preflight check of root's own key files in real ansible-playbook on this machine, in check mode: a key that is not an administrator's stops the machine, named with its file, type, fingerprint, and comment, and the files are not read once nanoHPC's root setting is active).
+- Fast: `tests/test_root_login.py` (root's key file and nanoHPC's sshd settings from their templates; when the machine running the tests has an sshd, `sshd -T` shows that root reads its keys only from `/etc/ssh/authorized_keys/root`; the preflight check of root's own key files in real ansible-playbook on this machine, in check mode: only the files `sshd -T` lists for root are read, apart from nanoHPC's own; a key there that is not an administrator's stops the machine, named with its file, type, fingerprint, and comment, except cloud-init's key that only says to log in as another user).
 - Real VMs: `SimRedeployTest` (root login with an administrator's key on every machine, refused with another user's key or a key in `/root/.ssh/authorized_keys`, and working on `gpu4` within 20 seconds with the front node's NFS server stopped; with the root setting turned off on `cpu1` and another key in `/root/.ssh/authorized_keys`, `--dry-run` fails on `cpu1` naming the key, and once the key is gone a deploy puts the setting back).
 
 ### Dry run
