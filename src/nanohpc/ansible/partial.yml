@@ -1,0 +1,277 @@
+# nanoHPC partial deploys: `nanohpc deploy --only users|policy|partitions` or `--only node NAME`. nanohpc deploy
+# runs this playbook with the part's tag (--tags) on the part's machines (--limit); ONLY in deploy.py names them.
+# Like site.yml it runs twice, a dry run (check mode) first, then for real on the machines whose dry run passed.
+# A partial deploy is only for a cluster whose machines were all deployed with their roles in cluster.yml (nanohpc
+# deploy checks /etc/nanohpc/roles on every machine first); only the machine of --only node may be new.
+#
+# Every play here runs role task files that site.yml runs too, so a partial deploy reaches the same state as a
+# full deploy for its part. The "pending" variables set below say what a first deploy's dry run cannot read yet;
+# on a deployed cluster nothing is pending.
+#
+# Tags (one per part; `always` runs in every part):
+# - users: accounts, SSH keys, sudo keys, and AllowUsers on every machine; home folders and quotas on the home
+#   machine; scratch folders and caches on the compute machines; Slurm accounting users on the front node;
+#   the user lists of the status collector (front node) and the quota reader (home machine); the website's
+#   site.json and the user guide and policy pages filled from it (front node).
+# - policy, partitions: slurm.conf (and gres.conf) on every Slurm machine, job_submit.lua and Slurm's QoS on the
+#   front node, Slurm restarted where its configuration changed (as a full deploy does), then a fresh status
+#   snapshot for the website.
+# - node: everything on the machine in the only_node group (inventory), as site.yml would set up a compute
+#   machine; on the others only the shared parts: /etc/hosts, slurm.conf and the Slurm restart, the /home
+#   exports, the Prometheus targets, and the machine lists of the status collector and of automatic deploys.
+#   The front node also takes part in the Munge and metrics certificate steps, which read its key and its
+#   certificate authority (nothing changes there).
+
+- name: Check every machine before changing anything
+  hosts: all
+  become: true
+  tags: [always]
+  pre_tasks:
+    - name: Leave out the machines whose dry run failed (nothing is changed on them)
+      ansible.builtin.fail:
+        msg: "{{ inventory_hostname }} is left out of this deploy: its dry run failed"
+      when: inventory_hostname in nanohpc_left_out
+  roles: [preflight]
+
+# A partial deploy is always run by hand, so it pauses automatic deploys; the last play starts them again.
+- name: Automatic deploy key on the front node
+  hosts: role_front
+  become: true
+  any_errors_fatal: true
+  tags: [always]
+  tasks:
+    - name: Pause automatic deploys while this manual deploy runs
+      ansible.builtin.include_role:
+        name: auto_deploy
+        tasks_from: pause
+
+    - name: Make or read the key
+      ansible.builtin.include_role:
+        name: auto_deploy
+        tasks_from: key
+      when: nanohpc.auto_deploy.enabled
+
+# --only users
+
+- name: Users, SSH keys, sudo keys, and who may log in, on every machine
+  hosts: all
+  become: true
+  tags: [users]
+  roles: [accounts]
+
+- name: The users' home folders and quotas on the home machine
+  hosts: role_home
+  become: true
+  tags: [users]
+  vars:
+    home_quota_pending: false
+  tasks:
+    - name: Home folders and quotas
+      ansible.builtin.import_role:
+        name: home_server
+        tasks_from: users
+
+- name: The users' scratch folders and caches on the compute machines
+  hosts: role_compute
+  become: true
+  tags: [users]
+  tasks:
+    - name: Scratch folders, caches, and cleanup
+      ansible.builtin.import_role:
+        name: scratch
+        tasks_from: users
+
+- name: The users in Slurm's accounting on the front node
+  hosts: role_front
+  become: true
+  tags: [users]
+  vars:
+    slurm_accounting_pending: false
+  tasks:
+    - name: Accounting users and fair-share
+      ansible.builtin.import_role:
+        name: slurm_controller
+        tasks_from: users
+
+- name: The user lists of the status collector and the home quota reader
+  hosts: role_front:role_home
+  become: true
+  tags: [users]
+  roles: [monitoring]
+
+# The website shows the home quotas and the scratch cleanup days, from site.json and the pages filled from it.
+- name: The website's site data and the pages filled from it on the front node
+  hosts: role_front
+  become: true
+  tags: [users]
+  tasks:
+    - name: site.json, docs.md, and policy.md
+      ansible.builtin.import_role:
+        name: website
+        tasks_from: site_data
+
+# --only node NAME: the machine itself, in site.yml's order, with the shared parts on the others in between.
+
+- name: Base setup, users, and SSH access on the new machine
+  hosts: only_node
+  become: true
+  tags: [node]
+  roles: [base, accounts]
+
+- name: Every other machine names the new machine in /etc/hosts
+  hosts: all:!only_node
+  become: true
+  tags: [node]
+  tasks:
+    - name: Cluster machines in /etc/hosts
+      ansible.builtin.import_role:
+        name: base
+        tasks_from: hosts
+
+- name: The home machine exports /home to the new machine
+  hosts: role_home
+  become: true
+  tags: [node]
+  tasks:
+    - name: Exports of /home
+      ansible.builtin.import_role:
+        name: home_server
+        tasks_from: exports
+
+- name: The shared /home on the new machine
+  hosts: only_node
+  become: true
+  tags: [node]
+  roles: [home_client]
+
+- name: Munge on the new machine, with the front node's key
+  hosts: only_node:role_front
+  become: true
+  tags: [node]
+  roles: [munge]
+
+- name: Slurm on the new machine
+  hosts: only_node
+  become: true
+  tags: [node]
+  roles: [slurm_packages]
+
+# --only policy, partitions, and node: Slurm's configuration, the controller first.
+
+- name: Slurm's configuration, QoS, and the controller on the front node
+  hosts: role_front
+  become: true
+  tags: [policy, partitions, node]
+  vars:
+    slurm_install_pending: false
+    slurm_accounting_pending: false
+    slurm_lua_pending: false
+  tasks:
+    - name: slurm.conf, cgroup.conf, and job_submit.lua
+      ansible.builtin.import_role:
+        name: slurm_controller
+        tasks_from: slurm_config
+
+    - name: QoS and limits
+      ansible.builtin.import_role:
+        name: slurm_controller
+        tasks_from: qos
+
+    - name: The controller (restarted when its configuration changed) and the partitions' GPU limits
+      ansible.builtin.import_role:
+        name: slurm_controller
+        tasks_from: slurmctld
+
+- name: Slurm's configuration on the other compute machines
+  hosts: role_compute:!only_node
+  become: true
+  tags: [policy, partitions, node]
+  vars:
+    slurm_install_pending: false
+  tasks:
+    - name: slurm.conf, cgroup.conf, and gres.conf (slurmd restarts when they change)
+      ansible.builtin.import_role:
+        name: slurm_compute
+        tasks_from: slurm_config
+
+- name: Slurm, scratch, job modes, and uv on the new machine
+  hosts: only_node
+  become: true
+  tags: [node]
+  roles: [slurm_compute, scratch, job_modes, uv]
+
+- name: The new machine's metrics certificate, signed by the front node
+  hosts: only_node:role_front
+  become: true
+  tags: [node]
+  roles: [metrics_tls]
+
+- name: Metrics exporters on the new machine
+  hosts: only_node
+  become: true
+  tags: [node]
+  roles: [node_metrics, machine_metrics]
+
+- name: Prometheus collects the new machine's metrics
+  hosts: role_front
+  become: true
+  tags: [node]
+  roles: [prometheus]
+
+- name: The status collector's and automatic deploys' lists of machines on the front node
+  hosts: role_front
+  become: true
+  tags: [node]
+  tasks:
+    - name: The status collector's list of machines
+      ansible.builtin.import_role:
+        name: monitoring
+        tasks_from: machines
+
+    - name: Every machine's SSH host key for automatic deploys
+      ansible.builtin.import_role:
+        name: auto_deploy
+        tasks_from: machines
+      when: nanohpc.auto_deploy.enabled
+
+- name: Health checks on the new machine
+  hosts: only_node
+  become: true
+  tags: [node]
+  roles: [health]
+
+# The website reads the status snapshot, which the status collector refreshes every 30 seconds; take one now.
+- name: A fresh status snapshot for the website (machines and policies)
+  hosts: role_front
+  become: true
+  tags: [policy, partitions, node]
+  tasks:
+    - name: Take a snapshot now
+      ansible.builtin.systemd_service:
+        name: nanohpc-monitor-snapshot.service
+        state: started
+      changed_when: false  # a one-off run of the collector, not a change to the machine
+      when: not ansible_check_mode  # the snapshot shows this deploy's result
+
+- name: Start automatic deploys again
+  hosts: role_front
+  become: true
+  tags: [always]
+  tasks:
+    - name: Start the automatic deploy timer again (paused at the start of this deploy)
+      ansible.builtin.systemd_service:
+        name: nanohpc-auto-deploy.timer
+        state: started
+      changed_when: false  # started again after this deploy's pause, not a change of its own
+      when: auto_deploy_timer_unit.stat.exists and not ansible_check_mode
+
+# Fails the deploy only for broken services and mounts (see roles/health/tasks/check.yml).
+- name: Check that every machine works
+  hosts: all
+  become: true
+  tags: [always]
+  tasks:
+    - name: Run cluster-health
+      ansible.builtin.import_role:
+        name: health
+        tasks_from: check

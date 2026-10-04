@@ -312,6 +312,7 @@ class StorageStep(Step):
         state = self.state
         machines = state.file.machines()
         cleanup = state.file.get(["scratch", "cleanup_days"])
+        job_retention = state.file.get(["scratch", "job_retention_days"])
         yield self.heading()
         yield Static("/home", classes="subheading")
         candidates = [name for name, machine in machines.items() if "compute" not in roles_of(machine)]
@@ -349,7 +350,7 @@ class StorageStep(Step):
                 yield plain(size.note_text(), "hint", f"{size_id}-note")
             if device:
                 facts = state.facts.get(name)
-                advice = disk_problem(facts, device, False) or scratch_warning(facts, device, cleanup)
+                advice = disk_problem(facts, device, False) or scratch_warning(facts, device, cleanup, job_retention)
                 if advice:
                     yield plain(advice, "warning", widget_id("scratch-advice", name))
         yield Static("Quotas and cleanup", classes="subheading")
@@ -363,6 +364,16 @@ class StorageStep(Step):
             "scratch cleanup days",
             BoundInput(
                 state, ["scratch", "cleanup_days"], "int", str(SCRATCH_DEFAULTS["cleanup_days"]), "scratch-cleanup"
+            ),
+        )
+        yield field(
+            "kept job copies days",
+            BoundInput(
+                state,
+                ["scratch", "job_retention_days"],
+                "int",
+                str(SCRATCH_DEFAULTS["job_retention_days"]),
+                "scratch-job-retention",
             ),
         )
         yield Static(STORAGE_ADVICE, classes="note")

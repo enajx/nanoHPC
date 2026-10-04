@@ -74,5 +74,22 @@ For each machine the administrator names (a hostname, an address, or a host from
 ## 7. Review and deploy
 
 - `nanohpc validate cluster.yml` must pass. Show the administrator the whole file and agree it.
-- `nanohpc deploy cluster.yml` (it stops before changing anything if a machine is not ready, and says why).
-  Run it in a terminal the first time, if sudo still needs a password.
+- `nanohpc deploy cluster.yml`: it first runs a dry run on every machine (it changes nothing except refreshing
+  apt's package lists), then deploys the machines whose dry run passed. Machines whose dry run failed are left out,
+  unchanged, and listed at the end with what failed (exit code 3); if the front node or the home machine fails its
+  dry run, nothing is deployed. A failure after the dry run passed exits with code 4: those machines may be partly
+  changed. Run it in a terminal the first time, if sudo still needs a password. `nanohpc deploy --dry-run
+  cluster.yml` shows what would change and stops there.
+- The deploy makes sshd read root's keys only from the administrators' keys in `cluster.yml`. A machine where
+  root has another key today (in `/root/.ssh/authorized_keys`, or another file sshd reads for root) fails its dry
+  run (a full deploy, `--only users`, or `--only node` for that machine), naming the key: ask the administrator to
+  delete it there, or to add it to an administrator in `cluster.yml`. cloud-init's root key that only says "Please
+  login as the user ..." does not count.
+- Later changes: after editing `cluster.yml`, `nanohpc deploy cluster.yml --only users` (or `policy`,
+  `partitions`) applies only that part (`users` includes the website's quota and cleanup values), and
+  `--only node NAME` sets up a new or changed compute machine (plus `/etc/hosts`, Slurm's configuration, the `/home`
+  exports, and the monitoring lists on the others), with the same checks and dry run. Anything else (a new front node, home machine, or backup machine, or changed roles) needs a
+  full `nanohpc deploy cluster.yml`.
+- `nanohpc check cluster.yml` (any time, changes nothing): one line per machine with SSH, the cluster-health
+  result, users and UIDs, mounts, GPU count, Slurm node state, and the nanoHPC version deployed, then the
+  problems (exit code 1 when there are any), warnings, and notes.

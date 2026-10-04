@@ -1,0 +1,47 @@
+# The cluster's account and every user in it with an equal fair-share (also run alone by --only users).
+# Needs a running accounting daemon.
+
+- name: Read the accounts
+  ansible.builtin.command: "sacctmgr --noheader --parsable2 show account {{ nanohpc.cluster_name }} format=Account"
+  register: cluster_accounts
+  changed_when: false
+  check_mode: false
+
+- name: Create the account every user belongs to
+  ansible.builtin.command: "sacctmgr -i add account {{ nanohpc.cluster_name }} Cluster={{ nanohpc.cluster_name }} Description=nanoHPC QoS=normal"
+  when: nanohpc.cluster_name not in cluster_accounts.stdout_lines
+
+- name: Read the users' associations
+  ansible.builtin.command: "sacctmgr --noheader --parsable2 show assoc where cluster={{ nanohpc.cluster_name }} account={{ nanohpc.cluster_name }} format=User"
+  register: cluster_users
+  changed_when: false
+  check_mode: false
+
+- name: Add the users as job submitters with equal fair-share
+  ansible.builtin.command: >-
+    sacctmgr -i add user {{ item.name }} Cluster={{ nanohpc.cluster_name }} Account={{ nanohpc.cluster_name }}
+    DefaultAccount={{ nanohpc.cluster_name }} QoS=normal DefaultQoS=normal Fairshare=1
+  loop: "{{ nanohpc.users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in cluster_users.stdout_lines
+
+- name: Read the users' fair-share
+  ansible.builtin.command: >-
+    sacctmgr --noheader --parsable2 show assoc where cluster={{ nanohpc.cluster_name }}
+    account={{ nanohpc.cluster_name }} user={{ item.name }} format=Fairshare
+  loop: "{{ nanohpc.users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: user_shares
+  changed_when: false
+  check_mode: false
+
+- name: Give every user an equal fair-share
+  ansible.builtin.command: >-
+    sacctmgr -i modify user where name={{ item.item.name }} cluster={{ nanohpc.cluster_name }}
+    account={{ nanohpc.cluster_name }} set Fairshare=1
+  loop: "{{ user_shares.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.stdout | trim != '1'

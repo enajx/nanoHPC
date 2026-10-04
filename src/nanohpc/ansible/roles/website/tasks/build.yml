@@ -43,6 +43,7 @@
         checksum: "sha256:{{ nanohpc.website.node.sha256[node_arch] }}"
         timeout: 120
         mode: "0644"
+      register: node_download
 
     - name: Unpack Node (owned by root)
       ansible.builtin.unarchive:
@@ -53,6 +54,7 @@
         owner: root
         group: root
         creates: "{{ node_dir }}/bin/node"
+      when: not (ansible_check_mode and node_download is changed)  # dry run: not downloaded yet
 
     - name: Pack the website source (without installed packages)
       ansible.builtin.command:
@@ -64,6 +66,7 @@
       delegate_to: localhost
       become: false
       changed_when: false
+      when: not ansible_check_mode  # writes on this machine: real run only
 
     - name: Remove a release copy that stopped halfway
       ansible.builtin.file:
@@ -85,6 +88,7 @@
         dest: "{{ build_dir }}"
         owner: cluster-web-build
         group: cluster-web-build
+      when: not ansible_check_mode  # dry run: the source is not packed
 
     - name: Install the packages and build (as the build account)
       ansible.builtin.command:
@@ -107,6 +111,7 @@
       register: built_hash
       changed_when: false
       failed_when: built_hash.stdout | trim != nanohpc.website.source_hash
+      when: not ansible_check_mode  # nothing is built in the dry run
 
     # Copied under a temporary name and renamed, so a copy that stopped halfway is never taken as a release.
     - name: Keep this build as a release
@@ -118,6 +123,7 @@
         group: root
         mode: "0644"
         directory_mode: "0755"
+      when: not ansible_check_mode  # dry run: nothing is built
 
     - name: Name the release
       ansible.builtin.command: mv /srv/nanohpc-web/releases/{{ website_release }}.partial /srv/nanohpc-web/releases/{{ website_release }}

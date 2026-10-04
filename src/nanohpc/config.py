@@ -42,7 +42,7 @@ POLICY_DEFAULTS: dict[str, Any] = {
     "age_max": "7-00:00:00",
 }
 HOME_DEFAULTS: dict[str, Any] = {"quota_soft_gb": 300, "quota_hard_gb": 400, "quota_grace": "7days"}
-SCRATCH_DEFAULTS: dict[str, Any] = {"cleanup_days": 14}
+SCRATCH_DEFAULTS: dict[str, Any] = {"cleanup_days": 14, "job_retention_days": 7}
 ALERTS_DEFAULTS: dict[str, Any] = {"slack": False}
 AUTO_DEPLOY_DEFAULTS: dict[str, Any] = {
     "enabled": False,
@@ -702,6 +702,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         home["quota_grace"], re.compile(r"\d+(days|hours|minutes)"), "home.quota_grace", "a time like 7days"
     )
     checker.positive(config["scratch"]["cleanup_days"], "scratch.cleanup_days")
+    checker.positive(config["scratch"]["job_retention_days"], "scratch.job_retention_days")
     checker.boolean(config["alerts"]["slack"], "alerts.slack")
     check_auto_deploy(checker, config)
     return config, checker.errors

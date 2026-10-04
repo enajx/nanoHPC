@@ -643,7 +643,9 @@ class StorageTest(unittest.IsolatedAsyncioTestCase):
         ext4 = Disk("/dev/vdc", 100.0, "ext4", None, None, "disk", None, [], True)
         with_ext4 = dataclasses.replace(machine, disks=[ext4])
         self.assertIsNone(disk_problem(with_ext4, "/dev/vdc", False))
-        self.assertIn("older than 14 days", str(scratch_warning(with_ext4, "/dev/vdc", None)))
+        warning = str(scratch_warning(with_ext4, "/dev/vdc", None, None))
+        self.assertIn("unused for 14 days", warning)
+        self.assertIn("7 days after their jobs ended", warning)
 
     async def test_image_size_is_limited_by_free_space(self) -> None:
         small = dataclasses.replace(facts("gpu2", ["192.168.104.12"], [], None), free_gb=50.0)

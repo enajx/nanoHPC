@@ -205,3 +205,28 @@ tests:
       - eval_time: 7m
         alertname: AutoDeployFailed
         exp_alerts: []
+
+  # The alert says whether the dry run failed (machines left out, unchanged) or the real run failed.
+  - interval: 1m
+    input_series:
+      - series: 'cluster_auto_deploy_last_exit_code{job="node",machine="front"}'
+        values: '3 3 4 4'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AutoDeployFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              machine: front
+            exp_annotations:
+              summary: "The automatic deploy on front failed: its dry run failed on some machines, which were left out, unchanged. See journalctl -u nanohpc-auto-deploy there."
+      - eval_time: 3m
+        alertname: AutoDeployFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              machine: front
+            exp_annotations:
+              summary: "The automatic deploy on front failed: its real run failed, so machines may be partly changed. See journalctl -u nanohpc-auto-deploy there."

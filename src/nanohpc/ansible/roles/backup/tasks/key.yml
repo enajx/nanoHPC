@@ -11,12 +11,16 @@
   ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-backup@{{ inventory_hostname }}" -f /etc/nanohpc/backup/id_ed25519
   args:
     creates: /etc/nanohpc/backup/id_ed25519
+  register: backup_keygen
 
 - name: Read the backup key's public half
   ansible.builtin.slurp:
     src: /etc/nanohpc/backup/id_ed25519.pub
   register: backup_public_key_file
+  when: not (ansible_check_mode and backup_keygen is changed)  # dry run: the key is not made yet
 
 - name: Keep the public key for the backup machine
   ansible.builtin.set_fact:
-    backup_public_key: "{{ backup_public_key_file.content | b64decode | trim }}"
+    backup_public_key: >-
+      {{ (backup_public_key_file.content | b64decode | trim) if backup_public_key_file.content is defined
+         else '(the key this deploy makes)' }}

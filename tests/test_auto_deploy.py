@@ -269,6 +269,20 @@ class AutoDeployTests(unittest.TestCase):
         self.assertEqual(self.cluster.state_file("deployed"), good)
         self.assertIsNone(self.cluster.state_file("failed"))
 
+    def test_journal_says_which_run_failed(self) -> None:
+        """nanohpc deploy exits 3 when its dry run failed on some machines (left out, unchanged), 4 when its real
+        run failed; the journal says which, and the metric keeps the code for the alert."""
+        for code, meaning in (
+            ("3", "its dry run failed on some machines, which were left out, unchanged"),
+            ("4", "its real run failed, so machines may be partly changed"),
+        ):
+            with self.subTest(code=code):
+                (self.cluster.root / "deploy-exit").write_text(code)
+                commit = self.cluster.commit(f"nanohpc_version: 1.0.0\nname: exit-{code}\n")
+                result = self.assert_run(int(code))
+                self.assertIn(f"deploy of commit {commit} failed with exit code {code} ({meaning})", result.stderr)
+                self.assertEqual(self.cluster.metric("cluster_auto_deploy_last_exit_code"), code)
+
     def test_wrong_origin_is_refused(self) -> None:
         """A checkout whose origin is not the expected repository is not fetched or deployed."""
         result = self.cluster.run("git@github.com:lab/other.git")

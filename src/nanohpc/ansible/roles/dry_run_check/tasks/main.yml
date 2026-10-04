@@ -1,0 +1,46 @@
+# Dry run only: check a new configuration file with its own checker, as the real run does with the copy module's
+# `validate`, so the dry run fails where the real run would. The new file is written to a temporary file in /tmp,
+# checked, and removed. This temporary file is the only thing a dry run writes, besides refreshing apt's package
+# lists.
+# Variables: check_content (the new file's text) or check_source (the new file on the administrator's machine;
+# the other one is none), and check_command (the checker, with %s for the file).
+- name: Check the new file with its checker
+  block:
+    - name: Make a temporary file for the check
+      ansible.builtin.tempfile:
+        path: /tmp
+        suffix: .nanohpc-dry-run
+      register: dry_run_check_file
+      changed_when: false
+      check_mode: false
+
+    - name: Write the new file's text into it
+      ansible.builtin.copy:
+        dest: "{{ dry_run_check_file.path }}"
+        content: "{{ check_content }}"
+        mode: "0600"
+      changed_when: false
+      check_mode: false
+      when: check_source is none
+
+    - name: Copy the new file into it
+      ansible.builtin.copy:
+        src: "{{ check_source }}"
+        dest: "{{ dry_run_check_file.path }}"
+        mode: "0600"
+      changed_when: false
+      check_mode: false
+      when: check_source is not none
+
+    - name: Run the checker
+      ansible.builtin.command: "{{ check_command | replace('%s', dry_run_check_file.path) }}"
+      changed_when: false
+      check_mode: false
+  always:
+    - name: Remove the temporary file
+      ansible.builtin.file:
+        path: "{{ dry_run_check_file.path }}"
+        state: absent
+      changed_when: false
+      check_mode: false
+      when: dry_run_check_file.path is defined

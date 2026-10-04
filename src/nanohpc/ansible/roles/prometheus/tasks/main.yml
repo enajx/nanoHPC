@@ -16,6 +16,7 @@
     dest: "/var/tmp/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}.tar.gz"
     checksum: "sha256:{{ nanohpc.metrics.prometheus.sha256[metrics_arch] }}"
     mode: "0644"
+  register: prometheus_download
 
 - name: Unpack Prometheus (owned by root, whatever the archive says)
   ansible.builtin.unarchive:
@@ -26,6 +27,7 @@
     owner: root
     group: root
     creates: "{{ prometheus_dir }}/prometheus"
+  when: not (ansible_check_mode and prometheus_download is changed)  # dry run: not downloaded yet
 
 - name: Create the Prometheus folders
   ansible.builtin.file:
@@ -38,6 +40,38 @@
     - {path: /etc/nanohpc/prometheus, owner: root, mode: "0755"}
     - {path: /var/lib/nanohpc/prometheus, owner: cluster-prometheus, mode: "0750"}
     - {path: /var/lib/nanohpc/history, owner: cluster-history, mode: "0750"}
+
+# The dry run checks the new files with promtool too, once Prometheus is unpacked.
+- name: Note whether promtool is there in this run
+  ansible.builtin.set_fact:
+    promtool_pending: "{{ ansible_check_mode and prometheus_download is changed }}"
+
+- name: Check the daily summary rules with promtool (dry run)
+  ansible.builtin.include_role:
+    name: dry_run_check
+  vars:
+    check_content: null
+    check_source: "{{ nanohpc.package_files }}/prometheus-daily-rules.yml"
+    check_command: "{{ prometheus_dir }}/promtool check rules %s"
+  when: ansible_check_mode and not promtool_pending
+
+- name: Check the alert rules with promtool (dry run)
+  ansible.builtin.include_role:
+    name: dry_run_check
+  vars:
+    check_content: null
+    check_source: "{{ nanohpc.package_files }}/prometheus-alert-rules.yml"
+    check_command: "{{ prometheus_dir }}/promtool check rules %s"
+  when: ansible_check_mode and not promtool_pending
+
+- name: Check the detail configuration with promtool (dry run)
+  ansible.builtin.include_role:
+    name: dry_run_check
+  vars:
+    check_content: null
+    check_source: "{{ nanohpc.files }}/prometheus.yml"
+    check_command: "{{ prometheus_dir }}/promtool check config --syntax-only %s"
+  when: ansible_check_mode and not promtool_pending
 
 - name: Install the daily summary rules (checked with promtool first)
   ansible.builtin.copy:
@@ -63,12 +97,9 @@
     validate: "{{ prometheus_dir }}/promtool check config --syntax-only %s"
   register: detail_config
 
-- name: Install the history configuration (checked with promtool first)
-  ansible.builtin.copy:
-    dest: /etc/nanohpc/prometheus/history.yml
-    mode: "0644"
-    validate: "{{ prometheus_dir }}/promtool check config --syntax-only %s"
-    content: |
+- name: Install the history configuration
+  vars:
+    history_config_text: |
       global:
         scrape_interval: 1d
         scrape_timeout: 15s
@@ -82,7 +113,23 @@
           static_configs:
             - targets: ['127.0.0.1:9090']
           sample_limit: 5000
-  register: history_config
+  block:
+    - name: Check the history configuration with promtool (dry run)
+      ansible.builtin.include_role:
+        name: dry_run_check
+      vars:
+        check_content: "{{ history_config_text }}"
+        check_source: null
+        check_command: "{{ prometheus_dir }}/promtool check config --syntax-only %s"
+      when: ansible_check_mode and not promtool_pending
+
+    - name: Install the history configuration (checked with promtool first)
+      ansible.builtin.copy:
+        dest: /etc/nanohpc/prometheus/history.yml
+        mode: "0644"
+        validate: "{{ prometheus_dir }}/promtool check config --syntax-only %s"
+        content: "{{ history_config_text }}"
+      register: history_config
 
 - name: Record when the history instance started (once; read by cluster-health)
   ansible.builtin.copy:
@@ -143,12 +190,14 @@
     daemon_reload: "{{ prometheus_units.changed }}"
     state: >-
       {{ 'restarted' if (prometheus_units.changed or detail_config.changed or daily_rules.changed or alert_rules.changed) else 'started' }}
+  when: not (ansible_check_mode and prometheus_units is changed)  # dry run: the service is not installed yet
 
 - name: Run the history Prometheus
   ansible.builtin.systemd_service:
     name: nanohpc-history
     enabled: true
     state: "{{ 'restarted' if (prometheus_units.changed or history_config.changed) else 'started' }}"
+  when: not (ansible_check_mode and prometheus_units is changed)  # dry run: the service is not installed yet
 
 - name: Wait until both are ready
   ansible.builtin.uri:
@@ -158,15 +207,21 @@
   retries: 90  # a large database can take minutes to load after a restart
   delay: 2
   loop: [9090, 9091]
+  when: not ansible_check_mode  # checks this deploy's result
 
 - name: Check that every machine's metrics are collected (over TLS for all but the front node)
   ansible.builtin.uri:
     url: "http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D~%22node.%2A%22%7D"
     return_content: true
   register: targets_up
+  # Every machine in this run; a machine left out of this deploy (its dry run failed) may have no exporter yet.
   until: >-
     (targets_up.json.data.result | length) == (nanohpc.machines | length)
-    and (targets_up.json.data.result | map(attribute='value') | map('last') | select('equalto', '1') | list | length)
-        == (nanohpc.machines | length)
+    and (targets_up.json.data.result | selectattr('metric.machine', 'in', in_this_run)
+         | map(attribute='value') | map('last') | select('equalto', '1') | list | length)
+        == (in_this_run | length)
+  vars:
+    in_this_run: "{{ nanohpc.machines.keys() | reject('in', nanohpc_left_out) | list }}"
   retries: 15
   delay: 4
+  when: not ansible_check_mode  # checks this deploy's result

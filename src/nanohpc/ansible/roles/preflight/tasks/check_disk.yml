@@ -11,6 +11,7 @@
     DISK: "{{ disk }}"
   register: disk_probe
   changed_when: false
+  check_mode: false
 
 - name: "Keep {{ disk }}'s details"
   ansible.builtin.set_fact:

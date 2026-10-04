@@ -41,6 +41,7 @@
     checksum: "sha256:{{ nanohpc.metrics.grafana.sha256[metrics_arch] }}"
     timeout: 120
     mode: "0644"
+  register: grafana_download
 
 - name: Unpack Grafana (owned by root, whatever the archive says)
   ansible.builtin.unarchive:
@@ -51,6 +52,7 @@
     owner: root
     group: root
     creates: "{{ grafana_dir }}/bin/grafana"
+  when: not (ansible_check_mode and grafana_download is changed)  # dry run: not downloaded yet
 
 - name: Check for the Grafana secrets
   ansible.builtin.stat:
@@ -232,6 +234,7 @@
     state: >-
       {{ 'restarted' if (grafana_unit.changed or grafana_config.changed or grafana_datasources.changed
          or grafana_provider.changed) else 'started' }}
+  when: not (ansible_check_mode and grafana_unit is changed)  # dry run: the service is not installed yet
 
 - name: Wait until Grafana answers
   ansible.builtin.uri:
@@ -240,6 +243,7 @@
   until: grafana_ready.status == 200
   retries: 30
   delay: 2
+  when: not ansible_check_mode  # checks this deploy's result
 
 - name: Check that the six dashboards are loaded and readable without logging in
   ansible.builtin.uri:
@@ -250,3 +254,4 @@
     (grafana_dashboards.json | map(attribute='uid') | select('match', '^nanohpc-') | list | length) == 6
   retries: 15
   delay: 2
+  when: not ansible_check_mode  # checks this deploy's result

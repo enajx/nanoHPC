@@ -12,11 +12,14 @@
     website: "{{ nanohpc.website }}"
   register: nginx_site
 
+# The dry run checks the nginx configuration only when this site is unchanged (it does not write the new one).
 - name: Check the nginx configuration
   ansible.builtin.command: nginx -t
   register: nginx_check
   changed_when: false
+  check_mode: false
   failed_when: false
+  when: not (ansible_check_mode and (nginx_site is changed or nginx_package is changed))
 
 - name: Put the previous nginx site back after a failed check
   ansible.builtin.copy:
@@ -24,19 +27,19 @@
     dest: /etc/nginx/conf.d/nanohpc-website.conf
     remote_src: true
     mode: "0644"
-  when: nginx_check.rc != 0 and nginx_site.backup_file is defined
+  when: nginx_check is not skipped and nginx_check.rc != 0 and nginx_site.backup_file is defined
 
 # On a first deploy there is no previous file: remove the bad one so nginx can still start.
 - name: Remove a first nginx site that failed the check
   ansible.builtin.file:
     path: /etc/nginx/conf.d/nanohpc-website.conf
     state: absent
-  when: nginx_check.rc != 0 and nginx_site.backup_file is not defined
+  when: nginx_check is not skipped and nginx_check.rc != 0 and nginx_site.backup_file is not defined
 
 - name: Stop on a bad nginx configuration
   ansible.builtin.fail:
     msg: "{{ inventory_hostname }}: nginx rejected the website configuration: {{ nginx_check.stderr }}"
-  when: nginx_check.rc != 0
+  when: nginx_check is not skipped and nginx_check.rc != 0
 
 - name: Remove the backup of the nginx site
   ansible.builtin.file:
@@ -50,3 +53,4 @@
     name: nginx
     enabled: true
     state: "{{ 'reloaded' if (nginx_site.changed or default_site.changed) else 'started' }}"
+  when: not (ansible_check_mode and nginx_package is changed)  # dry run: not installed yet

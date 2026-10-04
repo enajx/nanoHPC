@@ -51,6 +51,7 @@
     enabled: true
     daemon_reload: "{{ webhook_unit.changed }}"
     state: "{{ 'restarted' if (webhook_unit.changed or webhook_secret.changed or webhook_program.changed) else 'started' }}"
+  when: not (ansible_check_mode and webhook_unit is changed)  # dry run: the service is not installed yet
 
 - name: Say how to set up the webhook on GitHub
   ansible.builtin.debug:
