@@ -278,33 +278,36 @@
 
     # sshd -T prints the settings sshd would really use for this login, after every included file
     # and Match block, so a setting overridden elsewhere is caught before sshd is reloaded.
-    # The dry run cannot check settings it has not written yet.
+    # The dry run cannot check settings it has not written yet. Automatic deploys log in as root, whose settings
+    # are checked below; the users' settings are then checked for the first administrator.
     - name: Read the effective SSH settings for the login account
       ansible.builtin.command: >-
-        /usr/sbin/sshd -T -C user={{ nanohpc_login_user }},host={{ ansible_facts.hostname }},addr={{ nanohpc.machines[inventory_hostname].address }}
+        /usr/sbin/sshd -T -C user={{ ssh_check_user }},host={{ ansible_facts.hostname }},addr={{ nanohpc.machines[inventory_hostname].address }}
       register: ssh_effective
       changed_when: false
       check_mode: false
       when: not (ansible_check_mode and ssh_access is changed)
+      vars:
+        ssh_check_user: "{{ nanohpc.admins[0] if nanohpc_login_user == 'root' else nanohpc_login_user }}"
 
     - name: Require key-only login and the allowed accounts in the effective settings
       ansible.builtin.assert:
         that:
           - "'passwordauthentication no' in ssh_effective.stdout_lines"
           - "'kbdinteractiveauthentication no' in ssh_effective.stdout_lines"
-          - "('allowusers ' ~ nanohpc_login_user) in ssh_effective.stdout_lines"
+          - "('allowusers ' ~ ssh_check_user) in ssh_effective.stdout_lines"
           - ssh_effective.stdout_lines | select('match', '^allowgroups ') | list | length == 0
           - "'pubkeyauthentication yes' in ssh_effective.stdout_lines"
-          # root's key file is checked below.
-          - >-
-            nanohpc_login_user == 'root'
-            or ssh_effective.stdout_lines | select('match', '^authorizedkeysfile .*/etc/ssh/authorized_keys/%u') | list | length == 1
+          - ssh_effective.stdout_lines | select('match', '^authorizedkeysfile .*/etc/ssh/authorized_keys/%u') | list | length == 1
         fail_msg: >-
           {{ inventory_hostname }}: another SSH setting overrides nanoHPC's (password login still on, key login off,
-          the login account '{{ nanohpc_login_user }}' not allowed, or an AllowGroups rule). Check /etc/ssh/sshd_config
-          and /etc/ssh/sshd_config.d/. The previous SSH settings were put back.
+          the login account '{{ ssh_check_user }}' not allowed, its keys not read from /etc/ssh/authorized_keys, or an
+          AllowGroups rule). Check /etc/ssh/sshd_config and /etc/ssh/sshd_config.d/. The previous SSH settings were
+          put back.
         quiet: true
       when: not (ansible_check_mode and ssh_access is changed)
+      vars:
+        ssh_check_user: "{{ nanohpc.admins[0] if nanohpc_login_user == 'root' else nanohpc_login_user }}"
 
     # Administrators log in as root from anywhere; the address here is this machine's own.
     - name: Read the effective SSH settings for root
@@ -326,13 +329,21 @@
             or 'permitrootlogin prohibit-password' in ssh_effective_root.stdout_lines
           - "'allowusers root' in ssh_effective_root.stdout_lines"
           - ssh_effective_root.stdout_lines | select('match', '^allowgroups ') | list | length == 0
+          - root_refusals | length == 0
           - ssh_effective_root.stdout_lines | select('match', '^authorizedkeysfile ') | list == ['authorizedkeysfile /etc/ssh/authorized_keys/root']
+          - "'authorizedkeyscommand none' in ssh_effective_root.stdout_lines"
+          - "'trustedusercakeys none' in ssh_effective_root.stdout_lines"
         fail_msg: >-
           {{ inventory_hostname }}: another SSH setting overrides nanoHPC's root login (password login for root, root not
-          allowed, an AllowGroups rule, or root's keys read from somewhere else than /etc/ssh/authorized_keys/root).
+          allowed or refused by a DenyUsers, DenyGroups, or AllowGroups rule, or root's keys read from somewhere else
+          than /etc/ssh/authorized_keys/root: another file, an AuthorizedKeysCommand, or TrustedUserCAKeys).
+          {{ ('Root is refused by: ' ~ root_refusals | join(', ') ~ '.') if root_refusals else '' }}
           Check /etc/ssh/sshd_config and /etc/ssh/sshd_config.d/. The previous SSH settings were put back.
         quiet: true
       when: not (ansible_check_mode and ssh_access is changed)
+      vars:
+        # root's only group on Ubuntu is root.
+        root_refusals: "{{ ssh_effective_root.stdout_lines | sshd_refusals('root', ['root']) }}"
 
     - name: Remove the backup of the previous SSH settings
       ansible.builtin.file:

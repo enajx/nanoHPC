@@ -1,7 +1,7 @@
 """Key-only root login for administrators: the root key file and nanoHPC's sshd settings, rendered from their
 templates as the deploy does. When this machine has an sshd, it also reads the effective settings with
-`sshd -T`, as the deploy's own check does on every machine. The preflight check of root's own key files runs in
-real ansible-playbook on this machine."""
+`sshd -T`, and the accounts role's checks of them run in real ansible-playbook with that sshd. The preflight check
+of root's own key files runs in real ansible-playbook on this machine."""
 
 import importlib.util
 import json
@@ -19,8 +19,10 @@ import yaml
 
 from nanohpc.deploy import ansible_cfg
 
-TEMPLATES = Path(__file__).resolve().parents[1] / "src/nanohpc/ansible/roles/accounts/templates"
-FILTERS = Path(__file__).resolve().parents[1] / "src/nanohpc/ansible/roles/preflight/filter_plugins/root_keys.py"
+ROLES = Path(__file__).resolve().parents[1] / "src/nanohpc/ansible/roles"
+TEMPLATES = ROLES / "accounts/templates"
+FILTERS = ROLES / "preflight/filter_plugins/root_keys.py"
+SSHD = shutil.which("sshd") or "/usr/sbin/sshd"
 USERS = [
     {
         "name": "alice",
@@ -49,6 +51,19 @@ def root_keys(admins: list[str], auto_deploy_key: str | None) -> str:
 def sshd_settings(allowed: list[str]) -> str:
     """Render /etc/ssh/sshd_config.d/10-nanohpc.conf."""
     return render("sshd_nanohpc.conf.j2", {"ssh_allowed": allowed})
+
+
+# Settings another file in sshd_config.d could hold: keys from a command and from a certificate authority for
+# everyone, and password login (also for root) from some addresses.
+OTHER_SSHD_SETTINGS = (
+    "AuthorizedKeysCommand /usr/local/bin/keys %u\n"
+    "AuthorizedKeysCommandUser nobody\n"
+    "TrustedUserCAKeys /etc/ssh/user_ca.pub\n"
+    "Match Address 198.51.100.0/24\n"
+    "    PasswordAuthentication yes\n"
+    "    KbdInteractiveAuthentication yes\n"
+    "    PermitRootLogin yes\n"
+)
 
 
 def key_lines(text: str) -> list[str]:
@@ -97,27 +112,39 @@ class SshdSettingsTest(unittest.TestCase):
         self.assertIn("AllowUsers alice ubuntu root", lines)
         self.assertIn("AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys/%u", lines)
 
-    def test_root_match_block_is_last_and_sets_only_the_key_file(self) -> None:
-        """sshd applies every line after a Match line to that Match only, so the block must close the file and
-        hold nothing but root's key file."""
+    def test_root_match_block_is_last_and_sets_only_roots_login(self) -> None:
+        """sshd applies every line after a Match line to that Match only, so the block must close the file. It
+        holds root's key file, turns off the other ways to log in as root (keys from a command or a certificate
+        authority, password), and repeats the key-only settings, which a later Match block could otherwise change
+        for root."""
         lines = [line for line in sshd_settings(["alice"]).splitlines() if line.strip() and not line.startswith("#")]
         matches = [index for index, line in enumerate(lines) if line.lower().startswith("match")]
         self.assertEqual(len(matches), 1)
         self.assertEqual(lines[matches[0]], "Match User root")
         self.assertEqual(
-            [line.strip() for line in lines[matches[0] + 1 :]], ["AuthorizedKeysFile /etc/ssh/authorized_keys/root"]
+            [line.strip() for line in lines[matches[0] + 1 :]],
+            [
+                "AuthorizedKeysFile /etc/ssh/authorized_keys/root",
+                "AuthorizedKeysCommand none",
+                "TrustedUserCAKeys none",
+                "PasswordAuthentication no",
+                "KbdInteractiveAuthentication no",
+                "PermitRootLogin prohibit-password",
+            ],
         )
 
-    @unittest.skipUnless(shutil.which("sshd") or Path("/usr/sbin/sshd").exists(), "needs an OpenSSH sshd")
+    @unittest.skipUnless(Path(SSHD).exists(), "needs an OpenSSH sshd")
     def test_effective_settings_with_sshd(self) -> None:
-        """sshd -T on a main config that includes the file first, like Ubuntu's, then a later file that turns
-        password login on: root reads keys only from its file, other users from both places."""
-        sshd = shutil.which("sshd") or "/usr/sbin/sshd"
+        """sshd -T on a main config that includes the file first, like Ubuntu's, then later files that turn
+        password login on, also for root from some addresses (a Match Address block), and add keys from a command
+        and a certificate authority: root logs in only with a key from its file, other users read keys from both
+        places."""
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             (folder / "sshd_config.d").mkdir()
             (folder / "sshd_config.d" / "10-nanohpc.conf").write_text(sshd_settings(["alice"]))
             (folder / "sshd_config.d" / "50-cloud-init.conf").write_text("PasswordAuthentication yes\n")
+            (folder / "sshd_config.d" / "60-other.conf").write_text(OTHER_SSHD_SETTINGS)
             subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(folder / "host_key")], check=True)
             # Subsystem is refused inside a Match block, so this also shows the Match ends with the file.
             (folder / "sshd_config").write_text(
@@ -126,7 +153,7 @@ class SshdSettingsTest(unittest.TestCase):
 
             def effective(user: str) -> list[str]:
                 result = subprocess.run(
-                    [sshd, "-T", "-f", str(folder / "sshd_config"), "-C", f"user={user},host=laptop,addr=203.0.113.5"],
+                    [SSHD, "-T", "-f", str(folder / "sshd_config"), "-C", f"user={user},host=laptop,addr=198.51.100.7"],
                     capture_output=True,
                     text=True,
                     check=True,
@@ -135,10 +162,34 @@ class SshdSettingsTest(unittest.TestCase):
 
             root = effective("root")
             self.assertIn("authorizedkeysfile /etc/ssh/authorized_keys/root", root)
+            self.assertIn("authorizedkeyscommand none", root)
+            self.assertIn("trustedusercakeys none", root)
             self.assertIn("passwordauthentication no", root)
+            self.assertIn("kbdinteractiveauthentication no", root)
             self.assertTrue({"permitrootlogin prohibit-password", "permitrootlogin without-password"} & set(root))
             self.assertIn("allowusers root", root)
             self.assertIn("authorizedkeysfile .ssh/authorized_keys /etc/ssh/authorized_keys/%u", effective("alice"))
+
+
+def run_playbook(
+    folder: Path, inventory: dict[str, Any], play: dict[str, Any], arguments: list[str], environment: dict[str, str]
+) -> dict[str, Any]:
+    """Run one play with real ansible-playbook on this machine, with nanoHPC's ansible.cfg, and return what
+    nanoHPC's record callback wrote: {"changed": ..., "failed": {host: "task: message"}, "facts": ...}."""
+    (folder / "inventory.yml").write_text(yaml.safe_dump(inventory))
+    (folder / "play.yml").write_text(yaml.safe_dump([play]))
+    (folder / "ansible.cfg").write_text(ansible_cfg(None))
+    record = folder / "record.json"
+    record.unlink(missing_ok=True)
+    result = subprocess.run(
+        [str(Path(sys.executable).parent / "ansible-playbook"), "-i", str(folder / "inventory.yml"),
+         str(folder / "play.yml"), *arguments],
+        env={**os.environ, "ANSIBLE_CONFIG": str(folder / "ansible.cfg"), "NANOHPC_RECORD": str(record),
+             **environment},
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
+    )  # fmt: skip
+    assert record.exists(), result.stdout + result.stderr
+    return {**json.loads(record.read_text()), "output": result.stdout + result.stderr}
 
 
 def public_key(folder: Path, name: str, comment: str) -> tuple[str, str]:
@@ -234,7 +285,6 @@ class RootKeysPreflightTest(unittest.TestCase):
                     "hosts": hosts,
                 }
             }
-            (folder / "inventory.yml").write_text(yaml.safe_dump(inventory))
             play = {
                 "hosts": "all",
                 "gather_facts": False,
@@ -245,19 +295,9 @@ class RootKeysPreflightTest(unittest.TestCase):
                     }
                 ],
             }
-            (folder / "play.yml").write_text(yaml.safe_dump([play]))
-            (folder / "ansible.cfg").write_text(ansible_cfg(None))
-            result = subprocess.run(
-                [str(Path(sys.executable).parent / "ansible-playbook"), "-i", str(folder / "inventory.yml"),
-                 str(folder / "play.yml"), "--check"],
-                env={**os.environ, "ANSIBLE_CONFIG": str(folder / "ansible.cfg"),
-                     "NANOHPC_RECORD": str(folder / "record.json")},
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
-            )  # fmt: skip
-            output = result.stdout + result.stderr
-            self.assertTrue((folder / "record.json").exists(), output)
-            failed = json.loads((folder / "record.json").read_text())["failed"]
-            self.assertEqual(sorted(failed), ["outsiders"], output)
+            record = run_playbook(folder, inventory, play, ["--check"], {})
+            failed = record["failed"]
+            self.assertEqual(sorted(failed), ["outsiders"], record["output"])
             message = failed["outsiders"]
             self.assertIn(f"{folder}/outsiders/authorized_keys: ssh-ed25519 {bob_fingerprint} bob@laptop", message)
             self.assertIn(
@@ -287,6 +327,106 @@ class RootKeysPreflightTest(unittest.TestCase):
             ["/root/.ssh/authorized_keys", "/keys/%/root"],
         )
         self.assertEqual(filters["root_key_files"](["authorizedkeysfile /etc/ssh/authorized_keys/root"]), [])
+
+
+def sshd_check_tasks() -> list[dict[str, Any]]:
+    """Return the accounts role's tasks that read and check the effective SSH settings, from the block that
+    changes them, with sshd reading the main config in the host variable `sshd_config_file` (not
+    /etc/ssh/sshd_config)."""
+    tasks = yaml.safe_load((ROLES / "accounts/tasks/main.yml").read_text())
+    block = next(task for task in tasks if task.get("name", "").startswith("Change SSH access"))["block"]
+    checks = [task for task in block if "ansible.builtin.command" in task or "ansible.builtin.assert" in task]
+    for task in checks:
+        if "ansible.builtin.command" in task:
+            command = task["ansible.builtin.command"]
+            assert command.startswith("/usr/sbin/sshd -T "), command
+            task["ansible.builtin.command"] = command.replace(
+                "/usr/sbin/sshd -T", f"{SSHD} -T -f {{{{ sshd_config_file }}}}"
+            )
+    return checks
+
+
+@unittest.skipUnless(Path(SSHD).exists(), "needs an OpenSSH sshd")
+class SshdChecksTest(unittest.TestCase):
+    """The accounts role's checks of the effective SSH settings (`sshd -T` for the login account and for root),
+    run by real ansible-playbook on this machine with this machine's sshd, on a config like Ubuntu's: nanoHPC's
+    file included first, then other files. Each host here is one such config. The deploy stops (and puts the old
+    settings back) when another file still lets root in some other way, refuses root, or changes the key files of
+    the users; with automatic deploys (login as root) the users' settings are checked for the first
+    administrator."""
+
+    def test_checks_of_the_effective_settings(self) -> None:
+        other_for_root = OTHER_SSHD_SETTINGS.replace(
+            "Match Address 198.51.100.0/24", "Match Address 198.51.100.0/24 User root"
+        )
+        other_files = {
+            # Keys from a command and a certificate authority, and password login for root from this machine's
+            # address: nanoHPC's Match User root block turns all of these off for root.
+            "safe": {"60-other.conf": other_for_root},
+            "safe_as_root": {"60-other.conf": other_for_root},
+            # A file that sorts before nanoHPC's wins: root's keys from a command or a certificate authority.
+            "command_keys": {
+                "05-first.conf": "Match User root\n    AuthorizedKeysCommand /usr/local/bin/keys %u\n"
+                "    AuthorizedKeysCommandUser nobody\n"
+            },
+            "ca_keys": {"05-first.conf": "Match User root\n    TrustedUserCAKeys /etc/ssh/user_ca.pub\n"},
+            # Root refused: login as root would fail although the deploy passed.
+            "deny_user": {"70-deny.conf": "DenyUsers bob ro*\n"},
+            "deny_user_at_host": {"70-deny.conf": "DenyUsers root@10.0.0.*\n"},
+            "deny_group": {"70-deny.conf": "DenyGroups wheel root\n"},
+            # Login as root (automatic deploys), and alice, the first administrator, reads keys only from her home.
+            "users_keys_as_root": {"70-alice.conf": "Match User alice\n    AuthorizedKeysFile .ssh/authorized_keys\n"},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(folder / "host_key")], check=True)
+            hosts: dict[str, Any] = {}
+            for host, files in other_files.items():
+                (folder / host / "sshd_config.d").mkdir(parents=True)
+                (folder / host / "sshd_config.d" / "10-nanohpc.conf").write_text(sshd_settings(["alice", "ubuntu"]))
+                for name, text in files.items():
+                    (folder / host / "sshd_config.d" / name).write_text(text)
+                (folder / host / "sshd_config").write_text(
+                    f"Include {folder}/{host}/sshd_config.d/*.conf\nHostKey {folder}/host_key\n"
+                )
+                hosts[host] = {
+                    "sshd_config_file": str(folder / host / "sshd_config"),
+                    "nanohpc_login_user": "root" if host.endswith("_as_root") else "ubuntu",
+                }
+            inventory = {
+                "all": {
+                    "vars": {
+                        "ansible_connection": "local",
+                        "ansible_python_interpreter": sys.executable,
+                        "ssh_access": {"changed": False},
+                        "nanohpc": {
+                            "admins": ["alice", "bob"],
+                            "users": USERS,
+                            "machines": {host: {"address": "198.51.100.7"} for host in other_files},
+                        },
+                    },
+                    "hosts": hosts,
+                }
+            }
+            play = {"hosts": "all", "gather_facts": True, "gather_subset": ["min"], "tasks": sshd_check_tasks()}
+            record = run_playbook(
+                folder, inventory, play, [], {"ANSIBLE_FILTER_PLUGINS": str(ROLES / "accounts/filter_plugins")}
+            )
+            failed = record["failed"]
+            self.assertEqual(
+                sorted(failed),
+                ["ca_keys", "command_keys", "deny_group", "deny_user", "deny_user_at_host", "users_keys_as_root"],
+                record["output"],
+            )
+            for host in ("ca_keys", "command_keys", "deny_group", "deny_user", "deny_user_at_host"):
+                self.assertIn("another SSH setting overrides nanoHPC's root login", failed[host], host)
+            for host, line in (
+                ("deny_user", "denyusers ro*"),
+                ("deny_user_at_host", "denyusers root@10.0.0.*"),
+                ("deny_group", "denygroups root"),
+            ):
+                self.assertIn(f"Root is refused by: {line}.", failed[host], host)
+            self.assertIn("the login account 'alice' not allowed", failed["users_keys_as_root"])
 
 
 if __name__ == "__main__":

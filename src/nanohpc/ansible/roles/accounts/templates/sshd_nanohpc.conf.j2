@@ -5,7 +5,15 @@ AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys/%u
 PermitRootLogin prohibit-password
 AllowUsers {{ ssh_allowed | join(' ') }} root
 
-# root's keys come only from the file nanoHPC writes, never from /root/.ssh. Keep this block last: sshd applies
-# every line after a Match line to that Match only, until the end of this file.
+# root logs in only with a key from the file nanoHPC writes: not from /root/.ssh, a command, or a certificate
+# authority, and never with a password. The key-only settings are repeated here because a Match block in another
+# file (for example Match Address) would override the ones above for root; the first Match block that sets a
+# value wins, and this file sorts first. Keep this block last: sshd applies every line after a Match line to that
+# Match only, until the end of this file.
 Match User root
     AuthorizedKeysFile /etc/ssh/authorized_keys/root
+    AuthorizedKeysCommand none
+    TrustedUserCAKeys none
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    PermitRootLogin prohibit-password
