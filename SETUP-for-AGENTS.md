@@ -81,7 +81,7 @@ For each machine the administrator names (a hostname, an address, or a host from
   changed. Run it in a terminal the first time, if sudo still needs a password. `nanohpc deploy --dry-run
   cluster.yml` shows what would change and stops there.
 - Later changes: after editing `cluster.yml`, `nanohpc deploy cluster.yml --only users` (or `policy`,
-  `partitions`) applies only that part, and `--only node NAME` sets up a new or changed compute machine (plus
-  `/etc/hosts`, Slurm's configuration, the `/home` exports, and the monitoring lists on the others), with the same
-  checks and dry run. Anything else (a new front node, home machine, or backup machine, or changed roles) needs a
+  `partitions`) applies only that part (`users` includes the website's quota and cleanup values), and
+  `--only node NAME` sets up a new or changed compute machine (plus `/etc/hosts`, Slurm's configuration, the `/home`
+  exports, and the monitoring lists on the others), with the same checks and dry run. Anything else (a new front node, home machine, or backup machine, or changed roles) needs a
   full `nanohpc deploy cluster.yml`.

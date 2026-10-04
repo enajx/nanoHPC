@@ -174,7 +174,8 @@ ONLY: dict[str, Part] = {
         "users",
         EVERY_ROLE,
         "accounts, SSH keys, sudo keys, and who may log in on every machine; home folders and quotas; scratch folders"
-        " and caches; Slurm accounting users; the status collector's user list",
+        " and caches; Slurm accounting users; the status collector's user list; the website's site data (home quotas"
+        " and scratch cleanup days) and the pages filled from it",
     ),
     "policy": Part(
         "policy",

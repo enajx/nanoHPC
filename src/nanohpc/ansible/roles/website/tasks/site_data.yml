@@ -1,0 +1,39 @@
+# What comes from cluster.yml in the website's config folder: site.json, and the user guide and policy pages
+# filled from it. Run alone by --only users (home quotas and scratch cleanup days are in them), so the variables
+# that the other website tasks set (website_copy, website_built) may be missing.
+
+- name: Install the cluster's site data
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/site.json"
+    dest: /srv/nanohpc-web/config/site.json
+    owner: root
+    group: root
+    mode: "0644"
+  register: website_site_data
+
+- name: Install the user guide filler
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-website-docs"
+    dest: /usr/local/bin/cluster-website-docs
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Fill the user guide and policy pages with the cluster's values
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/cluster-website-docs
+      - --site
+      - /srv/nanohpc-web/config/site.json
+      - --template
+      - "/srv/nanohpc-web/current/{{ item }}"
+      - --output
+      - "/srv/nanohpc-web/config/{{ item }}"
+  loop: [docs.md, policy.md]
+  register: website_docs
+  changed_when: website_docs.stdout == 'changed'
+  # The dry run counts it only when what it is filled from changes (the site data, or a new build).
+  when: >-
+    not (ansible_check_mode and website_site_data is not changed
+         and (website_copy is not defined or website_copy is not changed)
+         and (website_built is not defined or website_built.stat.exists))

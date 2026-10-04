@@ -11,7 +11,8 @@
 # Tags (one per part; `always` runs in every part):
 # - users: accounts, SSH keys, sudo keys, and AllowUsers on every machine; home folders and quotas on the home
 #   machine; scratch folders and caches on the compute machines; Slurm accounting users on the front node;
-#   the user lists of the status collector (front node) and the quota reader (home machine).
+#   the user lists of the status collector (front node) and the quota reader (home machine); the website's
+#   site.json and the user guide and policy pages filled from it (front node).
 # - policy, partitions: slurm.conf (and gres.conf) on every Slurm machine, job_submit.lua and Slurm's QoS on the
 #   front node, Slurm restarted where its configuration changed (as a full deploy does), then a fresh status
 #   snapshot for the website.
@@ -97,6 +98,17 @@
   become: true
   tags: [users]
   roles: [monitoring]
+
+# The website shows the home quotas and the scratch cleanup days, from site.json and the pages filled from it.
+- name: The website's site data and the pages filled from it on the front node
+  hosts: role_front
+  become: true
+  tags: [users]
+  tasks:
+    - name: site.json, docs.md, and policy.md
+      ansible.builtin.import_role:
+        name: website
+        tasks_from: site_data
 
 # --only node NAME: the machine itself, in site.yml's order, with the shared parts on the others in between.
 

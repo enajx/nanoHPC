@@ -95,6 +95,23 @@ class OnlyMachinesTest(unittest.TestCase):
         tags = {tag for play in plays("partial.yml") for tag in play.get("tags", [])}
         self.assertEqual(tags, {"always", *(part.tag for part in ONLY.values())})
 
+    def test_users_part_refreshes_the_website_data_on_the_front_node(self) -> None:
+        """Home quotas and scratch cleanup days are in the website's site.json and in the docs and policy pages
+        filled from it, so --only users runs those tasks (the same file a full deploy runs) on the front node."""
+        users = [play for play in plays("partial.yml") if "users" in play.get("tags", [])]
+        website = [
+            play["hosts"]
+            for play in users
+            for task in play.get("tasks", [])
+            if task.get("ansible.builtin.import_role") == {"name": "website", "tasks_from": "site_data"}
+        ]
+        self.assertEqual(website, ["role_front"])
+        main = (ANSIBLE / "roles" / "website" / "tasks" / "main.yml").read_text()
+        self.assertIn("import_tasks: site_data.yml", main)
+        site_data = (ANSIBLE / "roles" / "website" / "tasks" / "site_data.yml").read_text()
+        self.assertIn("/srv/nanohpc-web/config/site.json", site_data)
+        self.assertIn("cluster-website-docs", site_data)
+
     def test_the_new_machine_gets_what_a_full_deploy_gives_a_compute_machine(self) -> None:
         """--only node runs, on the new machine, the roles site.yml runs on a compute machine, in the same order."""
         compute_groups = {"all", "role_compute", "role_slurm", "all:!role_home:!role_backup"}
