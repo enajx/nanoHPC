@@ -1,7 +1,8 @@
 """Key-only root login for administrators: the root key file and nanoHPC's sshd settings, rendered from their
 templates as the deploy does. When this machine has an sshd, it also reads the effective settings with
 `sshd -T`, and the accounts role's checks of them run in real ansible-playbook with that sshd. The preflight check
-of root's own key files runs in real ansible-playbook on this machine."""
+of root's own key files, and the condition that says where it runs, run in real ansible-playbook on this
+machine."""
 
 import base64
 import importlib.util
@@ -455,6 +456,53 @@ class CloudInitRefusalTest(unittest.TestCase):
         content = base64.b64encode("\n".join(lines).encode()).decode()
         found = filters["root_keys_to_lose"]([{"source": "/root/.ssh/authorized_keys", "content": content}], [])
         self.assertEqual([entry.split()[-1] for entry in found], ["exec", "original", "shell", "space"])
+
+
+class RootKeysStopWhereTest(unittest.TestCase):
+    """The dry run's stop on root's keys runs only where the deploy changes sshd's settings (the accounts role):
+    a full deploy, `--only users`, and the new machine of `--only node`; not `--only policy` or
+    `--only partitions`. The preflight runs in every part (tag `always` in partial.yml), so its block of root-key
+    tasks carries the condition. Here real ansible-playbook evaluates that condition with each part's --tags."""
+
+    def test_condition_under_each_part(self) -> None:
+        tasks = yaml.safe_load((ROLES / "preflight/tasks/main.yml").read_text())
+        blocks = [task for task in tasks if "block" in task and "root_keys.yml" in json.dumps(task["block"])]
+        self.assertEqual(len(blocks), 1)
+        block = blocks[0]
+        self.assertIn("user=root", json.dumps(block["block"]))
+        partial = yaml.safe_load((ROLES.parent / "partial.yml").read_text())
+        self.assertEqual(partial[0]["roles"], ["preflight"])
+        self.assertEqual(partial[0]["tags"], ["always"])
+        play = {
+            "hosts": "all",
+            "gather_facts": False,
+            "tags": ["always"],
+            "tasks": [
+                {
+                    "name": "Root key stop",
+                    "ansible.builtin.set_fact": {"nanohpc_dry_run_root_keys": True},
+                    "when": block["when"],
+                }
+            ],
+        }
+        inventory = {
+            "all": {
+                "vars": {"ansible_connection": "local", "ansible_python_interpreter": sys.executable},
+                "hosts": {"new": None, "other": None},
+                "children": {"only_node": {"hosts": {"new": None}}},
+            }
+        }
+        expected = {
+            "": ["new", "other"],
+            "users": ["new", "other"],
+            "node": ["new"],
+            "policy": [],
+            "partitions": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            for tag, machines in expected.items():
+                record = run_playbook(Path(temporary), inventory, play, ["--tags", tag] if tag else [], {})
+                self.assertEqual(sorted(record["facts"]), machines, (tag, record["output"]))
 
 
 if __name__ == "__main__":
