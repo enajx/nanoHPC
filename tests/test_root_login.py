@@ -3,6 +3,7 @@ templates as the deploy does. When this machine has an sshd, it also reads the e
 `sshd -T`, and the accounts role's checks of them run in real ansible-playbook with that sshd. The preflight check
 of root's own key files runs in real ansible-playbook on this machine."""
 
+import base64
 import importlib.util
 import json
 import os
@@ -427,6 +428,33 @@ class SshdChecksTest(unittest.TestCase):
             ):
                 self.assertIn(f"Root is refused by: {line}.", failed[host], host)
             self.assertIn("the login account 'alice' not allowed", failed["users_keys_as_root"])
+
+
+class CloudInitRefusalTest(unittest.TestCase):
+    """Only cloud-init's own refusal key (its forced command only says to log in as another user, and ends with
+    exit 142) is left out of the dry run's stop on root's keys. A look-alike key that still gives a shell counts."""
+
+    def test_look_alike_keys_count(self) -> None:
+        filters = root_key_filters()
+
+        def key(number: int) -> str:
+            return "ssh-ed25519 " + base64.b64encode(f"test key number {number:03}".encode()).decode()
+
+        cloud_init = (
+            "no-port-forwarding,no-agent-forwarding,no-X11-forwarding,"
+            'command="echo \'Please login as the user \\"ubuntu\\" rather than the user \\"root\\".\';echo;sleep 10;'
+            'exit 142"'
+        )
+        lines = [
+            f"{cloud_init} {key(1)} cloud-init",
+            f'command="echo \'Please login as the user \\"ubuntu\\"\';exec bash -l;exit 142" {key(2)} exec',
+            f'command="echo \'Please login as the user\';sh -c \\"$SSH_ORIGINAL_COMMAND\\";exit 142" {key(3)} original',
+            f'command="echo \'Please login as the user \\"ubuntu\\"\';bash" {key(4)} shell',
+            f"command=\"echo 'Please login as the user';bash;exit 142 \" {key(5)} space",
+        ]
+        content = base64.b64encode("\n".join(lines).encode()).decode()
+        found = filters["root_keys_to_lose"]([{"source": "/root/.ssh/authorized_keys", "content": content}], [])
+        self.assertEqual([entry.split()[-1] for entry in found], ["exec", "original", "shell", "space"])
 
 
 if __name__ == "__main__":

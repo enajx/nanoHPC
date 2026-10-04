@@ -17,8 +17,11 @@ KEY_TYPE = re.compile(r"(ssh|ecdsa|sk)-\S+")
 KEY_DATA = re.compile(r"[A-Za-z0-9+/]+={0,2}")
 # cloud-init with disable_root (the default on Ubuntu cloud images) gives root the default user's keys with
 # DISABLE_USER_OPTS (cloudinit/ssh_util.py): command="echo 'Please login as the user \"ubuntu\" rather than the
-# user \"root\".';echo;sleep 10;exit 142". Such a key only prints that and logs out.
+# user \"root\".';echo;sleep 10;exit 142". Such a key only prints that and logs out. A command that has this text
+# but also runs something else (exec, the client's command) gives root access and counts.
 CLOUD_INIT_REFUSAL = "Please login as the user"
+CLOUD_INIT_END = "exit 142"
+RUNS_SOMETHING_ELSE = ("exec", "SSH_ORIGINAL_COMMAND")
 # nanoHPC's own file of root's keys (accounts role), which this deploy writes.
 NANOHPC_ROOT_KEYS = "/etc/ssh/authorized_keys/root"
 ROOT_HOME = "/root"
@@ -46,6 +49,16 @@ def forced_command(options: str) -> str:
     """Return the command="..." option's command, without its quotes and escapes ("" when there is none)."""
     match = re.search(r'(?:^|,)command="((?:[^"\\]|\\.)*)"', options, re.IGNORECASE)
     return re.sub(r"\\(.)", r"\1", match.group(1)) if match else ""
+
+
+def cloud_init_refusal(options: str) -> bool:
+    """Whether a key's options force cloud-init's command that only tells root to log in as another user."""
+    command = forced_command(options)
+    return (
+        CLOUD_INIT_REFUSAL in command
+        and command.endswith(CLOUD_INIT_END)
+        and not any(word in command for word in RUNS_SOMETHING_ELSE)
+    )
 
 
 def key_parts(line: str) -> tuple[str, str, str, str] | None:
@@ -88,7 +101,7 @@ def root_keys_to_lose(files: list[dict[str, Any]], admin_keys: list[str]) -> lis
             parts = key_parts(line)
             if parts is None:
                 found.append(f"{file['source']} line {number}: not a key line nanoHPC can read")
-            elif parts[1:3] not in allowed and CLOUD_INIT_REFUSAL not in forced_command(parts[0]):
+            elif parts[1:3] not in allowed and not cloud_init_refusal(parts[0]):
                 _, key_type, data, comment = parts
                 found.append(f"{file['source']}: {key_type} {fingerprint(data)} {comment or '(no comment)'}")
     return found
