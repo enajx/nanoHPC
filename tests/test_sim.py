@@ -322,6 +322,11 @@ class SimUsersBase(unittest.TestCase):
         config = self.ssh_config_for(user)
         return self.run_command("ssh", "-F", str(config), "-o", "BatchMode=yes", machine, command, agent=agent)
 
+    def bob_login(self, key: Path) -> subprocess.CompletedProcess[str]:
+        """Log in to the front node as bob with his own key (the root login test gives him one)."""
+        config = self.ssh_config_with_key("bob", key)
+        return self.run_command("ssh", "-F", str(config), "-o", "BatchMode=yes", "front", "true", agent=False)
+
     def on_front(self, command: str) -> str:
         """Run a command on the front node, require success, and return its output."""
         result = self.ssh("front", command)
@@ -1063,7 +1068,7 @@ class SimRedeployTest(SimUsersBase):
             def bob_as_root(machine: str) -> subprocess.CompletedProcess[str]:
                 return self.run_command("ssh", "-F", str(as_root_bob), "-o", "BatchMode=yes", machine, "true")
 
-            self.assertEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)  # bob's key works
+            self.assertEqual(self.bob_login(bob_key).returncode, 0)  # bob's key works
             for machine in with_bob_key["machines"]:
                 root = self.as_user("root", machine, "whoami", agent=False)
                 self.assertEqual((root.returncode, root.stdout.strip()), (0, "root"), f"{machine}: {root.stderr}")
@@ -1127,13 +1132,14 @@ class SimRedeployTest(SimUsersBase):
             self.assertIn("authorizedkeysfile /etc/ssh/authorized_keys/root", effective.stdout.splitlines())
 
         with self.subTest("removing a user from cluster.yml takes away their login"):
-            self.assertEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
+            bob_key = self.keys / "bob"
+            self.assertEqual(self.bob_login(bob_key).returncode, 0)
             without_bob = yaml.safe_load(cluster.read_text())
             without_bob["users"] = [user for user in without_bob["users"] if user["name"] != "bob"]
             cluster.write_text(yaml.safe_dump(without_bob))
             result = self.deploy(self.state / "ssh_config", agent=False)
             self.assertEqual(result.returncode, 0, self.failure(result))
-            self.assertNotEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
+            self.assertNotEqual(self.bob_login(bob_key).returncode, 0)
             self.assertEqual(self.ssh("front", "test -e /etc/ssh/authorized_keys/bob").returncode, 1)
 
         with self.subTest("a UID conflict leaves that machine out of the deploy, unchanged"):
