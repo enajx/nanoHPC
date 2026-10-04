@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Remove kept scratch job copies after their Slurm job ended long enough ago."""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+JOB_FOLDER = re.compile(r"job-(\d+)-[A-Za-z0-9_]+")
+END_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d")
+SACCT_BATCH_SIZE = 100
+
+
+def job_ends(jobs: set[str]) -> dict[str, datetime | None]:
+    """Read end times in bounded Slurm queries; keep jobs with missing or unfinished records."""
+    records: dict[str, list[str]] = {job: [] for job in jobs}
+    ordered = sorted(jobs, key=int)
+    for offset in range(0, len(ordered), SACCT_BATCH_SIZE):
+        batch = ordered[offset : offset + SACCT_BATCH_SIZE]
+        result = subprocess.run(
+            ["sacct", "-X", "-n", "-P", "-j", ",".join(batch), "--format=JobIDRaw,State,End"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        for row in result.stdout.splitlines():
+            fields = row.split("|")
+            if len(fields) != 3 or fields[0] not in records:
+                raise ValueError(f"sacct returned an invalid row: {row}")
+            records[fields[0]].append(fields[2])
+    return {
+        job: max(datetime.fromisoformat(end) for end in ends)
+        if ends and all(END_TIME.fullmatch(end) for end in ends)
+        else None
+        for job, ends in records.items()
+    }
+
+
+def main() -> None:
+    """Remove old job copies; accounting failures stop before any deletion."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args()
+    root = Path(os.environ["SCRATCH_JOB_ROOT"])
+    days = int(os.environ["SCRATCH_JOB_RETENTION_DAYS"])
+    if days <= 0:
+        raise ValueError("SCRATCH_JOB_RETENTION_DAYS must be positive")
+    if root.name != "cluster-jobs" or not root.is_absolute() or root.resolve() != root:
+        raise ValueError(
+            f"scratch job root must be a cluster-jobs directory on an absolute path without symlinks: {root}"
+        )
+    if Path("/scratch") in root.parents:
+        subprocess.run(["mountpoint", "-q", "/scratch"], check=True)
+    if not root.is_dir():
+        return
+    cutoff = datetime.now(UTC).astimezone().replace(tzinfo=None) - timedelta(days=days)
+    # Ask Slurm about every candidate before deleting any copy. A failed sacct leaves them all intact.
+    candidates: list[tuple[Path, str]] = []
+    for folder in sorted(root.iterdir()):
+        match = JOB_FOLDER.fullmatch(folder.name)
+        if match is None or folder.is_symlink() or not folder.is_dir():
+            continue
+        candidates.append((folder, match[1]))
+    ends = job_ends({job for _, job in candidates})
+    for folder, job in candidates:
+        ended = ends[job]
+        if ended is None:
+            print(f"scratch-job-cleanup: keep {folder}: job {job} has no Slurm end time", flush=True)
+        elif ended >= cutoff:
+            print(f"scratch-job-cleanup: keep {folder}: job {job} ended {ended:%Y-%m-%d %H:%M}", flush=True)
+        else:
+            shutil.rmtree(folder)
+            print(f"scratch-job-cleanup: removed {folder}: job {job} ended {ended:%Y-%m-%d %H:%M}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

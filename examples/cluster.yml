@@ -103,6 +103,7 @@ home:
 
 scratch:
   cleanup_days: 14
+  job_retention_days: 7
 
 backup:
   to: store                     # a machine with the backup role, or user@host:/path

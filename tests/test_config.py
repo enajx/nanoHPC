@@ -119,7 +119,7 @@ class HeterogeneousClusterTest(unittest.TestCase):
         self.assertEqual(config["policy"]["fairshare_weight"], 10000)
         self.assertEqual(config["policy"]["max_gpus_per_user"], "unlimited")
         self.assertEqual(config["home"], {"quota_soft_gb": 300, "quota_hard_gb": 400, "quota_grace": "7days"})
-        self.assertEqual(config["scratch"], {"cleanup_days": 14})
+        self.assertEqual(config["scratch"], {"cleanup_days": 14, "job_retention_days": 7})
         self.assertIsNone(config["backup"])
         self.assertEqual(config["alerts"], {"slack": False})
         self.assertEqual(
@@ -134,6 +134,13 @@ class HeterogeneousClusterTest(unittest.TestCase):
         self.assertEqual(website["build"], "package")
         self.assertEqual(config["machines"]["gpu1"]["aliases"], [])
         self.assertEqual(config["partitions"]["main"]["jobs"], "any")
+
+    def test_job_retention_days_must_be_positive(self) -> None:
+        """A bad cleanup cutoff is rejected before any deploy can run."""
+        raw = example()
+        raw["scratch"]["job_retention_days"] = 0
+        _, errors = check_config(raw)
+        self.assertIn("scratch.job_retention_days must be a positive integer", errors)
 
 
 def mutate(change: Callable[[dict[str, Any]], None]) -> list[str]:

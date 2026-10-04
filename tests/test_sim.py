@@ -7,6 +7,7 @@ because it takes minutes and several GB of memory.
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -500,7 +501,8 @@ class SimUsersBase(unittest.TestCase):
             find /etc /srv /opt /usr/local /var/lib/nanohpc -xdev -type f 2>/dev/null | grep -Ev "$skip" | sort | tr '\\n' '\\0' \\
               | xargs -0 sha256sum
             systemctl list-unit-files --no-legend --no-pager | grep -v '^session-' | sort  # not the login sessions
-            systemctl list-units --type=service --state=running --no-legend --no-pager --plain | awk '{print $1}' | sort
+            # fwupd is D-Bus activated and can stop on its own between two snapshots.
+            systemctl list-units --type=service --state=running --no-legend --no-pager --plain | awk '$1 != "fwupd.service" {print $1}' | sort
             findmnt -rn -o TARGET,SOURCE,OPTIONS | sort
             if command -v sacctmgr >/dev/null && test -f /etc/slurm/slurmdbd.conf; then
               repquota -u -O csv /home | cut -d, -f1,5,6
@@ -755,6 +757,43 @@ class SimDeployTest(SimUsersBase):
             self.assertEqual(where[1], "input data")
             # The private scratch copy is removed after a successful job.
             self.assertEqual(self.ssh("gpu2", "sudo ls /scratch/alice/cluster-jobs").stdout.split(), [])
+
+        with self.subTest("daily cleanup keeps a recent failed job copy using real Slurm accounting"):
+            failed_job = textwrap.dedent("""\
+                set -e
+                cd /home/alice/proj
+                cat > fail.sh <<'JOB'
+                #!/bin/bash
+                #SBATCH --partition=main
+                #SBATCH --nodelist=gpu2
+                #SBATCH --wait
+                exit 17
+                JOB
+                git add fail.sh
+                git -c user.name=a -c user.email=a@a commit -qm fail
+                cluster-submit fail.sh
+            """)
+            failed = self.ssh("front", "cd /tmp && sudo -iu alice bash -s", stdin=failed_job)
+            self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+            folders = self.ssh(
+                "gpu2", "sudo -u alice find /scratch/alice/cluster-jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\\n'"
+            ).stdout.splitlines()
+            self.assertEqual(len(folders), 1, folders)
+            match = re.fullmatch(r"job-(\d+)-[A-Za-z0-9_]+", folders[0])
+            self.assertIsNotNone(match, folders[0])
+            assert match is not None
+            for _ in range(20):
+                accounting = self.ssh("gpu2", f"sudo -u alice sacct -X -n -P -j {match[1]} --format=State,End")
+                if re.search(r"FAILED\|\d{4}-\d\d-\d\dT", accounting.stdout):
+                    break
+                time.sleep(1)
+            else:
+                self.fail(f"Slurm did not record the failed job's end time: {accounting.stdout} {accounting.stderr}")
+            service = self.ssh("gpu2", "sudo systemctl start nanohpc-scratch-cleanup.service")
+            self.assertEqual(service.returncode, 0, service.stderr)
+            self.assertEqual(
+                self.ssh("gpu2", f"sudo -u alice test -d /scratch/alice/cluster-jobs/{folders[0]}").returncode, 0
+            )
 
         with self.subTest("metrics from every machine over TLS, fake GPU readings, daily rules, history"):
 
@@ -1191,6 +1230,16 @@ class SimPartialDeployTest(SimUsersBase):
             changed["users"].append({"name": "carol", "uid": 2005, "ssh_keys": [public_key]})
             changed["partitions"]["main"]["max_time"] = "12:00:00"
             cluster.write_text(yaml.safe_dump(changed))
+            # A users-only update must install the command and widen the old service's write path.
+            self.assertEqual(self.ssh("gpu2", "sudo rm /usr/local/bin/scratch-job-cleanup").returncode, 0)
+            self.assertEqual(
+                self.ssh(
+                    "gpu2",
+                    "sudo sed -i 's@ReadWritePaths=/scratch$@ReadWritePaths=/scratch/staged /scratch/locks@' "
+                    "/etc/systemd/system/nanohpc-scratch-cleanup.service",
+                ).returncode,
+                0,
+            )
             result = self.only("users")
             self.assertEqual(result.returncode, 0, self.failure(result))
             summary = self.dry_run_lines(result)
@@ -1210,6 +1259,11 @@ class SimPartialDeployTest(SimUsersBase):
             self.assertIn(f",{300 * 1024 * 1024},{400 * 1024 * 1024},", quotas.split("carol,", 1)[1].splitlines()[0])
             self.assertIn("carol", self.on_front("sacctmgr -n -P show assoc user=carol format=User"))
             self.assertEqual(self.ssh("gpu2", "stat -c '%U %a' /scratch/carol").stdout.strip(), "carol 700")
+            self.assertEqual(self.ssh("gpu2", "test -x /usr/local/bin/scratch-job-cleanup").returncode, 0)
+            self.assertIn(
+                "ReadWritePaths=/scratch\n",
+                self.ssh("gpu2", "sudo cat /etc/systemd/system/nanohpc-scratch-cleanup.service").stdout,
+            )
             self.assertEqual(self.as_user("carol", "front", "true", agent=False).returncode, 0)
             # The partition was not changed.
             self.assertIn("MaxTime=1-00:00:00", self.on_front("scontrol show partition main"))

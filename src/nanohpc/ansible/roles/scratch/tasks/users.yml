@@ -22,6 +22,25 @@
   loop_control:
     label: "{{ item.1 }}/{{ item.0.uid }}"
 
+- name: Write the scratch settings
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/scratch.conf
+    # Read by the cleanup, cluster-submit, and stage-dataset. A copy to scratch must leave at least
+    # 1 GiB and 15% of the disk free, and 10,000 inodes.
+    content: |
+      SCRATCH_CLEANUP_DAYS={{ nanohpc.scratch.cleanup_days }}
+      SCRATCH_JOB_RETENTION_DAYS={{ nanohpc.scratch.job_retention_days }}
+      STAGE_MIN_FREE_BYTES=1073741824
+      STAGE_CAPACITY_PERCENT=85
+      STAGE_MIN_FREE_INODES=10000
+    mode: "0644"
+
+- name: Install the kept scratch job cleanup script
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/scratch-job-cleanup"
+    dest: /usr/local/bin/scratch-job-cleanup
+    mode: "0755"
+
 - name: Run the cleanup with each user's own permissions
   ansible.builtin.copy:
     dest: /usr/local/sbin/scratch-cleanup-users
@@ -33,5 +52,48 @@
       status=0
       {% for user in nanohpc.users %}
       runuser -u {{ user.name }} -- env SCRATCH_ROOT=/scratch/staged/private/{{ user.uid }} /usr/local/bin/scratch-cleanup || status=1
+      runuser -u {{ user.name }} -- env SCRATCH_JOB_ROOT=/scratch/{{ user.name }}/cluster-jobs SCRATCH_JOB_RETENTION_DAYS={{ nanohpc.scratch.job_retention_days }} /usr/local/bin/scratch-job-cleanup || status=1
       {% endfor %}
       exit $status
+
+- name: Install the scratch cleanup service and daily timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: "0644"
+  loop:
+    - name: nanohpc-scratch-cleanup.service
+      content: |
+        [Unit]
+        Description=Remove unused staged data and old job copies (nanoHPC)
+        RequiresMountsFor=/scratch
+
+        [Service]
+        Type=oneshot
+        EnvironmentFile=/etc/nanohpc/scratch.conf
+        ProtectSystem=strict
+        ProtectHome=read-only
+        ReadWritePaths=/scratch
+        ExecStart=/usr/local/sbin/scratch-cleanup-users
+    - name: nanohpc-scratch-cleanup.timer
+      content: |
+        [Unit]
+        Description=Remove unused staged data and old job copies daily (nanoHPC)
+
+        [Timer]
+        OnCalendar=daily
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: cleanup_units
+
+- name: Run the cleanup timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-scratch-cleanup.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ cleanup_units.changed }}"
+  when: not (ansible_check_mode and cleanup_units is changed)  # dry run: the timer is not installed yet
