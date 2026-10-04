@@ -1507,7 +1507,7 @@ class SimAutoDeployTest(SimUsersBase):
             process.stdout.close()
             process.wait()
             self.on_front(f"echo {deployed} | sudo tee {state}")
-            self.assertEqual(process.returncode, 4, output[-4000:])
+            self.assertEqual(process.returncode, 3, output[-4000:])
             self.assertIn("An automatic deploy ran during this deploy's dry run", output)
             self.assertEqual(self.on_front("systemctl is-active nanohpc-auto-deploy.timer").strip(), "active")
 
