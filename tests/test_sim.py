@@ -1011,10 +1011,10 @@ class SimDeployTest(SimUsersBase):
 class SimRedeployTest(SimUsersBase):
     """The safety checks that each need another deploy, on the everyday cluster: a missing certificate issued
     again, a drained node as a warning only, a deploy by an administrator's forwarded key, the stop with no key
-    and no terminal, administrators' root login (also with the home machine's NFS server stopped), a removed
-    user's login taken away, and a UID conflict that leaves that machine out after its dry run. Run
-    when accounts, SSH, sudo, preflight, deploy.py, or the certificates change, and before the release. Real
-    Lima VMs."""
+    and no terminal, administrators' root login (also with the home machine's NFS server stopped), the dry run's
+    stop on a key in /root/.ssh that the deploy would make stop working, a removed user's login taken away, and a
+    UID conflict that leaves that machine out after its dry run. Run when accounts, SSH, sudo, preflight,
+    deploy.py, or the certificates change, and before the release. Real Lima VMs."""
 
     def test_redeploys(self) -> None:
         cluster, _, public_key = self.up_and_deploy()
@@ -1096,6 +1096,35 @@ class SimRedeployTest(SimUsersBase):
             # /home answers again on gpu4 before the next deploy (the NFS client retries on its own).
             wait = "for i in $(seq 24); do timeout -s KILL 10 sudo -u alice ls /home/alice >/dev/null && exit 0; sleep 5; done; exit 1"  # fmt: skip
             self.assertEqual(self.ssh("gpu4", wait).returncode, 0)
+
+        with self.subTest("the dry run stops on a key in /root/.ssh that the deploy would make stop working"):
+            # cpu1 as before nanoHPC's root setting: without the Match block, sshd reads root's keys from /root/.ssh.
+            outsider_key = self.keys / "outsider"
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "nanohpc-test-outsider", "-f", str(outsider_key)], check=True)  # fmt: skip
+            outsider_public = (self.keys / "outsider.pub").read_text().strip()
+            listing = subprocess.run(
+                ["ssh-keygen", "-l", "-f", str(self.keys / "outsider.pub")], capture_output=True, text=True, check=True
+            )
+            outsider_fingerprint = listing.stdout.split()[1]
+            setting_off = "sudo sed -i '/^Match User root/,$d' /etc/ssh/sshd_config.d/10-nanohpc.conf && sudo systemctl restart ssh"  # fmt: skip
+            self.assertEqual(self.ssh("cpu1", setting_off).returncode, 0)
+            plant = f"sudo install -d -m 0700 /root/.ssh && echo '{outsider_public}' | sudo tee -a /root/.ssh/authorized_keys"  # fmt: skip
+            self.assertEqual(self.ssh("cpu1", plant).returncode, 0)
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--dry-run")
+            self.assertEqual(result.returncode, 3, self.failure(result))
+            self.assertIn("Dry run: cpu1 failed: ", result.stdout)
+            self.assertIn(
+                f"/root/.ssh/authorized_keys: ssh-ed25519 {outsider_fingerprint} nanohpc-test-outsider", result.stdout
+            )
+            self.assertIn("These keys will stop working for root after this deploy", result.stdout)
+            self.assertIn("Dry run failed on cpu1. Nothing was changed (--dry-run).", result.stderr)
+            # Without that key, a deploy passes on cpu1 and puts nanoHPC's root setting back.
+            self.ssh("cpu1", "sudo sed -i '/nanohpc-test-outsider$/d' /root/.ssh/authorized_keys")
+            result = self.deploy(self.state / "ssh_config", agent=False)
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            address = yaml.safe_load(cluster.read_text())["machines"]["cpu1"]["address"]
+            effective = self.ssh("cpu1", f"sudo /usr/sbin/sshd -T -C user=root,host=cpu1,addr={address}")
+            self.assertIn("authorizedkeysfile /etc/ssh/authorized_keys/root", effective.stdout.splitlines())
 
         with self.subTest("removing a user from cluster.yml takes away their login"):
             self.assertEqual(self.as_user("bob", "front", "true", agent=False).returncode, 0)
