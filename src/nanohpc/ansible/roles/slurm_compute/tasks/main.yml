@@ -35,24 +35,8 @@
   ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/nanohpc-fake-gpus.conf
   when: fake_gpu_devices.changed
 
-- name: Install slurm.conf and cgroup.conf
-  ansible.builtin.copy:
-    src: "{{ nanohpc.files }}/{{ item }}"
-    dest: "/etc/slurm/{{ item }}"
-    owner: root
-    group: slurm
-    mode: "0644"
-  loop: [slurm.conf, cgroup.conf]
-  notify: Restart slurmd
-
-- name: Install gres.conf
-  ansible.builtin.copy:
-    src: "{{ nanohpc.files }}/gres/{{ inventory_hostname }}.conf"
-    dest: /etc/slurm/gres.conf
-    owner: root
-    group: slurm
-    mode: "0644"
-  notify: Restart slurmd
+- name: Slurm's configuration and this machine's GPUs
+  ansible.builtin.import_tasks: slurm_config.yml
 
 - name: Run slurmd
   ansible.builtin.service:

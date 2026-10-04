@@ -195,27 +195,8 @@
     force: false
   loop: [cleanup.lock, capacity.lock]
 
-- name: Create each user's private scratch folder and caches
-  ansible.builtin.file:
-    path: "/scratch/{{ item.0.name }}{{ item.1 }}"
-    state: directory
-    owner: "{{ item.0.name }}"
-    group: "{{ item.0.name }}"
-    mode: "0700"
-  loop: "{{ nanohpc.users | product(['', '/uv-cache', '/hf-cache', '/torch-cache']) | list }}"
-  loop_control:
-    label: "/scratch/{{ item.0.name }}{{ item.1 }}"
-
-- name: Create each user's private staging and lock folders
-  ansible.builtin.file:
-    path: "{{ item.1 }}/{{ item.0.uid }}"
-    state: directory
-    owner: "{{ item.0.name }}"
-    group: "{{ item.0.name }}"
-    mode: "0700"
-  loop: "{{ nanohpc.users | product(['/scratch/staged/private', '/scratch/locks']) | list }}"
-  loop_control:
-    label: "{{ item.1 }}/{{ item.0.uid }}"
+- name: Each user's scratch folders, caches, and cleanup
+  ansible.builtin.import_tasks: users.yml
 
 - name: Point uv, Hugging Face, and PyTorch caches to scratch
   ansible.builtin.copy:
@@ -252,20 +233,6 @@
     src: "{{ nanohpc.package_files }}/scratch-cleanup"
     dest: /usr/local/bin/scratch-cleanup
     mode: "0755"
-
-- name: Run the cleanup with each user's own permissions
-  ansible.builtin.copy:
-    dest: /usr/local/sbin/scratch-cleanup-users
-    mode: "0750"
-    content: |
-      #!/usr/bin/env bash
-      # Managed by nanoHPC. One user's failure does not skip the others; the run still fails at the end.
-      set -uo pipefail
-      status=0
-      {% for user in nanohpc.users %}
-      runuser -u {{ user.name }} -- env SCRATCH_ROOT=/scratch/staged/private/{{ user.uid }} /usr/local/bin/scratch-cleanup || status=1
-      {% endfor %}
-      exit $status
 
 - name: Install the scratch cleanup service and daily timer
   ansible.builtin.copy:

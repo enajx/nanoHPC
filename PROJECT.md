@@ -72,7 +72,7 @@ Tech stack. Most of it comes from the source deployment; changes from it are not
 Main components:
 
 - **Configuration file** (`cluster.yml`): the only file the administrator edits. It lists the front node, the compute nodes (address, CPUs, memory, GPU type and count, partitions, scratch), the optional storage and backup machines, the users, the partitions, and the queue policy. Example files and a wizard (`nanohpc init`) give simple defaults.
-- **nanoHPC command**: writes (wizard), validates, and turns the configuration into Ansible inventory, and runs the right playbooks (bootstrap, add node, redeploy).
+- **nanoHPC command**: writes (wizard), validates, and turns the configuration into Ansible inventory, and runs the playbooks: a full deploy, or one part of it (`--only users`, `policy`, `partitions`, or `node NAME`).
 - **Front node**: Slurm controller and accounting database, login node, Prometheus, Grafana, the collector, and the website. By default also the `/home` server.
 - **Storage machine** (optional): serves `/home` over NFS instead of the front node.
 - **Backup machine** (optional): receives the nightly `/home` backup. The backup can also go to an outside SSH server.
@@ -131,7 +131,8 @@ flowchart LR
 - Built: automatic deploys (M6b): the front node deploys the whole cluster from a branch of the configuration repository by itself (every few minutes or on a GitHub webhook), with the pinned nanoHPC version, root logins only from the front node, and failed commits reported and not retried.
 - Built: the setup wizard (M7): `nanohpc init`, a full-screen terminal app that probes the machines and writes or edits `cluster.yml`; `nanohpc fix-uid`; [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md) for agents.
 - Built: a dry run before every deploy (M8a): every deploy, manual or automatic, previews the changes on every machine first; machines whose dry run fails are left out (nothing is deployed when the front node or the home machine fails).
-- Next (M8): partial deploys (`nanohpc deploy --only ...`), `nanohpc check`, key-only root login for administrators, then v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
+- Built: partial deploys (M8b): `nanohpc deploy --only users|policy|partitions|node NAME` runs one part, with the same checks and dry run first.
+- Next (M8): `nanohpc check`, key-only root login for administrators, then v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
   - Site-specific parts are mixed into the main setup and must be removed.
