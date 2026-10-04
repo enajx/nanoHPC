@@ -158,22 +158,6 @@
       ansible.builtin.command: mount -o remount,usrquota /
       when: "'usrquota' not in home_fs_now.stdout.split()[2] and 'quota' not in home_fs_now.stdout.split()[2]"
 
-# The dry run cannot read the quotas before the quota tools are installed and the filesystem that holds
-# /home is mounted with quotas.
-- name: Note whether the quotas can be read in this run
-  ansible.builtin.set_fact:
-    home_quota_pending: >-
-      {{ ansible_check_mode and (home_packages is changed
-         or (nanohpc.home.device is not none and (home_fstab is changed or (home_mount.stdout | default('')) == ''))
-         or (nanohpc.home.device is none and 'quota' not in home_fs_now.stdout.split()[2])) }}
-
-- name: Read the quota mount point (the filesystem that holds /home)
-  ansible.builtin.command: "findmnt -n -o TARGET,FSTYPE --mountpoint {{ '/home' if nanohpc.home.device is not none else '/' }}"
-  register: quota_target
-  changed_when: false
-  check_mode: false
-  when: not home_quota_pending
-
 # /home on the root disk cannot be mounted nosuid by itself, so it is bind-mounted onto itself with nosuid.
 - name: Mount /home on the root disk onto itself without setuid or device files
   when: nanohpc.home.device is none
@@ -194,96 +178,17 @@
       changed_when: true
       failed_when: home_bind_mounted.rc != 0 and 'already mounted' not in home_bind_mounted.stderr
 
-- name: Read whether the ext4 filesystem has built-in quota support
-  ansible.builtin.shell: "dumpe2fs -h $(findmnt -n -o SOURCE --target /home) 2>/dev/null | grep -i '^Filesystem features:'"
-  register: ext4_features
-  changed_when: false
-  check_mode: false
-  failed_when: false
-  when: not home_quota_pending and quota_target.stdout.split()[1] == 'ext4'
+# The dry run cannot read the quotas before the quota tools are installed and the filesystem that holds
+# /home is mounted with quotas.
+- name: Note whether the quotas can be read in this run
+  ansible.builtin.set_fact:
+    home_quota_pending: >-
+      {{ ansible_check_mode and (home_packages is changed
+         or (nanohpc.home.device is not none and (home_fstab is changed or (home_mount.stdout | default('')) == ''))
+         or (nanohpc.home.device is none and 'quota' not in home_fs_now.stdout.split()[2])) }}
 
-# Without built-in quota support, ext4 keeps quotas in quota files: create them once, then switch quotas on.
-- name: Create the quota files
-  ansible.builtin.command: "quotacheck -cum {{ quota_target.stdout.split()[0] }}"
-  args:
-    creates: "{{ quota_target.stdout.split()[0] | regex_replace('/$', '') }}/aquota.user"
-  when: not home_quota_pending and quota_target.stdout.split()[1] == 'ext4' and ' quota' not in ext4_features.stdout | default('')
-
-- name: Read whether user quotas are on
-  ansible.builtin.command: "quotaon -p -u {{ quota_target.stdout.split()[0] }}"
-  register: quota_state
-  changed_when: false
-  check_mode: false
-  failed_when: false
-  when: not home_quota_pending and quota_target.stdout.split()[1] == 'ext4'
-
-- name: Switch user quotas on
-  ansible.builtin.command: "quotaon -u {{ quota_target.stdout.split()[0] }}"
-  when: not home_quota_pending and quota_target.stdout.split()[1] == 'ext4' and ' is on' not in quota_state.stdout
-
-- name: Create private home folders
-  ansible.builtin.file:
-    path: "/home/{{ item.name }}"
-    state: directory
-    owner: "{{ item.name }}"
-    group: "{{ item.name }}"
-    mode: "0700"
-  loop: "{{ nanohpc.users }}"
-  loop_control:
-    label: "{{ item.name }}"
-
-- name: Read the current quotas
-  ansible.builtin.command: "repquota -u -O csv {{ quota_target.stdout.split()[0] }}"
-  register: quotas_now
-  changed_when: false
-  check_mode: false
-  when: not home_quota_pending
-
-- name: Set each user's home quota (1 KiB blocks; no file count limit)
-  ansible.builtin.command: "setquota -u {{ item.name }} {{ item.soft_kib }} {{ item.hard_kib }} 0 0 {{ quota_target.stdout.split()[0] }}"
-  loop: "{{ nanohpc.home.quotas }}"
-  loop_control:
-    label: "{{ item.name }}"
-  vars:
-    columns: "{{ quotas_now.stdout_lines[0].split(',') }}"
-    row: "{{ (quotas_now.stdout_lines | select('match', '^' ~ item.name ~ ',') | first | default('')).split(',') }}"
-  when: >-
-    not home_quota_pending and (row | length != columns | length
-    or [row[columns.index('BlockSoftLimit')], row[columns.index('BlockHardLimit')]]
-       != [item.soft_kib | string, item.hard_kib | string])
-
-- name: Read the grace time last set by nanoHPC
-  ansible.builtin.slurp:
-    src: /etc/nanohpc/quota-grace
-  register: grace_now
-  failed_when: false
-
-- name: Set the grace time for going over the soft limit
-  ansible.builtin.command: "setquota -t {{ nanohpc.home.grace_seconds }} {{ nanohpc.home.grace_seconds }} {{ quota_target.stdout.split()[0] }}"
-  when: not home_quota_pending and (grace_now.content | default('') | b64decode | trim) != nanohpc.home.grace_seconds | string
-
-- name: Record the grace time
-  ansible.builtin.copy:
-    dest: /etc/nanohpc/quota-grace
-    content: "{{ nanohpc.home.grace_seconds }}\n"
-    mode: "0644"
-
-- name: Create the folder for NFS exports
-  ansible.builtin.file:
-    path: /etc/exports.d
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Export /home to the machines that use it
-  ansible.builtin.copy:
-    src: "{{ nanohpc.files }}/exports"
-    dest: /etc/exports.d/nanohpc.exports
-    owner: root
-    group: root
-    mode: "0644"
-  register: home_exports
+- name: The users' home folders and quotas
+  ansible.builtin.import_tasks: users.yml
 
 - name: Run the NFS server
   ansible.builtin.service:
@@ -292,10 +197,5 @@
     state: started
   when: not (ansible_check_mode and home_packages is changed)  # dry run: not installed yet
 
-- name: Apply the exports
-  ansible.builtin.command: exportfs -ra
-  when: home_exports.changed
-
-- name: Mark the home machine ready for the machines that mount /home
-  ansible.builtin.set_fact:
-    home_server_ready: true
+- name: Export /home to the machines that mount it
+  ansible.builtin.import_tasks: exports.yml

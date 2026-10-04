@@ -1,0 +1,33 @@
+# The machines' SSH host keys and how the front node reaches each machine as root, for automatic deploys
+# (also run alone by --only node).
+
+- name: Pin every machine's SSH host key
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/auto-deploy/machines_known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name in nanohpc.machines %}
+      {{ nanohpc.machines[name].address }} ssh-ed25519 {{ hostvars[name].ansible_facts.ssh_host_key_ed25519_public }}
+      {% endfor %}
+
+- name: Write the SSH config for automatic deploys
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/auto-deploy/ssh_config
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name in nanohpc.machines %}
+      Host {{ name }}
+        HostName {{ nanohpc.machines[name].address }}
+        User root
+        IdentityFile /etc/nanohpc/auto-deploy/id_ed25519
+        IdentitiesOnly yes
+        StrictHostKeyChecking yes
+        UserKnownHostsFile /etc/nanohpc/auto-deploy/machines_known_hosts
+
+      {% endfor %}
+
+# The checkout is made without network access, so a deploy works before the key is added to the repository.

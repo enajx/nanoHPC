@@ -1,0 +1,31 @@
+# slurm.conf, cgroup.conf, and the job submission rules on the front node (also run alone by --only policy,
+# partitions, and node). slurm_lua_pending: the dry run of a first deploy has no luac yet (see main.yml).
+
+- name: Install slurm.conf and cgroup.conf
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/{{ item }}"
+    dest: "/etc/slurm/{{ item }}"
+    owner: root
+    group: slurm
+    mode: "0644"
+  loop: [slurm.conf, cgroup.conf]
+  register: controller_configuration
+
+- name: Check the job submission rules with luac (dry run)
+  ansible.builtin.include_role:
+    name: dry_run_check
+  vars:
+    check_content: null
+    check_source: "{{ nanohpc.files }}/job_submit.lua"
+    check_command: /usr/bin/luac5.3 -p %s
+  when: ansible_check_mode and not slurm_lua_pending
+
+- name: Install the job submission rules
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/job_submit.lua"
+    dest: /etc/slurm/job_submit.lua
+    owner: root
+    group: slurm
+    mode: "0644"
+    validate: /usr/bin/luac5.3 -p %s
+  register: job_submit_rules
