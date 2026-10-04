@@ -135,6 +135,27 @@
       Deploy as a current administrator.
     quiet: true
 
+# Root's own SSH keys, only where this deploy runs the accounts role, which changes sshd's settings: a full deploy
+# (no --tags: ansible_run_tags is ['all']), `--only users`, and the new machine of `--only node` (partial.yml runs
+# this role in every part).
+- name: Check root's own SSH keys where this deploy changes SSH access
+  when: >-
+    'all' in ansible_run_tags or 'users' in ansible_run_tags
+    or ('node' in ansible_run_tags and inventory_hostname in groups['only_node'])
+  block:
+    # The address is this machine's own, as in the accounts role's check of root's settings.
+    - name: Read the effective SSH settings for root
+      ansible.builtin.command: >-
+        /usr/sbin/sshd -T -C user=root,host={{ ansible_facts.hostname }},addr={{ nanohpc.machines[inventory_hostname].address }}
+      register: sshd_root
+      changed_when: false
+      check_mode: false
+
+    - name: Check root's own SSH keys
+      ansible.builtin.include_tasks: root_keys.yml
+      vars:
+        sshd_root_settings: "{{ sshd_root.stdout_lines }}"
+
 # /home: the shared /home (NFS) or the home disk is mounted over the local /home folder. Stop if that
 # would hide anything other than the home folders of the accounts nanoHPC deploys with.
 - name: Read where /home comes from now

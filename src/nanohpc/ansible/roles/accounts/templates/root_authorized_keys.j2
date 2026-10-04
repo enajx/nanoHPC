@@ -1,0 +1,12 @@
+# Managed by nanoHPC. sshd reads root's keys only from this file (local disk, so it works without /home).
+# The administrators in cluster.yml may log in as root from anywhere, with a key only.
+{% for user in users if user.name in admins %}
+# {{ user.name }}
+{% for key in user.ssh_keys %}
+{{ key }}
+{% endfor %}
+{% endfor %}
+{% if auto_deploy_key %}
+# The front node's automatic deploys, accepted only from its address.
+from="{{ front_address }}",no-agent-forwarding,no-X11-forwarding {{ auto_deploy_key }}
+{% endif %}
