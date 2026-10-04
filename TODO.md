@@ -145,7 +145,12 @@ flowchart LR
 
 ### Release
 
-- [ ] A README, curated by the user (not filled in by the agent): a title for nanoHPC using the same neobrutalism components as the front-end monitor, with "nanoHPC" in the same blocky letter style as the website icon (a bold black block letter drawn as SVG on a yellow `#f7d64b` square with a black border, like the "R" icon in SLURM-REAL's `website/public/favicon.svg`; the same style as the mark shown where the logo goes when no logo is chosen); a description of nanoHPC as a minimalistic Slurm + Slurm monitoring tool for small lab clusters; a features section (a concise list); how to use it; the tech stack; how to contribute, linking to CONTRIBUTING.md; and the license (MIT). A first draft is in the working tree of the main checkout (`README.md`, `assets/nanohpc-title.svg`, `assets/cluster.gif`), not committed, waiting for the user's review.
+- [ ] A README, curated by the user: a nanoHPC title, a lightweight Slurm cluster description, a concise feature list, setup steps, the tech stack, and the MIT license. The current draft is under review (`README.md`, `assets/nanohpc-title.svg`, `assets/cluster.png`).
+  - [x] The README uses a static, transparent PNG with the chosen turquoise cluster layout: Threadripper left of three 4-GPU H100 machines and FPGA on the right (`assets/cluster.png`).
+  - [x] The Tech stack badges flow across the available width in Markdown readers (`README.md`).
+  - [x] The Tech stack no longer displays the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges (`README.md`).
+  - [x] The README feature list is concise and plain, with no bold lead-ins (`README.md`).
+  - [x] The README has a Set up section with a TBA placeholder for monitor-only setup instructions (`README.md`).
 - [ ] Before the release, the real-VM tests pass on Ubuntu 22.04 and 26.04 too (during development they run on 24.04 only).
 - [ ] Once nanoHPC is released and development slows down, bring the split-out real-VM tests (`SimRedeployTest`, `SimAlertsTest`, and the ones run only when relevant) back into every run, so users get proper tests when deploying on their systems.
 - [ ] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website.
@@ -157,6 +162,7 @@ flowchart LR
 
 ### Later
 
+- [ ] Review features and setup decisions added in SLURM-REAL since the nanoHPC port began, then decide with the user which ones to bring into nanoHPC.
 - [ ] Explore whether nanoHPC can be sold as a commercial product while it stays fully open source. Very exploratory. Ideas to look at: providing some of the infrastructure on the server side, or an app to see the cluster status (the current view is that the website is the best way to do this).
 - [ ] restic backups with dated snapshots, and S3-style storage as a backup destination.
 - [ ] Users from an existing directory (LDAP) instead of local users.
@@ -169,7 +175,8 @@ flowchart LR
 - [ ] See how the terminal login banner looks in SLURM-REAL and use it as inspiration for the login banner above. There it is `roles/job_modes/files/real-hpc` (big block-letter title with a short animation and time-of-day colours, then the user's jobs, the cluster's jobs, the 7-day waiting time, GPU-hours and ranking, an impact estimate, and home space with the largest folders), `roles/home_space` (each user's usage, readable only by them), and `roles/login_notice` (shown on interactive logins); tests in `tests/test_real_hpc.py`. In nanoHPC the title is the cluster name from `cluster.yml` and the links point to the cluster's own website; the impact estimate is kept as in SLURM-REAL (same fixed assumptions), to make configurable later (agreed 2026-10-03; the banner stays in Later).
 - [ ] SLURM-REAL's website added a Waiting time card (24h, 7d, 30d) and a "Powered by nanoHPC" footer (2026-10-03, commit b05616c); consider them for nanoHPC's website.
 - [ ] See how SLURM-REAL implements Slack notifications when a job ends and do the same: a private message to the job's user when their batch job ends, through a Slack app's bot token (job ID and name, how it ended with the exit code, run time, machine). Planned there on 2026-10-03 in `md/plan-slack.md` (commit 234223c); check whether it is built before porting.
-- [ ] A way to use only the cluster monitoring part (metrics, alerts, status snapshot, Grafana, website) without the Slurm part, for people who already have Slurm installed and want to add nanoHPC's monitoring to it.
+- [ ] Deploy only the cluster monitoring tools (metrics, alerts, status snapshot, Grafana, website) on a cluster that already has Slurm installed, without replacing its Slurm setup.
+- [ ] Deploy only the cluster monitoring tools (metrics, alerts, status snapshot, Grafana, website) on machines without Slurm, where people run jobs directly.
 - [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.
 
 ## Uncategorized

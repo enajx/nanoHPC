@@ -29,7 +29,7 @@ The work moves from the source deployment to a released tool in phases. Task-lev
 4. **Port and bootstrap**: bring Slurm, accounts, storage, monitoring, website, and backup over from the source deployment, made generic. One command sets up a new cluster from `cluster.yml`.
 5. **Wizard and operate**: a wizard writes `cluster.yml` by asking questions and probing the machines. Add a node and redeploy from the same file.
 6. **Release v0.1**: tested on the simulated cluster and on real x86 machines, documented, published.
-7. **Later**: LDAP users, AMD GPUs, restic and S3 backups, non-Ubuntu systems, other extras.
+7. **Later**: monitor-only setups with existing Slurm or no Slurm, LDAP users, AMD GPUs, restic and S3 backups, non-Ubuntu systems, other extras.
 
 ```mermaid
 flowchart LR
@@ -42,7 +42,7 @@ flowchart LR
   P3 --> P4[Port and bootstrap]:::wip
   P4 --> P5[Wizard and operate]:::queued
   P5 --> P6[Release v0.1]:::queued
-  P6 --> P7[Later: LDAP, AMD, restic, more OS]:::queued
+  P6 --> P7[Later: monitor-only, LDAP, AMD, backups, more OS]:::queued
 ```
 
 ## Technical specifications
