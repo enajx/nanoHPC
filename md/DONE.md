@@ -127,3 +127,16 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - Before nanoHPC's root setting is active, the dry run stops on a machine if a root key that sshd currently reads would lose access. It names the file, key type, fingerprint, and comment, with a hint. Cloud-init's exact refusal key is excluded. The stop applies to full deploys, `--only users`, and the new machine of `--only node`. The accounts role checks effective sshd settings and restores the old settings if validation fails.
 - `SimRedeployTest` and `SimAutoDeployTest` each passed on Ubuntu 24.04 VMs. The redeploy test checked root login on every machine and on a compute machine while the front node's NFS server was stopped. A separate agent reviewed the feature, and its findings were fixed before these runs. The automatic deploy VM test now expects exit code 3 when a manual deploy stops before changes because an automatic deploy ran during its dry run.
 - Files: `src/nanohpc/ansible/roles/{accounts,preflight}/`, `tests/test_root_login.py`, `tests/test_sim.py`, `SETUP-for-AGENTS.md`, `md/testing.md`.
+
+## 2026-10-04: README cluster animation
+
+- The user chose turquoise pipes from three GIF previews using the website's default coral theme. The README now shows one animation: Threadripper (a two-layer CPU machine), three 4-GPU machines all labelled H100 in the center, and FPGA on the right with no GPU bar. The live website map was not changed.
+- Checked the rendered map in Chromium and decoded frames from the selected GIF. It is 720 × 471 pixels, 64 frames, and 6.4 seconds long.
+- The Tech stack badges sit on one source line, so Markdown readers do not turn each badge into a separate row. The user removed the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges.
+- Files: `README.md`, `assets/cluster.gif`.
+
+## 2026-10-04: README feature descriptions
+
+- Rewrote Features as seven short bullets, without bold lead-ins: one `cluster.yml`, Slurm scheduling, the front-end monitor, health checks, playbooks for cluster changes and backups, shared and scratch storage, and Slack notifications.
+- Checked the claims against `PROJECT.md` and `TODO.md`; the text describes supported policy changes without claiming system package updates.
+- File: `README.md`.
