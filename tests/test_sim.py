@@ -979,6 +979,28 @@ class SimDeployTest(SimUsersBase):
             for machine in machines:
                 self.assertEqual(self.machine_state(machine), before[machine], machine)
 
+        with self.subTest("nanohpc check: no problems and nothing changed, then a stopped service is named"):
+            check = ("uv", "run", "nanohpc", "check", str(cluster), "--ssh-config", str(self.state / "ssh_config"))
+            before = {machine: self.machine_state(machine) for machine in machines}
+            result = self.run_command(*check)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("No problems.", result.stdout)
+            rows = {line.split()[0]: line for line in result.stdout.splitlines()[1 : len(machines) + 1]}
+            self.assertEqual(sorted(rows), sorted(machines), result.stdout)
+            for row in rows.values():
+                self.assertTrue(row.endswith(f"  {metadata.version('nanohpc')}"), row)
+                self.assertIn("  ok (sudo)  ", row)
+            self.assertIn("  4/4 (devices)  ", rows["gpu4"])
+            self.assertIn("  0/0  ", rows["cpu1"])
+            for machine in machines:
+                self.assertEqual(self.machine_state(machine), before[machine], machine)
+            self.assertEqual(self.ssh("cpu1", "sudo systemctl stop munge").returncode, 0)
+            result = self.run_command(*check)
+            self.ssh("cpu1", "sudo systemctl start munge")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertTrue(result.stdout.splitlines()[1].startswith("cpu1 "), result.stdout)
+            self.assertIn("\n  cpu1: cluster-health: FAIL service munge\n", result.stdout)
+
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimRedeployTest(SimUsersBase):
