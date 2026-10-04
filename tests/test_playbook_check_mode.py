@@ -29,7 +29,8 @@ def tasks_in(tasks: list[dict[str, Any]], inherited: list[str]) -> list[tuple[di
 
 
 def all_tasks() -> list[tuple[str, dict[str, Any], list[str]]]:
-    """Return every task of the roles and site.yml, with its file and its `when` conditions."""
+    """Return every task of the roles and the playbooks (site.yml, partial.yml), with its file and its `when`
+    conditions."""
     found = []
     for path in sorted(ANSIBLE.glob("roles/*/*/*.yml")):
         if path.parent.name in ("tasks", "handlers"):
@@ -37,9 +38,10 @@ def all_tasks() -> list[tuple[str, dict[str, Any], list[str]]]:
                 (str(path.relative_to(ANSIBLE)), task, when)
                 for task, when in tasks_in(yaml.safe_load(path.read_text()), [])
             ]
-    for play in yaml.safe_load((ANSIBLE / "site.yml").read_text()):
-        for key in ("pre_tasks", "tasks"):
-            found += [("site.yml", task, when) for task, when in tasks_in(play.get(key, []), [])]
+    for playbook in ("site.yml", "partial.yml"):
+        for play in yaml.safe_load((ANSIBLE / playbook).read_text()):
+            for key in ("pre_tasks", "tasks"):
+                found += [(playbook, task, when) for task, when in tasks_in(play.get(key, []), [])]
     return found
 
 

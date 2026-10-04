@@ -5,6 +5,7 @@ the user, address, and key (`--ssh-config` points at another SSH config file, as
 cluster). It reads each machine's real hostname first, generates every configuration file, then
 runs the playbook in `nanohpc/ansible/`: first as a dry run (check mode; nothing changes except apt's package
 lists), then for real on the machines whose dry run passed (none when the front node or the home machine failed). Work files go to ~/.cache/nanohpc/clusters/<cluster name>/.
+A partial deploy (`--only`, see ONLY) runs ansible/partial.yml instead, with the same checks and dry run.
 """
 
 import getpass
@@ -109,15 +110,19 @@ class Probe:
     hostnames: dict[str, str]
     needs_password: list[str]  # machines where sudo asks for a password
     errors: list[str]  # machines that cannot be reached, or where the login account may not use sudo
+    # The roles each machine was last deployed with (/etc/nanohpc/roles), None when it was never deployed.
+    deployed: dict[str, list[str] | None]
 
 
 def probe(machines: list[str], ssh_config: Path | None) -> Probe:
-    """Read each machine's short hostname and whether sudo works without a password. Changes nothing."""
+    """Read each machine's short hostname, whether sudo works without a password, and the roles it was deployed
+    with. Changes nothing."""
     # Not `sudo -n`: it skips authentication, so a forwarded key (pam_ssh_agent_auth) would never be tried.
     # With an empty stdin, a key login succeeds and a password prompt fails at once.
     command = (
         "hostname -s; if out=$(sudo -S -p '' true </dev/null 2>&1); then echo sudo-ok;"
-        " else case \"$out\" in *sudoers*|*'not allowed'*) echo sudo-denied;; *) echo sudo-password;; esac; fi"
+        " else case \"$out\" in *sudoers*|*'not allowed'*) echo sudo-denied;; *) echo sudo-password;; esac; fi;"
+        ' if test -f /etc/nanohpc/roles; then echo "roles: $(cat /etc/nanohpc/roles)"; else echo not-deployed; fi'
     )
 
     def read(machine: str) -> subprocess.CompletedProcess[str]:
@@ -128,21 +133,132 @@ def probe(machines: list[str], ssh_config: Path | None) -> Probe:
     hostnames: dict[str, str] = {}
     needs_password: list[str] = []
     errors: list[str] = []
+    deployed: dict[str, list[str] | None] = {}
     for machine, result in results.items():
-        lines = result.stdout.split()
-        if result.returncode != 0 or len(lines) != 2:
+        lines = result.stdout.splitlines()
+        if result.returncode != 0 or len(lines) != 3:
             errors.append(f"{machine}: cannot connect with `ssh {machine}`: {result.stderr.strip() or 'no output'}")
             continue
-        hostnames[machine] = lines[0]
+        hostnames[machine] = lines[0].strip()
         if lines[1] == "sudo-denied":
             errors.append(f"{machine}: the account `ssh {machine}` logs in with is not allowed to use sudo")
         elif lines[1] != "sudo-ok":
             needs_password.append(machine)
-    return Probe(hostnames, needs_password, errors)
+        deployed[machine] = lines[2].removeprefix("roles:").split() if lines[2].startswith("roles:") else None
+    return Probe(hostnames, needs_password, errors, deployed)
 
 
-def inventory(config: dict[str, Any]) -> dict[str, Any]:
-    """Return the Ansible inventory: one group per role (role_front, ...), and role_slurm for front and compute."""
+@dataclass(frozen=True)
+class Only:
+    """A partial deploy (`--only`): the part, and for `node` the machine's name."""
+
+    part: str
+    node: str | None
+
+
+@dataclass(frozen=True)
+class Part:
+    """What a partial deploy runs: its plays in ansible/partial.yml carry `tag`, and it runs on the machines that
+    have one of `roles` (the others are not touched)."""
+
+    tag: str
+    roles: tuple[str, ...]
+    what: str
+
+
+# Each `--only` part. policy and partitions run the same plays: both live in slurm.conf, job_submit.lua, and the
+# QoS. `node NAME` runs everything on NAME, and only the shared parts on the other machines.
+EVERY_ROLE = ("front", "home", "backup", "compute")
+ONLY: dict[str, Part] = {
+    "users": Part(
+        "users",
+        EVERY_ROLE,
+        "accounts, SSH keys, sudo keys, and who may log in on every machine; home folders and quotas; scratch folders"
+        " and caches; Slurm accounting users; the status collector's user list",
+    ),
+    "policy": Part(
+        "policy",
+        ("front", "compute"),
+        "QoS, fair-share, and limits (slurm.conf, job_submit.lua, Slurm's QoS), then Slurm reloads them",
+    ),
+    "partitions": Part(
+        "partitions",
+        ("front", "compute"),
+        "partitions and GPUs (slurm.conf and gres.conf on every Slurm machine, job_submit.lua, Slurm's QoS), then"
+        " Slurm reloads them, and the website's policy data",
+    ),
+    "node": Part(
+        "node",
+        EVERY_ROLE,
+        "everything on the machine, and the shared parts on the others: /etc/hosts, slurm.conf and Slurm's"
+        " reload, the /home exports, the Prometheus targets, and the machine lists of the status collector and of"
+        " automatic deploys",
+    ),
+}
+ONLY_USAGE = "--only takes users, policy, partitions, or node NAME"
+
+
+def parse_only(words: list[str]) -> tuple[Only | None, str | None]:
+    """Return the partial deploy that `--only` asks for, or an error message."""
+    if len(words) == 1 and words[0] in ONLY and words[0] != "node":
+        return Only(words[0], None), None
+    if len(words) == 2 and words[0] == "node":
+        return Only("node", words[1]), None
+    return None, f"{ONLY_USAGE} (got: {' '.join(words) or 'nothing'})"
+
+
+def only_machines(config: dict[str, Any], only: Only) -> list[str]:
+    """Return the machines a partial deploy runs on, in cluster.yml order."""
+    roles = ONLY[only.part].roles
+    return [name for name, machine in config["machines"].items() if set(machine["roles"]) & set(roles)]
+
+
+FULL_DEPLOY = "run a full deploy (nanohpc deploy without --only)"
+
+
+def only_refusal(config: dict[str, Any], only: Only) -> str | None:
+    """Return why a partial deploy cannot be done, from cluster.yml alone, or None. Only a compute machine can be
+    deployed alone: the other machines depend on the front node, the home machine, and the backup machine."""
+    if only.node is None:
+        return None
+    if only.node not in config["machines"]:
+        return f"{only.node} is not a machine in cluster.yml"
+    roles = config["machines"][only.node]["roles"]
+    if "compute" not in roles:
+        return (
+            f"{only.node} is not a compute machine (roles: {', '.join(roles)}), and the other machines depend on it:"
+            f" {FULL_DEPLOY}"
+        )
+    return None
+
+
+def deployed_problems(config: dict[str, Any], only: Only, deployed: dict[str, list[str] | None]) -> list[str]:
+    """Return why a partial deploy is not safe on this cluster: every machine must have been deployed with its
+    roles in cluster.yml, except the new machine of `--only node`, which may also be deployed for the first time."""
+    problems = []
+    for name, machine in config["machines"].items():
+        roles = sorted(machine["roles"])
+        recorded = deployed[name]
+        if recorded is None:
+            if name == only.node:
+                continue
+            if roles == ["compute"]:
+                problems.append(
+                    f"{name} has not been deployed yet: deploy it first with --only node {name}, or {FULL_DEPLOY}"
+                )
+            else:
+                problems.append(f"{name} has not been deployed yet: {FULL_DEPLOY}")
+        elif sorted(recorded) != roles:
+            problems.append(
+                f"{name} was deployed with the roles {', '.join(recorded)}, and cluster.yml gives it {', '.join(roles)}:"
+                f" a change of roles affects the other machines, {FULL_DEPLOY}"
+            )
+    return problems
+
+
+def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
+    """Return the Ansible inventory: one group per role (role_front, ...), role_slurm for front and compute, and
+    only_node: the machine of `--only node` (empty otherwise)."""
     # Ansible's temporary files on the cluster machines go to the login session's private runtime folder:
     # not the home folder (the shared /home or the home disk can hide it), and not a predictable /tmp path
     # another user could create first. Set on the role groups, which every machine is in, and not on `all`,
@@ -156,6 +272,7 @@ def inventory(config: dict[str, Any]) -> dict[str, Any]:
         for role in ("front", "home", "backup", "compute")
     }
     groups["role_slurm"] = {"children": {"role_front": None, "role_compute": None}}
+    groups["only_node"] = {"hosts": {} if node is None else {node: None}}
     return {"all": {"children": groups}}
 
 
@@ -448,9 +565,11 @@ def prepare(
     simulated: bool,
     fake_gpus: list[str],
     automatic: bool,
+    node: str | None,
     work: Path,
 ) -> None:
-    """Write the generated files, inventory, variables, and ansible.cfg into the work folder."""
+    """Write the generated files, inventory, variables, and ansible.cfg into the work folder. `node`: the machine
+    of `--only node`, None otherwise."""
     rendered = render(config, hostnames, simulated)
     files = work / "files"
     (files / "gres").mkdir(parents=True, exist_ok=True)
@@ -472,8 +591,20 @@ def prepare(
     (work / "vars.json").write_text(
         json.dumps(variables(config, work, simulated, fake_gpus, automatic, rendered.qos), indent=2)
     )
-    (work / "inventory.yml").write_text(yaml.safe_dump(inventory(config)))
+    (work / "inventory.yml").write_text(yaml.safe_dump(inventory(config, node)))
     (work / "ansible.cfg").write_text(ansible_cfg(ssh_config))
+
+
+def only_words(only: Only) -> str:
+    """Return a partial deploy as it is written after --only."""
+    return only.part if only.node is None else f"node {only.node}"
+
+
+def playbook_arguments(only: Only | None, machines: list[str]) -> list[str]:
+    """Return the playbook to run and, for a partial deploy, its part's tag and machines."""
+    if only is None:
+        return [str(ANSIBLE / "site.yml")]
+    return [str(ANSIBLE / "partial.yml"), "--tags", ONLY[only.part].tag, "--limit", ",".join(machines)]
 
 
 NO_TERMINAL = """Nothing was changed: sudo needs a password on {machines}, and no one can type it here (no terminal).
@@ -484,14 +615,17 @@ Options:
     with your key loaded in your SSH agent (ssh-add). nanoHPC forwards it, so no password is needed."""
 
 
-def needed_machines(config: dict[str, Any]) -> dict[str, str]:
-    """Return the machines every other machine depends on, each with what it is: the front node and the home
-    machine (the same machine when /home is on the front node)."""
+def needed_machines(config: dict[str, Any], machines: list[str]) -> dict[str, str]:
+    """Return the machines every other machine depends on, among `machines` (the machines of this run), each with
+    what it is: the front node and the home machine (the same machine when /home is on the front node)."""
     front, _ = front_machine(config)
     home = home_server(config)
-    if front == home:
-        return {front: "the front node and the home machine"}
-    return {front: "the front node", home: "the home machine"}
+    needed = (
+        {front: "the front node and the home machine"}
+        if front == home
+        else {front: "the front node", home: "the home machine"}
+    )
+    return {machine: what for machine, what in needed.items() if machine in machines}
 
 
 def dry_run_summary(machines: list[str], record: dict[str, Any]) -> list[str]:
@@ -626,11 +760,14 @@ def deploy(
     fake_gpus: list[str],
     automatic: bool,
     dry_run_only: bool,
+    only: Only | None,
 ) -> int:
     """Set up the cluster: a dry run first, then the real run on the machines whose dry run passed (unless
     `dry_run_only`). Return 0, 1 (stopped before the dry run), DRY_RUN_FAILED, or REAL_RUN_FAILED.
-    `automatic`: run by the front node's automatic deploy."""
+    `automatic`: run by the front node's automatic deploy. `only`: a partial deploy (None: the whole cluster)."""
     refused = refusal(config, automatic, metadata.version("nanohpc"))
+    if refused is None and only is not None:
+        refused = only_refusal(config, only)
     if refused is not None:
         print(f"Nothing was changed: {refused}", file=sys.stderr)
         return 1
@@ -639,6 +776,12 @@ def deploy(
         print("Nothing was changed: some machines cannot be used.", file=sys.stderr)
         for error in found.errors:
             print(f"  {error}", file=sys.stderr)
+        return 1
+    problems = [] if only is None else deployed_problems(config, only, found.deployed)
+    if only is not None and problems:
+        print(f"Nothing was changed: --only {only_words(only)} cannot be done safely here.", file=sys.stderr)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
         return 1
     if found.needs_password and not sys.stdin.isatty():
         arguments = " ".join(sys.argv[1:])
@@ -652,18 +795,25 @@ def deploy(
         if error is not None:
             print(f"Nothing was changed: {error}", file=sys.stderr)
             return 1
-    prepare(config, found.hostnames, ssh_config, simulated, fake_gpus, automatic, work)
+    prepare(
+        config, found.hostnames, ssh_config, simulated, fake_gpus, automatic, None if only is None else only.node, work
+    )
+    machines = list(config["machines"]) if only is None else only_machines(config, only)
     playbook = Path(sys.executable).parent / "ansible-playbook"
     command = [
         str(playbook),
         "-i",
         str(work / "inventory.yml"),
-        str(ANSIBLE / "site.yml"),
+        *playbook_arguments(only, machines),
         "-e",
         f"@{work / 'vars.json'}",
         "-e",
         f"@{work / 'secrets.json'}",
     ]
+    if only is not None:
+        print(
+            f"Partial deploy (--only {only_words(only)}) on {', '.join(machines)}: {ONLY[only.part].what}.", flush=True
+        )
     # A private folder for this run only (0700, short path under /tmp for SSH sockets, removed at the end).
     # Ansible's shared SSH connections live here, so a run never reuses a connection from an earlier run
     # that forwarded a different (maybe stopped) SSH agent.
@@ -691,7 +841,7 @@ def deploy(
                 [*command, *arguments], env=run_environment, stdin=subprocess.DEVNULL, check=False
             ).returncode
 
-        code = check_then_apply(run, list(config["machines"]), needed_machines(config), Path(private), dry_run_only)
+        code = check_then_apply(run, machines, needed_machines(config, machines), Path(private), dry_run_only)
         # No copy of the secrets stays in the work folder (the real run put them on the front node).
         (work / "secrets.json").unlink()
         # Close the shared SSH connections now, so none keeps the forwarded agent open after the run.
