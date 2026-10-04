@@ -17,11 +17,11 @@ KEY_TYPE = re.compile(r"(ssh|ecdsa|sk)-\S+")
 KEY_DATA = re.compile(r"[A-Za-z0-9+/]+={0,2}")
 # cloud-init with disable_root (the default on Ubuntu cloud images) gives root the default user's keys with
 # DISABLE_USER_OPTS (cloudinit/ssh_util.py): command="echo 'Please login as the user \"ubuntu\" rather than the
-# user \"root\".';echo;sleep 10;exit 142". Such a key only prints that and logs out. A command that has this text
-# but also runs something else (exec, the client's command) gives root access and counts.
-CLOUD_INIT_REFUSAL = "Please login as the user"
-CLOUD_INIT_END = "exit 142"
-RUNS_SOMETHING_ELSE = ("exec", "SSH_ORIGINAL_COMMAND")
+# user \"root\".';echo;sleep 10;exit 142". Such a key only prints that and logs out. Only that exact command is left
+# out: any other command gives root access and counts.
+CLOUD_INIT_REFUSAL = re.compile(
+    r"""echo 'Please login as the user "[A-Za-z0-9._-]+" rather than the user "root"\.';echo;sleep 10;exit 142"""
+)
 # nanoHPC's own file of root's keys (accounts role), which this deploy writes.
 NANOHPC_ROOT_KEYS = "/etc/ssh/authorized_keys/root"
 ROOT_HOME = "/root"
@@ -53,12 +53,7 @@ def forced_command(options: str) -> str:
 
 def cloud_init_refusal(options: str) -> bool:
     """Whether a key's options force cloud-init's command that only tells root to log in as another user."""
-    command = forced_command(options)
-    return (
-        CLOUD_INIT_REFUSAL in command
-        and command.endswith(CLOUD_INIT_END)
-        and not any(word in command for word in RUNS_SOMETHING_ELSE)
-    )
+    return CLOUD_INIT_REFUSAL.fullmatch(forced_command(options)) is not None
 
 
 def key_parts(line: str) -> tuple[str, str, str, str] | None:

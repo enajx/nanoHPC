@@ -432,8 +432,8 @@ class SshdChecksTest(unittest.TestCase):
 
 
 class CloudInitRefusalTest(unittest.TestCase):
-    """Only cloud-init's own refusal key (its forced command only says to log in as another user, and ends with
-    exit 142) is left out of the dry run's stop on root's keys. A look-alike key that still gives a shell counts."""
+    """Only cloud-init's own refusal key (its forced command is exactly cloud-init's: it says to log in as another
+    user, waits, and exits with 142) is left out of the dry run's stop on root's keys. A look-alike key that still gives a shell counts."""
 
     def test_look_alike_keys_count(self) -> None:
         filters = root_key_filters()
@@ -452,10 +452,11 @@ class CloudInitRefusalTest(unittest.TestCase):
             f'command="echo \'Please login as the user\';sh -c \\"$SSH_ORIGINAL_COMMAND\\";exit 142" {key(3)} original',
             f'command="echo \'Please login as the user \\"ubuntu\\"\';bash" {key(4)} shell',
             f"command=\"echo 'Please login as the user';bash;exit 142 \" {key(5)} space",
+            f"command=\"echo 'Please login as the user';bash;exit 142\" {key(6)} bash",
         ]
         content = base64.b64encode("\n".join(lines).encode()).decode()
         found = filters["root_keys_to_lose"]([{"source": "/root/.ssh/authorized_keys", "content": content}], [])
-        self.assertEqual([entry.split()[-1] for entry in found], ["exec", "original", "shell", "space"])
+        self.assertEqual([entry.split()[-1] for entry in found], ["exec", "original", "shell", "space", "bash"])
 
 
 class RootKeysStopWhereTest(unittest.TestCase):
