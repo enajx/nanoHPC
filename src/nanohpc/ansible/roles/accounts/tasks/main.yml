@@ -1,6 +1,8 @@
 # Users with fixed UIDs, keys outside home directories, key-only SSH, and who may log in where.
 # Keys live in /etc/ssh/authorized_keys/<user> (0755 directory, 0644 files), readable by sshd even
 # before /home is mounted, so a hidden or broken home folder never locks anyone out.
+# Administrators may also log in as root on every machine with their keys (from anywhere, key only):
+# the recovery login when the front node or /home is down, since root's home is on local disk.
 
 - name: Create the Slurm service group with a fixed GID
   ansible.builtin.group:
@@ -222,32 +224,34 @@
 - name: Name nanoHPC's own SSH accounts on this machine
   ansible.builtin.set_fact:
     service_account_names: >-
-      {{ (['nanohpc-backup'] if (nanohpc.backup is not none and nanohpc.backup.kind == 'machine'
-                                 and inventory_hostname == nanohpc.backup.machine) else [])
-         + (['root'] if nanohpc.auto_deploy.enabled else []) }}
+      {{ ['nanohpc-backup'] if (nanohpc.backup is not none and nanohpc.backup.kind == 'machine'
+                                and inventory_hostname == nanohpc.backup.machine) else [] }}
 
-# Automatic deploys: the front node logs in as root with its own key, accepted only from its address
-# (key-only; the key file is on local disk, so it works without /home).
-- name: Accept the front node's automatic deploy key for root
-  ansible.builtin.copy:
+# Root's keys: each administrator's keys from cluster.yml, and with automatic deploys the front node's key,
+# accepted only from its address. An administrator removed from cluster.yml loses root login here.
+- name: Accept the administrators' keys, and the front node's automatic deploy key, for root
+  ansible.builtin.template:
+    src: root_authorized_keys.j2
     dest: /etc/ssh/authorized_keys/root
     owner: root
     group: root
     mode: "0644"
-    content: |
-      from="{{ nanohpc.metrics.front_address }}",no-agent-forwarding,no-X11-forwarding {{ hostvars[groups['role_front'][0]].auto_deploy_public_key }}
-  when: nanohpc.auto_deploy.enabled
+  vars:
+    users: "{{ nanohpc.users }}"
+    admins: "{{ nanohpc.admins }}"
+    auto_deploy_key: "{{ hostvars[groups['role_front'][0]].auto_deploy_public_key if nanohpc.auto_deploy.enabled else '' }}"
+    front_address: "{{ nanohpc.metrics.front_address }}"
 
 - name: List the installed SSH key files
   ansible.builtin.find:
     paths: /etc/ssh/authorized_keys
   register: ssh_key_files
 
-- name: Remove SSH keys of users no longer in cluster.yml (deploy and nanoHPC accounts keep theirs)
+- name: Remove SSH keys of users no longer in cluster.yml (root, deploy and nanoHPC accounts keep theirs)
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: absent
-  loop: "{{ ssh_key_files.files | rejectattr('path', 'search', '/(' ~ ((nanohpc.users | map(attribute='name') | list) + deploy_account_names + service_account_names) | join('|') ~ ')$') | list }}"
+  loop: "{{ ssh_key_files.files | rejectattr('path', 'search', '/(' ~ ((nanohpc.users | map(attribute='name') | list) + deploy_account_names + service_account_names + ['root']) | join('|') ~ ')$') | list }}"
   loop_control:
     label: "{{ item.path | basename }}"
 
@@ -255,27 +259,17 @@
 # account it runs as, nor the one an earlier deploy ran as (for example `ubuntu` on first setup).
 - name: List who may log in on this machine
   ansible.builtin.set_fact:
-    # root only from the front node's address (its automatic deploys), whatever keys root has elsewhere.
+    # root is always allowed (added by the template): only the keys in /etc/ssh/authorized_keys/root work for it.
     ssh_allowed: >-
       {{ (((nanohpc.users | map(attribute='name') | list) if inventory_hostname in groups['role_front'] else nanohpc.admins)
-          + deploy_account_names + (service_account_names | reject('equalto', 'root') | list)
-          + (['root@' ~ nanohpc.metrics.front_address] if nanohpc.auto_deploy.enabled else [])
-          + ([nanohpc_login_user] if (nanohpc_login_user != 'root' or not nanohpc.auto_deploy.enabled) else [])) | unique }}
+          + deploy_account_names + service_account_names + [nanohpc_login_user]) | unique | reject('equalto', 'root') | list }}
 
 - name: Change SSH access, and put the old file back unless the effective settings are right
   block:
-    - name: Allow all users on the front node, and only administrators on the other machines
-      ansible.builtin.copy:
+    - name: Allow all users on the front node, only administrators on the other machines, and root by key
+      ansible.builtin.template:
+        src: sshd_nanohpc.conf.j2
         dest: /etc/ssh/sshd_config.d/10-nanohpc.conf
-        content: |
-          # Managed by nanoHPC. Earlier files win in sshd_config.d, so this file sorts first.
-          PasswordAuthentication no
-          KbdInteractiveAuthentication no
-          AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys/%u
-          {% if nanohpc.auto_deploy.enabled %}
-          PermitRootLogin prohibit-password
-          {% endif %}
-          AllowUsers {{ ssh_allowed | join(' ') }}
         owner: root
         group: root
         mode: "0644"
@@ -298,17 +292,45 @@
         that:
           - "'passwordauthentication no' in ssh_effective.stdout_lines"
           - "'kbdinteractiveauthentication no' in ssh_effective.stdout_lines"
-          - "('allowusers ' ~ (('root@' ~ nanohpc.metrics.front_address) if (nanohpc_login_user == 'root' and nanohpc.auto_deploy.enabled) else nanohpc_login_user)) in ssh_effective.stdout_lines"
-          - >-
-            not nanohpc.auto_deploy.enabled or ('permitrootlogin without-password' in ssh_effective.stdout_lines
-            or 'permitrootlogin prohibit-password' in ssh_effective.stdout_lines)
+          - "('allowusers ' ~ nanohpc_login_user) in ssh_effective.stdout_lines"
           - ssh_effective.stdout_lines | select('match', '^allowgroups ') | list | length == 0
           - "'pubkeyauthentication yes' in ssh_effective.stdout_lines"
-          - ssh_effective.stdout_lines | select('match', '^authorizedkeysfile .*/etc/ssh/authorized_keys/%u') | list | length == 1
+          # root's key file is checked below.
+          - >-
+            nanohpc_login_user == 'root'
+            or ssh_effective.stdout_lines | select('match', '^authorizedkeysfile .*/etc/ssh/authorized_keys/%u') | list | length == 1
         fail_msg: >-
           {{ inventory_hostname }}: another SSH setting overrides nanoHPC's (password login still on, key login off,
           the login account '{{ nanohpc_login_user }}' not allowed, or an AllowGroups rule). Check /etc/ssh/sshd_config
           and /etc/ssh/sshd_config.d/. The previous SSH settings were put back.
+        quiet: true
+      when: not (ansible_check_mode and ssh_access is changed)
+
+    # Administrators log in as root from anywhere; the address here is this machine's own.
+    - name: Read the effective SSH settings for root
+      ansible.builtin.command: >-
+        /usr/sbin/sshd -T -C user=root,host={{ ansible_facts.hostname }},addr={{ nanohpc.machines[inventory_hostname].address }}
+      register: ssh_effective_root
+      changed_when: false
+      check_mode: false
+      when: not (ansible_check_mode and ssh_access is changed)
+
+    - name: Require key-only root login with only nanoHPC's root key file in the effective settings
+      ansible.builtin.assert:
+        that:
+          - "'passwordauthentication no' in ssh_effective_root.stdout_lines"
+          - "'kbdinteractiveauthentication no' in ssh_effective_root.stdout_lines"
+          - "'pubkeyauthentication yes' in ssh_effective_root.stdout_lines"
+          - >-
+            'permitrootlogin without-password' in ssh_effective_root.stdout_lines
+            or 'permitrootlogin prohibit-password' in ssh_effective_root.stdout_lines
+          - "'allowusers root' in ssh_effective_root.stdout_lines"
+          - ssh_effective_root.stdout_lines | select('match', '^allowgroups ') | list | length == 0
+          - ssh_effective_root.stdout_lines | select('match', '^authorizedkeysfile ') | list == ['authorizedkeysfile /etc/ssh/authorized_keys/root']
+        fail_msg: >-
+          {{ inventory_hostname }}: another SSH setting overrides nanoHPC's root login (password login for root, root not
+          allowed, an AllowGroups rule, or root's keys read from somewhere else than /etc/ssh/authorized_keys/root).
+          Check /etc/ssh/sshd_config and /etc/ssh/sshd_config.d/. The previous SSH settings were put back.
         quiet: true
       when: not (ansible_check_mode and ssh_access is changed)
 

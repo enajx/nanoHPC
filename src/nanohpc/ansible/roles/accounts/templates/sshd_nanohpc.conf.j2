@@ -1,0 +1,11 @@
+# Managed by nanoHPC. Earlier files win in sshd_config.d, so this file sorts first.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys/%u
+PermitRootLogin prohibit-password
+AllowUsers {{ ssh_allowed | join(' ') }} root
+
+# root's keys come only from the file nanoHPC writes, never from /root/.ssh. Keep this block last: sshd applies
+# every line after a Match line to that Match only, until the end of this file.
+Match User root
+    AuthorizedKeysFile /etc/ssh/authorized_keys/root
