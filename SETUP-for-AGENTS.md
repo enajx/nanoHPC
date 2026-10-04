@@ -80,3 +80,6 @@ For each machine the administrator names (a hostname, an address, or a host from
   dry run, nothing is deployed. A failure after the dry run passed exits with code 4: those machines may be partly
   changed. Run it in a terminal the first time, if sudo still needs a password. `nanohpc deploy --dry-run
   cluster.yml` shows what would change and stops there.
+- `nanohpc check cluster.yml` (any time, changes nothing): one line per machine with SSH, the cluster-health
+  result, users and UIDs, mounts, GPU count, Slurm node state, and the nanoHPC version deployed, then the
+  problems (exit code 1 when there are any), warnings, and notes.
