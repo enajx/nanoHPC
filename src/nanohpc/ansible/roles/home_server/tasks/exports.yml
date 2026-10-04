@@ -1,0 +1,26 @@
+# The NFS exports of /home, one per machine that mounts it (also run alone by --only node).
+
+- name: Create the folder for NFS exports
+  ansible.builtin.file:
+    path: /etc/exports.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Export /home to the machines that use it
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/exports"
+    dest: /etc/exports.d/nanohpc.exports
+    owner: root
+    group: root
+    mode: "0644"
+  register: home_exports
+
+- name: Apply the exports
+  ansible.builtin.command: exportfs -ra
+  when: home_exports.changed
+
+- name: Mark the home machine ready for the machines that mount /home
+  ansible.builtin.set_fact:
+    home_server_ready: true

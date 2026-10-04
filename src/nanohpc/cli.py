@@ -7,9 +7,14 @@ import shutil
 import sys
 from pathlib import Path
 
-from nanohpc import deploy, fixuid, probe, sim
+from nanohpc import check, deploy, fixuid, probe, sim
 from nanohpc.config import load_config
 from nanohpc.render import render_forwarding_rules
+
+ONLY_HELP = (
+    "deploy only one part, with the same checks and dry run: users, policy, partitions, or node NAME (everything on"
+    " a new or changed compute machine, and the shared parts on the others)"
+)
 
 
 def validate(path: Path) -> int:
@@ -29,9 +34,24 @@ def validate(path: Path) -> int:
     return 0
 
 
-def run_deploy(path: Path, ssh_config: Path | None, dry_run_only: bool) -> int:
+def read_only(words: list[str] | None) -> tuple[deploy.Only | None, bool]:
+    """Return the partial deploy that `--only` asks for (None without --only), and whether the words were right;
+    print the error when they were not."""
+    if words is None:
+        return None, True
+    only, error = deploy.parse_only(words)
+    if error is not None:
+        print(error, file=sys.stderr)
+        return None, False
+    return only, True
+
+
+def run_deploy(path: Path, ssh_config: Path | None, dry_run_only: bool, only_arguments: list[str] | None) -> int:
     """Validate a cluster.yml, then set up the cluster it describes (after a dry run; only the dry run with
-    `dry_run_only`)."""
+    `dry_run_only`), or only one part of it (`only_arguments`, the words after --only)."""
+    only, right = read_only(only_arguments)
+    if not right:
+        return 1
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
         return 1
@@ -47,7 +67,7 @@ def run_deploy(path: Path, ssh_config: Path | None, dry_run_only: bool) -> int:
     # service only on simulated clusters; test use).
     simulated = os.environ.get("NANOHPC_SIMULATED") == "1"
     fake_gpus = [name for name in os.environ.get("NANOHPC_FAKE_GPUS", "").split(",") if name] if simulated else []
-    return deploy.deploy(config, ssh_config, simulated, fake_gpus, automatic, dry_run_only)
+    return deploy.deploy(config, ssh_config, simulated, fake_gpus, automatic, dry_run_only, only)
 
 
 def forwarding_rules(path: Path) -> int:
@@ -73,10 +93,19 @@ def forwarding_rules(path: Path) -> int:
     return 0
 
 
-def simulate(action: str, path: Path, ssh_config: Path | None, dry_run_only: bool) -> int:
-    """Start (`up`), set up with nanoHPC (`deploy`), or remove (`down`) the simulated test cluster of a sim file."""
+def simulate(
+    action: str, path: Path, ssh_config: Path | None, dry_run_only: bool, only_arguments: list[str] | None
+) -> int:
+    """Start (`up`), set up with nanoHPC (`deploy`, or only one part of it with `only_arguments`), or remove
+    (`down`) the simulated test cluster of a sim file."""
     if dry_run_only and action != "deploy":
         print("--dry-run works only with nanohpc sim deploy", file=sys.stderr)
+        return 1
+    if only_arguments is not None and action != "deploy":
+        print("--only works only with nanohpc sim deploy", file=sys.stderr)
+        return 1
+    only, right = read_only(only_arguments)
+    if not right:
         return 1
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
@@ -106,7 +135,9 @@ def simulate(action: str, path: Path, ssh_config: Path | None, dry_run_only: boo
         if errors:
             print("\n".join([f"{state / 'cluster.yml'}: {error}" for error in errors]), file=sys.stderr)
             return 1
-        return deploy.deploy(config, ssh_config or state / "ssh_config", True, plan.fake_gpus, False, dry_run_only)
+        return deploy.deploy(
+            config, ssh_config or state / "ssh_config", True, plan.fake_gpus, False, dry_run_only, only
+        )
     state = sim.up(plan)
     print(f"simulated cluster {plan.name} is up: {state}/cluster.yml, {state}/ssh_config")
     return 0
@@ -117,14 +148,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="nanohpc", description="Slurm cluster with monitoring, from one cluster.yml.")
     parser.add_argument("--version", action="version", version=f"nanohpc {importlib.metadata.version('nanohpc')}")
     commands = parser.add_subparsers(dest="command", required=True)
-    check = commands.add_parser("validate", help="check a cluster.yml without touching any machine")
-    check.add_argument("path", type=Path, help="path to cluster.yml")
+    validation = commands.add_parser("validate", help="check a cluster.yml without touching any machine")
+    validation.add_argument("path", type=Path, help="path to cluster.yml")
     setup = commands.add_parser("deploy", help="set up the cluster described by a cluster.yml")
     setup.add_argument("path", type=Path, help="path to cluster.yml")
     setup.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
     setup.add_argument(
         "--dry-run", action="store_true", help="only the dry run: show what would change, and change nothing"
     )
+    setup.add_argument("--only", nargs="+", metavar="PART", help=ONLY_HELP)
+    report = commands.add_parser(
+        "check", help="report how every machine compares with cluster.yml, without changing anything"
+    )
+    report.add_argument("path", type=Path, help="path to cluster.yml")
+    report.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
     rules = commands.add_parser(
         "forwarding-rules", help="print rules for the lab's own web server to show the cluster website"
     )
@@ -138,6 +175,7 @@ def main() -> None:
         "--ssh-config", type=Path, help="deploy only: SSH config to reach the VMs (default: the one sim up wrote)"
     )
     simulation.add_argument("--dry-run", action="store_true", help="deploy only: only the dry run, change nothing")
+    simulation.add_argument("--only", nargs="+", metavar="PART", help="deploy only: " + ONLY_HELP)
     fix = commands.add_parser(
         "fix-uid", help="renumber a user on a machine to their UID in cluster.yml (dry run unless --apply)"
     )
@@ -153,11 +191,13 @@ def main() -> None:
     if arguments.command == "validate":
         sys.exit(validate(arguments.path))
     if arguments.command == "deploy":
-        sys.exit(run_deploy(arguments.path, arguments.ssh_config, arguments.dry_run))
+        sys.exit(run_deploy(arguments.path, arguments.ssh_config, arguments.dry_run, arguments.only))
+    if arguments.command == "check":
+        sys.exit(check.run(arguments.path, arguments.ssh_config))
     if arguments.command == "forwarding-rules":
         sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":
-        sys.exit(simulate(arguments.action, arguments.path, arguments.ssh_config, arguments.dry_run))
+        sys.exit(simulate(arguments.action, arguments.path, arguments.ssh_config, arguments.dry_run, arguments.only))
     if arguments.command == "fix-uid":
         sys.exit(fixuid.run(arguments.path, arguments.user, arguments.machine, arguments.ssh_config, arguments.apply))
     if arguments.command == "init":

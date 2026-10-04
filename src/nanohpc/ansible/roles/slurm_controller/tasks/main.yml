@@ -123,34 +123,13 @@
   notify: Restart the Slurm accounting daemon
   no_log: true
 
-- name: Install slurm.conf and cgroup.conf
-  ansible.builtin.copy:
-    src: "{{ nanohpc.files }}/{{ item }}"
-    dest: "/etc/slurm/{{ item }}"
-    owner: root
-    group: slurm
-    mode: "0644"
-  loop: [slurm.conf, cgroup.conf]
-  register: controller_configuration
+# The dry run checks the submission rules with luac once Lua is installed.
+- name: Note whether the Lua checker is there in this run
+  ansible.builtin.set_fact:
+    slurm_lua_pending: "{{ ansible_check_mode and controller_packages is changed }}"
 
-- name: Check the job submission rules with luac (dry run)
-  ansible.builtin.include_role:
-    name: dry_run_check
-  vars:
-    check_content: null
-    check_source: "{{ nanohpc.files }}/job_submit.lua"
-    check_command: /usr/bin/luac5.3 -p %s
-  when: ansible_check_mode and not (controller_packages is changed)
-
-- name: Install the job submission rules
-  ansible.builtin.copy:
-    src: "{{ nanohpc.files }}/job_submit.lua"
-    dest: /etc/slurm/job_submit.lua
-    owner: root
-    group: slurm
-    mode: "0644"
-    validate: /usr/bin/luac5.3 -p %s
-  register: job_submit_rules
+- name: Slurm's configuration and the job submission rules
+  ansible.builtin.import_tasks: slurm_config.yml
 
 - name: Apply database changes
   ansible.builtin.meta: flush_handlers
@@ -185,137 +164,11 @@
       ansible.builtin.command: "sacctmgr -i add cluster {{ nanohpc.cluster_name }}"
       when: nanohpc.cluster_name not in registered_clusters.stdout_lines
 
-    - name: Read the existing QoS names
-      ansible.builtin.command: sacctmgr --noheader --parsable2 show qos format=Name
-      register: existing_qos
-      changed_when: false
-      check_mode: false
+    - name: One QoS per partition, and the per-user limits
+      ansible.builtin.import_tasks: qos.yml
 
-    - name: Create one QoS per partition
-      ansible.builtin.command: "sacctmgr -i add qos {{ item.name }}"
-      loop: "{{ nanohpc.qos }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: item.name not in existing_qos.stdout_lines
+    - name: The account every user belongs to, and the users' fair-share
+      ansible.builtin.import_tasks: users.yml
 
-    - name: Read the QoS settings
-      ansible.builtin.command: sacctmgr --noheader --parsable2 show qos format=Name,MaxWall,MaxTRESPJ,MaxTRESPU,MaxSubmitPU,Flags
-      register: qos_rows
-      changed_when: false
-      check_mode: false
-
-    # sacctmgr reports "Modified" even when nothing differs, so each setting is compared first.
-    - name: Index the QoS settings by name
-      ansible.builtin.set_fact:
-        qos_now: >-
-          {% set rows = {} %}{% for line in qos_rows.stdout_lines %}{% set fields = line.split('|') %}{% set _ = rows.update({fields[0]: fields}) %}{% endfor %}{{ rows }}
-
-    - name: Set each partition's time limit, refusing requests that cannot fit
-      ansible.builtin.command: "sacctmgr -i modify qos {{ item.name }} set MaxWall={{ item.max_wall }} Flags=DenyOnLimit"
-      loop: "{{ nanohpc.qos }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: >-
-        item.name not in qos_now
-        or qos_now[item.name][1] != item.max_wall
-        or qos_now[item.name][5].split(',') | sort != ['DenyOnLimit']
-
-    - name: Set the per-user submission limit
-      ansible.builtin.command: "sacctmgr -i modify qos normal set MaxSubmitJobsPerUser={{ nanohpc.max_submit_jobs_per_user }}"
-      when: qos_now['normal'][4] != nanohpc.max_submit_jobs_per_user | string
-
-    - name: Read the accounts
-      ansible.builtin.command: "sacctmgr --noheader --parsable2 show account {{ nanohpc.cluster_name }} format=Account"
-      register: cluster_accounts
-      changed_when: false
-      check_mode: false
-
-    - name: Create the account every user belongs to
-      ansible.builtin.command: "sacctmgr -i add account {{ nanohpc.cluster_name }} Cluster={{ nanohpc.cluster_name }} Description=nanoHPC QoS=normal"
-      when: nanohpc.cluster_name not in cluster_accounts.stdout_lines
-
-    - name: Read the users' associations
-      ansible.builtin.command: "sacctmgr --noheader --parsable2 show assoc where cluster={{ nanohpc.cluster_name }} account={{ nanohpc.cluster_name }} format=User"
-      register: cluster_users
-      changed_when: false
-      check_mode: false
-
-    - name: Add the users as job submitters with equal fair-share
-      ansible.builtin.command: >-
-        sacctmgr -i add user {{ item.name }} Cluster={{ nanohpc.cluster_name }} Account={{ nanohpc.cluster_name }}
-        DefaultAccount={{ nanohpc.cluster_name }} QoS=normal DefaultQoS=normal Fairshare=1
-      loop: "{{ nanohpc.users }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: item.name not in cluster_users.stdout_lines
-
-    - name: Read the users' fair-share
-      ansible.builtin.command: >-
-        sacctmgr --noheader --parsable2 show assoc where cluster={{ nanohpc.cluster_name }}
-        account={{ nanohpc.cluster_name }} user={{ item.name }} format=Fairshare
-      loop: "{{ nanohpc.users }}"
-      loop_control:
-        label: "{{ item.name }}"
-      register: user_shares
-      changed_when: false
-      check_mode: false
-
-    - name: Give every user an equal fair-share
-      ansible.builtin.command: >-
-        sacctmgr -i modify user where name={{ item.item.name }} cluster={{ nanohpc.cluster_name }}
-        account={{ nanohpc.cluster_name }} set Fairshare=1
-      loop: "{{ user_shares.results }}"
-      loop_control:
-        label: "{{ item.item.name }}"
-      when: item.stdout | trim != '1'
-
-- name: Run the Slurm controller
-  ansible.builtin.service:
-    name: slurmctld
-    enabled: true
-    state: "{{ 'restarted' if (controller_configuration.changed or job_submit_rules.changed) else 'started' }}"
-  register: slurmctld_service
-  when: not slurm_install_pending  # dry run: Slurm not installed yet
-
-- name: Partition GPU limits, once the controller knows the GPU resource type
-  when: not (ansible_check_mode and (slurm_accounting_pending or slurmctld_service is changed or slurmctld_service is skipped))
-  block:
-    - name: Wait for the controller to register the GPU resource type
-      ansible.builtin.command: sacctmgr --noheader --parsable2 show tres format=Type,Name
-      register: registered_resources
-      changed_when: false
-      check_mode: false
-      until: "'gres|gpu' in registered_resources.stdout_lines"
-      retries: 15
-      delay: 2
-
-    - name: Read the QoS settings again
-      ansible.builtin.command: sacctmgr --noheader --parsable2 show qos format=Name,MaxWall,MaxTRESPJ,MaxTRESPU,MaxSubmitPU,Flags
-      register: qos_rows
-      changed_when: false
-      check_mode: false
-
-    # sacctmgr reports "Modified" even when nothing differs, so each setting is compared first.
-    - name: Index the QoS settings by name again
-      ansible.builtin.set_fact:
-        qos_now: >-
-          {% set rows = {} %}{% for line in qos_rows.stdout_lines %}{% set fields = line.split('|') %}{% set _ = rows.update({fields[0]: fields}) %}{% endfor %}{{ rows }}
-
-    - name: Set each partition's GPU limits per job and per user
-      ansible.builtin.command: >-
-        sacctmgr -i modify qos {{ item.name }} set MaxTRESPerJob=gres/gpu={{ item.max_gpus_per_job }}
-        MaxTRESPerUser=gres/gpu={{ item.max_gpus_per_user if item.max_gpus_per_user is not none else -1 }}
-      loop: "{{ nanohpc.qos }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: >-
-        qos_now[item.name][2] != 'gres/gpu=' ~ item.max_gpus_per_job
-        or qos_now[item.name][3] != ('gres/gpu=' ~ item.max_gpus_per_user if item.max_gpus_per_user is not none else '')
-
-    - name: Set the cluster-wide GPU limit per user, checked before the partition limits
-      ansible.builtin.command: >-
-        sacctmgr -i modify qos normal set MaxTRESPerUser=gres/gpu={{ nanohpc.max_gpus_per_user }}
-        Flags{{ '+' if nanohpc.max_gpus_per_user > 0 else '-' }}=OverPartQOS,DenyOnLimit
-      when: >-
-        qos_now['normal'][3] != ('gres/gpu=' ~ nanohpc.max_gpus_per_user if nanohpc.max_gpus_per_user > 0 else '')
-        or ('OverPartQOS' in qos_now['normal'][5].split(',')) != (nanohpc.max_gpus_per_user > 0)
+- name: Run the Slurm controller, and the partitions' GPU limits
+  ansible.builtin.import_tasks: slurmctld.yml

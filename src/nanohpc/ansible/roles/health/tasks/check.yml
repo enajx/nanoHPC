@@ -1,0 +1,26 @@
+# Fails the deploy only for broken services and mounts (cluster-health FAIL lines). A drained node or a
+# full disk is a WARN line, shown but not a deploy error. Services can take a few seconds to settle after
+# a fresh start, so a failing check is retried briefly. It checks the result of the real run, so the dry run
+# skips it. Run at the end of every deploy, full or partial.
+
+- name: Check this deploy's result
+  when: not ansible_check_mode
+  block:
+    - name: Run cluster-health
+      ansible.builtin.command: /usr/local/bin/cluster-health
+      register: health
+      changed_when: false
+      failed_when: false
+      until: health.rc == 0
+      retries: 6
+      delay: 10
+
+    - name: Show the health report
+      ansible.builtin.debug:
+        msg: "{{ health.stdout_lines }}"
+
+    - name: Stop if a check failed
+      ansible.builtin.assert:
+        that: health.rc == 0
+        fail_msg: "{{ inventory_hostname }}: {{ health.stdout_lines | select('match', '^FAIL') | join('; ') }}"
+        quiet: true

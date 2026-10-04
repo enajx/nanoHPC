@@ -1,8 +1,5 @@
-- name: Resolve every cluster machine by name, without depending on outside DNS
-  ansible.builtin.blockinfile:
-    path: /etc/hosts
-    marker: "# {mark} nanoHPC cluster machines"
-    block: "{{ lookup('file', nanohpc.files + '/hosts') }}"
+- name: Name every cluster machine in /etc/hosts
+  ansible.builtin.import_tasks: hosts.yml
 
 - name: Create the nanoHPC configuration and data folders
   ansible.builtin.file:
@@ -17,6 +14,14 @@
   ansible.builtin.copy:
     dest: /etc/nanohpc/roles
     content: "{{ nanohpc.machines[inventory_hostname].roles | join(' ') }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Record the nanoHPC version of this deploy (read by nanohpc check)
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/version
+    content: "{{ nanohpc.version }}\n"
     owner: root
     group: root
     mode: "0644"
