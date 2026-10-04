@@ -1,36 +1,31 @@
 # Root's own SSH keys. The accounts role makes sshd read root's keys only from /etc/ssh/authorized_keys/root (the
-# administrators' keys from cluster.yml). Until that setting is active, sshd also reads root's keys from its home
-# folder, so a key there that is not an administrator's would stop working for root with this deploy, and could cut
-# off whoever uses it (the deploy itself, or another person or system that logs in as root). Stop first.
-# Variables: sshd_root_settings (the lines of `sshd -T` for root), root_key_files (root's key files in its home).
+# administrators' keys from cluster.yml). Until then, sshd reads root's keys from other files too (by default
+# /root/.ssh/authorized_keys and authorized_keys2), so a key there that is not an administrator's would stop
+# working for root with this deploy, and could cut off whoever uses it (the deploy itself, or another person or
+# system that logs in as root). Stop first. A key that gives no root access today (cloud-init's "Please login as
+# the user" forced command) is not counted.
+# Variables: sshd_root_settings (the lines of `sshd -T` for root).
 
-- name: Decide whether sshd still reads root's keys from its home folder (nanoHPC's root setting not active yet)
-  ansible.builtin.set_fact:
-    root_keys_from_home: >-
-      {{ sshd_root_settings | select('match', '^authorizedkeysfile ') | list
-         != ['authorizedkeysfile /etc/ssh/authorized_keys/root'] }}
-
-- name: Look for root's own key files
+- name: Look for the files sshd reads root's keys from, besides nanoHPC's own (none once its root setting is active)
   ansible.builtin.stat:
     path: "{{ item }}"
-  loop: "{{ root_key_files }}"
+  loop: "{{ sshd_root_settings | root_key_files }}"
   register: root_key_files_found
-  when: root_keys_from_home | bool
 
-- name: Read root's own key files
+- name: Read those files
   ansible.builtin.slurp:
     src: "{{ item.stat.path }}"
   loop: "{{ root_key_files_found.results }}"
   loop_control:
     label: "{{ item.item }}"
   register: root_key_files_read
-  when: root_keys_from_home | bool and item.stat.exists
+  when: item.stat.exists
 
-- name: Stop if root has keys in its home folder that are not administrators' keys in cluster.yml
+- name: Stop if root has keys there that are not administrators' keys in cluster.yml
   ansible.builtin.assert:
     that: keys_to_lose | length == 0
     fail_msg: >-
-      {{ inventory_hostname }}: root has keys in its home folder that are not administrators' keys in cluster.yml:
+      {{ inventory_hostname }}: root has SSH keys that are not administrators' keys in cluster.yml:
       {{ keys_to_lose | join('; ') }}. These keys will stop working for root after this deploy (nanoHPC makes sshd
       read root's keys only from /etc/ssh/authorized_keys/root). Delete them from that file, or add the key to an
       administrator in cluster.yml. Nothing was changed on this machine.

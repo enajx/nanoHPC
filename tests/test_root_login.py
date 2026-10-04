@@ -3,6 +3,7 @@ templates as the deploy does. When this machine has an sshd, it also reads the e
 `sshd -T`, as the deploy's own check does on every machine. The preflight check of root's own key files runs in
 real ansible-playbook on this machine."""
 
+import importlib.util
 import json
 import os
 import shutil
@@ -19,6 +20,7 @@ import yaml
 from nanohpc.deploy import ansible_cfg
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "src/nanohpc/ansible/roles/accounts/templates"
+FILTERS = Path(__file__).resolve().parents[1] / "src/nanohpc/ansible/roles/preflight/filter_plugins/root_keys.py"
 USERS = [
     {
         "name": "alice",
@@ -149,11 +151,21 @@ def public_key(folder: Path, name: str, comment: str) -> tuple[str, str]:
     return (folder / f"{name}.pub").read_text().strip(), listing.stdout.split()[1]
 
 
+def root_key_filters() -> dict[str, Any]:
+    """Load the preflight role's filters (filter_plugins/root_keys.py) as Ansible does."""
+    spec = importlib.util.spec_from_file_location("root_keys", FILTERS)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.FilterModule().filters()
+
+
 class RootKeysPreflightTest(unittest.TestCase):
     """The preflight check of root's own key files (roles/preflight/tasks/root_keys.yml), run by real
-    ansible-playbook on this machine in check mode, as the dry run does, with key files in a temporary folder in
-    place of /root/.ssh. Until nanoHPC's root setting is active, a key there that is not an administrator's key in
-    cluster.yml stops that machine, naming each such key; with the setting active, those files are not read."""
+    ansible-playbook on this machine in check mode, as the dry run does. It reads the files that sshd reads for
+    root today (from `sshd -T`, here naming files in a temporary folder), apart from nanoHPC's own file. A key in
+    them that is not an administrator's key in cluster.yml stops that machine, naming each such key, unless it
+    gives no root access today (cloud-init's "Please login as the user" forced command)."""
 
     def test_keys_that_would_stop_working_stop_the_machine(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -161,35 +173,51 @@ class RootKeysPreflightTest(unittest.TestCase):
             alice_key, alice_fingerprint = public_key(folder, "alice", "alice@laptop")
             bob_key, bob_fingerprint = public_key(folder, "bob", "bob@laptop")
             backup_key, backup_fingerprint = public_key(folder, "backup", "")
+            ubuntu_key, ubuntu_fingerprint = public_key(folder, "ubuntu", "ubuntu@laptop")
             alice_type, alice_data = alice_key.split()[:2]
             backup_type, backup_data = backup_key.split()[:2]
+            # cloud-init's disable_root_opts (DISABLE_USER_OPTS in cloudinit/ssh_util.py), filled in for ubuntu.
+            cloud_init = (
+                (
+                    "no-port-forwarding,no-agent-forwarding,"
+                    'no-X11-forwarding,command="echo \'Please login as the user \\"$USER\\"'
+                    ' rather than the user \\"$DISABLE_USER\\".\';echo;sleep 10;'
+                    'exit 142"'
+                )
+                .replace("$USER", "ubuntu")
+                .replace("$DISABLE_USER", "root")
+            )
             files = {
-                # Settings active: the files are not read, whatever they hold.
+                # Settings active: sshd reads only nanoHPC's file, so nothing is read.
                 "active": {"authorized_keys": f"{bob_key}\n"},
-                # An administrator's key with options and another comment, and comment lines.
+                # An administrator's key with options and another comment, comment lines, and cloud-init's key
+                # that only says to log in as ubuntu. authorized_keys2 is not read: sshd does not list it.
                 "admins": {
                     "authorized_keys": (
                         f'# keys\n\nfrom="10.0.0.1",command="echo hi there" {alice_type} {alice_data} other comment\n'
-                    )
+                        f"{cloud_init} {ubuntu_key}\n"
+                    ),
+                    "authorized_keys2": f"{bob_key}\n",
                 },
-                # A user who is not an administrator, a key nobody in cluster.yml has, and a line that is no key.
+                # A user who is not an administrator, an outside backup's rsync key (a forced command that works
+                # today), and a line that is no key.
                 "outsiders": {
                     "authorized_keys": f"{alice_key}\n{bob_key}\n",
                     "authorized_keys2": f'no-pty,command="rsync --server x" {backup_type} {backup_data}\nnot a key\n',
                 },
             }
-            from_home = ["authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2", "permitrootlogin yes"]
+            settings = {
+                "active": "authorizedkeysfile /etc/ssh/authorized_keys/root",
+                "admins": f"authorizedkeysfile {folder}/admins/authorized_keys {folder}/admins/missing"
+                " /etc/ssh/authorized_keys/%u",
+                "outsiders": f"authorizedkeysfile {folder}/outsiders/authorized_keys {folder}/outsiders/authorized_keys2",
+            }
             hosts: dict[str, Any] = {}
             for host, contents in files.items():
                 (folder / host).mkdir()
                 for name, text in contents.items():
                     (folder / host / name).write_text(text)
-                hosts[host] = {
-                    "root_key_files": [str(folder / host / "authorized_keys"), str(folder / host / "authorized_keys2")],
-                    "sshd_root_settings": (
-                        ["authorizedkeysfile /etc/ssh/authorized_keys/root"] if host == "active" else from_home
-                    ),
-                }
+                hosts[host] = {"sshd_root_settings": ["permitrootlogin yes", settings[host]]}
             inventory = {
                 "all": {
                     "vars": {
@@ -237,9 +265,28 @@ class RootKeysPreflightTest(unittest.TestCase):
             )
             self.assertIn(f"{folder}/outsiders/authorized_keys2 line 2: not a key line", message)
             self.assertNotIn(alice_fingerprint, message)
+            self.assertNotIn(ubuntu_fingerprint, message)
             self.assertIn("These keys will stop working for root after this deploy", message)
             self.assertIn("Delete them from that file, or add the key to an administrator in cluster.yml.", message)
             self.assertIn("Nothing was changed on this machine.", message)
+
+    def test_files_sshd_reads_for_root(self) -> None:
+        """The paths in sshd -T's authorizedkeysfile for root, as sshd expands them (root's home is /root),
+        without nanoHPC's own file."""
+        filters = root_key_filters()
+        self.assertEqual(
+            filters["root_key_files"](
+                ["permitrootlogin yes", "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2"]
+            ),
+            ["/root/.ssh/authorized_keys", "/root/.ssh/authorized_keys2"],
+        )
+        self.assertEqual(
+            filters["root_key_files"](
+                ["authorizedkeysfile %h/.ssh/authorized_keys /etc/ssh/authorized_keys/%u /keys/%%/%u"]
+            ),
+            ["/root/.ssh/authorized_keys", "/keys/%/root"],
+        )
+        self.assertEqual(filters["root_key_files"](["authorizedkeysfile /etc/ssh/authorized_keys/root"]), [])
 
 
 if __name__ == "__main__":

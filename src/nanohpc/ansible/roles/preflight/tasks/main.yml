@@ -147,7 +147,6 @@
   ansible.builtin.include_tasks: root_keys.yml
   vars:
     sshd_root_settings: "{{ sshd_root.stdout_lines }}"
-    root_key_files: [/root/.ssh/authorized_keys, /root/.ssh/authorized_keys2]
 
 # /home: the shared /home (NFS) or the home disk is mounted over the local /home folder. Stop if that
 # would hide anything other than the home folders of the accounts nanoHPC deploys with.
