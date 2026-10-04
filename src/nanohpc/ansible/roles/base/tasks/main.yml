@@ -21,6 +21,14 @@
     group: root
     mode: "0644"
 
+- name: Record the nanoHPC version of this deploy (read by nanohpc check)
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/version
+    content: "{{ nanohpc.version }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
 # Also in the dry run, which needs the lists to know what the package tasks would install. The lists are
 # apt's copy of what the package sources offer: refreshing them changes no installed package or setting.
 - name: Refresh the package lists

@@ -73,6 +73,8 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(variables["max_gpus_per_user"], -1)
         self.assertEqual(variables["slurm"]["version"], SLURM["version"])
         self.assertEqual(variables["files"], str(self.work / "files"))
+        # The base role records it in /etc/nanohpc/version, read by nanohpc check.
+        self.assertEqual(variables["version"], metadata.version("nanohpc"))
 
     def test_home_and_scratch_variables(self) -> None:
         prepare(self.config, self.hostnames, None, True, [], False, self.work)
