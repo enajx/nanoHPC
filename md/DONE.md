@@ -36,7 +36,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-05: public demo build
 
-- The normal website can also be built as a static demo with fictional machines, users, jobs, and sample charts. All seven pages work without a Slurm cluster or Grafana server. The Pages workflow is ready; public launch and the README link are queued for v0.1, when the repository becomes public.
+- The normal website can also be built as a static demo with fictional machines, users, jobs, and sample charts. All seven pages work without a Slurm cluster or Grafana server. The [public demo](https://najarro.science/nanoHPC/) is published by the Pages workflow on `main`; the README links to it. The live pages and all four Grafana snapshots were checked in Chromium on 2026-10-05.
 - Files: `src/nanohpc/website-source/{src,tests/demo.spec.ts,scripts/build-demo.mjs}`, `src/nanohpc/website/`, `.github/workflows/public-demo.yml`, `md/testing.md`.
 
 ## 2026-10-05: public demo content and chart
