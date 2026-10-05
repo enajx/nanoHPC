@@ -224,13 +224,12 @@ test('the site renders every tab from the fixture data under a non-root path', a
   expect(await page.locator('iframe').evaluateAll(frames => frames.map(frame => new URL((frame as HTMLIFrameElement).src).pathname)))
     .toEqual([`${prefix}grafana/d/nanohpc-queue`, `${prefix}grafana/d/nanohpc-queue-history`])
 
-  // Machines: a card per compute machine, including the CPU-only one; the map can be turned on.
+  // Machines: a card per compute machine, including the CPU-only one; the map opens by default.
   await nav.getByRole('link', { name: 'Machines', exact: true }).click()
   await expect(page.locator('.machine-spec')).toHaveCount(2)
   const cpuCard = page.getByRole('region', { name: 'cpu1 specs' })
   await expect(cpuCard).toContainText('Not applicable')
   await expect(page.getByRole('region', { name: 'gpu1 specs' })).toContainText('4× NVIDIA RTX A6000')
-  await page.getByRole('button', { name: 'Show cluster map' }).click()
   await expect(page.locator('.cluster-map-canvas canvas')).toBeVisible()
   await expect(page.locator('.cluster-map-canvas')).toHaveAttribute('aria-label', /gpu1: 2 of 4 GPUs allocated/)
   await page.getByRole('button', { name: 'Show cluster map' }).click()
@@ -248,10 +247,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   const metrics = new URL(await page.locator('iframe[title="Machine and GPU metrics"]').evaluate(frame => (frame as HTMLIFrameElement).src))
   expect(metrics.pathname).toBe(`${prefix}grafana/d/nanohpc-machines`)
   expect(metrics.searchParams.get('var-gpu_group')).toBe('0')
-  // and the long-term history: the daily summaries kept for 5 years.
-  const history = new URL(await page.locator('iframe[title="Long-term history (daily summaries, kept 5 years)"]').evaluate(frame => (frame as HTMLIFrameElement).src))
-  expect(history.pathname).toBe(`${prefix}grafana/d/nanohpc-history`)
-  expect(history.searchParams.get('from')).toBe('now-1y')
+  await expect(page.locator('iframe')).toHaveCount(1)
 
   // Cluster policy: one card per partition, default first, then the shared rows.
   await nav.getByRole('link', { name: 'Cluster policy', exact: true }).click()

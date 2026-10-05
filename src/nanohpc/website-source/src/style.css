@@ -3,6 +3,9 @@
 /* The two palettes use the colors selected for the cluster website. */
 :root[data-accent="sand"] { --accent: #f2765e; --card-1: #f5ebdd; --card-2: #f2765e; --card-3: #315b8c; --card-4: #413333; --card-3-text: #ffffff; --card-4-text: #ffffff; }
 :root[data-accent="coral"] { --accent: #06d6a0; --card-1: #ff7f50; --card-2: #ffd166; --card-3: #06d6a0; --card-4: #118ab2; }
+/* Machine labels use the same status colors as the reference cluster. */
+:root { --status-green: #06d6a0; --status-blue: #118ab2; --status-blue-text: #172322; --status-yellow: #ffd166; --status-red: #ff7f50; }
+:root[data-accent="sand"] { --status-blue: #315b8c; --status-blue-text: #ffffff; --status-red: #f2765e; }
 :root { --font: 'Arial', sans-serif; }
 :root[data-font="space-grotesk"] { --font: 'Space Grotesk', sans-serif; }
 :root[data-font="inter"] { --font: 'Inter', sans-serif; }
@@ -95,9 +98,7 @@ p { line-height: 1.6; }
 .machine-list > p { padding: 16px 22px; }
 .pill { font-family: monospace; font-size: 14px; border: 1px solid #172322; padding: 5px 8px; }
 .machine-list table { min-width: 790px; }
-.machine-list .speed-good { background: var(--accent); }
-.machine-list .state-healthy { background: #06d6a0; }
-.machine-list .state-idle { background: #118ab2; }
+.machine-list .speed-good { background: var(--status-green); }
 .dashboard iframe { border: 0; width: 100%; height: 690px; display: block; background: #f8f8f6; }
 .demo-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; padding: 20px; }
 .demo-chart { min-width: 0; border: 1px solid #deded8; padding: 15px; }
@@ -170,13 +171,11 @@ footer a { text-decoration: underline; }
 .overview-job-list thead { position: sticky; top: 0; }
 @media (max-width: 1100px) { .overview-job-groups { grid-template-columns: 1fr; } }
 .pill { display: inline-block; white-space: nowrap; }
-/* Normal states follow the theme's card colors; problem states keep fixed colors in every theme. */
-.state-healthy, .state-idle { background: var(--card-1); color: var(--card-1-text); }
-.state-active { background: var(--card-2); color: var(--card-2-text); }
-.state-full { background: var(--card-3); color: var(--card-3-text); }
-.state-warning { background: #fff1a8; }
-.state-offline { background: #f5d7dd; }
-.state-unknown, .state-not-applicable { background: #f0f2ee; }
+.state-healthy, .state-active, .state-full { background: var(--status-green); }
+.state-idle { background: var(--status-blue); color: var(--status-blue-text); }
+.state-warning { background: var(--status-yellow); }
+.state-problem, .state-offline { background: var(--status-red); }
+.state-maintenance, .state-unknown, .state-not-applicable, .state-neutral { background: #f0f2ee; }
 .user-guide { max-width: 880px; }
 .user-guide section { padding: 12px 0 30px; margin-bottom: 24px; border-bottom: 1px solid #c8cdc7; }
 .user-guide h2 { font-size: 24px; margin-bottom: 22px; }

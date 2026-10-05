@@ -11,26 +11,27 @@ SOURCE = Path(__file__).resolve().parents[2] / "files" / "grafana"
 END = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
 POINTS = 85
 TIMES = [int((END - timedelta(hours=168 - index * 2)).timestamp() * 1000) for index in range(POINTS)]
-NODES = ("H100", "H200", "Nvidia DGX", "Threadripper")
+NODES = ("H200", "Nvidia DGX", "Threadripper")
+GPU_NODES = ("H200", "Nvidia DGX")
 
 
 def series(title: str, name: str, index: int, count: int) -> list[float]:
     """Return stable, smooth sample values at two-hour intervals."""
     seed = sum(ord(char) for char in title) + index * 19
     baseline = {
-        "Allocated GPUs": 6, "Running jobs": 3, "Queue size": 5,
+        "Allocated GPUs": 4, "Running jobs": 2, "Queue size": 5,
         "Allocated GPU-hours": 35, "Fair-share factor": 0.7,
         "CPU in use": 40, "Available memory": 180, "Available filesystem space": 700,
         "GPU utilization": 55, "GPU memory used": 42, "GPU temperature": 60, "GPU power": 280,
     }[title]
     if title == "Available memory":
-        baseline = {"H100": 180, "H200": 180, "Nvidia DGX": 90, "Threadripper": 90}[name]
+        baseline = {"H200": 180, "Nvidia DGX": 90, "Threadripper": 90}[name]
     spread = baseline * 0.2
     unit = 1024**3 if title in ("Available memory", "Available filesystem space", "GPU memory used") else 1
     values = [round(max(0, baseline + spread * math.sin(step / 7 + seed) + spread * 0.3 * math.cos(step / 13 + seed / 3)) * unit, 2) for step in range(count)]
     if title in ("Allocated GPUs", "Running jobs", "Queue size"):
         values = [round(value) for value in values]
-        values[-1] = {"Allocated GPUs": 7, "Running jobs": 3, "Queue size": 5}[title]
+        values[-1] = {"Allocated GPUs": 4, "Running jobs": 2, "Queue size": 5}[title]
     return values
 
 
@@ -49,7 +50,7 @@ def time_frame(title: str, name: str, index: int) -> dict:
 def job_frame() -> dict:
     """Give Grafana's table panel only fictional job records."""
     rows = [
-        ("101", "Alice", "protein-fit", "RUNNING", 3, 24, "H100", 2500),
+        ("101", "Alice", "protein-fit", "PENDING", 3, 24, "", 2500),
         ("102", "Bob", "image-train", "RUNNING", 3, 32, "H200", 2100),
         ("103", "Mike", "sim-batch", "RUNNING", 1, 16, "Nvidia DGX", 1900),
         ("104", "Alice", "analysis", "PENDING", 1, 16, "", 1400),
@@ -84,7 +85,7 @@ def snapshot(kind: str) -> dict:
             panel["fieldConfig"] = {"defaults": {"custom": {"filterable": True}}, "overrides": []}
             panel["options"] = {"showHeader": True, "cellHeight": "sm", "sortBy": [{"displayName": "Priority", "desc": True}]}
         else:
-            names = (NODES[:3] if title.startswith("GPU ") else NODES) if kind == "machines" else ("Alice", "Bob", "Mike") if kind == "usage" else (title,)
+            names = (GPU_NODES if title.startswith("GPU ") else NODES) if kind == "machines" else ("Alice", "Bob", "Mike") if kind == "usage" else (title,)
             panel["snapshotData"] = [time_frame(title, name, index) for index, name in enumerate(names)]
     return {"dashboard": dashboard, "name": f"nanoHPC demo: {dashboard['title']}"}
 

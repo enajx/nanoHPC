@@ -12,10 +12,10 @@ const panels: Record<DashboardName, string[]> = {
   history: ['Allocated GPU-hours at daily sample', '24-hour mean CPU usage', '24-hour mean GPU utilization', 'Observed fraction of the 24-hour window'],
 }
 const snapshots: Partial<Record<DashboardName, string>> = {
-  queue: 'hG0sbTwTDjkE5EqraDRyesJMzC1xunFq',
-  'queue-history': 'GPOOddPx1UjCN6VDTA5dqJlywAy8auCA',
-  usage: 'PlJgVBNl4ympikXbPd72BOZLxbjLA0fU',
-  machines: '1GdTjXlQEilg7sLv6e6WfMgnTrR4xzpy',
+  queue: '9QDxO6t8FwjbL6S8C6PikE9NxehX4qx2',
+  'queue-history': '0yXYXRAkrE61IXTwceQ2r2ytXUwykXoW',
+  usage: 'SHRHlxj8nchgir5pVEzMFIvTWVhs52qi',
+  machines: 'J6ibvQtxT0GlFuaATGCamYvTNTNoe392',
 }
 
 /** Stable fictional points for the static demo, with a different span for each control. */
@@ -34,6 +34,7 @@ export function DemoDashboard({ name, kind, jobs, queueFilter }: { name: string;
   const snapshot = snapshots[kind]
   if (snapshot && (kind !== 'queue' || queueFilter === 'RUNNING|PENDING')) {
     return <section className={`dashboard demo-snapshot demo-snapshot-${kind} panel`} aria-label={name}>
+      <div className="panel-heading"><h2>{name}</h2></div>
       <iframe title={name} src={`https://snapshots.raintank.io/dashboard/snapshot/${snapshot}?theme=light&kiosk`} loading="lazy" referrerPolicy="no-referrer"/>
     </section>
   }

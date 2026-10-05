@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { Machine } from './machines'
 import type { OverviewJob } from './overview-jobs'
 import type { ClusterMap as Sketch, LayoutName, MapMachine } from './cluster-map/sketch'
+import { mapAreas } from './cluster-map/areas'
 
-const layouts: [LayoutName, string][] = [['tiers', 'Tiers'], ['radial', 'Radial'], ['blocks', 'Blocks']]
+const layouts: [LayoutName, string][] = [['default', 'Default'], ['partitions', 'Partitions'], ['geographic', 'Geographic']]
 const layoutStorageKey = 'cluster-map-layout'
 const shownStorageKey = 'cluster-map-shown'
 
@@ -48,12 +49,12 @@ async function measure(signal: AbortSignal): Promise<Measured> {
   return { nfs: byMachine('nfs'), writes: byMachine('writes'), busy }
 }
 
-/** Read whether the map is shown; off when nothing is stored or storage is blocked. */
+/** Read whether the map is shown; on until the visitor hides it. */
 export function storedMapShown(): boolean {
   try {
-    return localStorage.getItem(shownStorageKey) === 'true'
+    return localStorage.getItem(shownStorageKey) !== 'false'
   } catch {
-    return false
+    return true
   }
 }
 
@@ -64,19 +65,19 @@ export function MapToggle({ shown, onChange }: { shown: boolean; onChange: (show
     try {
       localStorage.setItem(shownStorageKey, String(!shown))
     } catch {
-      // Storage is blocked; the map is off next time.
+      // Storage is blocked; the map is shown next time.
     }
   }
   return <button type="button" className="markdown-link map-toggle" aria-label="Show cluster map" aria-pressed={shown} title={shown ? 'Hide the cluster map' : 'Show the cluster map'} onClick={toggle}>Cluster Map</button>
 }
 
-/** Read the last chosen layout; Tiers when none is stored or storage is blocked. */
+/** Read the last chosen layout; Default when none is stored or storage is blocked. */
 function storedLayout(): LayoutName {
   try {
     const value = localStorage.getItem(layoutStorageKey)
-    return layouts.find(([name]) => name === value)?.[0] ?? 'tiers'
+    return layouts.find(([name]) => name === value)?.[0] ?? 'default'
   } catch {
-    return 'tiers'
+    return 'default'
   }
 }
 
@@ -91,6 +92,7 @@ function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, mea
     const busy = measured?.busy.get(node.name)
     return {
       name: node.name, front: node.role === 'Front node', health: node.health ?? 'Unknown',
+      building: node.building ?? null, partitions: node.partitions ?? [],
       gpuModel: node.specs?.gpus[0]?.model ?? null, totalGpus: total,
       fpgaUsagePercent: node.fpga_usage_percent ?? null,
       allocatedGpus: allocated,
@@ -102,8 +104,9 @@ function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, mea
 }
 
 /** Describe the map in words for screen readers and tests. */
-function describe(machines: MapMachine[]): string {
-  return `Cluster map: ${machines.map(m => m.front
+function describe(machines: MapMachine[], layout: LayoutName): string {
+  const areas = mapAreas(machines, layout).map(area => `${area.label}: ${area.members.map(machine => machine.name).join(', ')}`).join('; ')
+  return `Cluster map: ${layout} layout, ${areas}. ${machines.map(m => m.front
     ? `${m.name}: front node, ${m.pendingJobs} pending job${m.pendingJobs === 1 ? '' : 's'}`
     : `${m.name}: ${m.fpgaUsagePercent !== null ? `FPGA usage ${m.fpgaUsagePercent}%` : `${m.allocatedGpus} of ${m.totalGpus} GPUs allocated`}, ${m.runningJobs} running job${m.runningJobs === 1 ? '' : 's'}, ${
       m.nfsRequests === null ? 'shared home traffic unknown' : `shared home ${Math.round(m.nfsRequests)} requests per second (${Math.round(m.nfsWrites ?? 0)} writes)`}${
@@ -159,13 +162,13 @@ export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, de
     try {
       localStorage.setItem(layoutStorageKey, name)
     } catch {
-      // Storage is blocked; the map opens on Tiers next time.
+      // Storage is blocked; the map opens on Default next time.
     }
   }
   return <div className="cluster-map">
     <div className="gpu-chart-ranges cluster-map-layouts" role="group" aria-label="Cluster map layout">
       {layouts.map(([name, label]) => <button key={name} type="button" aria-pressed={name === layout} onClick={() => choose(name)}>{label}</button>)}
     </div>
-    <div className="cluster-map-canvas" ref={box} role="img" aria-label={describe(machines)}/>
+    <div className="cluster-map-canvas" ref={box} role="img" aria-label={describe(machines, layout)}/>
   </div>
 }

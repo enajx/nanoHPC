@@ -33,8 +33,8 @@ if os.environ.get('TEST_FAIL') == name: sys.exit(2)
 if name=='sacct' and os.environ.get('SLURM_TIME_FORMAT')!='%s': sys.exit(4)
 if name=='scontrol' and 'nodes' in args:
  allocated=os.environ.get('TEST_ALLOCATED_GPUS','2')
- print('NodeName=gpu1 State=MIXED CfgTRES=cpu=32,gres/gpu=4,gres/gpu:a6000=4 AllocTRES=cpu=8,gres/gpu=' + allocated + ',gres/gpu:a6000=' + allocated)
- print('NodeName=cpu1 State=IDLE CfgTRES=cpu=16,mem=64G AllocTRES=')
+ print('NodeName=gpu1 State=MIXED Partitions=interactive,main CfgTRES=cpu=32,gres/gpu=4,gres/gpu:a6000=4 AllocTRES=cpu=8,gres/gpu=' + allocated + ',gres/gpu:a6000=' + allocated)
+ print('NodeName=cpu1 State=IDLE Partitions=main CfgTRES=cpu=16,mem=64G AllocTRES=')
 elif name=='scontrol' and 'partition' in args:
  print('PartitionName=interactive Default=NO Nodes=gpu1 MaxTime=08:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
  print('PartitionName=main Default=YES Nodes=gpu1,cpu1 MaxTime=1-00:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
@@ -59,7 +59,7 @@ else: sys.exit(3)
 
 MACHINES: dict[str, dict[str, Any]] = {
     "front": {"role": "front", "units": ["slurmctld.service", "slurmdbd.service"], "mounts": ["/", "/home"]},
-    "gpu1": {"role": "compute", "units": ["slurmd.service"], "mounts": ["/", "/home", "/scratch"]},
+    "gpu1": {"role": "compute", "building": "Lab A", "units": ["slurmd.service"], "mounts": ["/", "/home", "/scratch"]},
     "cpu1": {"role": "compute", "units": ["slurmd.service"], "mounts": ["/", "/home", "/scratch"]},
     "store": {"role": "storage", "units": ["nfs-server.service"], "mounts": ["/", "/home"]},
 }
@@ -213,6 +213,8 @@ class SnapshotTests(unittest.TestCase):
                 [(node["name"], node["role"]) for node in data["nodes"]],
                 [("front", "Front node"), ("gpu1", "Compute"), ("cpu1", "Compute"), ("store", "Storage")],
             )
+            self.assertEqual(data["nodes"][1]["partitions"], ["interactive", "main"])
+            self.assertEqual(data["nodes"][1]["building"], "Lab A")
             self.assertEqual((data["running_jobs"], data["pending_jobs"]), (1, 1))
             self.assertEqual(data["average_wait_seconds_30d"], 1200)
             self.assertEqual(

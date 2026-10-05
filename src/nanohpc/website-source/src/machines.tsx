@@ -19,7 +19,7 @@ export type MachineSpecs = {
   disks: { mount: string; total_bytes: number; used_bytes: number | null; available_bytes: number | null }[]
   speeds?: { home_small_write: number | null; internet_download: number | null }
 }
-export type Machine = { name: string; role: string; health?: string; health_details?: string[]; gpu_usage?: string; fpga_usage_percent?: number; total_gpus?: number; available_gpus?: number | null; specs?: MachineSpecs }
+export type Machine = { name: string; role: string; building?: string | null; partitions?: string[]; health?: string; health_details?: string[]; gpu_usage?: string; fpga_usage_percent?: number; total_gpus?: number; available_gpus?: number | null; specs?: MachineSpecs }
 
 /** Use binary storage units without turning unavailable values into zero. */
 export function size(bytes: number | null | undefined): string {

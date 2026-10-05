@@ -4,11 +4,14 @@
 // writes orange toward the front node, reads and file-handling blue toward the machine), and each GPU light shows
 // Slurm allocation, the job's user, and measured busy %. Pan, zoom, rotation, and the YAML picker are left out.
 import p5 from 'p5'
+import { mapAreas } from './areas'
 
 /** One machine as the snapshot reports it. */
 export type MapMachine = {
   name: string
   front: boolean
+  building: string | null
+  partitions: string[]
   health: string
   gpuModel: string | null
   fpgaUsagePercent: number | null
@@ -23,7 +26,7 @@ export type MapMachine = {
   gpus: { user: string | null; busy: number | null }[]
 }
 
-export type LayoutName = 'tiers' | 'radial' | 'blocks'
+export type LayoutName = 'default' | 'partitions' | 'geographic'
 
 export type ClusterMap = {
   update: (machines: MapMachine[], stale: boolean) => void
@@ -49,7 +52,7 @@ type Node = MapMachine & {
 type Point = { x: number; y: number }
 type Link = { from: Node; to: Node; pts: Point[]; segs: number[]; total: number; dueIn: number; dueOut: number }
 type Packet = { link: Link; d: number; dir: 1 | -1; kind: 'forward' | 'back'; size: number; done?: boolean }
-type Piece = { group: Node['group']; members: Node[] }
+type Piece = { group: Node['group']; label: string; members: Node[] }
 
 // Website style: dark ink borders and hard offset shadows, flat fills, the theme accent (read each frame).
 const INK = '#172322'
@@ -57,7 +60,6 @@ const MUTED = '#65716c'
 const COMPUTE_AREA = '#f0f2ee'
 // No spaces, so p5 does not quote the list and the fallbacks still apply.
 const MONO = 'ui-monospace,SFMono-Regular,Consolas,monospace'
-const GROUPS = { front: { label: 'FRONT NODE' }, compute: { label: 'COMPUTE' } }
 
 // Tile size in world units; true isometric (30°).
 const TW = 100
@@ -146,7 +148,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     packets = packets.filter(p => keep(p.link)).map(p => ({ ...p, link: relink(p.link) }))
     const names = new Set(next.map(n => n.name))
     pulses = pulses.filter(p => names.has(p.node.name)).map(p => ({ ...p, node: next.find(n => n.name === p.node.name)! }))
-    const changed = next.length !== nodes.length || next.some(n => !previous.has(n.name))
+    const changed = next.length !== nodes.length || next.some(n => !previous.has(n.name) || n.building !== previous.get(n.name)?.building || n.partitions.join(',') !== previous.get(n.name)?.partitions.join(','))
     nodes = next
     links = nextLinks
     hovered = null
@@ -156,16 +158,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
 
   // ---------------------------------------------------------------- layouts
 
-  function groupRuns(list: Node[]): Piece[] {
-    const sorted = [...list].sort((a, b) => Number(b.front) - Number(a.front) || a.order - b.order)
-    const runs: Piece[] = []
-    for (const n of sorted) {
-      const last = runs[runs.length - 1]
-      if (last && last.group === n.group) last.members.push(n)
-      else runs.push({ group: n.group, members: [n] })
-    }
-    return runs
-  }
+  const areaPieces = (name: LayoutName): Piece[] => mapAreas(nodes, name).map(area => ({ group: area.front ? 'front' : 'compute', label: area.label, members: area.members }))
 
   // Offsets along a line for a list of runs, centered on 0.
   function stackLine(runs: Piece[]): [Node, number][] {
@@ -185,10 +178,11 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   }
 
   // Columns left to right by tier; inside a column, one line grouped by group.
-  function layoutTiers(): Piece[] {
+  function layoutDefault(): Piece[] {
     const out: Piece[] = []
+    const areas = areaPieces('default')
     for (let t = 0; t <= Math.max(...nodes.map(n => n.tier)); t++) {
-      const runs = groupRuns(nodes.filter(n => n.tier === t))
+      const runs = areas.filter(area => area.members[0].tier === t)
       for (const [n, off] of stackLine(runs)) { n.tx = t * TIER_GAP; n.ty = off }
       out.push(...runs)
     }
@@ -196,31 +190,24 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   }
 
   // Front nodes in the middle; compute machines split over the four sides around them.
-  function layoutRadial(): Piece[] {
-    const center = groupRuns(nodes.filter(n => n.tier === 0))
-    const rest = groupRuns(nodes.filter(n => n.tier !== 0)).flatMap(r => r.members)
+  function layoutGeographic(): Piece[] {
+    const areas = areaPieces('geographic')
+    const center = areas.filter(area => area.group === 'front')
     const centerLine = stackLine(center)
     for (const [n, off] of centerLine) { n.tx = 0; n.ty = off }
     const out: Piece[] = [...center]
-    if (!rest.length) return out
-    const sides = Math.min(4, rest.length)
-    const lines: { runs: Piece[]; offs: [Node, number][] }[] = []
-    let i = 0
-    for (let s = 0; s < sides; s++) {
-      const size = Math.floor(rest.length / sides) + (s < rest.length % sides ? 1 : 0)
-      const runs = groupRuns(rest.slice(i, i + size))
-      lines.push({ runs, offs: stackLine(runs) })
-      i += size
-    }
+    const lines = areas.filter(area => area.group !== 'front').map(area => ({ runs: [area], offs: stackLine([area]) }))
+    if (!lines.length) return out
     const half = (offs: [Node, number][]) => (offs.length ? offs[offs.length - 1][1] : 0)
     const centerHalf = Math.max(0, ...centerLine.map(([, o]) => Math.abs(o)))
     const reach = Math.max(5, ...lines.map(l => half(l.offs) + 3), centerHalf + 4)
     const dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]]
     lines.forEach((l, s) => {
-      const [dx, dy] = dirs[s]
+      const [dx, dy] = dirs[s % 4]
+      const distance = reach * (1 + Math.floor(s / 4))
       for (const [n, off] of l.offs) {
-        n.tx = dx * reach + (dx === 0 ? off : 0)
-        n.ty = dy * reach + (dy === 0 ? off : 0)
+        n.tx = dx * distance + (dx === 0 ? off : 0)
+        n.ty = dy * distance + (dy === 0 ? off : 0)
       }
       out.push(...l.runs)
     })
@@ -228,11 +215,12 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   }
 
   // Each group packed into a near-square block; blocks in columns by tier.
-  function layoutBlocks(): Piece[] {
+  function layoutPartitions(): Piece[] {
     const out: Piece[] = []
+    const areas = areaPieces('partitions')
     let x = 0
     for (let t = 0; t <= Math.max(...nodes.map(n => n.tier)); t++) {
-      const runs = groupRuns(nodes.filter(n => n.tier === t))
+      const runs = areas.filter(area => area.members[0].tier === t)
       if (!runs.length) continue
       const blocks = runs.map(r => {
         const cols = Math.ceil(Math.sqrt(r.members.length))
@@ -255,7 +243,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     return out
   }
 
-  const layouts: Record<LayoutName, () => Piece[]> = { tiers: layoutTiers, radial: layoutRadial, blocks: layoutBlocks }
+  const layouts: Record<LayoutName, () => Piece[]> = { default: layoutDefault, partitions: layoutPartitions, geographic: layoutGeographic }
 
   function applyLayout(instant: boolean) {
     if (!nodes.length) { pieces = []; return }
@@ -306,7 +294,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     return pieces.map(pc => {
       const pad = Math.max(1, ...pc.members.map(n => n.scale))
       return {
-        label: GROUPS[pc.group].label, group: pc.group,
+        label: pc.label, group: pc.group,
         from: [Math.min(...pc.members.map(n => n.x!)) - pad, Math.min(...pc.members.map(n => n.y!)) - pad],
         to: [Math.max(...pc.members.map(n => n.x!)) + pad, Math.max(...pc.members.map(n => n.y!)) + pad],
       }

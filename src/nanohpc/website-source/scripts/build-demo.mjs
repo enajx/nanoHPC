@@ -13,7 +13,6 @@ const disks = [{ mount: '/', total_bytes: 500 * gib, used_bytes: 120 * gib, avai
 const speeds = {
   front: { home_small_write: null, internet_download: null },
   Threadripper: { home_small_write: 13e6, internet_download: 99e6 },
-  H100: { home_small_write: 13e6, internet_download: 133e6 },
   H200: { home_small_write: 13e6, internet_download: 169e6 },
   'Nvidia DGX': { home_small_write: 16e6, internet_download: 95e6 },
 }
@@ -26,15 +25,15 @@ const specs = (cores, ram, gpuCount, gpuModel, cpuModel, unifiedMemoryGb) => ({
   ...(unifiedMemoryGb === null ? {} : { unified_memory_gb: unifiedMemoryGb }),
 })
 const node = (name, role, cores, ram, gpus, available, gpuModel, cpuModel, unifiedMemoryGb) => ({
-  name, role, health: 'Healthy', health_details: [], gpu_usage: gpus ? 'Active' : 'Not applicable',
+  name, role, health: 'Healthy', health_details: [], gpu_usage: gpus ? available === gpus ? 'Idle' : 'Active' : 'Not applicable',
   specs: { ...specs(cores, ram, gpus, gpuModel, cpuModel, unifiedMemoryGb), speeds: speeds[name] }, total_gpus: gpus, available_gpus: available,
 })
 const snapshot = {
   generated_at: '2026-01-01T00:00:00Z', refresh_seconds: 30, accounting_start: '2026-01-01T00:00:00Z',
-  running_jobs: 3, pending_jobs: 2, average_wait_seconds_30d: 745,
-  total_gpus: 9, allocated_gpus: 7,
+  running_jobs: 2, pending_jobs: 3, average_wait_seconds_30d: 745,
+  total_gpus: 5, allocated_gpus: 4,
   jobs: [
-    { id: '101', user: 'Alice', state: 'RUNNING', gpus: 3, node: 'H100', priority: 2500, seconds: 3725 },
+    { id: '101', user: 'Alice', state: 'PENDING', gpus: 3, node: '', priority: 2500, seconds: 3725 },
     { id: '102', user: 'Bob', state: 'RUNNING', gpus: 3, node: 'H200', priority: 2100, seconds: 6250 },
     { id: '103', user: 'Mike', state: 'RUNNING', gpus: 1, node: 'Nvidia DGX', priority: 1900, seconds: 900 },
     { id: '104', user: 'Alice', state: 'PENDING', gpus: 1, node: '', priority: 1400, seconds: 400 },
@@ -42,7 +41,6 @@ const snapshot = {
   ],
   nodes: [node('front', 'Front node', 16, 64, 0, 0, '', 'AMD EPYC', null),
     node('Threadripper', 'Compute', 32, 128, 0, 0, '', 'AMD Threadripper', null),
-    node('H100', 'Compute', 32, 256, 4, 1, 'NVIDIA H100', 'AMD EPYC', null),
     node('H200', 'Compute', 32, 256, 4, 1, 'NVIDIA H200', 'AMD EPYC', null),
     node('Nvidia DGX', 'Compute', 20, 128, 1, 0, 'NVIDIA DGX', 'NVIDIA CPU', 128)],
   ranking: [
@@ -74,9 +72,13 @@ const snapshot = {
     { name: 'PriorityWeightAge', value: '2000' },
   ],
   partitions: [
-    { name: 'main', default: true, max_time: '1-00:00:00', nodes: 'H100,H200,Nvidia DGX,Threadripper' },
-    { name: 'interactive', default: false, max_time: '08:00:00', nodes: 'H100,H200,Nvidia DGX' },
+    { name: 'main', default: true, max_time: '1-00:00:00', nodes: 'H200,Nvidia DGX,Threadripper' },
+    { name: 'interactive', default: false, max_time: '08:00:00', nodes: 'H200,Nvidia DGX' },
   ],
+}
+for (const machine of snapshot.nodes) {
+  machine.partitions = snapshot.partitions.filter(partition => partition.nodes.split(',').includes(machine.name)).map(partition => partition.name)
+  machine.building = machine.role === 'Front node' ? null : ['Threadripper', 'H200'].includes(machine.name) ? 'Lab A' : 'Lab B'
 }
 
 /** Copy the deploy bundle and add only invented data for static hosting. */
@@ -85,7 +87,7 @@ cpSync(source, target, { recursive: true })
 mkdirSync(`${target}/data`, { recursive: true })
 writeFileSync(`${target}/site.json`, JSON.stringify(site, null, 2))
 writeFileSync(`${target}/data/status.json`, JSON.stringify(snapshot, null, 2))
-writeFileSync(`${target}/machines.md`, '# Machines\n\n| Machine | Type | GPUs |\n| --- | --- | ---: |\n| H100 | GPU | 4 |\n| H200 | GPU | 4 |\n| Nvidia DGX | 128 GB unified memory | 1 |\n| Threadripper | CPU | 0 |\n')
+writeFileSync(`${target}/machines.md`, '# Machines\n\n| Machine | Type | GPUs |\n| --- | --- | ---: |\n| H200 | GPU | 4 |\n| Nvidia DGX | 128 GB unified memory | 1 |\n| Threadripper | CPU | 0 |\n')
 for (const name of ['docs.md', 'policy.md']) {
   const template = readFileSync(`${target}/${name}`, 'utf8')
   writeFileSync(`${target}/${name}`, template.replace(/\{\{(\w+)\}\}/g, (_, key) => String(site[key])))

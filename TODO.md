@@ -152,7 +152,9 @@ flowchart LR
 - [x] The demo How to and Cluster policy pages show the useful layout and generic guidance from the reference deployment with fictional values and no REAL or ITU details (see [DONE.md](md/DONE.md)).
 - [x] The website has a Settings option with a read-only message, and a footer linking to nanoHPC, with generic wording in the public demo (see [DONE.md](md/DONE.md)).
 - [x] The public demo shows Grafana snapshots with fictional, fixed-week data for Running Jobs and Queue, Queue history, GPU usage history, and Machine and GPU metrics (see [DONE.md](md/DONE.md)).
-- [x] The Machines table shows the front node, machine State, `/home` and Internet speeds, and GPU availability in the same layout as the reference website (see [DONE.md](md/DONE.md)).
+- [x] The Machines table shows machine State, `/home` speed, and GPU availability (see [DONE.md](md/DONE.md)).
+- [x] The Machines table lists compute machines only, shows GPU counts in grey boxes, and uses green for healthy and active, yellow for attention, coral for problems, and blue for idle. Cluster usage has one titled Machine and GPU metrics panel and no long-term history panel (see [DONE.md](md/DONE.md)).
+- [x] The Machines map is shown by default and offers Default, Partitions, and Geographic layouts. The demo shows H200, Nvidia DGX, and Threadripper without an H100 (see [DONE.md](md/DONE.md)).
 - [ ] At v0.1, make the repository public, enable GitHub Pages, publish and check the demo, then link it from the README.
 - [ ] A README, curated by the user: a nanoHPC title, a lightweight Slurm cluster description, a concise feature list, setup steps, the tech stack, and the MIT license. The current draft is under review (`README.md`, `assets/nanohpc-title.svg`, `assets/cluster.png`).
   - [x] The README uses a static, transparent PNG with the chosen turquoise cluster layout: Threadripper left of three 4-GPU H100 machines and FPGA on the right (`assets/cluster.png`).

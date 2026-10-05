@@ -20,7 +20,8 @@ Arguments (all set by the operator, never from the website):
                              label, and Slurm's node name for compute machines):
                                {"NAME": {"role": "front" | "compute" | "storage",
                                          "units": ["slurmd.service", ...],
-                                         "mounts": ["/", "/home", "/scratch", ...]}}
+                                         "mounts": ["/", "/home", "/scratch", ...],
+                                         "building": "optional area name"}}
                              `units` are the systemd units that must be active and `mounts` the mount points
                              that must be writable with free space. Exactly one machine has the role front
                              (the --controller); the compute machines must be exactly Slurm's nodes; storage
@@ -184,15 +185,16 @@ def machines_markdown(snapshot: dict, cluster_name: str) -> str:
 
 
 def read_machines(path: Path) -> dict[str, dict[str, Any]]:
-    """Read the machines file: each machine's role, required systemd units, and required mount points."""
+    """Read the machines file: role, required checks, and optional geographic area."""
     machines = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(machines, dict) or not machines:
         raise ValueError(f"{path}: expected a non-empty object of machines")
     for name, machine in machines.items():
         valid = (
             isinstance(machine, dict)
-            and set(machine) == {"role", "units", "mounts"}
+            and {"role", "units", "mounts"} <= set(machine) <= {"role", "units", "mounts", "building"}
             and machine["role"] in ROLE_NAMES
+            and ("building" not in machine or isinstance(machine["building"], str) and bool(machine["building"]))
             and all(
                 isinstance(machine[key], list) and all(isinstance(item, str) and item for item in machine[key])
                 for key in ("units", "mounts")
@@ -200,7 +202,7 @@ def read_machines(path: Path) -> dict[str, dict[str, Any]]:
         )
         if not valid:
             raise ValueError(
-                f"{path}: machine {name} needs exactly role (front, compute, or storage), units, and mounts"
+                f"{path}: machine {name} needs role (front, compute, or storage), units, mounts, and optional building"
             )
     return machines
 
@@ -537,9 +539,11 @@ def collect(
     def status(name: str, slurm_state: str, gpus: int) -> dict[str, Any]:
         machine = machines[name]
         role = ROLE_NAMES[machine["role"]]
-        return machine_status(
+        result = machine_status(
             name, role, slurm_state, gpus, machine["units"], machine["mounts"], health, history, sample_end
         )
+        result["building"] = machine.get("building")
+        return result
 
     compute_nodes = []
     for node in nodes:
@@ -547,6 +551,7 @@ def collect(
         compute = status(node["NodeName"], node["State"], total)
         compute["total_gpus"] = total
         compute["available_gpus"] = slurm_available_gpus(node)
+        compute["partitions"] = [part for part in node.get("Partitions", "").split(",") if part]
         compute_nodes.append(compute)
     storage_nodes = [status(name, "", 0) for name, machine in machines.items() if machine["role"] == "storage"]
     result = {
