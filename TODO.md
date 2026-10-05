@@ -151,6 +151,8 @@ flowchart LR
 - [x] The public demo uses the nanoHPC name and subtitle, the requested sample machines and users, a working help pop-up, a current-time refresh display, and smoother sample GPU history; the website offers only the default and coral/sand themes (see [DONE.md](md/DONE.md)).
 - [x] The demo How to and Cluster policy pages show the useful layout and generic guidance from the reference deployment with fictional values and no REAL or ITU details (see [DONE.md](md/DONE.md)).
 - [x] The website has a Settings option with a read-only message, and a footer linking to nanoHPC, with generic wording in the public demo (see [DONE.md](md/DONE.md)).
+- [x] The public demo shows Grafana snapshots with fictional, fixed-week data for Running Jobs and Queue, Queue history, GPU usage history, and Machine and GPU metrics (see [DONE.md](md/DONE.md)).
+- [x] The Machines table shows the front node, machine State, `/home` and Internet speeds, and GPU availability in the same layout as the reference website (see [DONE.md](md/DONE.md)).
 - [ ] At v0.1, make the repository public, enable GitHub Pages, publish and check the demo, then link it from the README.
 - [ ] A README, curated by the user: a nanoHPC title, a lightweight Slurm cluster description, a concise feature list, setup steps, the tech stack, and the MIT license. The current draft is under review (`README.md`, `assets/nanohpc-title.svg`, `assets/cluster.png`).
   - [x] The README uses a static, transparent PNG with the chosen turquoise cluster layout: Threadripper left of three 4-GPU H100 machines and FPGA on the right (`assets/cluster.png`).
@@ -169,6 +171,7 @@ flowchart LR
 
 ### Later
 
+- [ ] Real cluster websites show measured `/home` write and Internet download speeds for each machine; until speed checks are added, the table shows Unknown for these values.
 - [ ] Review features and setup decisions added in SLURM-REAL since the nanoHPC port began, then decide with the user which ones to bring into nanoHPC.
 - [ ] The default configuration incorporates the policies in `~/code/nanoHPC/policies_to_implement.md`.
 - [ ] Explore whether nanoHPC can be sold as a commercial product while it stays fully open source. Very exploratory. Ideas to look at: providing some of the infrastructure on the server side, or an app to see the cluster status (the current view is that the website is the best way to do this).

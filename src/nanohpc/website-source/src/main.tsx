@@ -130,14 +130,17 @@ function Dashboard({ name, path }: { name: string; path: string }) {
 
 /** Reuse the same observed machine states on Overview and Machines. */
 function MachineTable({ data, stale, link }: { data: Snapshot | null; stale: boolean; link: string | null }) {
+  const speed = (value: number | null | undefined): string => value == null || stale ? 'Unknown' : `${Math.round(value / 1_000_000)} MB/s`
   return <section className="panel machine-list">
     {link ? <PanelLink href={link} title="Machines"/> : <div className="panel-heading"><h2>Machines</h2></div>}
-    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>Accelerator usage · last hour</th><th>Available GPUs</th></tr></thead>
-      <tbody>{data?.nodes.filter(node => node.role === 'Compute').map((node) => {
+    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>State</th><th>Speed /home</th><th>Internet</th><th>GPUs</th></tr></thead>
+      <tbody>{data?.nodes.filter(node => node.role === 'Compute' || node.role === 'Front node').map((node) => {
         const health = stale ? 'Unknown' : node.health ?? 'Unknown'
-        const usage = stale ? 'Unknown' : node.fpga_usage_percent != null ? `FPGA ${node.fpga_usage_percent}%` : node.gpu_usage ?? 'Unknown'
-        const available = stale ? 'Unknown' : node.total_gpus === 0 ? '—' : node.available_gpus != null && node.total_gpus != null ? `${node.available_gpus}/${node.total_gpus}` : 'Unknown'
-        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a></th><td><span className={`pill state-${health.toLowerCase()}`} title={stale ? 'Measurements are stale' : node.health_details?.join('; ')}>{health}</span></td><td><span className={`pill ${node.fpga_usage_percent != null && !stale ? 'state-active' : `state-${usage.toLowerCase().replaceAll(' ', '-')}`}`}>{usage}</span></td><td>{available}</td></tr>
+        const state = stale ? 'Unknown' : node.role !== 'Compute' ? '—' : node.fpga_usage_percent != null ? `FPGA ${node.fpga_usage_percent}%` : node.total_gpus === 0 ? 'Idle' : node.gpu_usage ?? 'Unknown'
+        const home = node.role === 'Compute' ? speed(node.specs?.speeds?.home_small_write) : '—'
+        const internet = speed(node.specs?.speeds?.internet_download)
+        const available = stale ? 'Unknown' : node.role !== 'Compute' || node.total_gpus === 0 ? '—' : node.available_gpus != null && node.total_gpus != null ? `${node.available_gpus}/${node.total_gpus}` : 'Unknown'
+        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a></th><td><span className={`pill state-${health.toLowerCase()}`} title={stale ? 'Measurements are stale' : node.health_details?.join('; ')}>{health}</span></td><td><span className={`pill ${state.startsWith('FPGA') && !stale ? 'state-active' : `state-${state.toLowerCase()}`}`}>{state}</span></td><td><span className={`pill ${home.includes('MB/s') ? 'speed-good' : 'state-unknown'}`}>{home}</span></td><td><span className={`pill ${internet.includes('MB/s') ? 'speed-good' : 'state-unknown'}`}>{internet}</span></td><td>{available}</td></tr>
       })}</tbody></table></div>
     {!data && <p role="status">Machine status unavailable.</p>}
   </section>

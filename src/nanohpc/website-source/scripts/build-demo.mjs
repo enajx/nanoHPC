@@ -10,6 +10,13 @@ const site = {
 }
 const disks = [{ mount: '/', total_bytes: 500 * gib, used_bytes: 120 * gib, available_bytes: 380 * gib },
   { mount: '/scratch', total_bytes: 2000 * gib, used_bytes: 720 * gib, available_bytes: 1280 * gib }]
+const speeds = {
+  front: { home_small_write: null, internet_download: null },
+  Threadripper: { home_small_write: 13e6, internet_download: 99e6 },
+  H100: { home_small_write: 13e6, internet_download: 133e6 },
+  H200: { home_small_write: 13e6, internet_download: 169e6 },
+  'Nvidia DGX': { home_small_write: 16e6, internet_download: 95e6 },
+}
 const specs = (cores, ram, gpuCount, gpuModel, cpuModel, unifiedMemoryGb) => ({
   collected_at: 0, os: 'Ubuntu 24.04 LTS', kernel: '6.8.0', cpu_model: cpuModel,
   cpu_cores: cores, cpu_threads: cores * 2, ram_bytes: ram * gib, gpu_count: gpuCount,
@@ -18,10 +25,9 @@ const specs = (cores, ram, gpuCount, gpuModel, cpuModel, unifiedMemoryGb) => ({
   uptime_seconds: 3 * 86400, pending_updates: 0, updates_checked_at: 0, needs_restart: false, disks,
   ...(unifiedMemoryGb === null ? {} : { unified_memory_gb: unifiedMemoryGb }),
 })
-const node = (name, role, cores, ram, gpus, available, gpuModel, cpuModel, unifiedMemoryGb, fpgaUsagePercent) => ({
+const node = (name, role, cores, ram, gpus, available, gpuModel, cpuModel, unifiedMemoryGb) => ({
   name, role, health: 'Healthy', health_details: [], gpu_usage: gpus ? 'Active' : 'Not applicable',
-  specs: specs(cores, ram, gpus, gpuModel, cpuModel, unifiedMemoryGb), total_gpus: gpus, available_gpus: available,
-  ...(fpgaUsagePercent === null ? {} : { fpga_usage_percent: fpgaUsagePercent }),
+  specs: { ...specs(cores, ram, gpus, gpuModel, cpuModel, unifiedMemoryGb), speeds: speeds[name] }, total_gpus: gpus, available_gpus: available,
 })
 const snapshot = {
   generated_at: '2026-01-01T00:00:00Z', refresh_seconds: 30, accounting_start: '2026-01-01T00:00:00Z',
@@ -34,12 +40,11 @@ const snapshot = {
     { id: '104', user: 'Alice', state: 'PENDING', gpus: 1, node: '', priority: 1400, seconds: 400 },
     { id: '105', user: 'Mike', state: 'PENDING', gpus: 1, node: '', priority: 1100, seconds: 140 },
   ],
-  nodes: [node('front', 'Front node', 16, 64, 0, 0, '', 'AMD EPYC', null, null),
-    node('Threadripper', 'Compute', 32, 128, 0, 0, '', 'AMD Threadripper', null, null),
-    node('H100', 'Compute', 32, 256, 4, 1, 'NVIDIA H100', 'AMD EPYC', null, null),
-    node('H200', 'Compute', 32, 256, 4, 1, 'NVIDIA H200', 'AMD EPYC', null, null),
-    node('Nvidia DGX', 'Compute', 20, 128, 1, 0, 'NVIDIA DGX', 'NVIDIA CPU', 128, null),
-    node('FPGA', 'Compute', 16, 64, 0, 0, '', 'Intel Xeon', null, 42)],
+  nodes: [node('front', 'Front node', 16, 64, 0, 0, '', 'AMD EPYC', null),
+    node('Threadripper', 'Compute', 32, 128, 0, 0, '', 'AMD Threadripper', null),
+    node('H100', 'Compute', 32, 256, 4, 1, 'NVIDIA H100', 'AMD EPYC', null),
+    node('H200', 'Compute', 32, 256, 4, 1, 'NVIDIA H200', 'AMD EPYC', null),
+    node('Nvidia DGX', 'Compute', 20, 128, 1, 0, 'NVIDIA DGX', 'NVIDIA CPU', 128)],
   ranking: [
     { user: 'Alice', gpu_hours: 120.25, decayed_gpu_hours: 40.5, fairshare: 0.25 },
     { user: 'Bob', gpu_hours: 84.5, decayed_gpu_hours: 32, fairshare: 0.45 },
@@ -69,7 +74,7 @@ const snapshot = {
     { name: 'PriorityWeightAge', value: '2000' },
   ],
   partitions: [
-    { name: 'main', default: true, max_time: '1-00:00:00', nodes: 'H100,H200,Nvidia DGX,Threadripper,FPGA' },
+    { name: 'main', default: true, max_time: '1-00:00:00', nodes: 'H100,H200,Nvidia DGX,Threadripper' },
     { name: 'interactive', default: false, max_time: '08:00:00', nodes: 'H100,H200,Nvidia DGX' },
   ],
 }
@@ -80,7 +85,7 @@ cpSync(source, target, { recursive: true })
 mkdirSync(`${target}/data`, { recursive: true })
 writeFileSync(`${target}/site.json`, JSON.stringify(site, null, 2))
 writeFileSync(`${target}/data/status.json`, JSON.stringify(snapshot, null, 2))
-writeFileSync(`${target}/machines.md`, '# Machines\n\n| Machine | Type | GPUs |\n| --- | --- | ---: |\n| H100 | GPU | 4 |\n| H200 | GPU | 4 |\n| Nvidia DGX | 128 GB unified memory | 1 |\n| Threadripper | CPU | 0 |\n| FPGA | FPGA, sample usage 42% | 0 |\n')
+writeFileSync(`${target}/machines.md`, '# Machines\n\n| Machine | Type | GPUs |\n| --- | --- | ---: |\n| H100 | GPU | 4 |\n| H200 | GPU | 4 |\n| Nvidia DGX | 128 GB unified memory | 1 |\n| Threadripper | CPU | 0 |\n')
 for (const name of ['docs.md', 'policy.md']) {
   const template = readFileSync(`${target}/${name}`, 'utf8')
   writeFileSync(`${target}/${name}`, template.replace(/\{\{(\w+)\}\}/g, (_, key) => String(site[key])))

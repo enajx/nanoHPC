@@ -94,6 +94,10 @@ p { line-height: 1.6; }
 .machine-row small { display: block; color: #65716c; font-size: 14px; margin-top: 5px; }
 .machine-list > p { padding: 16px 22px; }
 .pill { font-family: monospace; font-size: 14px; border: 1px solid #172322; padding: 5px 8px; }
+.machine-list table { min-width: 790px; }
+.machine-list .speed-good { background: var(--accent); }
+.machine-list .state-healthy { background: #06d6a0; }
+.machine-list .state-idle { background: #118ab2; }
 .dashboard iframe { border: 0; width: 100%; height: 690px; display: block; background: #f8f8f6; }
 .demo-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; padding: 20px; }
 .demo-chart { min-width: 0; border: 1px solid #deded8; padding: 15px; }
@@ -102,6 +106,10 @@ p { line-height: 1.6; }
 .demo-queue { padding: 12px 20px 20px; }
 .queue-dashboards .dashboard:first-child iframe { height: 560px; }
 .queue-dashboards .dashboard:last-child iframe { height: 500px; }
+.queue-dashboards .demo-snapshot-queue iframe { height: 400px; }
+.queue-dashboards .demo-snapshot-queue-history iframe { height: 420px; }
+.demo-snapshot-usage iframe { height: 470px; }
+.demo-snapshot-machines iframe { height: 1320px; }
 .frame-note { font-size: 14px; color: #65716c; padding: 0 20px; }
 .notice { display: flex; align-items: center; gap: 12px; background: #fff1a8; border: 1.5px solid; padding: 14px 18px; font-size: 16px; line-height: 1.6; margin-bottom: 24px; }
 .notice.neutral { background: #eaf0ed; }
@@ -232,6 +240,7 @@ footer a { text-decoration: underline; }
 @media (max-width: 1100px) { .layout { grid-template-columns: 200px minmax(0,1fr); } main { padding: 30px 26px; } .sidebar { padding: 28px 15px; } .stat-grid { grid-template-columns: repeat(2,1fr); } .docs-grid { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .topbar { height: 78px; padding: 0 20px; } .brand { font-size: 32px; } .brand-sub { font-size: 13px; } .public-badge { display: none; } .layout { display: block; } .sidebar { border-right: 0; border-bottom: 2px solid; padding: 12px; } .sidebar > .eyebrow, .sidebar-note, .sidebar-bottom { display: none; } nav { margin: 0; display: flex; overflow-x: auto; gap: 8px; padding-bottom: 5px; scroll-padding-inline: 12px; } nav a { white-space: nowrap; padding: 10px; font-size: 16px; scroll-margin-inline: 12px; } nav svg { display: none; } main { padding: 26px 18px; } .page-heading { align-items: start; } .page-heading-actions { gap: 10px; } .freshness { font-size: 14px; white-space: normal; max-width: 125px; } .overview-row, .policies dl { grid-template-columns: 1fr; } .stat-grid { gap: 14px; } .stat { padding: 16px; margin-bottom: 14px; } .stat strong { font-size: 30px; } .small-label { display: none; } .dashboard iframe { height: 640px; } footer { gap: 20px; line-height: 1.6; } }
 @media (max-width: 720px) { .queue-dashboards .dashboard:last-child iframe { height: 1300px; } }
+@media (max-width: 720px) { .queue-dashboards .demo-snapshot-queue iframe { height: 430px; } .queue-dashboards .demo-snapshot-queue-history iframe { height: 1200px; } .demo-snapshot-usage iframe { height: 850px; } .demo-snapshot-machines iframe { height: 3100px; } }
 @media (max-width: 1100px) { .stat-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 @media (max-width: 720px) { .stat-grid { gap: 10px; } .stat { padding: 13px 10px; } .stat span { font-size: 14px; } .stat strong { font-size: 25px; } .machine-list th, .machine-list td { padding: 12px 8px; } }
 @media (max-width: 720px) { .spec-card-grid { grid-template-columns: minmax(0, 1fr); } }

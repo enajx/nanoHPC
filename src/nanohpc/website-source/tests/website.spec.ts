@@ -189,13 +189,16 @@ test('the site renders every tab from the fixture data under a non-root path', a
   await page.getByRole('button', { name: 'Close settings' }).click()
   await expect(page.getByRole('dialog', { name: 'Settings' })).toHaveCount(0)
 
-  // Overview: summary, compute machines only, GPU chart, current jobs.
+  // Overview: summary, front and compute machines, GPU chart, current jobs.
   await expect(page.getByText('Updates every 30s')).toBeVisible()
   await expect(page.locator('.stat').filter({ hasText: 'GPUs allocated' })).toContainText('2 / 4')
   const machineRows = page.locator('.machine-list tbody tr')
-  await expect(machineRows).toHaveCount(2)
-  await expect(machineRows.nth(0)).toContainText('gpu1')
-  await expect(machineRows.nth(1)).toContainText('cpu1')
+  await expect(machineRows).toHaveCount(3)
+  await expect(machineRows.nth(0)).toContainText('front')
+  await expect(machineRows.nth(1)).toContainText('gpu1')
+  await expect(machineRows.nth(2)).toContainText('cpu1')
+  await expect(machineRows.nth(2)).toContainText('Idle')
+  await expect(machineRows.nth(1)).toContainText('Unknown')
   await expect(page.locator('.gpu-allocation-chart .recharts-area').first()).toBeVisible()
   await expect(page.getByRole('table', { name: 'Running jobs' })).toContainText('alice')
   await expect(page.getByRole('table', { name: 'Top of queue' })).toContainText('bob')

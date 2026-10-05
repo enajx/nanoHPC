@@ -30,15 +30,43 @@ test.afterAll(async () => {
   await new Promise<void>(done => server.close(() => done()))
 })
 
-test('static demo lets visitors browse all pages and interact with charts without Grafana', async ({ page }) => {
+test('the four demo dashboards embed fixed Grafana snapshots', async ({ page }) => {
+  await page.route('https://snapshots.raintank.io/dashboard/snapshot/**', route => route.fulfill({ contentType: 'text/html', body: '<h1>Grafana sample snapshot</h1>' }))
+  await page.goto(`${origin}${prefix}`)
+  const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
+  for (const [section, titles] of [
+    ['Jobs', ['Running Jobs and Queue', 'Queue history']],
+    ['Users', ['GPU usage history']],
+    ['Cluster usage', ['Machine and GPU metrics']],
+  ] as const) {
+    await nav.getByRole('link', { name: section, exact: true }).click()
+    for (const title of titles) {
+      const frame = page.locator(`iframe[title="${title}"]`)
+      await expect(frame).toHaveAttribute('src', /^https:\/\/snapshots\.raintank\.io\/dashboard\/snapshot\/[A-Za-z0-9]+\?theme=light&kiosk$/)
+    }
+  }
+})
+
+test('Machines table includes front, state, speeds, and GPU availability', async ({ page }) => {
+  await page.goto(`${origin}${prefix}#machines`)
+  const table = page.locator('.machine-list table')
+  await expect(table.locator('thead th')).toHaveText(['Machine', 'Health', 'State', 'Speed /home', 'Internet', 'GPUs'])
+  await expect(table.locator('tbody tr')).toHaveCount(5)
+  await expect(table.locator('tbody tr').first()).toContainText('front')
+  await expect(table.locator('tbody tr').filter({ hasText: 'Threadripper' })).toContainText('Idle')
+  await expect(table.locator('tbody tr').filter({ hasText: 'H100' })).toContainText('MB/s')
+})
+
+test('static demo lets visitors browse all pages and view Grafana snapshots', async ({ page }) => {
   const failed: string[] = []
   const outside: string[] = []
   page.on('pageerror', error => failed.push(error.message))
   page.on('response', response => { if (!response.ok()) failed.push(`${response.status()} ${response.url()}`) })
   page.on('request', request => {
     const url = new URL(request.url())
-    if (url.origin !== origin || !url.pathname.startsWith(prefix) || url.pathname.includes('grafana')) outside.push(request.url())
+    if (url.origin !== origin && url.origin !== 'https://snapshots.raintank.io') outside.push(request.url())
   })
+  await page.route('https://snapshots.raintank.io/dashboard/snapshot/**', route => route.fulfill({ contentType: 'text/html', body: '<h1>Grafana sample snapshot</h1>' }))
   await page.clock.install({ time: new Date('2026-10-05T12:34:00') })
   await page.goto(`${origin}${prefix}`)
   await expect(page.locator('.brand-title')).toHaveText('nanoHPC')
@@ -98,15 +126,11 @@ test('static demo lets visitors browse all pages and interact with charts withou
   await page.getByRole('tablist', { name: 'Shared vs scratch' }).getByRole('tab', { name: 'Scratch mode' }).click()
   await expect(page.getByRole('tablist', { name: 'Scratch mode' }).getByRole('tab', { name: 'Basic' })).toHaveAttribute('aria-selected', 'true')
   for (const name of ['Home space', 'GPU software', 'Caches']) await expect(page.getByRole('tab', { name })).toBeVisible()
-  expect(guide).not.toMatch(/REAL HPC|real3\.itu|ITU HPC|real-itu\.eu/)
   await nav.getByRole('link', { name: 'Machines', exact: true }).click()
-  for (const name of ['H100', 'H200', 'Threadripper', 'Nvidia DGX', 'FPGA']) await expect(page.getByText(name, { exact: true }).first()).toBeVisible()
-  const fpgaRow = page.locator('.machine-list tbody tr').filter({ hasText: 'FPGA' })
-  await expect(fpgaRow).toContainText('FPGA 42%')
-  await expect(fpgaRow).not.toContainText('0/0')
+  for (const name of ['H100', 'H200', 'Threadripper', 'Nvidia DGX']) await expect(page.getByText(name, { exact: true }).first()).toBeVisible()
+  await expect(page.locator('.machine-list')).not.toContainText('FPGA')
   await expect(page.getByRole('region', { name: 'Nvidia DGX specs' })).toContainText('Unified memory')
   await expect(page.getByRole('region', { name: 'Nvidia DGX specs' })).toContainText('128 GB')
-  await expect(page.getByRole('region', { name: 'FPGA specs' })).toContainText('FPGA usage')
   await nav.getByRole('link', { name: 'Users', exact: true }).click()
   for (const name of ['Alice', 'Bob', 'Mike']) await expect(page.getByText(name, { exact: true }).first()).toBeVisible()
   await nav.getByRole('link', { name: 'Cluster policy', exact: true }).click()
@@ -114,17 +138,16 @@ test('static demo lets visitors browse all pages and interact with charts withou
     await expect(page.getByRole('heading', { name, exact: true }).first()).toBeVisible()
   }
   await expect(page.locator('.partition-summary')).toContainText('Nvidia DGX')
+  await expect(page.locator('.partition-summary')).not.toContainText('FPGA')
   await nav.getByRole('link', { name: 'Jobs', exact: true }).click()
-  await expect(page.getByRole('table', { name: 'Sample jobs' }).locator('tbody tr')).toHaveCount(5)
-  await expect(page.locator('.demo-dashboard .recharts-wrapper').first()).toBeVisible()
-  await page.getByRole('group', { name: 'Dashboard time range' }).first().getByRole('button', { name: '24h' }).click()
-  await expect(page.getByRole('group', { name: 'Dashboard time range' }).first().getByRole('button', { name: '24h' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('iframe[title="Running Jobs and Queue"]')).toBeVisible()
+  await expect(page.locator('iframe[title="Queue history"]')).toBeVisible()
   await page.goto(`${origin}${prefix}#queue?state=PENDING`)
   await expect(page.getByRole('table', { name: 'Sample jobs' }).locator('tbody tr')).toHaveCount(2)
   await nav.getByRole('link', { name: 'Machines', exact: true }).click()
   await page.getByRole('button', { name: 'Show cluster map' }).click()
   await expect(page.getByRole('img', { name: /Cluster map:/ })).toBeVisible()
-  await expect(page.getByRole('img', { name: /Cluster map:/ })).toHaveAttribute('aria-label', /FPGA usage 42%/)
+  await expect(page.getByRole('img', { name: /Cluster map:/ })).not.toHaveAttribute('aria-label', /FPGA/)
   expect(await page.locator('iframe').count()).toBe(0)
   expect(outside).toEqual([])
   expect(failed).toEqual([])

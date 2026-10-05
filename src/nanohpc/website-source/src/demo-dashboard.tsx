@@ -11,6 +11,12 @@ const panels: Record<DashboardName, string[]> = {
   machines: ['CPU in use', 'Available memory', 'Available filesystem space', 'GPU utilization', 'GPU memory used', 'GPU temperature', 'GPU power'],
   history: ['Allocated GPU-hours at daily sample', '24-hour mean CPU usage', '24-hour mean GPU utilization', 'Observed fraction of the 24-hour window'],
 }
+const snapshots: Partial<Record<DashboardName, string>> = {
+  queue: 'hG0sbTwTDjkE5EqraDRyesJMzC1xunFq',
+  'queue-history': 'GPOOddPx1UjCN6VDTA5dqJlywAy8auCA',
+  usage: 'PlJgVBNl4ympikXbPd72BOZLxbjLA0fU',
+  machines: '1GdTjXlQEilg7sLv6e6WfMgnTrR4xzpy',
+}
 
 /** Stable fictional points for the static demo, with a different span for each control. */
 function samples(name: string, range: Range): { label: string; value: number }[] {
@@ -22,9 +28,15 @@ function samples(name: string, range: Range): { label: string; value: number }[]
   }))
 }
 
-/** Interactive sample panels for Pages, where no Grafana service is running. */
+/** Embed fixed Grafana snapshots, with local charts for history and filtered jobs. */
 export function DemoDashboard({ name, kind, jobs, queueFilter }: { name: string; kind: DashboardName; jobs?: OverviewJob[]; queueFilter?: string }) {
   const [range, setRange] = useState<Range>('7d')
+  const snapshot = snapshots[kind]
+  if (snapshot && (kind !== 'queue' || queueFilter === 'RUNNING|PENDING')) {
+    return <section className={`dashboard demo-snapshot demo-snapshot-${kind} panel`} aria-label={name}>
+      <iframe title={name} src={`https://snapshots.raintank.io/dashboard/snapshot/${snapshot}?theme=light&kiosk`} loading="lazy" referrerPolicy="no-referrer"/>
+    </section>
+  }
   return <section className="dashboard demo-dashboard panel">
     <div className="panel-heading"><h2>{name}</h2>{kind !== 'queue' && <div className="gpu-chart-ranges" role="group" aria-label="Dashboard time range">
       {(['24h', '7d', '30d'] as Range[]).map(value => <button key={value} type="button" aria-pressed={value === range} onClick={() => setRange(value)}>{value}</button>)}
