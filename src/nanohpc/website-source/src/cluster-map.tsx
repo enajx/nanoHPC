@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { Machine } from './machines'
 import type { OverviewJob } from './overview-jobs'
 import type { ClusterMap as Sketch, LayoutName, MapMachine } from './cluster-map/sketch'
+import { mapAreas } from './cluster-map/areas'
 
-const layouts: [LayoutName, string][] = [['tiers', 'Tiers'], ['radial', 'Radial'], ['blocks', 'Blocks']]
+const layouts: [LayoutName, string][] = [['default', 'Default'], ['partitions', 'Partitions'], ['geographic', 'Geographic']]
 const layoutStorageKey = 'cluster-map-layout'
 const shownStorageKey = 'cluster-map-shown'
 
@@ -51,12 +52,12 @@ async function measure(signal: AbortSignal, mode: 'slurm' | 'monitor'): Promise<
   return { nfs: byMachine('nfs'), writes: byMachine('writes'), busy }
 }
 
-/** Read whether the map is shown; off when nothing is stored or storage is blocked. */
+/** Read whether the map is shown; on until the visitor hides it. */
 export function storedMapShown(): boolean {
   try {
-    return localStorage.getItem(shownStorageKey) === 'true'
+    return localStorage.getItem(shownStorageKey) !== 'false'
   } catch {
-    return false
+    return true
   }
 }
 
@@ -67,19 +68,19 @@ export function MapToggle({ shown, onChange }: { shown: boolean; onChange: (show
     try {
       localStorage.setItem(shownStorageKey, String(!shown))
     } catch {
-      // Storage is blocked; the map is off next time.
+      // Storage is blocked; the map is shown next time.
     }
   }
   return <button type="button" className="markdown-link map-toggle" aria-label="Show cluster map" aria-pressed={shown} title={shown ? 'Hide the cluster map' : 'Show the cluster map'} onClick={toggle}>Cluster Map</button>
 }
 
-/** Read the last chosen layout; Tiers when none is stored or storage is blocked. */
+/** Read the last chosen layout; Default when none is stored or storage is blocked. */
 function storedLayout(): LayoutName {
   try {
     const value = localStorage.getItem(layoutStorageKey)
-    return layouts.find(([name]) => name === value)?.[0] ?? 'tiers'
+    return layouts.find(([name]) => name === value)?.[0] ?? 'default'
   } catch {
-    return 'tiers'
+    return 'default'
   }
 }
 
@@ -94,13 +95,16 @@ function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, mea
     const busy = measured?.busy.get(node.name)
     if (mode === 'monitor') return {
       mode, name: node.name, front: node.role === 'Monitor', health: node.health ?? 'Unknown',
+      building: null, partitions: [], fpgaUsagePercent: null,
       gpuModel: node.specs?.gpus[0]?.model ?? null, totalGpus: total,
       allocatedGpus: 0, runningJobs: 0, pendingJobs: 0, nfsRequests: null, nfsWrites: null,
       gpus: Array.from({ length: total }, (_, i) => ({ user: null, busy: busy?.[i] ?? null })),
     }
     return {
       mode, name: node.name, front: node.role === 'Front node', health: node.health ?? 'Unknown',
+      building: node.building ?? null, partitions: node.partitions ?? [],
       gpuModel: node.specs?.gpus[0]?.model ?? null, totalGpus: total,
+      fpgaUsagePercent: node.fpga_usage_percent ?? null,
       allocatedGpus: allocated,
       runningJobs: running.length, pendingJobs: node.role === 'Front node' ? pending : 0,
       nfsRequests: measured?.nfs.get(node.name) ?? null, nfsWrites: measured?.nfs.has(node.name) ? measured.writes.get(node.name) ?? 0 : null,
@@ -110,18 +114,19 @@ function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, mea
 }
 
 /** Describe the map in words for screen readers and tests. */
-function describe(machines: MapMachine[]): string {
-  return `Cluster map: ${machines.map(m => m.mode === 'monitor'
+function describe(machines: MapMachine[], layout: LayoutName): string {
+  const areas = mapAreas(machines, layout).map(area => `${machines[0]?.mode === 'monitor' ? (area.front ? 'MONITOR' : 'MACHINES') : area.label}: ${area.members.map(machine => machine.name).join(', ')}`).join('; ')
+  return `Cluster map: ${layout} layout, ${areas}. ${machines.map(m => m.mode === 'monitor'
     ? `${m.name}: ${m.front ? 'monitor host' : 'machine'}, health ${m.health}, GPU activity ${m.gpus.length ? m.gpus.map((gpu, i) => `GPU ${i} ${gpu.busy === null ? 'unknown' : `${Math.round(gpu.busy)}%`}`).join(', ') : 'not applicable'}`
     : m.front
     ? `${m.name}: front node, ${m.pendingJobs} pending job${m.pendingJobs === 1 ? '' : 's'}`
-    : `${m.name}: ${m.allocatedGpus} of ${m.totalGpus} GPUs allocated, ${m.runningJobs} running job${m.runningJobs === 1 ? '' : 's'}, ${
+    : `${m.name}: ${m.fpgaUsagePercent !== null ? `FPGA usage ${m.fpgaUsagePercent}%` : `${m.allocatedGpus} of ${m.totalGpus} GPUs allocated`}, ${m.runningJobs} running job${m.runningJobs === 1 ? '' : 's'}, ${
       m.nfsRequests === null ? 'shared home traffic unknown' : `shared home ${Math.round(m.nfsRequests)} requests per second (${Math.round(m.nfsWrites ?? 0)} writes)`}${
       !m.gpus.length ? '' : m.gpus.some(gpu => gpu.busy === null) ? ', GPU busy unknown' : `, GPUs busy ${m.gpus.map(gpu => `${Math.round(gpu.busy!)}%`).join(', ')}`}`).join('; ')}`
 }
 
 /** Animated isometric map of the machines Slurm knows, with traffic from their running jobs. */
-export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, mode }: { nodes: Machine[]; jobs: OverviewJob[]; pendingJobs: number; stale: boolean; refreshSeconds: number; mode?: 'slurm' | 'monitor' }) {
+export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, demo, mode }: { nodes: Machine[]; jobs: OverviewJob[]; pendingJobs: number; stale: boolean; refreshSeconds: number; demo?: boolean; mode?: 'slurm' | 'monitor' }) {
   const box = useRef<HTMLDivElement>(null)
   const sketch = useRef<Sketch | null>(null)
   const [layout, setLayout] = useState<LayoutName>(storedLayout)
@@ -130,12 +135,20 @@ export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, mo
 
   // Measurements refresh with the snapshot; a failed query means no traffic is shown, not zero.
   useEffect(() => {
+    if (demo) {
+      setMeasured({
+        nfs: new Map(nodes.map((node, index) => [node.name, index * 12 + 8])),
+        writes: new Map(nodes.map((node, index) => [node.name, index * 3 + 2])),
+        busy: new Map(nodes.filter(node => (node.total_gpus ?? 0) > 0).map(node => [node.name, Array.from({ length: node.total_gpus ?? 0 }, (_, index) => index * 18 + 25)])),
+      })
+      return
+    }
     const controller = new AbortController()
     const load = () => measure(controller.signal, mode ?? 'slurm').then(setMeasured).catch(() => { if (!controller.signal.aborted) setMeasured(null) })
     load()
     const timer = window.setInterval(load, Math.max(5, refreshSeconds) * 1000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [refreshSeconds, mode])
+  }, [refreshSeconds, demo, mode])
   const latest = useRef({ machines, stale })
   latest.current = { machines, stale }
 
@@ -161,13 +174,13 @@ export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, mo
     try {
       localStorage.setItem(layoutStorageKey, name)
     } catch {
-      // Storage is blocked; the map opens on Tiers next time.
+      // Storage is blocked; the map opens on Default next time.
     }
   }
   return <div className="cluster-map">
     <div className="gpu-chart-ranges cluster-map-layouts" role="group" aria-label="Cluster map layout">
       {layouts.map(([name, label]) => <button key={name} type="button" aria-pressed={name === layout} onClick={() => choose(name)}>{label}</button>)}
     </div>
-    <div className="cluster-map-canvas" ref={box} role="img" aria-label={describe(machines)}/>
+    <div className="cluster-map-canvas" ref={box} role="img" aria-label={describe(machines, layout)}/>
   </div>
 }

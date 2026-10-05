@@ -85,6 +85,12 @@ Do not name a node or use --constraint for normal jobs. Slurm selects a suitable
 - [Download four-gpu-torchrun-job.sh](job-examples/four-gpu-torchrun-job.sh): four GPUs, runs PyTorch distributed training.
 - [Download cpu-memory-job.sh](job-examples/cpu-memory-job.sh): one GPU with explicit CPU and RAM requests.
 
+## Do's and don'ts
+
+Do: run installs and interactive tools inside a batch job or an interactive shell on a compute machine.
+
+Don't: run heavy or long-lived work on {{cluster_name}}; the front node is shared by everyone.
+
 ## Batch vs interactive
 
 ### Batch job
@@ -113,7 +119,7 @@ srun --partition=PARTITION --gpus=1 --cpus-per-task=4 --time=01:00:00 --pty bash
 
 We recommend shared mode with a git worktree for most jobs. Use scratch mode for jobs that read or write a lot.
 
-### Shared mode with a git worktree (recommended)
+### Shared mode: With a git worktree
 
 Make a separate git worktree for each run and submit from it with sbatch. The job runs that fixed copy of the code, so you can keep editing and pulling in your main checkout. The worktree holds the last commit only, so commit your changes first, and add .worktrees/ and logs/ to .gitignore. Write results to an absolute path in your home outside the worktree, such as $HOME/YOUR_PROJECT/results: they are saved as the job writes them, and a job stopped at its time limit loses only the work in progress. Cost: each worktree is a full copy of the code in your home, and uv sync builds a separate .venv in it. The job reads both over the network, and building the .venv copies the whole environment into your home, which takes job time for large packages such as PyTorch. Remove the worktree when the job has ended; git worktree remove refuses if it holds files you have not committed.
 
@@ -130,7 +136,7 @@ git worktree add --detach "$RUN"
 git worktree remove "$RUN"
 ```
 
-### Shared mode
+### Shared mode: Plain
 
 Use this when you want the job to read and write the shared project directly. There is no project copy or output copy-back. A git pull, branch switch, or file edit can change code used by processes that start later in a pending or running job.
 
@@ -141,7 +147,7 @@ cd ~/YOUR_PROJECT
 sbatch job.sh
 ```
 
-### Shared mode with local scratch
+### Shared mode: With local scratch
 
 Keep code and results in your home, and put large datasets and temporary files on the compute machine’s local disk. Add these lines to job.sh. stage-dataset --private copies a dataset folder from your home (path relative to your home) to local scratch once, and later jobs on the same machine reuse it. A staged copy that no job has used for {{scratch_cleanup_days}} days is deleted automatically. Files in TMPDIR are not copied back; the last line deletes them.
 
@@ -155,7 +161,7 @@ uv run --locked python train.py --data "$DATA" --output "$HOME/YOUR_PROJECT/resu
 rm -rf "$TMPDIR"
 ```
 
-### Scratch mode
+### Scratch mode: Basic
 
 Use this when you want a private project copy while the job runs. cluster-submit copies Git-tracked files when the job starts, including uncommitted edits. Changes made while the job waits may be copied; later changes do not affect the running copy. Add #CLUSTER include= for other inputs and #CLUSTER copy-back= for results to return, including after an application failure. Git commands such as git rev-parse do not work in the scratch copy, which has no .git folder. --mode is required (--mode=shared is the same as plain sbatch). sbatch options go before the script in the --name=value form, for example cluster-submit --mode=scratch --output=$HOME/YOUR_PROJECT/logs/job-%j.log job.sh.
 
@@ -166,7 +172,7 @@ cd ~/YOUR_PROJECT
 cluster-submit --mode=scratch job.sh
 ```
 
-### Scratch mode with results in home
+### Scratch mode: Results in home
 
 Run from a private scratch copy, but write results and checkpoints to an absolute path in your home. They are saved as the job writes them, so they do not depend on copy-back at the end of the job, and a time limit or crash loses only the work in progress. These paths need no #CLUSTER copy-back= line.
 
@@ -185,7 +191,7 @@ uv run --locked python train.py --output "$HOME/YOUR_PROJECT/results/$SLURM_JOB_
 # cluster-submit --mode=scratch job.sh
 ```
 
-### Select extra inputs and outputs
+### Scratch mode: Inputs and outputs
 
 For scratch mode. Add these lines to the job script. Outputs return to the same relative path inside the original project. Choose a different output directory for each run. Non-Git projects need explicit inputs.
 
@@ -194,7 +200,7 @@ For scratch mode. Add these lines to the job script. Outputs return to the same 
 #CLUSTER copy-back=results/
 ```
 
-### Recover partial results
+### Scratch mode: Recover partial results
 
 For scratch mode. Failed jobs attempt to return declared outputs and keep their scratch directory. Read the job log for the recovery path. Node loss or forced termination can prevent copy-back. Write important checkpoints to your experiment’s persistent output path during execution.
 
@@ -214,6 +220,31 @@ sacct --starttime today --format=JobID,JobName,State,Elapsed,AllocTRES
 sstat -j JOB_ID.batch --format=JobID,AveCPU,MaxRSS
 srun --jobid=JOB_ID --overlap nvidia-smi
 less training-JOB_ID.log
+```
+
+### Home space
+
+Your home is shared between the front and compute machines. Its soft quota is {{home_quota_soft_gb}} GB and its hard quota is {{home_quota_hard_gb}} GB. Keep large temporary data on local scratch.
+
+```bash
+du -sh "$HOME"
+du -h -d 1 "$HOME" | sort -h
+```
+
+### GPU software
+
+The NVIDIA driver is installed on GPU machines. Check the assigned GPU and available driver from inside a job. Use the Machines page for the GPU model and memory on each machine.
+
+```bash
+nvidia-smi
+```
+
+### Caches
+
+uv, Hugging Face, and PyTorch caches are placed on local scratch on compute machines so package downloads do not fill the shared home.
+
+```bash
+printf "uv: %s\nHugging Face: %s\nPyTorch: %s\n" "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME"
 ```
 
 ## Jobs examples

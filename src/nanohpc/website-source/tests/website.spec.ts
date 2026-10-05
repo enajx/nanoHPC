@@ -183,14 +183,21 @@ test('the site renders every tab from the fixture data under a non-root path', a
   const logo = page.locator('img.brand-mark')
   await expect(logo).toHaveAttribute('src', 'logo.svg')
   await expect.poll(() => logo.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+  await expect(page.locator('main footer')).toContainText('mylab runs on nanoHPC')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toContainText('read-only cluster monitor')
+  await page.getByRole('button', { name: 'Close settings' }).click()
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toHaveCount(0)
 
-  // Overview: summary, compute machines only, GPU chart, current jobs.
+  // Overview: summary, compute machines, GPU chart, current jobs.
   await expect(page.getByText('Updates every 30s')).toBeVisible()
   await expect(page.locator('.stat').filter({ hasText: 'GPUs allocated' })).toContainText('2 / 4')
   const machineRows = page.locator('.machine-list tbody tr')
   await expect(machineRows).toHaveCount(2)
   await expect(machineRows.nth(0)).toContainText('gpu1')
   await expect(machineRows.nth(1)).toContainText('cpu1')
+  await expect(machineRows.nth(1)).toContainText('Idle')
+  await expect(machineRows.nth(0)).toContainText('Unknown')
   await expect(page.locator('.gpu-allocation-chart .recharts-area').first()).toBeVisible()
   await expect(page.getByRole('table', { name: 'Running jobs' })).toContainText('alice')
   await expect(page.getByRole('table', { name: 'Top of queue' })).toContainText('bob')
@@ -201,7 +208,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   // How to: the cluster's own values and live partitions.
   await nav.getByRole('link', { name: 'How to', exact: true }).click()
   await expect(page.getByRole('heading', { name: '1. SSH into mylab', exact: true })).toBeVisible()
-  await expect(page.locator('.instruction.panel')).toHaveCount(4)
+  await expect(page.locator('.instruction.panel')).toHaveCount(5)
   await expect(page.locator('.instruction').filter({ hasText: 'HostName login.mylab.example.org' })).toHaveCount(1)
   await expect(page.getByText('soft quota of 250 GB and a hard quota of 300 GB', { exact: false })).toBeVisible()
   await expect(page.getByText('main (default): 24 hours, gpu1,cpu1', { exact: true }).first()).toBeVisible()
@@ -216,13 +223,12 @@ test('the site renders every tab from the fixture data under a non-root path', a
   expect(await page.locator('iframe').evaluateAll(frames => frames.map(frame => new URL((frame as HTMLIFrameElement).src).pathname)))
     .toEqual([`${prefix}grafana/d/nanohpc-queue`, `${prefix}grafana/d/nanohpc-queue-history`])
 
-  // Machines: a card per compute machine, including the CPU-only one; the map can be turned on.
+  // Machines: a card per compute machine, including the CPU-only one; the map opens by default.
   await nav.getByRole('link', { name: 'Machines', exact: true }).click()
   await expect(page.locator('.machine-spec')).toHaveCount(2)
   const cpuCard = page.getByRole('region', { name: 'cpu1 specs' })
   await expect(cpuCard).toContainText('Not applicable')
   await expect(page.getByRole('region', { name: 'gpu1 specs' })).toContainText('4× NVIDIA RTX A6000')
-  await page.getByRole('button', { name: 'Show cluster map' }).click()
   await expect(page.locator('.cluster-map-canvas canvas')).toBeVisible()
   await expect(page.locator('.cluster-map-canvas')).toHaveAttribute('aria-label', /gpu1: 2 of 4 GPUs allocated/)
   await page.getByRole('button', { name: 'Show cluster map' }).click()
@@ -240,10 +246,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   const metrics = new URL(await page.locator('iframe[title="Machine and GPU metrics"]').evaluate(frame => (frame as HTMLIFrameElement).src))
   expect(metrics.pathname).toBe(`${prefix}grafana/d/nanohpc-machines`)
   expect(metrics.searchParams.get('var-gpu_group')).toBe('0')
-  // and the long-term history: the daily summaries kept for 5 years.
-  const history = new URL(await page.locator('iframe[title="Long-term history (daily summaries, kept 5 years)"]').evaluate(frame => (frame as HTMLIFrameElement).src))
-  expect(history.pathname).toBe(`${prefix}grafana/d/nanohpc-history`)
-  expect(history.searchParams.get('from')).toBe('now-1y')
+  await expect(page.locator('iframe')).toHaveCount(1)
 
   // Cluster policy: one card per partition, default first, then the shared rows.
   await nav.getByRole('link', { name: 'Cluster policy', exact: true }).click()
@@ -299,9 +302,10 @@ test('monitor mode shows measured machines and login names without Slurm claims'
   await expect(page.getByRole('region', { name: 'gpu1 specs' })).toContainText('2× RTX')
   await expect(page.getByRole('table', { name: 'GPU readings' })).toContainText('GPU 0')
   await expect(page.getByRole('table', { name: 'GPU readings' })).toContainText('55%')
-  await page.getByRole('button', { name: 'Show cluster map' }).click()
   await expect(page.locator('.cluster-map-canvas canvas')).toBeVisible()
   await expect(page.locator('.cluster-map-canvas')).toHaveAttribute('aria-label', /gpu1: machine, health Healthy, GPU activity GPU 0 55%/)
+  await page.getByRole('button', { name: 'Show cluster map' }).click()
+  await expect(page.locator('.cluster-map-canvas')).toHaveCount(0)
   await nav.getByRole('link', { name: 'Users' }).click()
   await expect(page.getByRole('list', { name: 'Login names' })).toContainText('alice')
   await expect(page.getByRole('list', { name: 'Login names' })).toContainText('bob')

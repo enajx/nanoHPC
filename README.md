@@ -29,7 +29,7 @@ policy), and one command sets up every machine.
   <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="520">
 </div>
 
-See a [demo of nanoHPC](https://enajx.github.io/nanoHPC/).
+See a [demo of nanoHPC](https://najarro.science/nanoHPC/).
 
 ## Set up
 
