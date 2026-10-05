@@ -22,8 +22,8 @@ policy), and one command sets up every machine.
 
 You need:
 
-- A set of Linux machines running Ubuntu 22.04, 24.04, or 26.04 (the releases nanoHPC is tested on), with NVIDIA
-  drivers already installed on GPU machines.
+- A set of machines with NVIDIA GPUs running Linux (nanoHPC has been tested on Ubuntu 22.04/24.04/26.04). CPU-only
+  machines are also supported. AMD ROCm support is coming soon.
 - SSH access to every machine as an administrator with sudo.
 - [uv](https://docs.astral.sh/uv/) on your own computer (macOS or Linux).
 
@@ -84,29 +84,7 @@ If you prefer having your AI agents setting up the cluster, you can point them t
 
 ### Deploy Monitor only (without Slurm)
 
-Use monitor mode for machines where people run work directly. It installs machine and GPU metrics, health checks,
-alerts, Grafana, and the website. It does not set up Slurm, user accounts, SSH access, or storage. Choose one machine
-as `monitor_host`; that machine may also run work. The website shows Overview, Machines, Usage, and Users, with
-measured GPU use rather than job or queue data.
-
-Start with [examples/monitor.yml](examples/monitor.yml), or run the setup wizard:
-
-```sh
-nanohpc init cluster.yml --mode monitor
-nanohpc validate cluster.yml
-nanohpc deploy-monitor cluster.yml --dry-run
-nanohpc deploy-monitor cluster.yml
-nanohpc check cluster.yml
-```
-
-The file lists each machine's address and optional aliases. `users` is a list of existing login names for the website;
-`[]` is valid. The website is public by default over HTTPS. Set `cluster.website.allow` to restrict its visitors.
-Use `--ssh-config FILE` when the machines need a separate SSH configuration.
-
-After a change, run `nanohpc deploy-monitor cluster.yml` again, or use `--only node NAME` for one machine. nanoHPC
-records the discovered GPU count and models at the first deploy. If hardware changes, inspect it and pass
-`--accept-hardware-change NAME` on the next deploy. A machine with `nvidia-smi` installed but unable to report GPUs
-stops the deploy. Monitor mode refuses machines that already have a nanoHPC Slurm setup; it does not convert one.
+TBA
 
 ## Tech stack
 
