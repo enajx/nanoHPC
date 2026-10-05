@@ -1686,6 +1686,40 @@ class SimSetupTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimHomeBindRemountTest(SimUsersBase):
+    """A later deploy applies changed options to /home when it is a bind mount on the root disk."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "variations.yml"
+        self.state = ROOT / ".nanohpc-sim" / "variations"
+        super().setUp()
+
+    def test_home_bind_remount(self) -> None:
+        self.up_and_deploy()
+        edit = (
+            "from pathlib import Path; p = Path('/etc/fstab'); "
+            "p.write_text(''.join(line.replace(',nodev', '').replace(',nosuid', '') "
+            "if ' /home ' in line else line for line in p.read_text().splitlines(keepends=True)))"
+        )
+        changed = self.ssh("front", f"sudo python3 -c {shlex.quote(edit)} && sudo mount -o remount,bind,suid,dev /home")
+        self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+        before = self.on_front("cat /etc/fstab; findmnt -n -o OPTIONS --mountpoint /home")
+        self.assertNotIn("nodev", before.splitlines()[-1].split(","))
+        self.assertNotIn("nosuid", before.splitlines()[-1].split(","))
+
+        dry = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--dry-run")
+        self.assertEqual(dry.returncode, 0, self.failure(dry))
+        self.assertEqual(self.on_front("cat /etc/fstab; findmnt -n -o OPTIONS --mountpoint /home"), before)
+
+        applied = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(applied.returncode, 0, self.failure(applied))
+        options = self.on_front("findmnt -n -o OPTIONS --mountpoint /home").strip().split(",")
+        self.assertIn("nodev", options)
+        self.assertIn("nosuid", options)
+        self.assertEqual(len(self.on_front("findmnt -n -o TARGET --mountpoint /home").splitlines()), 1)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimHomeOnStorageTest(SimUsersBase):
     """/home served by the storage machine instead of the front node. Real Lima VMs."""
 
@@ -1717,6 +1751,42 @@ class SimHomeOnStorageTest(SimUsersBase):
         self.assertEqual(self.ssh("gpu4", "sudo -u alice cat /home/alice/check").stdout.strip(), "shared")
         # The VM's default account still logs in on the front node, where its own home is now hidden.
         self.assertEqual(self.ssh("front", "true").returncode, 0)
+
+        # These are the existing mounts that a later deploy must update without a reboot.
+        mounts = [("store", "/home"), ("front", "/home"), ("gpu4", "/scratch"), ("gpu2", "/scratch")]
+        for machine, target in mounts:
+            edit = (
+                "from pathlib import Path; p = Path('/etc/fstab'); "
+                "p.write_text(''.join(line.replace(',nodev', '').replace(',nosuid', '') "
+                f"if ' {target} ' in line else line for line in p.read_text().splitlines(keepends=True)))"
+            )
+            changed = self.ssh(
+                machine, f"sudo python3 -c {shlex.quote(edit)} && sudo mount -o remount,suid,dev {target}"
+            )
+            self.assertEqual(changed.returncode, 0, f"{machine} {target}: {changed.stdout}{changed.stderr}")
+            options = self.ssh(machine, f"findmnt -n -o OPTIONS --mountpoint {target}").stdout.strip().split(",")
+            self.assertNotIn("nodev", options, (machine, target, options))
+            self.assertNotIn("nosuid", options, (machine, target, options))
+
+        before = {
+            (machine, target): self.ssh(machine, f"cat /etc/fstab; findmnt -n -o OPTIONS --mountpoint {target}").stdout
+            for machine, target in mounts
+        }
+        dry = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--dry-run")
+        self.assertEqual(dry.returncode, 0, self.failure(dry))
+        for machine, target in mounts:
+            self.assertEqual(
+                self.ssh(machine, f"cat /etc/fstab; findmnt -n -o OPTIONS --mountpoint {target}").stdout,
+                before[machine, target],
+                f"dry run changed {machine} {target}",
+            )
+
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        for machine, target in mounts:
+            options = self.ssh(machine, f"findmnt -n -o OPTIONS --mountpoint {target}").stdout.strip().split(",")
+            self.assertIn("nodev", options, (machine, target, options))
+            self.assertIn("nosuid", options, (machine, target, options))
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assert_no_changes(result, 6)
         # The quotas read on the storage machine reach the front node's status snapshot.

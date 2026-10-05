@@ -147,3 +147,10 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - `cluster.yml` validation, the example, and the wizard expose the separate retention setting. A full deploy and `--only users` install the command, settings, wrapper, and service. Slurm job IDs are queried in batches.
 - Direct command, config, deploy, and wizard tests passed. `SimDeployTest` and `SimPartialDeployTest` passed on Ubuntu 24.04 VMs: the first ran a failed job and its daily cleanup service, and the second restored the command and service through `--only users`. A separate agent reviewed the feature. The VM runs also led to a longer Alertmanager download timeout and a dry-run snapshot filter for the on-demand `fwupd` service.
 - Files: `src/nanohpc/files/scratch-job-cleanup`, `src/nanohpc/ansible/roles/scratch/tasks/{main,users}.yml`, `src/nanohpc/{config,deploy}.py`, `src/nanohpc/wizard/{machines,state}.py`, `src/nanohpc/ansible/roles/alerts/tasks/main.yml`, `examples/cluster.yml`, `tests/{test_scratch_job_cleanup,test_config,test_deploy,test_sim,test_wizard}.py`, `md/testing.md`.
+
+## 2026-10-05: apply changed mount options during deploy
+
+- When nanoHPC changes an `/etc/fstab` entry for an already mounted `/home` or `/scratch`, it remounts that path. A new mount still uses `mount /home` or `mount /scratch`. The root-disk `/home` bind uses `remount,bind,nosuid,nodev`. The roles check the live `nosuid,nodev` flags and fail if they are missing.
+- `SimHomeOnStorageTest` passed on Ubuntu 24.04 VMs: home disk, NFS `/home`, scratch disk, and scratch image gained `nosuid,nodev` in the same deploy after their fstab entries changed; a dry run changed nothing and a later deploy found no work. `SimHomeBindRemountTest` passed on Ubuntu 24.04 VMs for `/home` on the root disk. A separate agent reviewed the changed tasks.
+- NFS-specific options such as transport and version cannot generally change through a remount. That remaining case is queued in [TODO.md](../TODO.md) (at the repo root).
+- Files: `src/nanohpc/ansible/roles/{home_client,home_server,scratch}/tasks/main.yml`, `tests/test_sim.py`, `md/testing.md`.

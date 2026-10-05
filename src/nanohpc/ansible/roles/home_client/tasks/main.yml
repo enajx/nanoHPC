@@ -28,10 +28,13 @@
 
 - name: Mount the shared /home now
   ansible.builtin.command: mount /home
-  when: home_fstab.changed or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'
-  register: home_mounted
+  when: (home_mount.stdout | default('') | trim) == ''
   changed_when: true
-  failed_when: home_mounted.rc != 0 and 'already mounted' not in home_mounted.stderr
+
+- name: Apply changed shared /home mount options now
+  ansible.builtin.command: mount -o remount /home
+  when: home_fstab.changed and (home_mount.stdout | default('') | trim) != ''
+  changed_when: true
 
 - name: Check that /home is the shared one
   ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /home
@@ -40,3 +43,11 @@
   check_mode: false
   failed_when: home_now.stdout.split() != [nanohpc.home.server_address ~ ':/home', 'nfs4']
   when: not (ansible_check_mode and (home_fstab is changed or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'))  # dry run: not mounted yet
+
+- name: Check that shared /home has the required mount options
+  ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /home
+  register: home_options_now
+  changed_when: false
+  check_mode: false
+  failed_when: "'nodev' not in home_options_now.stdout.split(',') or 'nosuid' not in home_options_now.stdout.split(',')"
+  when: not (ansible_check_mode and (home_fstab is changed or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'))

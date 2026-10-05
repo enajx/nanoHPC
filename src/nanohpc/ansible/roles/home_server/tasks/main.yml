@@ -48,10 +48,13 @@
 
     - name: Mount /home now
       ansible.builtin.command: mount /home
-      when: home_fstab.changed or (home_mount.stdout | default('')) == ''
-      register: home_mounted
+      when: (home_mount.stdout | default('')) == ''
       changed_when: true
-      failed_when: home_mounted.rc != 0 and 'already mounted' not in home_mounted.stderr
+
+    - name: Apply changed /home disk mount options now
+      ansible.builtin.command: mount -o remount /home
+      when: home_fstab.changed and (home_mount.stdout | default('')) != ''
+      changed_when: true
 
     - name: Check that /home is the home disk
       ansible.builtin.command: findmnt -n -o UUID --mountpoint /home
@@ -173,10 +176,24 @@
 
     - name: Mount the /home bind now
       ansible.builtin.command: mount /home
-      when: home_bind.changed or (home_mount.stdout | default('')) == ''
-      register: home_bind_mounted
+      when: (home_mount.stdout | default('')) == ''
       changed_when: true
-      failed_when: home_bind_mounted.rc != 0 and 'already mounted' not in home_bind_mounted.stderr
+
+    - name: Apply changed /home bind mount options now
+      ansible.builtin.command: mount -o remount,bind,nosuid,nodev /home
+      when: home_bind.changed and (home_mount.stdout | default('')) != ''
+      changed_when: true
+
+- name: Check that /home has the required mount options
+  ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /home
+  register: home_options_now
+  changed_when: false
+  check_mode: false
+  failed_when: "'nodev' not in home_options_now.stdout.split(',') or 'nosuid' not in home_options_now.stdout.split(',')"
+  when: >-
+    not (ansible_check_mode and
+         ((nanohpc.home.device is not none and (home_fstab is changed or (home_mount.stdout | default('')) == ''))
+          or (nanohpc.home.device is none and (home_bind is changed or (home_mount.stdout | default('')) == ''))))
 
 # The dry run cannot read the quotas before the quota tools are installed and the filesystem that holds
 # /home is mounted with quotas.

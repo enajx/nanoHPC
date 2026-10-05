@@ -135,6 +135,7 @@ flowchart LR
 - Built: `nanohpc check` (M8b): a read-only report on every machine against `cluster.yml` (SSH, health, users, mounts, GPUs, Slurm, deployed version), problems first.
 - Built: key-only root login for administrators (M8b): their keys from `cluster.yml` work directly on every machine, even when `/home` is unavailable; the dry run stops before replacing root keys that would lose access. Checked on Ubuntu 24.04 VMs with the redeploy and automatic deploy tests. See [DONE.md](md/DONE.md).
 - Built: daily cleanup of kept `cluster-submit` job copies, with a separate seven-day default. The full deploy and `--only users` paths passed on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md).
+- Built: changed `/etc/fstab` entries remount existing `/home` and `/scratch` during deploy; the live `nosuid,nodev` options are checked. Ubuntu 24.04 VM tests cover home disk, NFS, root-disk bind, scratch disk, and scratch image. See [DONE.md](md/DONE.md).
 - Next: v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):
