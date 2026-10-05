@@ -39,7 +39,7 @@ with open(os.path.join(os.environ["FAKE_CLUSTER"], "ssh.log"), "a") as log:
 if os.path.exists(os.path.join(root, "unreachable")):
     sys.stderr.write(f"ssh: connect to host {{target}} port 22: Connection refused\\n")
     sys.exit(255)
-command = command.replace("/etc/nanohpc/version", root + "/etc/nanohpc/version").replace('"/dev"', f'"{{root}}/dev"')
+command = command.replace("/etc/nanohpc/version", root + "/etc/nanohpc/version").replace("/etc/nanohpc/monitor-gpus.json", root + "/etc/nanohpc/monitor-gpus.json").replace("/var/lib/nanohpc/monitor/status.json", root + "/var/lib/nanohpc/monitor/status.json").replace('"/dev"', f'"{{root}}/dev"')
 environment = dict(os.environ, FAKE_ROOT=root, PATH=os.path.join(root, "bin") + ":" + os.environ["PATH"])
 sys.exit(subprocess.run(["sh", "-c", command], env=environment).returncode)
 """
@@ -312,3 +312,73 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("error(s)", result.stderr)
         self.assertFalse((self.cluster / "ssh.log").exists())
+
+
+class MonitorCheckTest(unittest.TestCase):
+    """The monitor check uses SSH but never asks about users, mounts, or Slurm."""
+
+    check = CheckTest.check
+    machine = CheckTest.machine
+    gpus = CheckTest.gpus
+    rows = CheckTest.rows
+    row = CheckTest.row
+    assert_problem_first = CheckTest.assert_problem_first
+
+    def setUp(self) -> None:
+        CheckTest.setUp(self)
+        self.environment["PYTHONPATH"] = str(ROOT / "src")
+        (self.folder / "cluster.yml").write_text(
+            "cluster:\n  name: lab\n  mode: monitor\n  monitor_host: front\n"
+            "  website:\n    hostname: lab.example.org\n    https: letsencrypt\n    path: /cluster/\n"
+            "machines:\n  front:\n    address: 192.168.1.10\n  gpu4:\n    address: 192.168.1.11\n"
+            "users: [alice]\n"
+        )
+        for name in ("front", "gpu4"):
+            root = self.cluster / name
+            (root / "etc" / "nanohpc" / "monitor-gpus.json").write_text(
+                '{"count": 0, "models": [], "fake": false}'
+                if name == "front"
+                else '{"count": 4, "models": ["NVIDIA RTX A6000", "NVIDIA RTX A6000", "NVIDIA RTX A6000", "NVIDIA RTX A6000"], "fake": false}'
+            )
+            write_command(root / "bin", "systemctl", "echo active\n")
+        (self.cluster / "front" / "var" / "lib" / "nanohpc" / "monitor").mkdir(parents=True)
+        (self.cluster / "front" / "var" / "lib" / "nanohpc" / "monitor" / "status.json").write_text(
+            '{"mode":"monitor","generated_at":"2099-01-01T00:00:00Z","refresh_seconds":30,"nodes":[]}'
+        )
+
+    def test_healthy_cluster(self) -> None:
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            [cell.strip() for cell in self.rows(result.stdout)[0]],
+            ["machine", "ssh", "health", "gpus", "monitoring", "version"],
+        )
+        self.assertEqual(self.row(result.stdout, "gpu4")[3], "4/4")
+        self.assertEqual(self.row(result.stdout, "front")[3], "0/0")
+        self.assertIn("No problems.", result.stdout)
+        self.assertNotIn("slurm", result.stdout.lower())
+        self.assertNotIn("/home", result.stdout)
+        self.assertNotIn("users", result.stdout.lower())
+        sudo = (self.cluster / "sudo.log").read_text()
+        self.assertNotIn("getent", sudo)
+        self.assertNotIn("findmnt", sudo)
+
+    def test_gpu_inventory_change(self) -> None:
+        (self.cluster / "gpu4" / "gpus").write_text("NVIDIA RTX A6000\n" * 3)
+        result = self.check()
+        self.assert_problem_first(result, "gpu4", "GPU inventory changed: found 3 GPUs, recorded 4")
+
+    def test_monitor_service_and_snapshot_failure(self) -> None:
+        write_command(self.cluster / "front" / "bin", "systemctl", "echo inactive\nexit 3\n")
+        result = self.check()
+        self.assert_problem_first(result, "front", "monitoring service nanohpc-node-exporter.service is inactive")
+
+    def test_stale_snapshot(self) -> None:
+        (self.cluster / "front" / "var" / "lib" / "nanohpc" / "monitor" / "status.json").write_text(
+            '{"mode":"monitor","generated_at":"2020-01-01T00:00:00Z","refresh_seconds":30,"nodes":[]}'
+        )
+        self.assert_problem_first(self.check(), "front", "monitoring snapshot is stale")
+
+    def test_changed_gpu_model(self) -> None:
+        (self.cluster / "gpu4" / "gpus").write_text("Other GPU\n" * 4)
+        self.assert_problem_first(self.check(), "gpu4", "GPU inventory changed: models differ")

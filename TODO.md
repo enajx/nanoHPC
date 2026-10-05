@@ -21,6 +21,8 @@ flowchart LR
   M --> W[Website from config]:::done
   S --> BK[Backup + alerts + auto-deploy]:::done
   C --> WZ[Wizard]:::done
+  M --> MO[Monitor without Slurm]:::done
+  W --> MO
   S --> N[Add node + redeploy]:::queued
   W --> R[Release v0.1]:::queued
   BK --> R
@@ -100,6 +102,7 @@ flowchart LR
 
 ### Monitoring and website
 
+- [x] Deploy only monitoring tools on machines without Slurm, with a monitor-mode `cluster.yml`, wizard, dry run, check, and node deploy (see [DONE.md](md/DONE.md)).
 - [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
 - [x] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
 - [x] Daily summaries are kept for 5 years (the history Prometheus).
@@ -151,7 +154,7 @@ flowchart LR
   - [x] The Tech stack badges flow across the available width in Markdown readers (`README.md`).
   - [x] The Tech stack no longer displays the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges (`README.md`).
   - [x] The README feature list is concise and plain, with no bold lead-ins (`README.md`).
-  - [x] The README has a Set up section with a TBA placeholder for monitor-only setup instructions (`README.md`).
+  - [x] The README has monitor-only setup instructions (`README.md`).
 - [ ] Before the release, the real-VM tests pass on Ubuntu 22.04 and 26.04 too (during development they run on 24.04 only).
 - [ ] Once nanoHPC is released and development slows down, bring the split-out real-VM tests (`SimRedeployTest`, `SimAlertsTest`, and the ones run only when relevant) back into every run, so users get proper tests when deploying on their systems.
 - [ ] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website.
@@ -178,7 +181,6 @@ flowchart LR
 - [ ] SLURM-REAL's website added a Waiting time card (24h, 7d, 30d) and a "Powered by nanoHPC" footer (2026-10-03, commit b05616c); consider them for nanoHPC's website.
 - [ ] See how SLURM-REAL implements Slack notifications when a job ends and do the same: a private message to the job's user when their batch job ends, through a Slack app's bot token (job ID and name, how it ended with the exit code, run time, machine). Planned there on 2026-10-03 in `md/plan-slack.md` (commit 234223c); check whether it is built before porting.
 - [ ] Deploy only the cluster monitoring tools (metrics, alerts, status snapshot, Grafana, website) on a cluster that already has Slurm installed, without replacing its Slurm setup.
-- [ ] Deploy only the cluster monitoring tools (metrics, alerts, status snapshot, Grafana, website) on machines without Slurm, where people run jobs directly.
 - [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.
 
 ## Uncategorized

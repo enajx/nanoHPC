@@ -1,0 +1,36 @@
+# Summarize measured machine and GPU use without scheduler accounting.
+groups:
+  - name: monitor-minute-values
+    interval: 1m
+    rules:
+      - record: cluster:machine_cpu_busy_ratio
+        expr: 1 - avg by(machine) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+      - record: cluster:machine_memory_used_ratio
+        expr: 1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+      - record: cluster:gpu_utilization_percent_fresh
+        expr: cluster_gpu_utilization_percent and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)
+      - record: cluster:gpu_memory_used_bytes_fresh
+        expr: cluster_gpu_memory_used_bytes and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)
+      - record: cluster:gpu_temperature_celsius_fresh
+        expr: cluster_gpu_temperature_celsius and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)
+      - record: cluster:gpu_power_watts_fresh
+        expr: cluster_gpu_power_watts and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)
+  - name: monitor-daily-summaries
+    interval: 1m
+    rules:
+      - record: cluster_daily_cpu_busy_ratio
+        expr: avg_over_time(cluster:machine_cpu_busy_ratio[24h])
+      - record: cluster_daily_memory_used_ratio
+        expr: avg_over_time(cluster:machine_memory_used_ratio[24h])
+      - record: cluster_daily_filesystem_available_bytes_min
+        expr: min_over_time(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}[24h])
+      - record: cluster_daily_gpu_utilization_percent
+        expr: avg_over_time(cluster:gpu_utilization_percent_fresh[24h])
+      - record: cluster_daily_gpu_memory_used_bytes_max
+        expr: max_over_time(cluster:gpu_memory_used_bytes_fresh[24h])
+      - record: cluster_daily_gpu_temperature_celsius_max
+        expr: max_over_time(cluster:gpu_temperature_celsius_fresh[24h])
+      - record: cluster_daily_gpu_power_watts
+        expr: avg_over_time(cluster:gpu_power_watts_fresh[24h])
+      - record: cluster_daily_scrape_coverage_ratio
+        expr: clamp_max(sum_over_time(up{job=~"node|node-.+"}[24h]) / 2880, 1)

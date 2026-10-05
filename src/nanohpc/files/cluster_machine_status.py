@@ -1,20 +1,20 @@
-"""Classify machines from private Prometheus measurements and Slurm state.
+"""Classify machines from private Prometheus measurements and optional Slurm state.
 
 Imported by cluster-monitor-snapshot from the same folder (standard library only).
 
-Each machine has a role ("Front node", "Compute", or "Storage") and is checked on:
+Each machine has a role and is checked on:
 - its node_exporter answering Prometheus (`up`);
 - each of its required systemd units being active;
 - each of its required mount points: not read-only, with free space and free inodes;
 - on compute machines only, the Slurm node state (not down, drained, failed, or not responding);
-- on machines with GPUs, fresh GPU readings.
+- on machines with GPUs, fresh GPU readings. Monitor mode also requires fresh GPU inventory.
 
-Health: Offline when the exporter is down and Slurm says the node is not responding; Warning when a check
-failed; Unknown when a reading is missing or stale; Healthy otherwise.
+Health: Offline when a monitor-mode exporter is down, or a Slurm-mode exporter is down and its node is not
+responding; Warning when a check failed; Unknown when a reading is missing or stale; Healthy otherwise.
 
 GPU use over the last hour (one-minute samples, machines with GPUs only): Idle when no GPU was busy, Full when
 all GPUs were busy in more than half of the samples, Active otherwise, and Unknown when samples are missing.
-Machines without GPUs (front node, storage machines, CPU-only compute machines) report "Not applicable".
+Machines with a measured zero GPUs report "Not applicable". Missing monitor-mode inventory reports "Unknown".
 """
 
 import json
@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-ROLES = ("Front node", "Compute", "Storage")
+ROLES = ("Front node", "Compute", "Storage", "Monitor", "Machine")
 HEALTH_QUERY = '{__name__=~"up|node_systemd_unit_state|node_filesystem_(readonly|avail_bytes|free_bytes|size_bytes|files_free)|node_boot_time_seconds|node_memory_MemTotal_bytes|cluster_machine_.*|cluster_gpu_collection_timestamp_seconds",job=~"node|node-.+"}'
 GPU_QUERY = "cluster_gpu_utilization_percent and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)"
 
@@ -125,9 +125,9 @@ def machine_status(
     """Report only checked health; Full requires all GPUs busy for a majority of samples.
 
     name: the machine's name, as in Prometheus's `machine` label (and Slurm's node name for compute machines).
-    role: "Front node", "Compute", or "Storage". Only compute machines are checked on `slurm_state`.
+    role: "Front node", "Compute", "Storage", "Monitor", or "Machine". Only compute checks Slurm state.
     slurm_state: the Slurm node state (for example "MIXED" or "IDLE+DRAIN"); "" for other machines.
-    gpu_count: the GPUs Slurm has configured on the machine; 0 for machines without GPUs.
+    gpu_count: configured GPUs in Slurm mode, measured GPUs in monitor mode; 0 for machines without GPUs.
     units: the systemd units that must be active (for example "slurmd.service").
     mounts: the mount points that must be present and writable, with free space and inodes.
     health: instant readings from HEALTH_QUERY; history: GPU_QUERY over the hour ending at `end`.
@@ -201,7 +201,11 @@ def machine_status(
             gpu_usage = "Idle" if max(busy) == 0 else "Full" if full else "Active"
         elif not series or len(series) != gpu_count:
             missing.append("GPU measurements incomplete")
-    status = "Offline" if up == 0 and not responding else "Warning" if problems else "Unknown" if missing else "Healthy"
+    status = (
+        "Offline"
+        if up == 0 and (role in ("Monitor", "Machine") or not responding)
+        else "Warning" if problems else "Unknown" if missing else "Healthy"
+    )
     return {
         "name": name,
         "role": role,
@@ -210,3 +214,29 @@ def machine_status(
         "gpu_usage": gpu_usage,
         **({"specs": machine_specs(current, end)} if role != "Front node" else {}),
     }
+
+
+def monitor_machine_status(
+    name: str,
+    role: str,
+    units: list[str],
+    mounts: list[str],
+    health: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+    end: int,
+) -> dict[str, Any]:
+    """Classify a directly used machine with measured GPU inventory and no scheduler state."""
+    if role not in ("Monitor", "Machine"):
+        raise ValueError(f"Unknown monitor machine role {role!r} for {name}")
+    current = [row for row in health if row["metric"].get("machine") == name]
+    specs = machine_specs(current, end)
+    measured = specs["gpu_count"]
+    count = int(measured) if measured is not None and measured >= 0 and float(measured).is_integer() else None
+    result = machine_status(name, role, "", count or 0, units, mounts, health, history, end)
+    result["total_gpus"] = count
+    if count is None:
+        result["gpu_usage"] = "Unknown"
+        result["health_details"].append("GPU inventory unavailable or stale")
+        if result["health"] == "Healthy":
+            result["health"] = "Unknown"
+    return result

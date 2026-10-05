@@ -6,7 +6,7 @@
 {# With an allow list, the front node itself (its health checks) may always open the site. #}
 {% set allowed = (['127.0.0.1', '::1'] + website.allow) if website.allow else [] %}
 {% set escaped = website.path | regex_escape %}
-{% set dashboards = 'nanohpc-overview|nanohpc-machines|nanohpc-usage|nanohpc-history|nanohpc-queue|nanohpc-queue-history' %}
+{% set dashboards = 'nanohpc-machines|nanohpc-history' if nanohpc is defined and (nanohpc.mode | default('slurm')) == 'monitor' else 'nanohpc-overview|nanohpc-machines|nanohpc-usage|nanohpc-history|nanohpc-queue|nanohpc-queue-history' %}
 {% set headers %}
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy same-origin always;

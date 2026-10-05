@@ -122,6 +122,18 @@ class EditTest(unittest.TestCase):
 
 
 class NewFileTest(unittest.TestCase):
+    def test_new_monitor_has_no_slurm_sections_and_round_trips(self) -> None:
+        file = clusterfile.new("lab", "monitor")
+        self.assertEqual(file.get(["cluster", "mode"]), "monitor")
+        self.assertEqual(file.get(["cluster", "monitor_host"]), None)
+        self.assertNotIn("partitions:", file.as_text())
+        self.assertNotIn("policy:", file.as_text())
+        self.assertNotIn("admins:", file.as_text())
+        file.set_machine("host", {"address": "192.168.1.10"})
+        file.set_value(["cluster", "monitor_host"], "host")
+        file.set_value(["users"], ["alice"])
+        self.assertEqual(file.validate(), [])
+
     """A new file from the wizard."""
 
     def test_new_file_validates_once_machines_and_users_are_added(self) -> None:

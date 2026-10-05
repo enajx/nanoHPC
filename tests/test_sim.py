@@ -124,6 +124,51 @@ class SimPlanTest(unittest.TestCase):
         self.assertIn(expected, errors)
 
 
+class MonitorSimPlanTest(unittest.TestCase):
+    """Monitor simulations specify fake GPU count and model without Slurm machine GPU fields."""
+
+    def test_shipped_monitor_sim(self) -> None:
+        """A host, one fake-GPU machine, and one CPU-only machine are planned."""
+        plan = plan_of(SIM / "monitor.yml")
+        self.assertEqual({vm.machine for vm in plan.vms}, {"host", "gpu1", "cpu1"})
+        self.assertEqual(plan.fake_gpus, {"gpu1": {"count": 2, "type": "A6000"}})
+        addresses = {vm.machine: f"192.168.104.{50 + index}" for index, vm in enumerate(plan.vms)}
+        with tempfile.TemporaryDirectory() as directory:
+            rendered = render_cluster(plan, addresses, Path(directory))
+        config, errors = check_config(yaml.safe_load(rendered))
+        self.assertEqual(errors, [])
+        self.assertEqual(config["cluster"]["mode"], "monitor")
+
+    def test_monitor_fake_gpu_mapping_validation(self) -> None:
+        """Reject unknown machines, invalid counts and models, and the Slurm list form in monitor mode."""
+        cases = [
+            ({"gpu1": {"count": 0, "type": "A6000"}}, "fake_gpus.gpu1.count"),
+            ({"gpu1": {"count": True, "type": "A6000"}}, "fake_gpus.gpu1.count"),
+            ({"gpu1": {"count": 2, "type": "bad type"}}, "fake_gpus.gpu1.type"),
+            ({"missing": {"count": 2, "type": "A6000"}}, "missing is not a machine"),
+            ({"gpu1": {"count": 2}}, "fake_gpus.gpu1.type"),
+            (["gpu1"], "fake_gpus must be a mapping"),
+        ]
+        for fake_gpus, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory)
+                shutil.copy(ROOT / "examples" / "monitor.yml", folder / "monitor.yml")
+                path = folder / "test.yml"
+                path.write_text(
+                    yaml.safe_dump(
+                        {
+                            "cluster": "monitor.yml",
+                            "ubuntu": "24.04",
+                            "fake_gpus": fake_gpus,
+                            "vms": {"default": {"cpus": 1, "memory_gb": 1, "disk_gb": 10}},
+                            "extra_disk_gb": 10,
+                        }
+                    )
+                )
+                _, errors = load_sim(path)
+                self.assertTrue(any(expected in error for error in errors), errors)
+
+
 class SimOutputTest(unittest.TestCase):
     """The files `sim up` writes: the cluster.yml with real VM addresses, and the SSH machine list."""
 
@@ -259,6 +304,73 @@ class SimClusterTest(unittest.TestCase):
         disks = self.run_command("limactl", "disk", "ls", "--json").stdout
         self.assertNotIn(f"nanohpc-{sim_name}-", disks)
         self.assertFalse(state.exists())
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimMonitorDeployTest(unittest.TestCase):
+    """Deploy monitor mode to real VMs and check the live monitoring boundary."""
+
+    sim = SIM / "monitor.yml"
+    state = ROOT / ".nanohpc-sim" / "monitor"
+
+    def run_nanohpc(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        """Run the current source's command from the repository checkout."""
+        return subprocess.run(
+            [sys.executable, "-c", "from nanohpc.cli import main; main()", *arguments],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def ssh(self, machine: str, command: str) -> subprocess.CompletedProcess[str]:
+        """Run a command on one VM with the generated administrator SSH config."""
+        return subprocess.run(
+            ["ssh", "-F", str(self.state / "ssh_config"), machine, command],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_monitor_only_deploy(self) -> None:
+        if os.environ.get("NANOHPC_SIM_KEEP") != "1":
+            self.addCleanup(self.run_nanohpc, "sim", "down", str(self.sim))
+        up = self.run_nanohpc("sim", "up", str(self.sim))
+        self.assertEqual(up.returncode, 0, up.stdout + up.stderr)
+        dry = self.run_nanohpc("sim", "deploy", str(self.sim), "--dry-run")
+        self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+        deployed = self.run_nanohpc("sim", "deploy", str(self.sim))
+        self.assertEqual(deployed.returncode, 0, deployed.stdout + deployed.stderr)
+        checked = self.run_nanohpc(
+            "check", str(self.state / "cluster.yml"), "--ssh-config", str(self.state / "ssh_config")
+        )
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        for machine in ("host", "gpu1", "cpu1"):
+            with self.subTest(machine=machine):
+                result = self.ssh(
+                    machine,
+                    'test "$(cat /etc/nanohpc/mode)" = monitor && ! test -e /etc/slurm/slurm.conf && ! getent passwd alice',
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        snapshot = self.ssh("host", "cat /var/lib/nanohpc/monitor/status.json")
+        self.assertEqual(snapshot.returncode, 0, snapshot.stdout + snapshot.stderr)
+        status = json.loads(snapshot.stdout)
+        self.assertEqual(status["mode"], "monitor")
+        self.assertEqual(status["total_gpus"], 2)
+        self.assertEqual(status["users"], [{"user": "alice"}, {"user": "bob"}])
+        gpu = self.ssh(
+            "host",
+            'curl -fsSG --data-urlencode "query=cluster_gpu_utilization_percent" http://127.0.0.1:9090/api/v1/query',
+        )
+        self.assertEqual(gpu.returncode, 0, gpu.stdout + gpu.stderr)
+        self.assertEqual(len(json.loads(gpu.stdout)["data"]["result"]), 2)
+        website = self.ssh(
+            "host",
+            "curl -fsSk --resolve lab.example.org:443:127.0.0.1 https://lab.example.org/cluster/site.json",
+        )
+        self.assertEqual(website.returncode, 0, website.stdout + website.stderr)
+        self.assertEqual(json.loads(website.stdout)["mode"], "monitor")
 
 
 class SimUsersBase(unittest.TestCase):

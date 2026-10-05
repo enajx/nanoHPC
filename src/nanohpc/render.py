@@ -223,7 +223,9 @@ METRICS_TLS = "/etc/nanohpc/metrics-tls"
 def render_prometheus(config: dict[str, Any]) -> str:
     """Return prometheus.yml: the front node's own exporter on localhost, and every other machine's
     exporter over mutually authenticated TLS (certificates signed by the cluster's metrics CA)."""
-    front, _ = front_machine(config)
+    front = (
+        config["cluster"]["monitor_host"] if config["cluster"].get("mode") == "monitor" else front_machine(config)[0]
+    )
 
     def job(name: str, target: str, machine: str) -> dict[str, Any]:
         return {

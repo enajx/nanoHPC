@@ -1,0 +1,11 @@
+{
+  "uid": "nanohpc-history", "title": "Daily machine history", "schemaVersion": 39,
+  "editable": false, "refresh": "30s", "time": {"from": "now-1y", "to": "now"},
+  "description": "Daily summaries of measured machine and GPU use. Missing samples are not zero use.",
+  "panels": [
+    {"id": 1, "title": "24-hour mean CPU usage", "type": "timeseries", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "cluster-history"}, "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}, "targets": [{"refId": "A", "expr": "last_over_time(cluster_daily_cpu_busy_ratio[25h])", "legendFormat": "{{machine}}"}]},
+    {"id": 2, "title": "24-hour mean memory use", "type": "timeseries", "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "cluster-history"}, "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}, "targets": [{"refId": "A", "expr": "last_over_time(cluster_daily_memory_used_ratio[25h])", "legendFormat": "{{machine}}"}]},
+    {"id": 3, "title": "24-hour mean GPU utilization", "type": "timeseries", "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "cluster-history"}, "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}, "overrides": []}, "targets": [{"refId": "A", "expr": "last_over_time(cluster_daily_gpu_utilization_percent[25h])", "legendFormat": "{{machine}} GPU {{gpu}}"}]},
+    {"id": 4, "title": "Observed fraction of the 24-hour window", "description": "A partial day or collection gap is shown below 100%.", "type": "timeseries", "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "cluster-history"}, "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}, "targets": [{"refId": "A", "expr": "last_over_time(cluster_daily_scrape_coverage_ratio[25h])", "legendFormat": "{{machine}}"}]}
+  ]
+}

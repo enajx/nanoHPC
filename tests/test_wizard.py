@@ -273,6 +273,57 @@ class NewClusterTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(config["machines"]["front"]["home"], {"device": None})
 
 
+class MonitorWizardTest(unittest.IsolatedAsyncioTestCase):
+    """Monitor setup shows only machine, user, website, alert, and review steps."""
+
+    async def test_new_monitor_file_through_wizard(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "monitor.yml"
+            app = WizardApp(path, None, Fakes({}, {}).dependencies(), "monitor")
+            async with app.run_test(size=SIZE) as pilot:
+                await fill(pilot, {"#cluster-name": "lab"})
+                await pilot.click("#create")
+                await settle(pilot)
+                sidebar = app.screen.query_one("#steps", ListView)
+                self.assertEqual(len(sidebar.children), 5)
+                self.assertNotIn(
+                    "Partitions", " ".join(str(item.query_one(Label).render()) for item in sidebar.children)
+                )
+                await fill(pilot, {"#monitor-machine-name": "host", "#monitor-machine-address": "192.168.1.10"})
+                await pilot.click("#monitor-machine-add")
+                await settle(pilot)
+                app.screen.query_one("#monitor-host", Select).value = "host"
+                await go(pilot, 1)
+                await fill(pilot, {"#monitor-users": "alice, bob"})
+                await go(pilot, 2)
+                await fill(pilot, {"#website-hostname": "cluster.lab.example.org"})
+                await go(pilot, 4)
+                self.assertEqual(
+                    len(app.screen.query_one("#errors", ListView).children), 0, app.state.file.validate_in(path.parent)
+                )
+                self.assertIn("deploy-monitor", text(app, "#next-steps"))
+                await pilot.click("#save")
+                await settle(pilot)
+            config, errors = load_config(path, True, False)
+            self.assertEqual(errors, [])
+            self.assertEqual(config["users"], ["alice", "bob"])
+            self.assertEqual(config["cluster"]["monitor_host"], "host")
+
+    async def test_existing_monitor_file_uses_monitor_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "monitor.yml"
+            shutil.copy(ROOT / "examples" / "monitor.yml", path)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                self.assertEqual(len(app.state.steps), 5)
+                self.assertEqual(app.state.file.get(["cluster", "mode"]), "monitor")
+                await go(pilot, 1)
+                self.assertEqual(app.screen.query_one("#monitor-users", Input).value, "alice, bob")
+                await pilot.press("q")
+                await settle(pilot)
+
+
 class SaveAndQuitTest(unittest.IsolatedAsyncioTestCase):
     """The file is written only when it changed and the administrator saves; quitting asks about changes."""
 

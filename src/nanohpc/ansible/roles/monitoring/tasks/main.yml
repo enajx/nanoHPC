@@ -7,7 +7,7 @@
 #   wherever /home is.
 
 - name: Install the quota reader on the home machine
-  when: inventory_hostname == nanohpc.home.server
+  when: nanohpc.mode | default('slurm') != 'monitor' and inventory_hostname == nanohpc.home.server
   block:
     - name: Install cluster-home-quotas
       ansible.builtin.copy:
@@ -123,12 +123,13 @@
         mode: "0644"
         force: false
       register: accounting_start_file
+      when: nanohpc.mode | default('slurm') != 'monitor'
 
     - name: Read when accounting started
       ansible.builtin.slurp:
         src: /etc/nanohpc/accounting-start
       register: accounting_start
-      when: not (ansible_check_mode and accounting_start_file is changed)  # dry run: not recorded yet
+      when: nanohpc.mode | default('slurm') != 'monitor' and not (ansible_check_mode and accounting_start_file is changed)  # dry run: not recorded yet
 
     - name: Install the status collector service and timer
       ansible.builtin.copy:
@@ -140,21 +141,24 @@
           {% if item == 'service' %}
           [Unit]
           Description=Cluster status snapshot for the website and metrics (nanoHPC)
-          After=slurmctld.service slurmdbd.service nanohpc-prometheus.service
+          After={{ 'nanohpc-prometheus.service' if nanohpc.mode | default('slurm') == 'monitor' else 'slurmctld.service slurmdbd.service nanohpc-prometheus.service' }}
 
           [Service]
           Type=oneshot
           User=cluster-monitor
           Group=cluster-monitor
           ExecStart=/usr/local/bin/cluster-monitor-snapshot \
+            {% if nanohpc.mode | default('slurm') == 'monitor' %}--mode monitor \
+            {% endif %}
             --output /var/lib/nanohpc/monitor/status.json \
             --machine-markdown-output /var/lib/nanohpc/monitor/machines.md \
             --metrics /var/lib/nanohpc/monitor-textfile/cluster.prom \
             --controller {{ groups['role_front'][0] }} --cluster-name {{ nanohpc.cluster_name }} \
             --machines /etc/nanohpc/monitor-machines.json --refresh-seconds 30 \
-            --accounting-start {{ (accounting_start.content | b64decode | trim) if accounting_start.content is defined else ansible_facts.date_time.date ~ 'T' ~ ansible_facts.date_time.time }} \
+            {% if nanohpc.mode | default('slurm') != 'monitor' %}--accounting-start {{ (accounting_start.content | b64decode | trim) if accounting_start.content is defined else ansible_facts.date_time.date ~ 'T' ~ ansible_facts.date_time.time }} \
+            {% endif %}
             --prometheus-url http://127.0.0.1:9090 \
-            --users {{ nanohpc.users | map(attribute='name') | join(' ') }}
+            --users {{ (nanohpc.users if nanohpc.mode | default('slurm') == 'monitor' else nanohpc.users | map(attribute='name') | list) | join(' ') }}
           TimeoutStartSec=90
           UMask=0022
           NoNewPrivileges=true

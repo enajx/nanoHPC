@@ -166,3 +166,10 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - A fresh Ubuntu 24.04 VM cluster passed with an XFS home disk and XFS scratch disk. The test checks the configured home quota limits, reads and writes files through NFS and on local scratch, then confirms that an over-limit write through NFS fails with a quota error.
 - The test uses its own simulated cluster so it can format test disks without touching another test's disks. A separate agent reviewed the test and its quota check.
 - Files: `tests/sim/xfs-quota.yml`, `tests/test_sim.py`, `md/testing.md`.
+
+## 2026-10-05: monitor only, without Slurm
+
+- `nanohpc deploy-monitor` installs machine and GPU metrics, health checks, alerts, a status snapshot, Grafana, and an HTTPS website on directly used Ubuntu machines. One named monitor host serves the shared services and can also run work. It does not set up Slurm, accounts, SSH access, or storage. Existing nanoHPC Slurm setups are refused.
+- `cluster.mode: monitor` uses machine addresses, optional aliases, and existing login names. The example, `nanohpc init --mode monitor` wizard, validation, `nanohpc check`, dry run, `--only node NAME`, and explicit GPU hardware change acceptance support this mode. The website shows Overview, Machines, Usage, and Users, with measured GPU data and monitor-specific history. It has no job or queue claims.
+- A separate agent reviewed the implementation. The focused tests passed. `SimMonitorDeployTest` passed on three Ubuntu 24.04 VMs, checking the live HTTPS site, snapshot, measured fake-GPU metrics, and absence of Slurm and listed user accounts. A node-only dry run and apply also passed on the VMs.
+- Files: `src/nanohpc/{cli,config,clusterfile,deploy,render,sim,check}.py`, `src/nanohpc/wizard/`, `src/nanohpc/ansible/monitor.yml`, monitoring roles and collectors, monitor Prometheus rules and Grafana history, `src/nanohpc/website-source/`, `examples/monitor.yml`, `tests/`, `README.md`, `md/testing.md`.

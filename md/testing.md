@@ -47,6 +47,7 @@ Requires [Lima](https://lima-vm.io) (`brew install lima` on macOS). Each test cl
 | `tests/sim/everyday.yml` | [examples/cluster.yml](../examples/cluster.yml) (at the repo root): `/home` on the front node, backup to the storage machine |
 | `tests/sim/home-on-storage.yml` | `tests/sim/cluster-home-on-storage.yml`: `/home` on the storage machine, no backup |
 | `tests/sim/large.yml` | `tests/sim/cluster-large.yml`: front node and 20 compute nodes |
+| `tests/sim/monitor.yml` | [examples/monitor.yml](../examples/monitor.yml) (at the repo root): a monitor host, one fake-GPU machine, and one CPU-only machine, without Slurm |
 
 ```
 uv run nanohpc sim up tests/sim/everyday.yml     # create and start the VMs (reuses running or stopped ones)
@@ -55,6 +56,10 @@ uv run nanohpc sim deploy tests/sim/everyday.yml # set it up with nanoHPC (first
 # --ssh-config FILE deploys through another SSH config, e.g. as a cluster administrator with a forwarded key
 uv run nanohpc sim down tests/sim/everyday.yml   # delete the VMs, their disks, and .nanohpc-sim/everyday/
 ```
+
+For monitor mode, use `uv run nanohpc sim up tests/sim/monitor.yml`, then `uv run nanohpc sim deploy tests/sim/monitor.yml`.
+The sim file's `fake_gpus` mapping gives a count and model for each simulated GPU machine. It stays outside
+`cluster.yml`; a real monitor deploy discovers GPUs on the machines.
 
 `sim up` writes, under `.nanohpc-sim/<sim name>/` (not tracked by Git):
 
@@ -94,6 +99,7 @@ Which ones to run (agreed 2026-10-03), on Ubuntu 24.04 while developing:
 
 
 - `uv run python -m unittest tests.test_sim.SimClusterTest`: brings a cluster up, checks SSH, sudo, the cluster network, and the disks on every machine, then brings it down. `NANOHPC_SIM_FILE=large` picks another sim file.
+- `uv run python -m unittest tests.test_sim.SimMonitorDeployTest`: deploys the monitor-only cluster, checks the live services and website over HTTPS, checks measured fake-GPU metrics and the snapshot, and confirms that Slurm and the listed user accounts were not installed.
 - `uv run python -m unittest tests.test_sim.SimReleaseTest` with `NANOHPC_SIM_FILE=ubuntu-2204` or `ubuntu-2604`: deploys a small cluster (front node, one fake-GPU node, one CPU node) on that Ubuntu release and checks the stop for a scratch disk with no filesystem (at the dry run: that machine is left out, unchanged, the others are deployed), Slurm nodes, jobs, sudo by forwarded key on every machine, the shared `/home` and quotas, scratch, a repeat deploy with no changes, and a later deploy as an administrator. The 22.04 cluster keeps `/home` on the root disk (no `home.device`). Each release builds its own Slurm packages the first time.
 - `uv run python -m unittest tests.test_sim.SimHomeOnStorageTest`: `/home` served by the storage machine; checks that a machine whose local `/home` holds data is left out of the deploy at its dry run, then the NFS mounts, shared files, live remount of `nosuid,nodev` on the home disk, NFS `/home`, scratch disk, and scratch image after a changed `/etc/fstab`, a repeat deploy with no changes, and the users' quotas (read on the storage machine) in the front node's status snapshot.
 - `uv run python -m unittest tests.test_sim.SimHomeBindRemountTest`: `/home` on the front node's root disk; checks that a changed `/etc/fstab` restores `nosuid,nodev` on the live `/home` bind mount without a reboot, while a dry run leaves it unchanged.

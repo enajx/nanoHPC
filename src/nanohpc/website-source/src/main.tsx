@@ -12,6 +12,7 @@ import { PanelLink } from './panel-link'
 import { AccentButton, storedAccent } from './accent-button'
 import { FontButton, storedFont } from './font-button'
 import { ClusterMap, MapToggle, storedMapShown } from './cluster-map'
+import { MonitorApp } from './monitor'
 import './style.css'
 
 type Page = 'overview' | 'queue' | 'machines' | 'users' | 'usage' | 'docs' | 'policy'
@@ -222,7 +223,7 @@ const root = createRoot(document.getElementById('root')!)
 // The page needs the cluster's settings before it can show anything; a missing or invalid site.json is shown.
 loadSiteSettings().then((site) => {
   document.title = site.cluster_name
-  root.render(<App site={site}/>)
+  root.render(site.mode === 'monitor' ? <MonitorApp site={site}/> : <App site={site}/>)
 }).catch((error: unknown) => {
   console.error(error)
   root.render(<div role="alert" className="notice">This cluster website is not set up: {String(error instanceof Error ? error.message : error)}</div>)

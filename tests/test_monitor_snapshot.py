@@ -64,6 +64,12 @@ MACHINES: dict[str, dict[str, Any]] = {
     "store": {"role": "storage", "units": ["nfs-server.service"], "mounts": ["/", "/home"]},
 }
 
+MONITOR_MACHINES: dict[str, dict[str, Any]] = {
+    "front": {"role": "monitor", "units": ["prometheus.service"], "mounts": ["/"]},
+    "gpu1": {"role": "machine", "units": [], "mounts": ["/"]},
+    "cpu1": {"role": "machine", "units": [], "mounts": ["/"]},
+}
+
 
 def prometheus_samples(end: int) -> list[dict[str, Any]]:
     """Readings of a cluster where every machine is up, with active units and writable mounts."""
@@ -74,6 +80,32 @@ def prometheus_samples(end: int) -> list[dict[str, Any]]:
     readings = [sample("gpu1", "cluster_gpu_collection_timestamp_seconds", end, {})]
     for machine, values in MACHINES.items():
         readings.append(sample(machine, "up", 1, {}))
+        for unit in values["units"]:
+            readings.append(sample(machine, "node_systemd_unit_state", 1, {"name": unit, "state": "active"}))
+        for mount in values["mounts"]:
+            for name, value in [("readonly", 0), ("avail_bytes", 1024), ("files_free", 100)]:
+                readings.append(sample(machine, "node_filesystem_" + name, value, {"mountpoint": mount}))
+    return readings
+
+
+def monitor_samples(end: int) -> list[dict[str, Any]]:
+    """Monitor machines report measured inventory and only required local checks."""
+
+    def sample(machine: str, name: str, value: float, labels: dict[str, str]) -> dict[str, Any]:
+        return {"metric": {"__name__": name, "machine": machine, **labels}, "value": [end, str(value)]}
+
+    readings = []
+    for machine, values in MONITOR_MACHINES.items():
+        count = 4 if machine == "gpu1" else 0
+        readings.extend(
+            [
+                sample(machine, "up", 1, {}),
+                sample(machine, "cluster_machine_specs_timestamp_seconds", end, {}),
+                sample(machine, "cluster_machine_gpu_count", count, {}),
+            ]
+        )
+        if count:
+            readings.append(sample(machine, "cluster_gpu_collection_timestamp_seconds", end, {}))
         for unit in values["units"]:
             readings.append(sample(machine, "node_systemd_unit_state", 1, {"name": unit, "state": "active"}))
         for mount in values["mounts"]:
@@ -135,6 +167,30 @@ class FakePrometheus(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         """Keep the test output quiet."""
+
+
+class MonitorPrometheus(FakePrometheus):
+    """Fake Prometheus with measured monitor-only machine inventory."""
+
+    def do_GET(self) -> None:
+        url = urlparse(self.path)
+        parameters = {key: values[0] for key, values in parse_qs(url.query).items()}
+        if url.path == "/api/v1/query":
+            result = monitor_samples(int(parameters["time"]))
+        elif url.path == "/api/v1/query_range":
+            times = range(int(parameters["start"]), int(parameters["end"]) + 1, int(parameters["step"]))
+            result = [
+                {"metric": {"machine": "gpu1", "uuid": f"GPU-{gpu}"}, "values": [[t, "0"] for t in times]}
+                for gpu in range(4)
+            ]
+        else:
+            self.send_error(404)
+            return
+        body = json.dumps({"status": "success", "data": {"resultType": "vector", "result": result}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
 
 
 def fake_slurm(root: Path) -> dict[str, str]:
@@ -382,6 +438,56 @@ class SnapshotTests(unittest.TestCase):
             self.assertNotEqual(twice.returncode, 0)
             self.assertIn("more than one machine", twice.stderr)
             self.assertEqual(output.read_bytes(), before)
+
+    def test_monitor_collection_without_slurm(self) -> None:
+        """The public monitor path uses measurements only, with no scheduler figures or commands."""
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MonitorPrometheus)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory(prefix="monitor-only-snapshot-") as directory:
+            root = Path(directory)
+            machine_file = root / "machines.json"
+            machine_file.write_text(json.dumps(MONITOR_MACHINES))
+            output = root / "status.json"
+            metrics = root / "cluster.prom"
+            markdown = root / "machines.md"
+            args = [
+                sys.executable,
+                str(COLLECTOR),
+                "--mode", "monitor",
+                "--output", str(output),
+                "--metrics", str(metrics),
+                "--controller", "front",
+                "--cluster-name", "demo",
+                "--machines", str(machine_file),
+                "--refresh-seconds", "30",
+                "--machine-markdown-output", str(markdown),
+                "--prometheus-url", f"http://127.0.0.1:{server.server_address[1]}",
+            ]
+            empty_path = root / "no-commands"
+            empty_path.mkdir()
+            result = subprocess.run(args, env=dict(os.environ, PATH=str(empty_path)), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(output.read_text())
+            self.assertEqual(data["mode"], "monitor")
+            self.assertEqual(data["refresh_seconds"], 30)
+            self.assertEqual(data["total_gpus"], 4)
+            self.assertEqual(
+                [(node["name"], node["role"], node["health"], node["gpu_usage"], node["total_gpus"])
+                 for node in data["nodes"]],
+                [("front", "Monitor", "Healthy", "Not applicable", 0),
+                 ("gpu1", "Machine", "Healthy", "Idle", 4),
+                 ("cpu1", "Machine", "Healthy", "Not applicable", 0)],
+            )
+            for key in ("jobs", "running_jobs", "pending_jobs", "allocated_gpus", "ranking", "partitions"):
+                self.assertNotIn(key, data)
+            self.assertIn("cluster_snapshot_timestamp_seconds", metrics.read_text())
+            self.assertNotIn("cluster_job_", metrics.read_text())
+            self.assertIn("| gpu1 | Healthy | Idle |", markdown.read_text())
+            self.assertNotIn("Available GPUs", markdown.read_text())
+            self.assertNotIn("Slurm", markdown.read_text())
 
 
 if __name__ == "__main__":

@@ -26,13 +26,16 @@ function latest(frames: MetricFrame[]): { labels: Record<string, string>; value:
 }
 
 /** Ask monitoring for shared-home requests and GPU busy % through the public read-only query route. */
-async function measure(signal: AbortSignal): Promise<Measured> {
-  const refIds = Object.keys(queries) as (keyof typeof queries)[]
+async function measure(signal: AbortSignal, mode: 'slurm' | 'monitor'): Promise<Measured> {
+  const refIds = mode === 'monitor' ? ['busy'] as (keyof typeof queries)[] : Object.keys(queries) as (keyof typeof queries)[]
   const response = await fetch('grafana/api/ds/query', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', signal,
     body: JSON.stringify({
       from: 'now-5m', to: 'now',
-      queries: refIds.map(refId => ({ refId, datasource: { uid: 'cluster-detail', type: 'prometheus' }, expr: queries[refId], instant: true, range: false })),
+      queries: refIds.map(refId => ({ refId, datasource: { uid: 'cluster-detail', type: 'prometheus' },
+        expr: mode === 'monitor' && refId === 'busy'
+          ? 'cluster_gpu_utilization_percent and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)'
+          : queries[refId], instant: true, range: false })),
     }),
   })
   if (!response.ok) throw new Error('Monitoring unavailable')
@@ -81,7 +84,7 @@ function storedLayout(): LayoutName {
 }
 
 /** Turn the snapshot's machines and jobs into what the map draws. */
-function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, measured: Measured | null): MapMachine[] {
+function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, measured: Measured | null, mode: 'slurm' | 'monitor'): MapMachine[] {
   return nodes.map(node => {
     const running = jobs.filter(job => job.state === 'RUNNING' && job.node === node.name).sort((a, b) => a.id.localeCompare(b.id))
     const total = node.total_gpus ?? 0
@@ -89,8 +92,14 @@ function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, mea
     // Slurm does not say which GPU index a job has, so allocated lights take users in job order.
     const users = running.flatMap(job => Array(job.gpus).fill(job.user) as string[])
     const busy = measured?.busy.get(node.name)
+    if (mode === 'monitor') return {
+      mode, name: node.name, front: node.role === 'Monitor', health: node.health ?? 'Unknown',
+      gpuModel: node.specs?.gpus[0]?.model ?? null, totalGpus: total,
+      allocatedGpus: 0, runningJobs: 0, pendingJobs: 0, nfsRequests: null, nfsWrites: null,
+      gpus: Array.from({ length: total }, (_, i) => ({ user: null, busy: busy?.[i] ?? null })),
+    }
     return {
-      name: node.name, front: node.role === 'Front node', health: node.health ?? 'Unknown',
+      mode, name: node.name, front: node.role === 'Front node', health: node.health ?? 'Unknown',
       gpuModel: node.specs?.gpus[0]?.model ?? null, totalGpus: total,
       allocatedGpus: allocated,
       runningJobs: running.length, pendingJobs: node.role === 'Front node' ? pending : 0,
@@ -102,7 +111,9 @@ function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, mea
 
 /** Describe the map in words for screen readers and tests. */
 function describe(machines: MapMachine[]): string {
-  return `Cluster map: ${machines.map(m => m.front
+  return `Cluster map: ${machines.map(m => m.mode === 'monitor'
+    ? `${m.name}: ${m.front ? 'monitor host' : 'machine'}, health ${m.health}, GPU activity ${m.gpus.length ? m.gpus.map((gpu, i) => `GPU ${i} ${gpu.busy === null ? 'unknown' : `${Math.round(gpu.busy)}%`}`).join(', ') : 'not applicable'}`
+    : m.front
     ? `${m.name}: front node, ${m.pendingJobs} pending job${m.pendingJobs === 1 ? '' : 's'}`
     : `${m.name}: ${m.allocatedGpus} of ${m.totalGpus} GPUs allocated, ${m.runningJobs} running job${m.runningJobs === 1 ? '' : 's'}, ${
       m.nfsRequests === null ? 'shared home traffic unknown' : `shared home ${Math.round(m.nfsRequests)} requests per second (${Math.round(m.nfsWrites ?? 0)} writes)`}${
@@ -110,21 +121,21 @@ function describe(machines: MapMachine[]): string {
 }
 
 /** Animated isometric map of the machines Slurm knows, with traffic from their running jobs. */
-export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds }: { nodes: Machine[]; jobs: OverviewJob[]; pendingJobs: number; stale: boolean; refreshSeconds: number }) {
+export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, mode }: { nodes: Machine[]; jobs: OverviewJob[]; pendingJobs: number; stale: boolean; refreshSeconds: number; mode?: 'slurm' | 'monitor' }) {
   const box = useRef<HTMLDivElement>(null)
   const sketch = useRef<Sketch | null>(null)
   const [layout, setLayout] = useState<LayoutName>(storedLayout)
   const [measured, setMeasured] = useState<Measured | null>(null)
-  const machines = mapMachines(nodes, jobs, pendingJobs, measured)
+  const machines = mapMachines(nodes, jobs, pendingJobs, measured, mode ?? 'slurm')
 
   // Measurements refresh with the snapshot; a failed query means no traffic is shown, not zero.
   useEffect(() => {
     const controller = new AbortController()
-    const load = () => measure(controller.signal).then(setMeasured).catch(() => { if (!controller.signal.aborted) setMeasured(null) })
+    const load = () => measure(controller.signal, mode ?? 'slurm').then(setMeasured).catch(() => { if (!controller.signal.aborted) setMeasured(null) })
     load()
     const timer = window.setInterval(load, Math.max(5, refreshSeconds) * 1000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [refreshSeconds])
+  }, [refreshSeconds, mode])
   const latest = useRef({ machines, stale })
   latest.current = { machines, stale }
 
