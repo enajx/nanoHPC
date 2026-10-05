@@ -14,9 +14,9 @@ policy), and one command sets up every machine.
 - Automatic health checks and Slack alerts for jobs and issues.
 - Isometric visualisation of the cluster topology in real time:
 
-<p align="center">
+<div align="center">
   <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="520">
-</p>
+</div>
 
 ## Set up
 
@@ -33,7 +33,32 @@ Install nanoHPC on your computer:
 uv tool install git+https://github.com/enajx/nanoHPC
 ```
 
-Write `cluster.yml` with the wizard, or start from [examples/cluster.yml](examples/cluster.yml):
+Here is a short Slurm-mode `cluster.yml` excerpt:
+
+```yaml
+cluster:
+  name: mylab
+  admins: [alice]
+  website: {hostname: cluster.mylab.example.org, https: letsencrypt}
+
+machines:
+  front: {address: 10.0.0.10, roles: [front, home]}
+  gpu1:
+    address: 10.0.0.11
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 16, threads_per_core: 2}
+    memory_mb: 128000
+    gpu: {type: rtx4090, count: 2}
+    partitions: [main]
+    scratch: {image_gb: 500}
+
+users:
+  - {name: alice, uid: 2000, ssh_keys: ["ssh-ed25519 <your-public-key>"]}
+partitions:
+  main: {default: true, max_time: "24:00:00"}
+```
+
+Write your file with the wizard, or start from the full [example](examples/cluster.yml):
 
 ```sh
 nanohpc init
