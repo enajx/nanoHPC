@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from nanohpc import check, deploy, fixuid, probe, restart_check, sim
+from nanohpc import check, deploy, fixuid, probe, restart, restart_check, sim
 from nanohpc.config import load_config
 from nanohpc.render import render_forwarding_rules
 
@@ -213,6 +213,11 @@ def main() -> None:
     report.add_argument("path", type=Path, help="path to cluster.yml")
     report.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
     report.add_argument("--before-restart", action="store_true", help="check saved boot settings on every machine")
+    restart_command = commands.add_parser("restart", help="restart one confirmed compute machine")
+    restart_command.add_argument("path", type=Path, help="path to cluster.yml")
+    restart_command.add_argument("machine", help="one compute machine in cluster.yml")
+    restart_command.add_argument("--confirm", required=True, help="repeat the machine name to authorize its restart")
+    restart_command.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines")
     rules = commands.add_parser(
         "forwarding-rules", help="print rules for the lab's own web server to show the cluster website"
     )
@@ -260,6 +265,8 @@ def main() -> None:
             if arguments.before_restart
             else check.run(arguments.path, arguments.ssh_config)
         )
+    if arguments.command == "restart":
+        sys.exit(restart.run(arguments.path, arguments.machine, arguments.confirm, arguments.ssh_config))
     if arguments.command == "forwarding-rules":
         sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":
