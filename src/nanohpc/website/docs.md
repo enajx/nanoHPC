@@ -57,27 +57,6 @@ uv run --locked python script.py
 
 set -euo pipefail stops the script when a command fails, an unset variable is used, or a command in a pipeline fails. Replace uv run --locked python script.py with the command that runs your code. uv is installed on the front node and the compute machines. If jobs have outbound internet access, uv can download locked packages; downloads use job time. Use nvidia-smi when you only want to check the GPU assigned to the job.
 
-### Terminal: type these commands after saving job.sh
-
-We recommend submitting from a git worktree: a separate checkout of one commit, so editing or pulling in your project does not change the code of a waiting or running job. The worktree holds the last commit only, so commit job.sh and your code first, and add .worktrees/ and logs/ to .gitignore.
-
-```bash
-cd ~/YOUR_PROJECT
-mkdir -p logs
-RUN=.worktrees/$(date +%Y%m%d-%H%M%S)
-git worktree add --detach "$RUN"
-(cd "$RUN" && sbatch --output="$HOME/YOUR_PROJECT/logs/job-%j.log" job.sh)
-squeue --me
-```
-
-Write results to an absolute path in your home, such as $HOME/YOUR_PROJECT/results, not inside the worktree. When the job has ended, remove the worktree from your project folder with git worktree remove "$RUN" (git worktree list shows them all).
-
-/home is shared between {{cluster_name}} and the compute machines. Your home has a soft quota of {{home_quota_soft_gb}} GB and a hard quota of {{home_quota_hard_gb}} GB: you can go above the soft quota for a limited time, never above the hard quota. sbatch reads and writes the files in the folder you submit from. /scratch/$USER is fast local temporary storage; for jobs that read or write a lot, use cluster-submit --mode=scratch job.sh to let the cluster manage a private copy on the compute machine. Both use Slurm and follow the same resource requests.
-
-Do not name a node or use --constraint for normal jobs. Slurm selects a suitable compute machine.
-
-[Current machines](machines.md) · [Cluster policy](policy.md)
-
 ## Example job scripts
 
 - [Download gpu-check-job.sh](job-examples/gpu-check-job.sh): one GPU, checks the assigned GPU.
@@ -90,6 +69,49 @@ Do not name a node or use --constraint for normal jobs. Slurm selects a suitable
 Do: run installs and interactive tools inside a batch job or an interactive shell on a compute machine.
 
 Don't: run heavy or long-lived work on {{cluster_name}}; the front node is shared by everyone.
+
+## Jobs examples
+
+### One GPU
+
+Submit with sbatch from a git worktree, as shown in Shared vs scratch. The job goes to the default partition. The program must accept --output, or change that argument to match your program. Results go to an absolute path in your home, so they are saved as the job writes them.
+
+```bash
+#!/bin/bash
+#SBATCH --gpus=1
+#SBATCH --time=02:00:00
+set -euo pipefail
+uv run --locked python train.py --output "$HOME/YOUR_PROJECT/results/$SLURM_JOB_ID"
+```
+
+### Four GPUs
+
+For training code that already supports four GPU workers. Requesting four GPUs does not make single-GPU code use them. Submit this script with sbatch job.sh from the shared project.
+
+```bash
+#!/bin/bash
+#SBATCH --gpus=4
+#SBATCH --cpus-per-task=16
+#SBATCH --time=02:00:00
+#SBATCH --output=training-%j.log
+set -euo pipefail
+uv run --locked torchrun --nproc-per-node=4 train.py
+```
+
+### More CPUs and RAM
+
+Request 8 CPUs and 64 GiB of RAM for one GPU. The request must fit on one compute machine; the Machines page lists each machine’s CPU cores and RAM. Submit with sbatch job.sh from the shared project.
+
+```bash
+#!/bin/bash
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=02:00:00
+#SBATCH --output=training-%j.log
+set -euo pipefail
+uv run --locked python train.py
+```
 
 ## Batch vs interactive
 
@@ -245,47 +267,4 @@ uv, Hugging Face, and PyTorch caches are placed on local scratch on compute mach
 
 ```bash
 printf "uv: %s\nHugging Face: %s\nPyTorch: %s\n" "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME"
-```
-
-## Jobs examples
-
-### One GPU
-
-Submit with sbatch from a git worktree, as shown in Shared vs scratch. The job goes to the default partition. The program must accept --output, or change that argument to match your program. Results go to an absolute path in your home, so they are saved as the job writes them.
-
-```bash
-#!/bin/bash
-#SBATCH --gpus=1
-#SBATCH --time=02:00:00
-set -euo pipefail
-uv run --locked python train.py --output "$HOME/YOUR_PROJECT/results/$SLURM_JOB_ID"
-```
-
-### Four GPUs
-
-For training code that already supports four GPU workers. Requesting four GPUs does not make single-GPU code use them. Submit this script with sbatch job.sh from the shared project.
-
-```bash
-#!/bin/bash
-#SBATCH --gpus=4
-#SBATCH --cpus-per-task=16
-#SBATCH --time=02:00:00
-#SBATCH --output=training-%j.log
-set -euo pipefail
-uv run --locked torchrun --nproc-per-node=4 train.py
-```
-
-### More CPUs and RAM
-
-Request 8 CPUs and 64 GiB of RAM for one GPU. The request must fit on one compute machine; the Machines page lists each machine’s CPU cores and RAM. Submit with sbatch job.sh from the shared project.
-
-```bash
-#!/bin/bash
-#SBATCH --gpus=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=02:00:00
-#SBATCH --output=training-%j.log
-set -euo pipefail
-uv run --locked python train.py
 ```

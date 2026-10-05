@@ -178,12 +178,14 @@ footer a { text-decoration: underline; }
 .state-problem, .state-offline { background: var(--status-red); }
 .state-maintenance, .state-unknown, .state-not-applicable, .state-neutral { background: #f0f2ee; }
 .user-guide { max-width: 880px; }
-.user-guide section { padding: 12px 0 30px; margin-bottom: 24px; border-bottom: 1px solid #c8cdc7; }
+.user-guide section { padding: 12px 0 30px; margin-bottom: 24px; }
 .user-guide h2 { font-size: 24px; margin-bottom: 22px; }
 .user-guide h3 { font-size: 17px; }
 .user-guide p { font-size: 16px; color: #37443e; }
 .user-guide pre { margin: 18px 0; font-size: 14px; }
 .reference-heading { margin-top: 42px; }
+.user-guide > section:has(> .reference-heading) { padding: 0; margin-bottom: 0; }
+.user-guide > section > .reference-heading { margin-top: 60px; font-size: 28px; }
 .guide-alt { max-width: none; }
 .setup-cards { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
 .guide-alt .instruction.panel { padding: 24px; margin: 0; border: 2px solid #172322; }

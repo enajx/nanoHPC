@@ -155,6 +155,7 @@ flowchart LR
 - [x] The static demo build lets visitors browse every frontend page with fictional cluster data and interactive sample charts, without using the REAL lab deployment (see [DONE.md](md/DONE.md)).
 - [x] The public demo uses the nanoHPC name and subtitle, the requested sample machines and users, a working help pop-up, a current-time refresh display, and smoother sample GPU history; the website offers only the default and coral/sand themes (see [DONE.md](md/DONE.md)).
 - [x] The demo How to and Cluster policy pages show the useful layout and generic guidance from the reference deployment with fictional values and no REAL or ITU details (see [DONE.md](md/DONE.md)).
+- [x] The How to guide omits the pictured terminal section, uses the reference site's section spacing and heading size, and shows Jobs examples first (see [DONE.md](md/DONE.md)).
 - [x] The website has a Settings option with a read-only message, and a footer linking to nanoHPC, with generic wording in the public demo (see [DONE.md](md/DONE.md)).
 - [x] The public demo shows Grafana snapshots with fictional, fixed-week data for Running Jobs and Queue, Queue history, GPU usage history, and Machine and GPU metrics (see [DONE.md](md/DONE.md)).
 - [x] The Machines table shows machine State, `/home` speed, and GPU availability (see [DONE.md](md/DONE.md)).

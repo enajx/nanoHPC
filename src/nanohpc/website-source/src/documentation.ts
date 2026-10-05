@@ -14,7 +14,7 @@ export type GuideBlock =
 /** Column is the desktop column; narrow screens show steps in list order. */
 export type GuideStep = { title: string; column: 'left' | 'right'; blocks: GuideBlock[] }
 /** The How to page shows one tabbed panel per entry, in this order. */
-export const guidePanels = ['Batch vs interactive', 'Shared vs scratch', 'Other settings', 'Jobs examples'] as const
+export const guidePanels = ['Jobs examples', 'Batch vs interactive', 'Shared vs scratch', 'Other settings'] as const
 export type GuidePanel = typeof guidePanels[number]
 /** Short text shown under a panel's heading, before its tabs. */
 export const panelIntros: Partial<Record<GuidePanel, string>> = {
@@ -74,16 +74,6 @@ export function guideSteps(values: GuideValues): GuideStep[] {
       { kind: 'heading', text: 'job.sh: save this file in your project' },
       { kind: 'code', text: '#!/bin/bash\n#SBATCH --gpus=1\n#SBATCH --time=00:05:00\n\nset -euo pipefail\nuv run --locked python script.py' },
       { kind: 'paragraph', text: 'set -euo pipefail stops the script when a command fails, an unset variable is used, or a command in a pipeline fails. Replace uv run --locked python script.py with the command that runs your code. uv is installed on the front node and the compute machines. If jobs have outbound internet access, uv can download locked packages; downloads use job time. Use nvidia-smi when you only want to check the GPU assigned to the job.' },
-      { kind: 'heading', text: 'Terminal: type these commands after saving job.sh' },
-      { kind: 'paragraph', text: 'We recommend submitting from a git worktree: a separate checkout of one commit, so editing or pulling in your project does not change the code of a waiting or running job. The worktree holds the last commit only, so commit job.sh and your code first, and add .worktrees/ and logs/ to .gitignore.' },
-      { kind: 'code', text: 'cd ~/YOUR_PROJECT\nmkdir -p logs\nRUN=.worktrees/$(date +%Y%m%d-%H%M%S)\ngit worktree add --detach "$RUN"\n(cd "$RUN" && sbatch --output="$HOME/YOUR_PROJECT/logs/job-%j.log" job.sh)\nsqueue --me' },
-      { kind: 'paragraph', text: 'Write results to an absolute path in your home, such as $HOME/YOUR_PROJECT/results, not inside the worktree. When the job has ended, remove the worktree from your project folder with git worktree remove "$RUN" (git worktree list shows them all).' },
-      { kind: 'paragraph', text: `/home is shared between ${name} and the compute machines. Your home has a soft quota of ${values.home_quota_soft_gb} GB and a hard quota of ${values.home_quota_hard_gb} GB: you can go above the soft quota for a limited time, never above the hard quota. sbatch reads and writes the files in the folder you submit from. /scratch/$USER is fast local temporary storage; for jobs that read or write a lot, use cluster-submit --mode=scratch job.sh to let the cluster manage a private copy on the compute machine. Both use Slurm and follow the same resource requests.` },
-      { kind: 'paragraph', text: 'Do not name a node or use --constraint for normal jobs. Slurm selects a suitable compute machine.' },
-      { kind: 'links', items: [
-        { label: 'Current machines', href: 'machines.md' },
-        { label: 'Cluster policy', href: 'policy.md' },
-      ] },
     ] },
     { title: 'Example job scripts', column: 'left', blocks: [
       { kind: 'downloads', items: [

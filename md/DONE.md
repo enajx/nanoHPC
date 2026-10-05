@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-05: How to guide layout
+
+- Removed the terminal, worktree, quota, and node-selection text shown in the screenshot from the Submit a job card and generated Markdown. The guide has no section dividers, uses larger headings for the tabbed topics, and shows Jobs examples before the other topics.
+- Files: `src/nanohpc/website-source/src/{documentation.ts,style.css}`, `src/nanohpc/website-source/tests/website.spec.ts`, `src/nanohpc/website/`.
+
 ## 2026-10-05: demo partitions and dark Grafana previews
 
 - The demo Training partition contains H100, H200, and B200. Inference contains Threadripper and Nvidia DGX and appears on the left side of the Partitions map. The public demo opens its Grafana snapshots in the dark theme.
