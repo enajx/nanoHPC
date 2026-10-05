@@ -14,8 +14,11 @@ policy), and one command sets up every machine.
 - Playbooks for setup, node changes, policy updates, and nightly `/home` backups, with a dry run before each deploy.
 - Shared `/home` and local scratch, with optional copy-back of job results.
 - Optional Slack notifications when checks, backups, or automatic deploys fail, and when checks recover.
-- Isometric visualisation of the cluster topology in real time:<br>
-  <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="520">
+- Isometric visualisation of the cluster topology in real time:
+
+  <p align="center">
+    <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="520">
+  </p>
 
 ## Set up
 
