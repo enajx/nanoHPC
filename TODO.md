@@ -21,9 +21,12 @@ flowchart LR
   M --> W[Website from config]:::done
   S --> BK[Backup + alerts + auto-deploy]:::done
   C --> WZ[Wizard]:::done
+  M --> MO[Monitor without Slurm]:::done
+  W --> MO
   S --> N[Add node + redeploy]:::queued
   W --> DEMO[Public demo build]:::done
-  DEMO --> R[Release v0.1]:::queued
+  DEMO --> DP[Publish demo]:::queued
+  DP --> R[Release v0.1]:::queued
   BK --> R
   WZ --> R
   N --> R
@@ -89,18 +92,20 @@ flowchart LR
 - [x] Daily cleanup removes kept failed `cluster-submit` job copies after `scratch.job_retention_days` days from their Slurm end time (7 by default), while keeping recent, running, and unknown jobs.
 - [x] A deploy remounts existing `/scratch` disk or image, `/home` disk or bind mount, and shared `/home` when its `/etc/fstab` entry changes; the managed `nosuid,nodev` options take effect without a reboot.
 - [ ] Handle changes to NFS-specific `/home` mount options that Linux cannot apply by remounting, without requiring a reboot.
-- [ ] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on the simulated cluster; no test reboots a machine yet).
-- [ ] XFS home and scratch disks, and quota enforcement over NFS (a user over the hard limit cannot write), are checked on the simulated cluster.
-- [ ] Quotas survive kernel upgrades: on Ubuntu cloud kernels the quota modules come from `linux-modules-extra-<kernel>`, which nanoHPC installs for the running kernel only. After a kernel upgrade the `/home` mount with quotas could fail at boot until the next deploy.
-- [ ] A read-only check before a restart reports each pass or failure on any machine, including the front node: nonessential `/etc/fstab` mounts have `nofail` (except `/`, `/boot/efi`, and swap); the kernel GRUB will boot has the NVIDIA module built for it; saved network settings match the running ones; and automatic updates cannot restart the machine.
-- [ ] A confirmed restart of one compute machine drains it and waits for jobs to finish, runs the restart checks, restarts it, then checks fresh root and administrator logins, the new kernel, every GPU in `nvidia-smi`, `/home`, `/scratch`, and `slurmd`. The machine resumes only after a 1-GPU test job completes; any failure leaves it drained. More than one machine and the front node are refused. Front-node restarts stay manual, after the queue is empty, users are told, and the checks pass. Restarts happen one machine at a time.
-- [ ] A read-only update report on any machine groups waiting updates as security, kernel, GRUB, NVIDIA/CUDA, SSH, network, Slurm/Munge, Docker on the front node, extra package sources, and the rest. A confirmed update of one compute machine drains it and waits for jobs, shows the proposed packages, then installs waiting Ubuntu updates except the named care groups and extra sources unless the administrator names them for that run. It checks `sshd -t`, fresh root and administrator logins, network, NVIDIA modules for every installed kernel, `nvidia-smi`, `slurmd`, and other services; it reports whether a restart is needed and resumes only on success. An update never restarts the machine. Agree with the user on the separate front-node update procedure before building it.
+- [x] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on Ubuntu 24.04 VMs). See [DONE.md](md/DONE.md).
+- [x] XFS home and scratch disks, and quota enforcement over NFS (a user over the hard limit cannot write), are checked on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md).
+- [x] `/home` quotas survive an Ubuntu kernel upgrade and reboot; the new kernel's quota modules and a later deploy are checked on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md).
+- [x] `nanohpc check --before-restart` reports saved boot settings on every machine and fails on unsafe or unverified fstab, GRUB, NVIDIA, network, or automatic update restart settings. See [DONE.md](md/DONE.md).
+- [x] A confirmed `nanohpc restart` of one compute machine drains, waits for jobs, checks, reboots, and releases it only after a Slurm test job passes; failures leave it drained. See [DONE.md](md/DONE.md).
+- [x] `nanohpc update-report CLUSTER_YML` reports waiting updates on every machine from saved APT lists, including the lists' age, with each package in one built-in care, security, extra-source, or rest group. It changes nothing and fails clearly when any machine cannot be checked. See [DONE.md](md/DONE.md).
+- [ ] A confirmed update of one compute machine drains it and waits for jobs, shows the proposed packages, then installs waiting Ubuntu updates except the named care groups and extra sources unless the administrator names them for that run. It checks `sshd -t`, fresh root and administrator logins, network, NVIDIA modules for every installed kernel, `nvidia-smi`, `slurmd`, and other services; it reports whether a restart is needed and resumes only on success. An update never restarts the machine. Agree with the user on the separate front-node update procedure before building it.
 - [ ] The default configuration enables automatic security updates on every machine after any backlog is installed through the update procedure. Automatic updates never restart a machine or install NVIDIA/CUDA packages; driver changes need the administrator's confirmation.
 - [ ] A machine that serves `/home` from a local disk does not export an empty `/home` if that disk fails to mount at boot, while administrators still have a recovery path over SSH. Agree on the exact behavior with the user alongside the front-node update procedure.
 - [x] Admins have direct key-only root login on every machine for recovery, with their keys from `cluster.yml` on local disk; a dry run stops before replacing other root keys that would lose access. See [DONE.md](md/DONE.md).
 
 ### Monitoring and website
 
+- [x] Deploy only monitoring tools on machines without Slurm, with a monitor-mode `cluster.yml`, wizard, dry run, check, and node deploy (see [DONE.md](md/DONE.md)).
 - [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
 - [x] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
 - [x] Daily summaries are kept for 5 years (the history Prometheus).
@@ -161,13 +166,13 @@ flowchart LR
 - [x] The demo cluster usage curve has an asymmetric shape: a smaller first bump, a larger full-capacity second bump, then low use at the end (see [DONE.md](md/DONE.md)).
 - [x] The demo Training partition contains H100, H200, and B200; Inference contains Threadripper and Nvidia DGX and appears on the left side of the Partitions map (see [DONE.md](md/DONE.md)).
 - [x] The public demo embeds its Grafana snapshots with the dark theme (see [DONE.md](md/DONE.md)).
-- [ ] At v0.1, make the repository public, enable GitHub Pages, publish and check the demo, then link it from the README.
+- [ ] The public demo is live on GitHub Pages and the README link opens it.
 - [ ] A README, curated by the user: a nanoHPC title, a lightweight Slurm cluster description, a concise feature list, setup steps, the tech stack, and the MIT license. The current draft is under review (`README.md`, `assets/nanohpc-title.svg`, `assets/cluster.png`).
   - [x] The README uses a static, transparent PNG with the chosen turquoise cluster layout: Threadripper left of three 4-GPU H100 machines and FPGA on the right (`assets/cluster.png`).
   - [x] The Tech stack badges flow across the available width in Markdown readers (`README.md`).
   - [x] The Tech stack no longer displays the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges (`README.md`).
   - [x] The README feature list is concise and plain, with no bold lead-ins (`README.md`).
-  - [x] The README has a Set up section with a TBA placeholder for monitor-only setup instructions (`README.md`).
+  - [ ] The README has monitor-only setup instructions (`README.md` currently says TBA).
 - [ ] Before the release, the real-VM tests pass on Ubuntu 22.04 and 26.04 too (during development they run on 24.04 only).
 - [ ] Once nanoHPC is released and development slows down, bring the split-out real-VM tests (`SimRedeployTest`, `SimAlertsTest`, and the ones run only when relevant) back into every run, so users get proper tests when deploying on their systems.
 - [ ] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website.
@@ -181,7 +186,7 @@ flowchart LR
 
 - [ ] Real cluster websites show measured `/home` write and Internet download speeds for each machine; until speed checks are added, the table shows Unknown for these values.
 - [ ] Review features and setup decisions added in SLURM-REAL since the nanoHPC port began, then decide with the user which ones to bring into nanoHPC.
-- [ ] The default configuration incorporates the policies in `~/code/nanoHPC/policies_to_implement.md`.
+- [ ] The default configuration incorporates the policies in [policies_to_implement.md](policies_to_implement.md).
 - [ ] Explore whether nanoHPC can be sold as a commercial product while it stays fully open source. Very exploratory. Ideas to look at: providing some of the infrastructure on the server side, or an app to see the cluster status (the current view is that the website is the best way to do this).
 - [ ] restic backups with dated snapshots, and S3-style storage as a backup destination.
 - [ ] Users from an existing directory (LDAP) instead of local users.
@@ -194,7 +199,6 @@ flowchart LR
 - [ ] SLURM-REAL's website added a Waiting time card (24h, 7d, 30d) and a "Powered by nanoHPC" footer (2026-10-03, commit b05616c); consider them for nanoHPC's website.
 - [ ] See how SLURM-REAL implements Slack notifications when a job ends and do the same: a private message to the job's user when their batch job ends, through a Slack app's bot token (job ID and name, how it ended with the exit code, run time, machine). Planned there on 2026-10-03 in `md/plan-slack.md` (commit 234223c); check whether it is built before porting.
 - [ ] Deploy only the cluster monitoring tools (metrics, alerts, status snapshot, Grafana, website) on a cluster that already has Slurm installed, without replacing its Slurm setup.
-- [ ] Deploy only the cluster monitoring tools (metrics, alerts, status snapshot, Grafana, website) on machines without Slurm, where people run jobs directly.
 - [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.
 
 ## Uncategorized

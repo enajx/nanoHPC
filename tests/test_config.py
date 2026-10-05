@@ -16,11 +16,59 @@ from nanohpc.config import check_config, load_config
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "cluster.yml"
 MINIMAL = ROOT / "examples" / "minimal.yml"
+MONITOR = ROOT / "examples" / "monitor.yml"
 
 
 def example() -> dict[str, Any]:
     """Return a fresh copy of the test-cluster example."""
     return copy.deepcopy(yaml.safe_load(EXAMPLE.read_text()))
+
+
+class MonitorConfigTest(unittest.TestCase):
+    """Monitor configs describe machines and names, without Slurm or managed accounts."""
+
+    def raw(self) -> dict[str, Any]:
+        return {
+            "cluster": {
+                "name": "lab",
+                "mode": "monitor",
+                "monitor_host": "host",
+                "website": {"hostname": "lab.example.org", "https": "letsencrypt"},
+            },
+            "machines": {"host": {"address": "192.168.1.10"}, "gpu1": {"address": "192.168.1.11"}},
+            "users": ["alice", "bob"],
+            "alerts": {"slack": False},
+        }
+
+    def test_monitor_defaults_and_empty_users(self) -> None:
+        raw = self.raw()
+        raw["users"] = []
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["users"], [])
+        self.assertEqual(config["cluster"]["monitor_host"], "host")
+        self.assertEqual(config["cluster"]["mode"], "monitor")
+        self.assertEqual(config["machines"]["gpu1"]["aliases"], [])
+
+    def test_monitor_rejects_slurm_settings_and_bad_host(self) -> None:
+        raw = self.raw()
+        raw["cluster"]["monitor_host"] = "missing"
+        raw["partitions"] = {"main": {"max_time": "24:00:00"}}
+        raw["machines"]["gpu1"]["roles"] = ["compute"]
+        raw["users"] = [{"name": "alice", "uid": 2000}]
+        _, errors = check_config(raw)
+        self.assertTrue(any("cluster.monitor_host" in error for error in errors))
+        self.assertTrue(any("partitions" in error for error in errors))
+        self.assertTrue(any("machines.gpu1.roles" in error for error in errors))
+        self.assertTrue(any("users[0]" in error for error in errors))
+
+    def test_duplicate_names_and_addresses(self) -> None:
+        raw = self.raw()
+        raw["users"] = ["alice", "alice"]
+        raw["machines"]["gpu1"]["address"] = "192.168.1.10"
+        _, errors = check_config(raw)
+        self.assertTrue(any("users[1]" in error for error in errors))
+        self.assertTrue(any("machines.gpu1.address" in error for error in errors))
 
 
 def run_validate(path: Path) -> subprocess.CompletedProcess[str]:
@@ -34,7 +82,7 @@ class ValidateCommandTest(unittest.TestCase):
     """The command the administrator runs."""
 
     def test_examples_are_valid(self) -> None:
-        for path in (EXAMPLE, MINIMAL):
+        for path in (EXAMPLE, MINIMAL, MONITOR):
             with self.subTest(path=path.name):
                 result = run_validate(path)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

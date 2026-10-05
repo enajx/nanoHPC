@@ -177,8 +177,9 @@ class WebsiteStep(Step):
             )
             yield Static("Paths on this computer, relative to the folder of cluster.yml.", classes="hint")
         else:
+            host = "monitoring host" if state.file.get(["cluster", "mode"]) == "monitor" else "front node"
             yield Static(
-                "Let's Encrypt needs the hostname to reach the front node on port 80 from the internet.",
+                f"Let's Encrypt needs the hostname to reach the {host} on port 80 from the internet.",
                 classes="hint",
             )
         yield field("logo (optional)", BoundInput(state, [*website, "logo"], "optional", "logo.png", "website-logo"))

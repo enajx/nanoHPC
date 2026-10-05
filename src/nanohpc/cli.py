@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from nanohpc import check, deploy, fixuid, probe, sim
+from nanohpc import check, deploy, fixuid, probe, restart, restart_check, sim, update_report
 from nanohpc.config import load_config
 from nanohpc.render import render_forwarding_rules
 
@@ -29,7 +29,9 @@ def validate(path: Path) -> int:
             print(f"  {error}", file=sys.stderr)
         return 1
     machines = config["machines"].values()
-    compute = sum("compute" in machine["roles"] for machine in machines)
+    compute = (
+        sum("compute" in machine["roles"] for machine in machines) if config["cluster"].get("mode") != "monitor" else 0
+    )
     print(f"{path}: valid (machines: {len(machines)}, compute: {compute}, users: {len(config['users'])})")
     return 0
 
@@ -63,11 +65,43 @@ def run_deploy(path: Path, ssh_config: Path | None, dry_run_only: bool, only_arg
         for error in errors:
             print(f"  {error}", file=sys.stderr)
         return 1
+    if config["cluster"].get("mode") == "monitor":
+        print("This cluster.yml uses monitor mode: run nanohpc deploy-monitor instead.", file=sys.stderr)
+        return 1
     # A simulated cluster's front node deploys itself like `nanohpc sim deploy` (set on its automatic deploy
     # service only on simulated clusters; test use).
     simulated = os.environ.get("NANOHPC_SIMULATED") == "1"
     fake_gpus = [name for name in os.environ.get("NANOHPC_FAKE_GPUS", "").split(",") if name] if simulated else []
     return deploy.deploy(config, ssh_config, simulated, fake_gpus, automatic, dry_run_only, only)
+
+
+def run_deploy_monitor(
+    path: Path,
+    ssh_config: Path | None,
+    dry_run_only: bool,
+    only_arguments: list[str] | None,
+    accept_hardware_change: str | None,
+) -> int:
+    """Validate and deploy monitoring without Slurm or account management."""
+    if not path.is_file():
+        print(f"{path}: file not found", file=sys.stderr)
+        return 1
+    config, errors = load_config(path, True, False)
+    if errors:
+        print(f"{path}: {len(errors)} error(s); nothing was changed", file=sys.stderr)
+        for error in errors:
+            print(f"  {error}", file=sys.stderr)
+        return 1
+    if config["cluster"].get("mode") != "monitor":
+        print("This cluster.yml uses Slurm mode: run nanohpc deploy instead.", file=sys.stderr)
+        return 1
+    only, right = read_only(only_arguments)
+    if not right:
+        return 1
+    if only is not None and only.part != "node":
+        print("Monitor mode --only supports node NAME only.", file=sys.stderr)
+        return 1
+    return deploy.deploy_monitor(config, ssh_config, False, {}, dry_run_only, only, accept_hardware_change)
 
 
 def forwarding_rules(path: Path) -> int:
@@ -135,6 +169,16 @@ def simulate(
         if errors:
             print("\n".join([f"{state / 'cluster.yml'}: {error}" for error in errors]), file=sys.stderr)
             return 1
+        if config["cluster"].get("mode") == "monitor":
+            if not isinstance(plan.fake_gpus, dict):
+                print("monitor simulation needs a fake_gpus mapping", file=sys.stderr)
+                return 1
+            return deploy.deploy_monitor(
+                config, ssh_config or state / "ssh_config", True, plan.fake_gpus, dry_run_only, only, None
+            )
+        if not isinstance(plan.fake_gpus, list):
+            print("Slurm simulation needs a fake_gpus list", file=sys.stderr)
+            return 1
         return deploy.deploy(
             config, ssh_config or state / "ssh_config", True, plan.fake_gpus, False, dry_run_only, only
         )
@@ -157,11 +201,28 @@ def main() -> None:
         "--dry-run", action="store_true", help="only the dry run: show what would change, and change nothing"
     )
     setup.add_argument("--only", nargs="+", metavar="PART", help=ONLY_HELP)
+    monitor_setup = commands.add_parser("deploy-monitor", help="deploy monitoring without Slurm")
+    monitor_setup.add_argument("path", type=Path, help="monitor-mode cluster.yml")
+    monitor_setup.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines")
+    monitor_setup.add_argument("--dry-run", action="store_true", help="show changes without applying them")
+    monitor_setup.add_argument("--only", nargs=2, metavar=("NODE", "NAME"), help="add or update one machine")
+    monitor_setup.add_argument("--accept-hardware-change", metavar="NAME", help="accept a changed GPU inventory")
     report = commands.add_parser(
         "check", help="report how every machine compares with cluster.yml, without changing anything"
     )
     report.add_argument("path", type=Path, help="path to cluster.yml")
     report.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
+    report.add_argument("--before-restart", action="store_true", help="check saved boot settings on every machine")
+    updates = commands.add_parser(
+        "update-report", help="report waiting package updates on every machine without changing anything"
+    )
+    updates.add_argument("path", type=Path, help="path to cluster.yml")
+    updates.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
+    restart_command = commands.add_parser("restart", help="restart one confirmed compute machine")
+    restart_command.add_argument("path", type=Path, help="path to cluster.yml")
+    restart_command.add_argument("machine", help="one compute machine in cluster.yml")
+    restart_command.add_argument("--confirm", required=True, help="repeat the machine name to authorize its restart")
+    restart_command.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines")
     rules = commands.add_parser(
         "forwarding-rules", help="print rules for the lab's own web server to show the cluster website"
     )
@@ -187,13 +248,32 @@ def main() -> None:
     init = commands.add_parser("init", help="setup wizard: write a new cluster.yml, or change an existing one")
     init.add_argument("path", type=Path, help="path to cluster.yml (created if missing)")
     init.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
+    init.add_argument("--mode", choices=("monitor",), help="create a monitor-only configuration")
     arguments = parser.parse_args()
     if arguments.command == "validate":
         sys.exit(validate(arguments.path))
     if arguments.command == "deploy":
         sys.exit(run_deploy(arguments.path, arguments.ssh_config, arguments.dry_run, arguments.only))
+    if arguments.command == "deploy-monitor":
+        sys.exit(
+            run_deploy_monitor(
+                arguments.path,
+                arguments.ssh_config,
+                arguments.dry_run,
+                arguments.only,
+                arguments.accept_hardware_change,
+            )
+        )
     if arguments.command == "check":
-        sys.exit(check.run(arguments.path, arguments.ssh_config))
+        sys.exit(
+            restart_check.run(arguments.path, arguments.ssh_config)
+            if arguments.before_restart
+            else check.run(arguments.path, arguments.ssh_config)
+        )
+    if arguments.command == "restart":
+        sys.exit(restart.run(arguments.path, arguments.machine, arguments.confirm, arguments.ssh_config))
+    if arguments.command == "update-report":
+        sys.exit(update_report.run(arguments.path, arguments.ssh_config))
     if arguments.command == "forwarding-rules":
         sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":
@@ -207,4 +287,4 @@ def main() -> None:
         dependencies = wizard.Dependencies(
             probe.probe_machine, probe.user_ids, probe.uid_problems, probe.uid_owner, fixuid.plan_fix, fixuid.apply_fix
         )
-        sys.exit(wizard.run(arguments.path, arguments.ssh_config, dependencies))
+        sys.exit(wizard.run(arguments.path, arguments.ssh_config, dependencies, arguments.mode))

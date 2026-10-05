@@ -63,8 +63,8 @@ function Detail({ label, value }: { label: string; value: string | number | null
 }
 
 /** Keep each compute machine's measured status and specifications below its charts. */
-export function MachineCards({ nodes, stale }: { nodes: Machine[]; stale: boolean }) {
-  return <section className="machine-specs"><h2>Machines</h2><div className="spec-card-grid">{nodes.filter(node => node.role === 'Compute').map(node => {
+export function MachineCards({ nodes, stale, roles }: { nodes: Machine[]; stale: boolean; roles?: string[] }) {
+  return <section className="machine-specs"><h2>Machines</h2><div className="spec-card-grid">{nodes.filter(node => (roles ?? ['Compute']).includes(node.role)).map(node => {
     const s = stale ? undefined : node.specs
     const completeGpus = s?.gpu_count != null && s.gpus.length === s.gpu_count
     const models = s?.gpu_count === 0 ? '0' : completeGpus ? gpuGroups(s.gpus, gpu => gpu.model) : s?.gpu_count != null ? `${s.gpu_count} GPUs` : 'Unknown'

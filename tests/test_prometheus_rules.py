@@ -13,6 +13,8 @@ RULES = REPO / "src/nanohpc/files/prometheus-daily-rules.yml"
 RULES_TEST = REPO / "tests/prometheus_daily_rules_test.yml"
 ALERT_RULES = REPO / "src/nanohpc/files/prometheus-alert-rules.yml"
 ALERT_RULES_TEST = REPO / "tests/prometheus_alert_rules_test.yml"
+MONITOR_DAILY_RULES = REPO / "src/nanohpc/files/prometheus-monitor-daily-rules.yml"
+MONITOR_ALERT_RULES = REPO / "src/nanohpc/files/prometheus-monitor-alert-rules.yml"
 EXPECTED_ALERTS = {
     "HealthCheckFailing": "critical",
     "HealthCheckWarning": "warning",
@@ -91,6 +93,39 @@ class AlertRulesTests(unittest.TestCase):
             ["promtool", "test", "rules", str(ALERT_RULES_TEST)], capture_output=True, text=True, check=False
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class MonitorRulesTests(unittest.TestCase):
+    """Monitor-only rules summarize machine readings and alert on failed checks or missing metrics."""
+
+    def test_monitor_daily_rules_have_no_scheduler_metrics(self) -> None:
+        """Daily history keeps measured machine and GPU series without scheduler figures."""
+        groups = yaml.safe_load(MONITOR_DAILY_RULES.read_text())["groups"]
+        self.assertEqual([group["name"] for group in groups], ["monitor-minute-values", "monitor-daily-summaries"])
+        records = {rule["record"] for group in groups for rule in group["rules"]}
+        self.assertIn("cluster_daily_gpu_utilization_percent", records)
+        self.assertIn("cluster_daily_scrape_coverage_ratio", records)
+        self.assertFalse(any("allocat" in name or "fairshare" in name or "jobs" in name for name in records))
+        self.assertFalse(any("cluster_allocated" in rule["expr"] or "cluster_pending_jobs" in rule["expr"]
+                             for group in groups for rule in group["rules"]))
+
+    def test_monitor_alerts_cover_health_inventory_and_freshness(self) -> None:
+        """Alerts use collector health and inventory mismatch, without storage or scheduler alerts."""
+        groups = yaml.safe_load(MONITOR_ALERT_RULES.read_text())["groups"]
+        self.assertEqual([group["name"] for group in groups], ["monitor-alerts"])
+        rules = {rule["alert"]: rule for rule in groups[0]["rules"]}
+        self.assertEqual(set(rules), {
+            "HealthCheckFailing", "HealthCheckWarning", "HealthChecksNotRunning", "HealthChecksMissing",
+            "MachineMetricsMissing", "MonitorMachineOffline", "MonitorMachineUnhealthy",
+            "SnapshotStale", "GpuMetricsStale", "GPUInventoryChanged",
+        })
+        self.assertIn("cluster_monitor_machine_health", rules["MonitorMachineUnhealthy"]["expr"])
+        self.assertIn("cluster_monitor_gpu_inventory_mismatch", rules["GPUInventoryChanged"]["expr"])
+        for name, rule in rules.items():
+            self.assertTrue(rule["expr"].strip(), name)
+            self.assertIn(rule["labels"]["severity"], ("warning", "critical"))
+            self.assertNotIn("Slurm", str(rule))
+            self.assertNotIn("backup", str(rule).lower())
 
 
 if __name__ == "__main__":

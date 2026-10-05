@@ -174,8 +174,8 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 ## 2026-10-04: README cluster image
 
 - The user chose turquoise pipes from three GIF previews using the website's default coral theme, then chose a static image with a transparent background. The README image shows Threadripper (a two-layer CPU machine), three 4-GPU machines all labelled H100 in the center, and FPGA on the right with no GPU bar. The live website map was not changed.
-- The original GIF was checked in Chromium and decoded; it has been replaced by `assets/cluster.png`.
-- The Tech stack badges sit on one source line, so Markdown readers do not turn each badge into a separate row. The user removed the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges.
+- The original GIF was checked in Chromium and decoded; the README uses the transparent static `assets/cluster.png`.
+- The Tech stack badges sit on one source line in their section and also appear above the title. The user removed the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges.
 - Files: `README.md`, `assets/cluster.png`.
 
 ## 2026-10-04: README feature descriptions
@@ -197,3 +197,47 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - `SimHomeOnStorageTest` passed on Ubuntu 24.04 VMs: home disk, NFS `/home`, scratch disk, and scratch image gained `nosuid,nodev` in the same deploy after their fstab entries changed; a dry run changed nothing and a later deploy found no work. `SimHomeBindRemountTest` passed on Ubuntu 24.04 VMs for `/home` on the root disk. A separate agent reviewed the changed tasks.
 - NFS-specific options such as transport and version cannot generally change through a remount. That remaining case is queued in [TODO.md](../TODO.md) (at the repo root).
 - Files: `src/nanohpc/ansible/roles/{home_client,home_server,scratch}/tasks/main.yml`, `tests/test_sim.py`, `md/testing.md`.
+
+## 2026-10-05: storage and quotas after reboot
+
+- Ubuntu 24.04 VM checks passed from a fresh cluster: restart the home server, front node, and two compute nodes one at a time after a deploy. They check the home disk, NFS mounts, active quota limits, scratch disk and image, and files read and written after boot. A separate VM test passed after restarting the front node when `/home` is a bind mount on its root disk.
+- The reboot test refreshes Lima's forwarded SSH port after each restart. `sim up` checks for the known stuck `systemd-logind` process on fresh Ubuntu VMs and restarts it when CPU use stays high.
+- Files: `tests/test_sim.py`, `src/nanohpc/sim.py`, `md/testing.md`.
+
+## 2026-10-05: XFS disks and NFS quota enforcement
+
+- A fresh Ubuntu 24.04 VM cluster passed with an XFS home disk and XFS scratch disk. The test checks the configured home quota limits, reads and writes files through NFS and on local scratch, then confirms that an over-limit write through NFS fails with a quota error.
+- The test uses its own simulated cluster so it can format test disks without touching another test's disks. A separate agent reviewed the test and its quota check.
+- Files: `tests/sim/xfs-quota.yml`, `tests/test_sim.py`, `md/testing.md`.
+
+## 2026-10-05: monitor only, without Slurm
+
+- `nanohpc deploy-monitor` installs machine and GPU metrics, health checks, alerts, a status snapshot, Grafana, and an HTTPS website on directly used Ubuntu machines. One named monitor host serves the shared services and can also run work. It does not set up Slurm, accounts, SSH access, or storage. Existing nanoHPC Slurm setups are refused.
+- `cluster.mode: monitor` uses machine addresses, optional aliases, and existing login names. The example, `nanohpc init --mode monitor` wizard, validation, `nanohpc check`, dry run, `--only node NAME`, and explicit GPU hardware change acceptance support this mode. The website shows Overview, Machines, Usage, and Users, with measured GPU data and monitor-specific history. It has no job or queue claims.
+- A separate agent reviewed the implementation. The focused tests passed. `SimMonitorDeployTest` passed on three Ubuntu 24.04 VMs, checking the live HTTPS site, snapshot, measured fake-GPU metrics, and absence of Slurm and listed user accounts. A node-only dry run and apply also passed on the VMs.
+- Files: `src/nanohpc/{cli,config,clusterfile,deploy,render,sim,check}.py`, `src/nanohpc/wizard/`, `src/nanohpc/ansible/monitor.yml`, monitoring roles and collectors, monitor Prometheus rules and Grafana history, `src/nanohpc/website-source/`, `examples/monitor.yml`, `tests/`, `README.md`, `md/testing.md`.
+
+## 2026-10-05: home quotas across kernel upgrades
+
+- The home server installs the extra-module package for its running kernel and a package that tracks quota modules with later Ubuntu kernel updates. It uses the installed kernel image package's update track and stops with a clear error if tracks conflict or the matching package is unavailable.
+- A fresh Ubuntu 24.04 VM test passed: deploy twice, upgrade to a newer kernel, reboot, check the separate `/home` disk, active quotas, and a user's file, then deploy again. A separate agent reviewed the package selection.
+- Files: `src/nanohpc/ansible/roles/home_server/tasks/main.yml`, `tests/sim/kernel-quota.yml`, `tests/test_sim.py`, `md/testing.md`.
+
+## 2026-10-05: restart checks before a restart
+
+- `nanohpc check CLUSTER_YML --before-restart` reads every machine over SSH and reports pass or failure for fstab, GRUB's selected kernel, the NVIDIA module on GPU machines, saved versus live network settings, and automatic update restart settings. A separate `/boot` needs `nofail` and a live mount. Netplan and persistent NetworkManager profiles support static and DHCP settings; temporary or unverifiable settings fail the check. The command changes nothing.
+- The focused CLI tests passed. `SimRestartCheckTest` passed on three Ubuntu 24.04 VMs: it reached every machine, reported an injected fstab problem on the front node, and left fstab unchanged. Lima's cloud-init Netplan file changed after boot, so the strict network check reported that it could not verify those VM settings. A separate agent reviewed the checks, and its findings were fixed.
+- Files: `src/nanohpc/{cli,restart_check}.py`, `tests/{test_restart_check,test_sim}.py`, `md/testing.md`.
+
+## 2026-10-05: confirmed restart of one compute machine
+
+- `nanohpc restart CLUSTER_YML MACHINE --confirm MACHINE` accepts one compute machine, never the front node. It checks the SSH target's configured address, takes a cluster-wide lock, drains the Slurm node, and waits for its allocated jobs to finish. It requires the saved boot checks to pass before requesting a reboot, then checks a new boot ID and the target address again.
+- After reboot it checks fresh root and the invoking administrator's login, the selected kernel, every configured GPU through `nvidia-smi`, shared `/home`, `/scratch`, and `slurmd`. The caller must log in as an administrator listed in `cluster.yml`; checking another administrator's fresh login would need that person's private key. A temporary Slurm maintenance reservation keeps ordinary jobs off the node while it runs a 1-GPU test job, or a CPU job on a CPU-only node, as the invoking administrator. It removes the reservation and unlocks after the test passes. Any failed check or job re-drains the node; if re-draining fails, it keeps the reservation. Front-node restarts remain manual after the queue is empty, users are told, and the read-only restart checks pass.
+- The focused CLI tests passed and a separate agent reviewed the safety paths. On Ubuntu 24.04 VMs, an unsafe fstab entry stopped before reboot and left the CPU node drained. A fresh-cluster test waited for a real running job to finish, rebooted the CPU node, and completed a real Slurm test job. Lima's base image changes saved boot settings after startup, so the success test bypassed only the boot-settings precheck; the production command did not.
+- Files: `src/nanohpc/{cli,restart}.py`, `tests/{test_restart,test_sim}.py`, `md/testing.md`.
+
+## 2026-10-05: read-only update report
+
+- `nanohpc update-report CLUSTER_YML [--ssh-config PATH]` reads saved APT lists on every configured machine without refreshing them. It reports the list timestamp and age, waiting and security counts, and package names. Each package goes in the first matching built-in care group, then extra sources, Ubuntu security, or the rest. Docker and MariaDB are care groups wherever those packages are installed.
+- A failed SSH call, missing saved APT lists, or an invalid remote result names its machine and makes the command exit with an error after reporting the other machines. The focused CLI tests passed. `SimUpdateReportTest` passed on Ubuntu 24.04 VMs through the real SSH and `python3-apt` boundary and checked that APT list files were unchanged. A separate agent reviewed the outcome and tests.
+- Files: `src/nanohpc/{cli,update_report}.py`, `tests/{test_update_report,test_sim}.py`, `md/testing.md`.

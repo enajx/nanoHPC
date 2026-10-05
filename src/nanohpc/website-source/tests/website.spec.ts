@@ -189,16 +189,15 @@ test('the site renders every tab from the fixture data under a non-root path', a
   await page.getByRole('button', { name: 'Close settings' }).click()
   await expect(page.getByRole('dialog', { name: 'Settings' })).toHaveCount(0)
 
-  // Overview: summary, front and compute machines, GPU chart, current jobs.
+  // Overview: summary, compute machines, GPU chart, current jobs.
   await expect(page.getByText('Updates every 30s')).toBeVisible()
   await expect(page.locator('.stat').filter({ hasText: 'GPUs allocated' })).toContainText('2 / 4')
   const machineRows = page.locator('.machine-list tbody tr')
-  await expect(machineRows).toHaveCount(3)
-  await expect(machineRows.nth(0)).toContainText('front')
-  await expect(machineRows.nth(1)).toContainText('gpu1')
-  await expect(machineRows.nth(2)).toContainText('cpu1')
-  await expect(machineRows.nth(2)).toContainText('Idle')
-  await expect(machineRows.nth(1)).toContainText('Unknown')
+  await expect(machineRows).toHaveCount(2)
+  await expect(machineRows.nth(0)).toContainText('gpu1')
+  await expect(machineRows.nth(1)).toContainText('cpu1')
+  await expect(machineRows.nth(1)).toContainText('Idle')
+  await expect(machineRows.nth(0)).toContainText('Unknown')
   await expect(page.locator('.gpu-allocation-chart .recharts-area').first()).toBeVisible()
   await expect(page.getByRole('table', { name: 'Running jobs' })).toContainText('alice')
   await expect(page.getByRole('table', { name: 'Top of queue' })).toContainText('bob')
@@ -270,4 +269,70 @@ test('without a logo the brand shows a generic mark and the cluster name', async
   await expect(page.locator('img.brand-mark')).toHaveCount(0)
   expectInsidePrefix(seen.requests)
   expect(seen.errors).toEqual([])
+})
+
+test('monitor mode shows measured machines and login names without Slurm claims', async ({ page }) => {
+  await mockGrafana(page)
+  await page.route(`**${prefix}grafana/api/ds/query`, route => {
+    const body = route.request().postDataJSON() as { queries: { refId: string }[] }
+    const frame = (gpu: string, value: number) => ({ schema: { fields: [{}, { labels: { machine: 'gpu1', gpu } }] }, data: { values: [[Date.now()], [value]] } })
+    const results = Object.fromEntries(body.queries.map(query => [query.refId, { frames: [frame('0', query.refId === 'memory' ? 8 * gib : 55), frame('1', query.refId === 'memory' ? 2 * gib : 5)] }]))
+    return route.fulfill({ json: { results } })
+  })
+  await page.route(`**${prefix}site.json`, route => route.fulfill({ json: {
+    mode: 'monitor', cluster_name: 'mylab', logo: null, login_address: 'login.mylab.example.org', users: ['alice', 'bob'],
+  } }))
+  await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: {
+    mode: 'monitor', generated_at: new Date().toISOString(), refresh_seconds: 30, total_gpus: 2,
+    nodes: [
+      { name: 'host', role: 'Monitor', health: 'Healthy', health_details: [], gpu_usage: 'Not applicable', total_gpus: 0,
+        specs: { gpu_count: 0, gpus: [], disks: [] } },
+      { name: 'gpu1', role: 'Machine', health: 'Healthy', health_details: [], gpu_usage: 'Active', total_gpus: 2,
+        specs: { gpu_count: 2, gpus: [{ index: '0', model: 'RTX', memory_bytes: 48 * gib }, { index: '1', model: 'RTX', memory_bytes: 48 * gib }], disks: [] } },
+    ],
+  } }))
+  const seen = watch(page)
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.brand-sub')).toHaveText('Machine monitor')
+  const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
+  expect(await nav.getByRole('link').allInnerTexts()).toEqual(['Overview', 'Machines', 'Usage', 'Users'])
+  await expect(page.getByRole('region', { name: 'Cluster summary' })).toContainText('2')
+  await expect(page.locator('.machine-list tbody tr')).toHaveCount(2)
+  await nav.getByRole('link', { name: 'Machines' }).click()
+  await expect(page.getByRole('region', { name: 'gpu1 specs' })).toContainText('2× RTX')
+  await expect(page.getByRole('table', { name: 'GPU readings' })).toContainText('GPU 0')
+  await expect(page.getByRole('table', { name: 'GPU readings' })).toContainText('55%')
+  await expect(page.locator('.cluster-map-canvas canvas')).toBeVisible()
+  await expect(page.locator('.cluster-map-canvas')).toHaveAttribute('aria-label', /gpu1: machine, health Healthy, GPU activity GPU 0 55%/)
+  await page.getByRole('button', { name: 'Show cluster map' }).click()
+  await expect(page.locator('.cluster-map-canvas')).toHaveCount(0)
+  await nav.getByRole('link', { name: 'Users' }).click()
+  await expect(page.getByRole('list', { name: 'Login names' })).toContainText('alice')
+  await expect(page.getByRole('list', { name: 'Login names' })).toContainText('bob')
+  await expect(page.locator('main')).not.toContainText(/allocated|fair.share|pending|queue|job|NFS/i)
+  expectInsidePrefix(seen.requests)
+  expect(seen.errors).toEqual([])
+})
+
+test('monitor mode shows an empty user list', async ({ page }) => {
+  await page.route(`**${prefix}site.json`, route => route.fulfill({ json: {
+    mode: 'monitor', cluster_name: 'mylab', logo: null, login_address: 'login.mylab.example.org', users: [],
+  } }))
+  await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: {
+    mode: 'monitor', generated_at: new Date().toISOString(), refresh_seconds: 30, nodes: [], total_gpus: 0,
+  } }))
+  await page.goto(`${origin}${prefix}#users`)
+  await expect(page.getByText('No login names configured.')).toBeVisible()
+})
+
+test('monitor mode does not infer a GPU total from incomplete inventory', async ({ page }) => {
+  await page.route(`**${prefix}site.json`, route => route.fulfill({ json: {
+    mode: 'monitor', cluster_name: 'mylab', logo: null, login_address: 'login.mylab.example.org', users: [],
+  } }))
+  await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: {
+    mode: 'monitor', generated_at: new Date().toISOString(), refresh_seconds: 30, total_gpus: null,
+    nodes: [{ name: 'gpu1', role: 'Machine', health: 'Unknown', gpu_usage: 'Unknown', total_gpus: null }],
+  } }))
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.stat').filter({ hasText: 'GPUs installed' })).toContainText('Unknown')
 })

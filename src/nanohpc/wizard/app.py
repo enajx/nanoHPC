@@ -18,9 +18,9 @@ from nanohpc import clusterfile
 from nanohpc.clusterfile import ClusterFile
 from nanohpc.wizard.common import Edited, GoToStep, Probed, SaveFile, Step
 from nanohpc.wizard.dialogs import ChoiceScreen, NameScreen, ProblemsScreen
+from nanohpc.wizard.monitor import MONITOR_STEP_CLASSES
 from nanohpc.wizard.state import (
     AGENTS_URL,
-    STEPS,
     USERS,
     Dependencies,
     WizardState,
@@ -56,9 +56,12 @@ class WizardScreen(Screen[None]):
         with Horizontal(id="body"):
             with Vertical(id="sidebar"):
                 yield Static("nanoHPC setup", id="title")
-                yield ListView(*[ListItem(Label(title)) for _, title in STEPS], id="steps")
-            with ContentSwitcher(initial=STEPS[0][0], id="content"):
-                for index, step in enumerate(STEP_CLASSES):
+                yield ListView(*[ListItem(Label(title)) for _, title in self.state.steps], id="steps")
+            with ContentSwitcher(initial=self.state.steps[0][0], id="content"):
+                classes = (
+                    MONITOR_STEP_CLASSES if self.state.file.get(["cluster", "mode"]) == "monitor" else STEP_CLASSES
+                )
+                for index, step in enumerate(classes):
                     yield step(self.state, index)
         with Vertical(id="footer"):
             yield Static("", id="keys", markup=False)
@@ -70,13 +73,13 @@ class WizardScreen(Screen[None]):
 
     def step(self, index: int) -> Step:
         """Return a step's widget."""
-        return self.query_one(f"#{STEPS[index][0]}", Step)
+        return self.query_one(f"#{self.state.steps[index][0]}", Step)
 
     async def go(self, index: int) -> None:
         """Show a step with the file's current content."""
         self.current = index
         self.visited.add(index)
-        self.query_one("#content", ContentSwitcher).current = STEPS[index][0]
+        self.query_one("#content", ContentSwitcher).current = self.state.steps[index][0]
         self.query_one("#steps", ListView).index = index
         step = self.step(index)
         await step.reload()
@@ -88,19 +91,20 @@ class WizardScreen(Screen[None]):
 
     def refresh_status(self) -> None:
         """Mark the current step, the visited steps, and the steps with errors in the sidebar."""
-        counts = [0] * len(STEPS)
+        counts = [0] * len(self.state.steps)
+        mode = self.state.file.get(["cluster", "mode"]) or "slurm"
         for error in wizard_errors(self.state):
-            counts[error_step(error)] += 1
+            counts[error_step(error, mode)] += 1
         for index, item in enumerate(self.query_one("#steps", ListView).query(ListItem)):
             mark = "■" if index == self.current else "✓" if index in self.visited else "□"
             errors = f" ✗{counts[index]}" if counts[index] else ""
-            item.query_one(Label).update(f"{mark} {index + 1} {STEPS[index][1]}{errors}")
+            item.query_one(Label).update(f"{mark} {index + 1} {self.state.steps[index][1]}{errors}")
             item.set_class(index == self.current, "current")
             item.set_class(counts[index] > 0, "has-errors")
 
     async def action_next(self) -> None:
         """Open the next step."""
-        if self.current < len(STEPS) - 1:
+        if self.current < len(self.state.steps) - 1:
             await self.go(self.current + 1)
 
     async def action_back(self) -> None:
@@ -125,7 +129,8 @@ class WizardScreen(Screen[None]):
 
     def on_probed(self, event: Probed) -> None:
         """Check the UIDs on a machine that was just probed."""
-        self.query_one(f"#{STEPS[USERS][0]}", UsersStep).check([event.machine])
+        if self.state.file.get(["cluster", "mode"]) != "monitor":
+            self.query_one(f"#{self.state.steps[USERS][0]}", UsersStep).check([event.machine])
 
     async def on_go_to_step(self, event: GoToStep) -> None:
         """Open the step an error belongs to."""
@@ -147,11 +152,12 @@ class WizardApp(App[int]):
         Binding("ctrl+s", "save", "save"),
     ]
 
-    def __init__(self, path: Path, ssh_config: Path | None, deps: Dependencies) -> None:
+    def __init__(self, path: Path, ssh_config: Path | None, deps: Dependencies, mode: str | None = None) -> None:
         super().__init__()
         self.path = path
         self.ssh_config = ssh_config
         self.deps = deps
+        self.mode = mode
         self.wizard: WizardState | None = None
         self.saved = False  # the file was written in this session
         self.saved_errors = 0  # errors of the file as last saved
@@ -163,6 +169,9 @@ class WizardApp(App[int]):
             self.problems = shape_problems(data)
             if isinstance(data, CommentedMap) and not self.problems:
                 self.opened = ClusterFile(data)
+                existing = self.opened.get(["cluster", "mode"]) or "slurm"
+                if mode is not None and mode != existing:
+                    self.problems.append(f"cluster.mode is {existing}; --mode {mode} cannot change an existing file")
 
     @property
     def state(self) -> WizardState:
@@ -179,14 +188,14 @@ class WizardApp(App[int]):
         elif self.opened is not None:
             self.open(self.opened, self.opened.as_text())
         else:
-            self.push_screen(NameScreen(), self.named)
+            self.push_screen(NameScreen(self.mode or "slurm"), self.named)
 
     def named(self, name: str | None) -> None:
         """Start a new file for the named cluster; no name quits without writing anything."""
         if name is None:
             self.exit(1)
             return
-        self.open(clusterfile.new(name), None)
+        self.open(clusterfile.new(name, self.mode or "slurm"), None)
 
     def open(self, file: ClusterFile, saved: str | None) -> None:
         """Show the steps for the file."""
@@ -258,7 +267,7 @@ class WizardApp(App[int]):
         )
 
 
-def run(path: Path, ssh_config: Path | None, deps: Dependencies) -> int:
+def run(path: Path, ssh_config: Path | None, deps: Dependencies, mode: str | None = None) -> int:
     """Run the wizard on a cluster.yml (created if missing) and return the exit code."""
     if path.exists() and not path.is_file():
         print(f"{path}: not a file", file=sys.stderr)
@@ -266,12 +275,13 @@ def run(path: Path, ssh_config: Path | None, deps: Dependencies) -> int:
     if not path.parent.is_dir():
         print(f"{path.parent}: folder not found", file=sys.stderr)
         return 1
-    app = WizardApp(path, ssh_config, deps)
+    app = WizardApp(path, ssh_config, deps, mode)
     code = app.run()
     if code is None:
         return 1
     if app.saved and app.saved_errors == 0:
-        print(f"Saved {path}. Next: ssh-add (load your key), then nanohpc deploy {path}")
+        command = "deploy-monitor" if app.state.file.get(["cluster", "mode"]) == "monitor" else "deploy"
+        print(f"Saved {path}. Next: ssh-add (load your key), then nanohpc {command} {path}")
     elif app.saved:
         print(f"Saved {path} with {app.saved_errors} error(s): nanohpc validate {path} lists them.")
     return code

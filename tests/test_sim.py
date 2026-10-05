@@ -124,6 +124,51 @@ class SimPlanTest(unittest.TestCase):
         self.assertIn(expected, errors)
 
 
+class MonitorSimPlanTest(unittest.TestCase):
+    """Monitor simulations specify fake GPU count and model without Slurm machine GPU fields."""
+
+    def test_shipped_monitor_sim(self) -> None:
+        """A host, one fake-GPU machine, and one CPU-only machine are planned."""
+        plan = plan_of(SIM / "monitor.yml")
+        self.assertEqual({vm.machine for vm in plan.vms}, {"host", "gpu1", "cpu1"})
+        self.assertEqual(plan.fake_gpus, {"gpu1": {"count": 2, "type": "A6000"}})
+        addresses = {vm.machine: f"192.168.104.{50 + index}" for index, vm in enumerate(plan.vms)}
+        with tempfile.TemporaryDirectory() as directory:
+            rendered = render_cluster(plan, addresses, Path(directory))
+        config, errors = check_config(yaml.safe_load(rendered))
+        self.assertEqual(errors, [])
+        self.assertEqual(config["cluster"]["mode"], "monitor")
+
+    def test_monitor_fake_gpu_mapping_validation(self) -> None:
+        """Reject unknown machines, invalid counts and models, and the Slurm list form in monitor mode."""
+        cases = [
+            ({"gpu1": {"count": 0, "type": "A6000"}}, "fake_gpus.gpu1.count"),
+            ({"gpu1": {"count": True, "type": "A6000"}}, "fake_gpus.gpu1.count"),
+            ({"gpu1": {"count": 2, "type": "bad type"}}, "fake_gpus.gpu1.type"),
+            ({"missing": {"count": 2, "type": "A6000"}}, "missing is not a machine"),
+            ({"gpu1": {"count": 2}}, "fake_gpus.gpu1.type"),
+            (["gpu1"], "fake_gpus must be a mapping"),
+        ]
+        for fake_gpus, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory)
+                shutil.copy(ROOT / "examples" / "monitor.yml", folder / "monitor.yml")
+                path = folder / "test.yml"
+                path.write_text(
+                    yaml.safe_dump(
+                        {
+                            "cluster": "monitor.yml",
+                            "ubuntu": "24.04",
+                            "fake_gpus": fake_gpus,
+                            "vms": {"default": {"cpus": 1, "memory_gb": 1, "disk_gb": 10}},
+                            "extra_disk_gb": 10,
+                        }
+                    )
+                )
+                _, errors = load_sim(path)
+                self.assertTrue(any(expected in error for error in errors), errors)
+
+
 class SimOutputTest(unittest.TestCase):
     """The files `sim up` writes: the cluster.yml with real VM addresses, and the SSH machine list."""
 
@@ -261,6 +306,73 @@ class SimClusterTest(unittest.TestCase):
         self.assertFalse(state.exists())
 
 
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimMonitorDeployTest(unittest.TestCase):
+    """Deploy monitor mode to real VMs and check the live monitoring boundary."""
+
+    sim = SIM / "monitor.yml"
+    state = ROOT / ".nanohpc-sim" / "monitor"
+
+    def run_nanohpc(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        """Run the current source's command from the repository checkout."""
+        return subprocess.run(
+            [sys.executable, "-c", "from nanohpc.cli import main; main()", *arguments],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def ssh(self, machine: str, command: str) -> subprocess.CompletedProcess[str]:
+        """Run a command on one VM with the generated administrator SSH config."""
+        return subprocess.run(
+            ["ssh", "-F", str(self.state / "ssh_config"), machine, command],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_monitor_only_deploy(self) -> None:
+        if os.environ.get("NANOHPC_SIM_KEEP") != "1":
+            self.addCleanup(self.run_nanohpc, "sim", "down", str(self.sim))
+        up = self.run_nanohpc("sim", "up", str(self.sim))
+        self.assertEqual(up.returncode, 0, up.stdout + up.stderr)
+        dry = self.run_nanohpc("sim", "deploy", str(self.sim), "--dry-run")
+        self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+        deployed = self.run_nanohpc("sim", "deploy", str(self.sim))
+        self.assertEqual(deployed.returncode, 0, deployed.stdout + deployed.stderr)
+        checked = self.run_nanohpc(
+            "check", str(self.state / "cluster.yml"), "--ssh-config", str(self.state / "ssh_config")
+        )
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        for machine in ("host", "gpu1", "cpu1"):
+            with self.subTest(machine=machine):
+                result = self.ssh(
+                    machine,
+                    'test "$(cat /etc/nanohpc/mode)" = monitor && ! test -e /etc/slurm/slurm.conf && ! getent passwd alice',
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        snapshot = self.ssh("host", "cat /var/lib/nanohpc/monitor/status.json")
+        self.assertEqual(snapshot.returncode, 0, snapshot.stdout + snapshot.stderr)
+        status = json.loads(snapshot.stdout)
+        self.assertEqual(status["mode"], "monitor")
+        self.assertEqual(status["total_gpus"], 2)
+        self.assertEqual(status["users"], [{"user": "alice"}, {"user": "bob"}])
+        gpu = self.ssh(
+            "host",
+            'curl -fsSG --data-urlencode "query=cluster_gpu_utilization_percent" http://127.0.0.1:9090/api/v1/query',
+        )
+        self.assertEqual(gpu.returncode, 0, gpu.stdout + gpu.stderr)
+        self.assertEqual(len(json.loads(gpu.stdout)["data"]["result"]), 2)
+        website = self.ssh(
+            "host",
+            "curl -fsSk --resolve lab.example.org:443:127.0.0.1 https://lab.example.org/cluster/site.json",
+        )
+        self.assertEqual(website.returncode, 0, website.stdout + website.stderr)
+        self.assertEqual(json.loads(website.stdout)["mode"], "monitor")
+
+
 class SimUsersBase(unittest.TestCase):
     """Helpers for real-VM tests that log in as cluster users with a key generated for the test."""
 
@@ -370,6 +482,47 @@ class SimUsersBase(unittest.TestCase):
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assertEqual(result.returncode, 0, self.failure(result))
         return cluster, config, public_key
+
+    def reboot_vm(self, machine: str, instance: str) -> None:
+        """Power-cycle one Lima VM and require a new Linux boot ID."""
+        before = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
+        self.assertEqual(before.returncode, 0, before.stderr)
+        stopped = self.run_command("limactl", "stop", instance)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", instance)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        # Lima assigns a new forwarded SSH port when a VM starts again.
+        listing = self.run_command("limactl", "list", "--format", "{{.Name}} {{.SSHLocalPort}}")
+        self.assertEqual(listing.returncode, 0, listing.stdout + listing.stderr)
+        port = dict(line.split() for line in listing.stdout.splitlines() if line.strip())[instance]
+        config = self.state / "ssh_config"
+        lines = config.read_text().splitlines()
+        current = ""
+        replaced = False
+        for index, line in enumerate(lines):
+            if line.startswith("Host "):
+                current = line.removeprefix("Host ")
+            elif current == machine and line.startswith("  Port "):
+                lines[index] = f"  Port {port}"
+                replaced = True
+        self.assertTrue(replaced, f"{machine} is missing from {config}")
+        config.write_text("\n".join(lines) + "\n")
+        for _ in range(24):
+            after = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
+            if after.returncode == 0:
+                break
+            time.sleep(5)
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertNotEqual(after.stdout.strip(), before.stdout.strip(), machine)
+
+    def wait_for_vm(self, machine: str, command: str) -> str:
+        """Wait for a boot service or mount to become usable, then return its output."""
+        for _ in range(24):
+            result = self.ssh(machine, command)
+            if result.returncode == 0:
+                return result.stdout
+            time.sleep(5)
+        self.fail(f"{machine}: {command} did not become ready: {result.stdout}{result.stderr}")
 
     def finished_job(self, job: str) -> tuple[str, str]:
         """Return the state and node of a job, once accounting has recorded it."""
@@ -1717,6 +1870,349 @@ class SimHomeBindRemountTest(SimUsersBase):
         self.assertIn("nodev", options)
         self.assertIn("nosuid", options)
         self.assertEqual(len(self.on_front("findmnt -n -o TARGET --mountpoint /home").splitlines()), 1)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimRootHomeRebootTest(SimUsersBase):
+    """A root-disk /home bind mount and its quotas survive a reboot."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "variations.yml"
+        self.state = ROOT / ".nanohpc-sim" / "variations"
+        super().setUp()
+
+    def test_root_home_survives_reboot(self) -> None:
+        _, config, _ = self.up_and_deploy()
+        self.on_front("sudo -u alice sh -c 'echo reboot-check > /home/alice/nanohpc-reboot-check'")
+        front = next(vm.instance for vm in plan_of(self.sim).vms if vm.machine == "front")
+        self.reboot_vm("front", front)
+        mount = self.wait_for_vm("front", "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home")
+        _, fstype, options = mount.strip().split()
+        self.assertEqual(fstype, "ext4")
+        self.assertIn("nodev", options.split(","))
+        self.assertIn("nosuid", options.split(","))
+        self.assertEqual(
+            self.wait_for_vm("front", "sudo -u alice cat /home/alice/nanohpc-reboot-check").strip(), "reboot-check"
+        )
+        self.assertIn(" is on", self.wait_for_vm("front", "sudo quotaon -p -u / | grep -F ' is on'"))
+        quotas = self.wait_for_vm("front", "sudo repquota -u -O csv /")
+        rows = {row.split(",")[0]: row.split(",") for row in quotas.splitlines()}
+        columns = rows["User"]
+        self.assertEqual(
+            (rows["alice"][columns.index("BlockSoftLimit")], rows["alice"][columns.index("BlockHardLimit")]),
+            (str(config["home"]["quota_soft_gb"] * 1024 * 1024), str(config["home"]["quota_hard_gb"] * 1024 * 1024)),
+        )
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimRebootTest(SimUsersBase):
+    """A deployed home disk, NFS clients, quotas, and both scratch kinds survive a machine reboot."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "home-on-storage.yml"
+        self.state = ROOT / ".nanohpc-sim" / "home-on-storage"
+        super().setUp()
+
+    def test_mounts_and_quotas_survive_reboot(self) -> None:
+        _, config, _ = self.up_and_deploy()
+        instances = {vm.machine: vm.instance for vm in plan_of(self.sim).vms}
+        store_address = config["machines"]["store"]["address"]
+        marker = "sudo -u alice timeout 10 cat /home/alice/nanohpc-reboot-check"
+        made = self.ssh("store", "sudo -u alice sh -c 'echo reboot-check > /home/alice/nanohpc-reboot-check'")
+        self.assertEqual(made.returncode, 0, made.stderr)
+        for machine in ("gpu4", "gpu2"):
+            made = self.ssh(machine, "sudo -u alice sh -c 'echo before > /scratch/alice/nanohpc-reboot-check'")
+            self.assertEqual(made.returncode, 0, f"{machine}: {made.stdout}{made.stderr}")
+
+        for machine in ("store", "front", "gpu4", "gpu2"):
+            with self.subTest(machine=machine):
+                self.reboot_vm(machine, instances[machine])
+                mount = self.wait_for_vm(machine, "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home")
+                source, fstype, options = mount.strip().split()
+                if machine == "store":
+                    self.assertEqual((source, fstype), ("/dev/vdb", "ext4"))
+                    self.assertIn(" is on", self.wait_for_vm(machine, "sudo quotaon -p -u /home | grep -F ' is on'"))
+                    quotas = self.wait_for_vm(machine, "sudo repquota -u -O csv /home")
+                    rows = {row.split(",")[0]: row.split(",") for row in quotas.splitlines()}
+                    columns = rows["User"]
+                    self.assertEqual(
+                        (
+                            rows["alice"][columns.index("BlockSoftLimit")],
+                            rows["alice"][columns.index("BlockHardLimit")],
+                        ),
+                        (
+                            str(config["home"]["quota_soft_gb"] * 1024 * 1024),
+                            str(config["home"]["quota_hard_gb"] * 1024 * 1024),
+                        ),
+                    )
+                else:
+                    self.assertEqual((source, fstype), (f"{store_address}:/home", "nfs4"))
+                self.assertEqual(self.wait_for_vm(machine, marker).strip(), "reboot-check")
+                self.assertIn("nodev", options.split(","))
+                self.assertIn("nosuid", options.split(","))
+
+                if machine in ("gpu4", "gpu2"):
+                    scratch = self.wait_for_vm(machine, "findmnt -n -o SOURCE,OPTIONS --mountpoint /scratch")
+                    scratch_source, scratch_options = scratch.strip().split()
+                    if machine == "gpu4":
+                        self.assertEqual(scratch_source, "/dev/vdb")
+                    else:
+                        self.assertTrue(scratch_source.startswith("/dev/loop"), scratch_source)
+                    self.assertIn("nodev", scratch_options.split(","))
+                    self.assertIn("nosuid", scratch_options.split(","))
+                    self.wait_for_vm(
+                        machine,
+                        'sudo -u alice sh -c \'test "$(cat /scratch/alice/nanohpc-reboot-check)" = before '
+                        "&& echo after > /scratch/alice/nanohpc-reboot-check "
+                        '&& test "$(cat /scratch/alice/nanohpc-reboot-check)" = after\'',
+                    )
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimXfsQuotaTest(SimUsersBase):
+    """XFS home and scratch disks work, and the home quota stops writes over NFS."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "xfs-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "xfs-quota"
+        super().setUp()
+
+    def test_xfs_disks_and_nfs_quota(self) -> None:
+        _, config, _ = self.up_with_test_key()
+        for machine in ("store", "gpu4"):
+            installed = self.ssh(machine, "sudo apt-get install -y xfsprogs")
+            self.assertEqual(installed.returncode, 0, f"{machine}: {installed.stdout}{installed.stderr}")
+            filesystem = self.ssh(machine, "sudo blkid -s TYPE -o value /dev/vdb")
+            self.assertEqual(filesystem.returncode, 0, f"{machine}: {filesystem.stdout}{filesystem.stderr}")
+            if filesystem.stdout.strip() != "xfs":
+                mounted = self.ssh(machine, "findmnt -n -o TARGET --source /dev/vdb")
+                self.assertEqual(mounted.stdout.strip(), "", f"{machine}: /dev/vdb is mounted at {mounted.stdout}")
+                formatted = self.ssh(machine, "sudo mkfs.xfs -f -q /dev/vdb")
+                self.assertEqual(formatted.returncode, 0, f"{machine}: {formatted.stdout}{formatted.stderr}")
+        deployed = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(deployed.returncode, 0, self.failure(deployed))
+
+        home = self.on_front("findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home")
+        self.assertIn("nfs4", home)
+        disk = self.ssh("store", "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home")
+        self.assertEqual(disk.returncode, 0, disk.stderr)
+        self.assertIn("/dev/vdb xfs", disk.stdout)
+        scratch = self.ssh("gpu4", "findmnt -n -o SOURCE,FSTYPE --mountpoint /scratch")
+        self.assertEqual(scratch.returncode, 0, scratch.stderr)
+        self.assertEqual(scratch.stdout.strip(), "/dev/vdb xfs")
+        scratch_file = self.ssh(
+            "gpu4",
+            "sudo -u alice sh -c 'echo xfs > /scratch/alice/nanohpc-xfs-check; cat /scratch/alice/nanohpc-xfs-check'",
+        )
+        self.assertEqual(scratch_file.returncode, 0, scratch_file.stdout + scratch_file.stderr)
+        self.assertEqual(scratch_file.stdout.strip(), "xfs")
+        home_file = self.ssh(
+            "front", "sudo -u alice sh -c 'echo xfs > /home/alice/nanohpc-xfs-check; cat /home/alice/nanohpc-xfs-check'"
+        )
+        self.assertEqual(home_file.returncode, 0, home_file.stdout + home_file.stderr)
+        self.assertEqual(home_file.stdout.strip(), "xfs")
+        quotas = self.ssh("store", "sudo repquota -u -O csv /home")
+        self.assertEqual(quotas.returncode, 0, quotas.stdout + quotas.stderr)
+        rows = {row.split(",")[0]: row.split(",") for row in quotas.stdout.splitlines()}
+        columns = rows["User"]
+        self.assertEqual(
+            (rows["alice"][columns.index("BlockSoftLimit")], rows["alice"][columns.index("BlockHardLimit")]),
+            (str(config["home"]["quota_soft_gb"] * 1024 * 1024), str(config["home"]["quota_hard_gb"] * 1024 * 1024)),
+        )
+
+        limited = self.ssh("store", "sudo setquota -u alice 2048 2048 0 0 /home")
+        self.assertEqual(limited.returncode, 0, limited.stdout + limited.stderr)
+        written = self.ssh(
+            "front", "sudo -u alice dd if=/dev/zero of=/home/alice/nanohpc-quota-check bs=1M count=4 status=none"
+        )
+        self.assertNotEqual(written.returncode, 0, written.stdout + written.stderr)
+        self.assertIn("Disk quota exceeded", written.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimKernelQuotaTest(SimUsersBase):
+    """A new Ubuntu kernel still has quota modules when the home machine reboots."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_home_quotas_after_kernel_update(self) -> None:
+        self.up_and_deploy()
+        extra_meta = self.on_front("dpkg-query -W -f='${Status}' linux-image-extra-virtual")
+        self.assertEqual(extra_meta, "install ok installed", "future virtual kernels need their extra modules")
+        meta = self.on_front("dpkg-query -W -f='${Status}' linux-image-generic")
+        self.assertEqual(meta, "install ok installed", "the future generic kernels need their extra modules")
+        redeploy = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(redeploy.returncode, 0, self.failure(redeploy))
+        self.on_front("sudo -u alice sh -c 'echo before > /home/alice/nanohpc-kernel-check'")
+        before = self.on_front("uname -r").strip()
+        self.on_front("sudo apt-get update -qq")
+        self.on_front(
+            "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y linux-virtual linux-image-extra-virtual"
+        )
+        dependency = self.on_front("dpkg-query -W -f='${Depends}' linux-image-virtual").strip()
+        self.assertTrue(dependency.startswith("linux-image-"), dependency)
+        new_kernel = dependency.removeprefix("linux-image-")
+        if new_kernel == before:
+            self.skipTest("no newer Ubuntu kernel is available")
+        extra = self.on_front(f"dpkg-query -W -f='${{Status}}' linux-modules-extra-{new_kernel}")
+        self.assertEqual(extra, "install ok installed")
+        front = next(vm.instance for vm in plan_of(self.sim).vms if vm.machine == "front")
+        self.reboot_vm("front", front)
+        self.assertEqual(self.wait_for_vm("front", "uname -r").strip(), new_kernel)
+        self.assertIn("/dev/vdb ext4", self.wait_for_vm("front", "findmnt -n -o SOURCE,FSTYPE --mountpoint /home"))
+        self.assertIn(" is on", self.wait_for_vm("front", "sudo quotaon -p -u /home | grep -F ' is on'"))
+        self.assertEqual(
+            self.wait_for_vm("front", "sudo -u alice cat /home/alice/nanohpc-kernel-check").strip(), "before"
+        )
+        self.wait_for_vm("front", "sudo -u alice sh -c 'echo after > /home/alice/nanohpc-kernel-check'")
+        redeploy = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(redeploy.returncode, 0, self.failure(redeploy))
+        self.assertIn(" is on", self.on_front("sudo quotaon -p -u /home | grep -F ' is on'"))
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimUpdateReportTest(SimUsersBase):
+    """The read-only update report reaches all Ubuntu 24.04 VMs and leaves APT lists alone."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_update_report_on_vms(self) -> None:
+        cluster, config, _ = self.up_with_test_key()
+        names = list(config["machines"])
+        list_state = "find /var/lib/apt/lists -maxdepth 1 -type f -printf '%f %T@ %s\\n' | sort"
+        before = {name: self.ssh(name, list_state).stdout for name in names}
+        result = self.run_command(
+            "uv", "run", "nanohpc", "update-report", str(cluster), "--ssh-config", str(self.state / "ssh_config")
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name in names:
+            self.assertIn(f"{name}: ", result.stdout)
+            self.assertIn("package lists from ", result.stdout)
+            self.assertEqual(self.ssh(name, list_state).stdout, before[name])
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimRestartCheckTest(SimUsersBase):
+    """The read-only restart check reaches every Ubuntu 24.04 VM and reports a real fstab problem."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_restart_check_on_vms(self) -> None:
+        cluster, config, _ = self.up_with_test_key()
+        names = list(config["machines"])
+        changed = self.ssh(
+            "front", "echo 'UUID=missing /restart-check-example ext4 defaults 0 2' | sudo tee -a /etc/fstab"
+        )
+        self.assertEqual(changed.returncode, 0, changed.stderr)
+        before = {name: self.ssh(name, "sha256sum /etc/fstab").stdout for name in names}
+        result = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "check",
+            str(cluster),
+            "--before-restart",
+            "--ssh-config",
+            str(self.state / "ssh_config"),
+        )
+        self.assertIn("machine", result.stdout, result.stdout + result.stderr)
+        for name in names:
+            self.assertRegex(result.stdout, rf"(?m)^{name}\s+ok\s+")
+            self.assertEqual(self.ssh(name, "sha256sum /etc/fstab").stdout, before[name])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("front: fstab: /restart-check-example has no nofail", result.stdout)
+        self.assertNotIn("restart check could not run", result.stdout)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimComputeRestartTest(SimUsersBase):
+    """A confirmed restart uses real Slurm and SSH on Ubuntu 24.04 VMs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_failed_precheck_leaves_cpu_node_drained(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+        changed = self.ssh("cpu1", "echo 'UUID=missing /unsafe ext4 defaults 0 2' | sudo tee -a /etc/fstab")
+        self.assertEqual(changed.returncode, 0, changed.stderr)
+        before = self.ssh("cpu1", "cat /proc/sys/kernel/random/boot_id").stdout
+        ssh_config = self.ssh_config_for("alice")
+        result = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "restart",
+            str(cluster),
+            "cpu1",
+            "--confirm",
+            "cpu1",
+            "--ssh-config",
+            str(ssh_config),
+            agent=True,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("/unsafe has no nofail", result.stderr)
+        self.assertEqual(self.ssh("cpu1", "cat /proc/sys/kernel/random/boot_id").stdout, before)
+        state = self.on_front("scontrol show node cpu1 -o")
+        self.assertIn("DRAIN", state)
+
+    def test_confirmed_cpu_restart_runs_slurm_job(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+        ssh_config = self.ssh_config_for("alice")
+        before = self.ssh("cpu1", "cat /proc/sys/kernel/random/boot_id").stdout.strip()
+        job = self.on_front(
+            "sudo -u alice sbatch --parsable --partition=main --nodelist=cpu1 "
+            "--cpus-per-task=1 --mem=1G --time=00:01:00 --chdir=/tmp --output=/dev/null --wrap='sleep 15'"
+        ).strip()
+        self.assertTrue(job.isdigit(), job)
+        self.on_front(
+            f"for i in $(seq 20); do state=$(squeue -h -j {job} -o %T); "
+            '[ "$state" = RUNNING ] && exit 0; sleep 1; done; exit 1'
+        )
+        # Lima's base image changes saved network and boot files after boot. The separate
+        # failed-precheck VM test covers that refusal; this test exercises the real reboot,
+        # SSH, storage, Slurm reservation, and job path with only that precheck bypassed.
+        script = (
+            "from nanohpc import restart; "
+            "restart.POLL_JOBS_SECONDS=1; "
+            "restart.before_restart=lambda machine, ssh_config, gpu: "
+            "restart.read(machine, ssh_config, 'uname -r', 30); "
+            "from nanohpc.cli import main; main()"
+        )
+        result = self.run_command(
+            "uv",
+            "run",
+            "python",
+            "-c",
+            script,
+            "restart",
+            str(cluster),
+            "cpu1",
+            "--confirm",
+            "cpu1",
+            "--ssh-config",
+            str(ssh_config),
+            agent=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"waiting for running jobs: {job}", result.stdout)
+        self.assertEqual(self.finished_job(job), ("COMPLETED", "cpu1"))
+        after = self.ssh("cpu1", "cat /proc/sys/kernel/random/boot_id").stdout.strip()
+        self.assertNotEqual(after, before)
+        state = self.on_front("scontrol show node cpu1 -o")
+        self.assertNotIn("DRAIN", state)
+        self.assertNotIn("MAINT", state)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

@@ -1,20 +1,22 @@
 #!/usr/bin/python3
-"""Publish a fixed read-only view of Slurm; never execute visitor-supplied queries.
+"""Publish a fixed read-only view of Slurm or directly used monitor machines.
 
-Reads Slurm (scontrol, squeue, sshare, sprio, sacct, sacctmgr) and, if given, Prometheus, then writes:
+In Slurm mode, read scheduler commands and optional Prometheus measurements. In monitor mode, read
+Prometheus alone. Never execute visitor-supplied queries. Write:
 - status.json for the website (`--output`, and a copy at `--mirror-output`);
 - machines.md, a Markdown table of the compute machines (`--machine-markdown-output`, and a copy at
   `--machine-markdown-mirror-output`);
-- cluster.prom, Slurm figures for node_exporter's textfile collector (`--metrics`).
+- cluster.prom, snapshot and mode-specific figures for node_exporter's textfile collector (`--metrics`).
 Every file is replaced whole, and only after all reads succeed: any failure leaves the last good files.
 
 Arguments (all set by the operator, never from the website):
+  --mode slurm|monitor      Slurm is the default for existing deployments.
   --output PATH              status.json to write.
   --mirror-output PATH       optional second copy of status.json.
   --machine-markdown-output PATH         machines.md to write.
   --machine-markdown-mirror-output PATH  optional second copy of machines.md.
   --metrics PATH             cluster.prom to write.
-  --controller NAME          the front node's machine name (runs the Slurm controller).
+  --controller NAME          the front node's machine name in Slurm mode, the monitor host otherwise.
   --cluster-name NAME        the cluster's name, for the machines.md heading.
   --machines PATH            JSON file of every machine to check, by machine name (Prometheus's `machine`
                              label, and Slurm's node name for compute machines):
@@ -22,19 +24,23 @@ Arguments (all set by the operator, never from the website):
                                          "units": ["slurmd.service", ...],
                                          "mounts": ["/", "/home", "/scratch", ...],
                                          "building": "optional area name"}}
-                             `units` are the systemd units that must be active and `mounts` the mount points
-                             that must be writable with free space. Exactly one machine has the role front
+                             In monitor mode, roles are "monitor" and "machine", and exactly the controller
+                             machine has the monitor role. `building` applies to Slurm mode only. `units` are
+                             the systemd units that must be active and `mounts` the mount points that must be
+                             writable with free space. In Slurm mode, exactly one machine has the role front
                              (the --controller); the compute machines must be exactly Slurm's nodes; storage
                              machines (home and backup machines) run no Slurm and get no Slurm check.
   --refresh-seconds N        how often the snapshot is refreshed (at least 5), published for the website.
-  --accounting-start TIME    start of the GPU-hour totals, as sacct reads it: YYYY-MM-DD or
+  --accounting-start TIME    Slurm mode: start of the GPU-hour totals, as sacct reads it: YYYY-MM-DD or
                              YYYY-MM-DDTHH:MM:SS, local time, no timezone.
-  --prometheus-url URL       optional detail Prometheus (for example http://127.0.0.1:9090). Without it,
+  --prometheus-url URL       Prometheus (for example http://127.0.0.1:9090); required in monitor mode.
+                             Without it in Slurm mode,
                              every machine's health is Unknown and no home quotas are shown. Home quotas
                              come from the cluster_home_quota_* series that cluster-home-quotas writes on the
                              home machine; they are left out when absent or older than 10 minutes, and series
                              from more than one machine are an error.
-  --users NAME [NAME ...]    the cluster's users; only they appear in the ranking, user cards, and priorities.
+  --users NAME [NAME ...]    Slurm mode: required cluster users for rankings and cards. Monitor mode: optional
+                             login names for the website.
 """
 
 import argparse
@@ -47,11 +53,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from cluster_machine_status import machine_status, measurements, query
+from cluster_machine_status import machine_status, measurements, monitor_machine_status, query
 
 UTC = timezone.utc  # noqa: UP017 (datetime.UTC needs Python 3.11; Ubuntu 22.04 has 3.10)
 QUOTA_QUERY = '{__name__=~"cluster_home_quota_(used_bytes|soft_bytes|hard_bytes|collected_timestamp_seconds)"}'
 ROLE_NAMES = {"front": "Front node", "compute": "Compute", "storage": "Storage"}
+MONITOR_ROLE_NAMES = {"monitor": "Monitor", "machine": "Machine"}
 
 
 def read(arguments: list[str]) -> str:
@@ -184,6 +191,36 @@ def machines_markdown(snapshot: dict, cluster_name: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def monitor_machines_markdown(snapshot: dict, cluster_name: str) -> str:
+    """Show measured machine condition without claiming that a GPU can be allocated."""
+    lines = [
+        f"# {cluster_name} machines",
+        "",
+        "> Generated from the same current machine data as the website. Do not edit this file by hand.",
+        "",
+        f"Updated: {snapshot['generated_at']}",
+        "",
+        "| Machine | Health | GPU use, last hour | GPUs | GPU memory | CPU cores | RAM |",
+        "| --- | --- | --- | --- | --- | ---: | ---: |",
+    ]
+    for node in snapshot["nodes"]:
+        specs = node["specs"]
+        gpu_models, gpu_memory = grouped_gpus(specs, node["total_gpus"])
+        cores = specs.get("cpu_cores")
+        cores_text = str(int(cores)) if isinstance(cores, (int, float)) and float(cores).is_integer() else "Unknown"
+        values = [
+            node["name"],
+            node["health"],
+            node["gpu_usage"],
+            gpu_models,
+            gpu_memory,
+            cores_text,
+            binary_size(specs.get("ram_bytes")),
+        ]
+        lines.append("| " + " | ".join(markdown_cell(value) for value in values) + " |")
+    return "\n".join(lines) + "\n"
+
+
 def read_machines(path: Path) -> dict[str, dict[str, Any]]:
     """Read the machines file: role, required checks, and optional geographic area."""
     machines = json.loads(path.read_text(encoding="utf-8"))
@@ -204,6 +241,33 @@ def read_machines(path: Path) -> dict[str, dict[str, Any]]:
             raise ValueError(
                 f"{path}: machine {name} needs role (front, compute, or storage), units, mounts, and optional building"
             )
+    return machines
+
+
+def read_monitor_machines(path: Path, controller: str) -> dict[str, dict[str, Any]]:
+    """Validate the monitor machine map before querying or publishing a snapshot."""
+    machines = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(machines, dict) or not machines:
+        raise ValueError(f"{path}: expected a non-empty object of machines")
+    for name, machine in machines.items():
+        valid = (
+            isinstance(name, str)
+            and bool(name)
+            and isinstance(machine, dict)
+            and set(machine) == {"role", "units", "mounts"}
+            and isinstance(machine["role"], str)
+            and machine["role"] in MONITOR_ROLE_NAMES
+            and all(
+                isinstance(machine[key], list)
+                and all(isinstance(item, str) and bool(item) for item in machine[key])
+                for key in ("units", "mounts")
+            )
+        )
+        if not valid:
+            raise ValueError(f"{path}: machine {name} needs role (monitor or machine), units, and mounts")
+    monitors = [name for name, machine in machines.items() if machine["role"] == "monitor"]
+    if monitors != [controller]:
+        raise ValueError(f"The machines file must have {controller} as its only monitor machine, found {monitors}")
     return machines
 
 
@@ -611,9 +675,57 @@ def collect(
     return result, "\n".join(metrics) + "\n"
 
 
+def collect_monitor(
+    controller: str,
+    machines: dict[str, dict[str, Any]],
+    refresh: int,
+    prometheus: str,
+    users: list[str],
+) -> tuple[dict[str, Any], str]:
+    """Collect machine condition and observed GPU use without running scheduler commands."""
+    now = datetime.now(UTC)
+    sample_end = int(now.timestamp()) // 60 * 60
+    health, history = measurements(prometheus, sample_end)
+    names = [controller] + [name for name in machines if name != controller]
+    nodes = [
+        monitor_machine_status(
+            name,
+            MONITOR_ROLE_NAMES[machines[name]["role"]],
+            machines[name]["units"],
+            machines[name]["mounts"],
+            health,
+            history,
+            sample_end,
+        )
+        for name in names
+    ]
+    counts = [node["total_gpus"] for node in nodes]
+    result = {
+        "mode": "monitor",
+        "generated_at": now.isoformat(),
+        "refresh_seconds": refresh,
+        "total_gpus": sum(counts) if all(count is not None for count in counts) else None,
+        "nodes": nodes,
+        "users": [{"user": user} for user in sorted(set(users))],
+    }
+    metrics = [
+        "# HELP cluster_snapshot_timestamp_seconds Last fully successful collection.",
+        "# TYPE cluster_snapshot_timestamp_seconds gauge",
+        f"cluster_snapshot_timestamp_seconds {now.timestamp()}",
+        "# HELP cluster_monitor_machine_health Machine health reported by the latest snapshot.",
+        "# TYPE cluster_monitor_machine_health gauge",
+    ]
+    metrics.extend(
+        f'cluster_monitor_machine_health{{machine={label(node["name"])},health={label(node["health"])}}} 1'
+        for node in nodes
+    )
+    return result, "\n".join(metrics) + "\n"
+
+
 def main() -> None:
     """Only accept operator-controlled paths and settings, never browser input."""
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("slurm", "monitor"), default="slurm")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mirror-output", type=Path)
     parser.add_argument("--machine-markdown-output", type=Path, required=True)
@@ -623,23 +735,37 @@ def main() -> None:
     parser.add_argument("--cluster-name", required=True)
     parser.add_argument("--machines", type=Path, required=True)
     parser.add_argument("--refresh-seconds", type=int, required=True)
-    parser.add_argument("--accounting-start", required=True)
+    parser.add_argument("--accounting-start")
     parser.add_argument("--prometheus-url")
-    parser.add_argument("--users", nargs="+", required=True)
+    parser.add_argument("--users", nargs="*")
     args = parser.parse_args()
     if args.refresh_seconds < 5:
         parser.error("refresh interval must be at least five seconds")
-    if datetime.fromisoformat(args.accounting_start).tzinfo is not None:
-        parser.error("--accounting-start must be a local time without a timezone, as sacct reads it")
-    result, metrics = collect(
-        args.controller,
-        read_machines(args.machines),
-        args.refresh_seconds,
-        args.accounting_start,
-        args.prometheus_url,
-        args.users,
-    )
-    machine_document = machines_markdown(result, args.cluster_name)
+    if args.mode == "monitor":
+        if not args.prometheus_url:
+            parser.error("--prometheus-url is required in monitor mode")
+        result, metrics = collect_monitor(
+            args.controller,
+            read_monitor_machines(args.machines, args.controller),
+            args.refresh_seconds,
+            args.prometheus_url,
+            args.users or [],
+        )
+        machine_document = monitor_machines_markdown(result, args.cluster_name)
+    else:
+        if not args.accounting_start or args.users is None or not args.users:
+            parser.error("--accounting-start and at least one --users name are required in Slurm mode")
+        if datetime.fromisoformat(args.accounting_start).tzinfo is not None:
+            parser.error("--accounting-start must be a local time without a timezone, as sacct reads it")
+        result, metrics = collect(
+            args.controller,
+            read_machines(args.machines),
+            args.refresh_seconds,
+            args.accounting_start,
+            args.prometheus_url,
+            args.users,
+        )
+        machine_document = machines_markdown(result, args.cluster_name)
     atomic_write(args.metrics, metrics)
     atomic_write(args.output, json.dumps(result, indent=2) + "\n")
     atomic_write(args.machine_markdown_output, machine_document)

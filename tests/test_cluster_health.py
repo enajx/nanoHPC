@@ -5,6 +5,7 @@ its nanoHPC files (roles, backup state) under NANOHPC_HEALTH_TEST_ROOT, an overr
 """
 
 import os
+import json
 import stat
 import subprocess
 import tempfile
@@ -237,6 +238,64 @@ class ClusterHealthMetricsTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(result.stdout, "")
                 self.assertIn("usage: cluster-health", result.stderr)
+
+    def test_monitor_machine_checks_hardware_without_slurm(self) -> None:
+        """Monitor mode checks installed services and accepted GPUs, but no scheduler or shared storage."""
+        with tempfile.TemporaryDirectory(prefix="cluster-health-monitor-") as directory:
+            folder = Path(directory)
+            environment = make_machine(folder, "machine", "")
+            root = folder / "root"
+            (root / "etc/nanohpc/mode").write_text("monitor\n")
+            (root / "etc/nanohpc/monitor-gpus.json").write_text(json.dumps({"count": 1, "models": ["A6000"], "fake": False}))
+            specs = root / "var/lib/nanohpc/metrics-textfile/specs.prom"
+            stamp = int(time.time())
+            specs.write_text(
+                'cluster_machine_gpu_count 1\ncluster_machine_gpu_memory_bytes{gpu="0",model="A6000"} 1\n'
+                f"cluster_machine_specs_timestamp_seconds {stamp}\n"
+            )
+            metrics = folder / "health.prom"
+            healthy = run(["--metrics", str(metrics)], environment)
+            self.assertEqual(healthy.returncode, 0, healthy.stdout + healthy.stderr)
+            self.assertIn("ok    GPU inventory matches accepted hardware", healthy.stdout)
+            self.assertNotIn("Slurm", healthy.stdout)
+            self.assertNotIn("/home", healthy.stdout)
+            self.assertNotIn("/scratch", healthy.stdout)
+            self.assertIn("cluster_monitor_gpu_inventory_mismatch 0", metrics.read_text())
+            specs.write_text(specs.read_text().replace('model="A6000"', 'model="H100"'))
+            changed = run(["--metrics", str(metrics)], environment)
+            self.assertEqual(changed.returncode, 1)
+            self.assertIn("FAIL  GPU inventory matches accepted hardware", changed.stdout)
+            self.assertIn("cluster_monitor_gpu_inventory_mismatch 1", metrics.read_text())
+            specs.write_text(specs.read_text().replace(f"cluster_machine_specs_timestamp_seconds {stamp}", "cluster_machine_specs_timestamp_seconds 1"))
+            stale = run(["--metrics", str(metrics)], environment)
+            self.assertEqual(stale.returncode, 0)
+            self.assertIn("WARN  GPU inventory reading is fresh", stale.stdout)
+            self.assertNotIn("cluster_monitor_gpu_inventory_mismatch ", metrics.read_text())
+
+    def test_monitor_host_checks_services_and_snapshot(self) -> None:
+        """The monitor host checks its stack and public endpoint; service failure is visible in the exit code."""
+        with tempfile.TemporaryDirectory(prefix="cluster-health-monitor-") as directory:
+            folder = Path(directory)
+            environment = make_machine(folder, "monitor", "nanohpc-grafana")
+            root = folder / "root"
+            (root / "etc/nanohpc/mode").write_text("monitor\n")
+            (root / "etc/nanohpc/monitor-gpus.json").write_text(json.dumps({"count": 0, "models": [], "fake": False}))
+            (root / "var/lib/nanohpc/metrics-textfile/specs.prom").write_text(
+                f"cluster_machine_gpu_count 0\ncluster_machine_specs_timestamp_seconds {int(time.time())}\n"
+            )
+            website = root / "etc/nanohpc/website"
+            website.mkdir()
+            (website / "address").write_text("example.test /\n")
+            snapshot = root / "var/lib/nanohpc/monitor"
+            snapshot.mkdir(parents=True)
+            (snapshot / "status.json").write_text("{}")
+            write_command(folder / "bin", "curl", "echo '{\"status\":\"success\",\"data\":{\"result\":[]}}'\n")
+            result = run([], environment)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("FAIL  service nanohpc-grafana", result.stdout)
+            self.assertIn("ok    status collector timer", result.stdout)
+            self.assertIn("ok    the website answers over HTTPS", result.stdout)
+            self.assertNotIn("slurm", result.stdout.lower())
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import { mapAreas } from './areas'
 
 /** One machine as the snapshot reports it. */
 export type MapMachine = {
+  mode?: 'slurm' | 'monitor'
   name: string
   front: boolean
   building: string | null
@@ -264,7 +265,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     return pieces.map(pc => {
       const pad = Math.max(1, ...pc.members.map(n => n.scale))
       return {
-        label: pc.label, group: pc.group,
+        label: pc.members[0]?.mode === 'monitor' ? (pc.group === 'front' ? 'MONITOR' : 'MACHINES') : pc.label, group: pc.group,
         from: [Math.min(...pc.members.map(n => n.x!)) - pad, Math.min(...pc.members.map(n => n.y!)) - pad],
         to: [Math.max(...pc.members.map(n => n.x!)) + pad, Math.max(...pc.members.map(n => n.y!)) + pad],
       }
@@ -330,9 +331,11 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
       pulses.push({ node, kind: p.kind, t: 0 })
     }
     packets = packets.filter(p => !p.done)
-    // A compute machine's load eases toward its allocated GPU share.
+    // The bar shows allocation in Slurm mode and measured activity in monitor mode.
     for (const n of nodes) {
-      const target = n.fpgaUsagePercent !== null ? n.fpgaUsagePercent / 100 : n.front || !n.totalGpus ? 0 : n.allocatedGpus / n.totalGpus
+      const target = n.fpgaUsagePercent !== null ? n.fpgaUsagePercent / 100 : n.front || !n.totalGpus ? 0 : n.mode === 'monitor'
+        ? n.gpus.reduce((sum, gpu) => sum + (gpu.busy ?? 0), 0) / n.totalGpus / 100
+        : n.allocatedGpus / n.totalGpus
       n.load += (target - n.load) * Math.min(1, dt * 2)
     }
   }
@@ -516,7 +519,12 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
       const gpu = n.gpus[b.layers - 1 - k]
       if (gpu) {
         const light = at(0.18, 0.5)
-        if (gpu.user === null) {
+        if (n.mode === 'monitor') {
+          const busy = (gpu.busy ?? 0) / 100
+          const color = p.color(gpu.busy === null ? '#475569' : accent)
+          color.setAlpha(alpha * (0.3 + 0.7 * busy))
+          p.fill(color)
+        } else if (gpu.user === null) {
           p.fill(tone('#475569'))
         } else {
           const color = p.color(gpu.user ? userColor(gpu.user) : '#94a3b8')
@@ -539,7 +547,9 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     return USER_COLORS[hash % USER_COLORS.length]
   }
 
-  const subtitle = (n: Node) => n.front
+  const subtitle = (n: Node) => n.mode === 'monitor'
+    ? n.front ? 'Monitor' : `${n.totalGpus} GPUs`
+    : n.front
     ? `${n.pendingJobs} pending`
     : n.fpgaUsagePercent !== null ? `FPGA ${Math.round(n.fpgaUsagePercent)}%` : n.totalGpus ? `${n.allocatedGpus}/${n.totalGpus} GPUs` : 'CPU'
 
@@ -569,7 +579,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     p.textAlign(p.LEFT, p.TOP)
     p.text(n.name, x + 11, y + 8)
     if (hasBar) {
-      // GPU allocation, or FPGA usage when the machine has an FPGA instead of GPUs.
+      // GPU activity in monitor mode; GPU allocation or FPGA usage in Slurm mode.
       const bw = w - 22
       p.fill(255, alpha)
       p.stroke(23, 35, 34, alpha)
@@ -594,7 +604,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     p.textFont(font)
     p.textStyle(p.BOLD)
     p.textSize(12)
-    const text = 'Data is stale: traffic paused'
+    const text = nodes.some(node => node.mode === 'monitor') ? 'Data is stale' : 'Data is stale: traffic paused'
     drawBox(p, 12, 12, p.textWidth(text) + 20, 28, 2, 3, 0, 255)
     p.noStroke()
     p.fill(INK)
@@ -606,7 +616,10 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   function drawTooltip(p: p5) {
     if (!hovered) return
     const n = hovered
-    const rows = n.front
+    const rows = n.mode === 'monitor'
+      ? [n.front ? 'Monitor host' : 'Machine', `Health: ${n.health}`, n.gpuModel ? `${n.totalGpus} × ${n.gpuModel}` : `${n.totalGpus} GPUs`,
+        ...n.gpus.map((gpu, i) => `GPU ${i}: utilization ${gpu.busy === null ? 'unknown' : `${Math.round(gpu.busy)}%`}`)]
+      : n.front
       ? ['Front node', `Health: ${n.health}`, `Serves the shared home to ${n.out} machine${n.out === 1 ? '' : 's'}`, `Pending jobs: ${n.pendingJobs}`]
       : ['Compute', `Health: ${n.health}`, n.fpgaUsagePercent !== null ? `FPGA usage: ${Math.round(n.fpgaUsagePercent)}%` : n.gpuModel ? `${n.totalGpus} × ${n.gpuModel}` : n.totalGpus ? `${n.totalGpus} GPUs` : 'CPU only',
         ...(n.totalGpus ? [`GPUs allocated: ${n.allocatedGpus} of ${n.totalGpus}`] : []), `Running jobs: ${n.runningJobs}`,

@@ -10,7 +10,7 @@ from textual.widget import Widget
 from textual.widgets import DataTable, Input, Label, Static, Switch
 from textual.worker import Worker, WorkerState
 
-from nanohpc.wizard.state import STEPS, WizardState, field_text, write_field
+from nanohpc.wizard.state import WizardState, field_text, write_field
 
 
 class Edited(Message):
@@ -88,13 +88,13 @@ class Step(VerticalScroll):
     KEYS = ""
 
     def __init__(self, state: WizardState, index: int) -> None:
-        super().__init__(id=STEPS[index][0], classes="step")
+        super().__init__(id=state.steps[index][0], classes="step")
         self.state = state
         self.index = index
 
     def heading(self) -> Static:
         """Return the step's heading."""
-        return Static(f"{self.index + 1} · {STEPS[self.index][1].upper()}", classes="heading")
+        return Static(f"{self.index + 1} · {self.state.steps[self.index][1].upper()}", classes="heading")
 
     async def reload(self) -> None:
         """Show the file's current content again."""

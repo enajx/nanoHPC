@@ -27,6 +27,7 @@ UBUNTU_VERSIONS = ("22.04", "24.04", "26.04")
 SIM_FIELDS = ("cluster", "ubuntu", "fake_gpus", "vms", "extra_disk_gb")
 VM_FIELDS = ("cpus", "memory_gb", "disk_gb")
 SIM_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+FAKE_GPU_TYPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 STATE_ROOT = Path(".nanohpc-sim")
 LIMA_HOME = Path.home() / ".lima"
 RECORD = "lima.yml"  # the Lima instances and disks made by `sim up`, read by `sim down`
@@ -53,7 +54,7 @@ class SimPlan:
     name: str
     cluster_path: Path
     ubuntu: str
-    fake_gpus: list[str]
+    fake_gpus: list[str] | dict[str, dict[str, int | str]]
     extra_disk_gb: int
     vms: list[Vm]
 
@@ -85,25 +86,55 @@ def load_sim(path: Path) -> tuple[SimPlan | None, list[str]]:
     machines: dict[str, dict[str, Any]] = config["machines"]
     if sim["ubuntu"] not in UBUNTU_VERSIONS:
         checker.fail("ubuntu", f"must be one of {', '.join(UBUNTU_VERSIONS)} (in quotes)")
-    fake_gpus = sim["fake_gpus"]
-    if not isinstance(fake_gpus, list):
-        checker.fail("fake_gpus", "must be a list of machine names")
-        fake_gpus = []
-    if len(set(map(str, fake_gpus))) != len(fake_gpus):
-        checker.fail("fake_gpus", "has duplicates")
-    for index, machine in enumerate(fake_gpus):
-        if not isinstance(machine, str):
-            checker.fail(f"fake_gpus[{index}]", "must be a machine name")
-        elif machine not in machines:
-            checker.fail("fake_gpus:", f"{machine} is not a machine in the cluster configuration")
-        elif machines[machine].get("gpu") is None:
-            checker.fail("fake_gpus:", f"{machine} has no gpu in the cluster configuration")
+    monitor = config["cluster"].get("mode") == "monitor"
+    if monitor:
+        fake_gpus = check_monitor_fake_gpus(checker, sim["fake_gpus"], machines)
+    else:
+        fake_gpus = sim["fake_gpus"]
+        if not isinstance(fake_gpus, list):
+            checker.fail("fake_gpus", "must be a list of machine names")
+            fake_gpus = []
+        if len(set(map(str, fake_gpus))) != len(fake_gpus):
+            checker.fail("fake_gpus", "has duplicates")
+        for index, machine in enumerate(fake_gpus):
+            if not isinstance(machine, str):
+                checker.fail(f"fake_gpus[{index}]", "must be a machine name")
+            elif machine not in machines:
+                checker.fail("fake_gpus:", f"{machine} is not a machine in the cluster configuration")
+            elif machines[machine].get("gpu") is None:
+                checker.fail("fake_gpus:", f"{machine} has no gpu in the cluster configuration")
     extra_disk_gb = checker.positive(sim["extra_disk_gb"], "extra_disk_gb") or 0
     sizes = check_vms(checker, sim["vms"], machines)
     vms = [plan_vm(checker, name, machine, values, sizes) for machine, values in machines.items()]
     if checker.errors:
         return None, checker.errors
-    return SimPlan(name, cluster_path, sim["ubuntu"], list(fake_gpus), extra_disk_gb, vms), []
+    return SimPlan(name, cluster_path, sim["ubuntu"], fake_gpus, extra_disk_gb, vms), []
+
+
+def check_monitor_fake_gpus(
+    checker: Checker, value: Any, machines: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, int | str]]:
+    """Validate fake GPU count and model per monitor machine; an empty mapping means CPU-only VMs."""
+    if not isinstance(value, Mapping):
+        checker.fail("fake_gpus", "must be a mapping of machine names to count and type")
+        return {}
+    result: dict[str, dict[str, int | str]] = {}
+    for machine, fake in value.items():
+        if not isinstance(machine, str) or machine not in machines:
+            checker.fail("fake_gpus:", f"{machine} is not a machine in the cluster configuration")
+            continue
+        fields = checker.mapping(fake, f"fake_gpus.{machine}", ("count", "type"), ())
+        if fields is None:
+            continue
+        count = checker.positive(fields["count"], f"fake_gpus.{machine}.count") if "count" in fields else None
+        model = (
+            checker.matches(fields["type"], FAKE_GPU_TYPE, f"fake_gpus.{machine}.type", "a simple GPU type")
+            if "type" in fields
+            else None
+        )
+        if count is not None and model is not None:
+            result[machine] = {"count": count, "type": model}
+    return result
 
 
 def check_vms(checker: Checker, value: Any, machines: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -281,8 +312,31 @@ fi
 FORMAT_TEST_DISK = "blkid {device} >/dev/null || mkfs.ext4 -q {options} {device}"
 
 
+# Some fresh Lima Ubuntu VMs start systemd-logind at 100% CPU. SSH logins then wait two minutes
+# and have no XDG_RUNTIME_DIR, so Ansible cannot make its private temporary directory. A normal
+# Lima shell does not set XDG_RUNTIME_DIR either, so check sustained CPU use instead.
+REPAIR_STUCK_LOGIND = r"""
+high_cpu() { ps -o pcpu= -C systemd-logind | awk '$1 + 0 >= 80 { high = 1 } END { exit !high }'; }
+if high_cpu; then
+  sleep 3
+  if high_cpu; then
+    echo 'restarting stuck systemd-logind'
+    sudo systemctl restart systemd-logind
+    sleep 3
+    if high_cpu; then
+      echo 'systemd-logind is still using at least 80% CPU after restart' >&2
+      exit 1
+    fi
+  fi
+fi
+"""
+
+
 def prepare_vm(vm: Vm) -> None:
     """Make a started VM behave like a real machine where Lima differs, and format its test disks."""
+    repaired = lima("shell", "--workdir", "/", vm.instance, "sh", "-c", REPAIR_STUCK_LOGIND)
+    if repaired.strip():
+        print(f"{vm.instance}: {repaired.strip()}")
     lima("shell", "--workdir", "/", vm.instance, "sudo", "sh", "-c", VSOCK_SSHD_DROPIN)
     for disk in vm.disks:
         device = "/dev/" + disk.rsplit("-", 1)[1]
