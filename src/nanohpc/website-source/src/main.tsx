@@ -13,6 +13,7 @@ import { AccentButton, storedAccent } from './accent-button'
 import { FontButton, storedFont } from './font-button'
 import { ClusterMap, MapToggle, storedMapShown } from './cluster-map'
 import { DemoDashboard } from './demo-dashboard'
+import { AboutButton } from './about-button'
 import './style.css'
 
 type Page = 'overview' | 'queue' | 'machines' | 'users' | 'usage' | 'docs' | 'policy'
@@ -59,8 +60,9 @@ function policyCards(policies: { name: string; value: string }[], partitions: { 
     title: partition.name + (partition.default ? ' (default)' : ''),
     rows: policies.filter((policy) => policy.name.startsWith(partition.name + ': ')).map((policy) => ({ name: policy.name.slice(partition.name.length + 2), value: policy.value })),
   }))
-  const shared = policies.filter((policy) => !partitions.some((partition) => policy.name.startsWith(partition.name + ': ')))
-  return [...cards, { title: 'All partitions', rows: shared }].filter((card) => card.rows.length)
+  const login = policies.filter(policy => policy.name.startsWith('Login on front: ')).map(policy => ({ name: policy.name.slice('Login on front: '.length), value: policy.value }))
+  const shared = policies.filter((policy) => !partitions.some((partition) => policy.name.startsWith(partition.name + ': ')) && !policy.name.startsWith('Login on front: '))
+  return [...cards, { title: 'Login on front', rows: login }, { title: 'All partitions', rows: shared }].filter((card) => card.rows.length)
 }
 
 /** Keep unknown hashes on the overview without requesting an untrusted URL. */
@@ -129,12 +131,12 @@ function Dashboard({ name, path }: { name: string; path: string }) {
 function MachineTable({ data, stale, link }: { data: Snapshot | null; stale: boolean; link: string | null }) {
   return <section className="panel machine-list">
     {link ? <PanelLink href={link} title="Machines"/> : <div className="panel-heading"><h2>Machines</h2></div>}
-    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>GPU usage · last hour</th><th>Available GPUs</th></tr></thead>
+    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>Accelerator usage · last hour</th><th>Available GPUs</th></tr></thead>
       <tbody>{data?.nodes.filter(node => node.role === 'Compute').map((node) => {
         const health = stale ? 'Unknown' : node.health ?? 'Unknown'
-        const usage = stale ? 'Unknown' : node.gpu_usage ?? 'Unknown'
-        const available = !stale && node.available_gpus != null && node.total_gpus != null ? `${node.available_gpus}/${node.total_gpus}` : 'Unknown'
-        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a></th><td><span className={`pill state-${health.toLowerCase()}`} title={stale ? 'Measurements are stale' : node.health_details?.join('; ')}>{health}</span></td><td><span className={`pill state-${usage.toLowerCase().replaceAll(' ', '-')}`}>{usage}</span></td><td>{available}</td></tr>
+        const usage = stale ? 'Unknown' : node.fpga_usage_percent != null ? `FPGA ${node.fpga_usage_percent}%` : node.gpu_usage ?? 'Unknown'
+        const available = stale ? 'Unknown' : node.total_gpus === 0 ? '—' : node.available_gpus != null && node.total_gpus != null ? `${node.available_gpus}/${node.total_gpus}` : 'Unknown'
+        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a></th><td><span className={`pill state-${health.toLowerCase()}`} title={stale ? 'Measurements are stale' : node.health_details?.join('; ')}>{health}</span></td><td><span className={`pill ${node.fpga_usage_percent != null && !stale ? 'state-active' : `state-${usage.toLowerCase().replaceAll(' ', '-')}`}`}>{usage}</span></td><td>{available}</td></tr>
       })}</tbody></table></div>
     {!data && <p role="status">Machine status unavailable.</p>}
   </section>
@@ -155,7 +157,13 @@ function App({ site }: { site: SiteSettings }) {
   const [mapShown, setMapShown] = useState(storedMapShown)
   const [queueState, setQueueState] = useState(window.location.hash.split('?')[1] ?? '')
   const demo = site.demo === true
+  const [demoUpdatedAt, setDemoUpdatedAt] = useState(Date.now())
   const { data, failed, stale } = useSnapshot(demo)
+  useEffect(() => {
+    if (!demo) return
+    const timer = window.setInterval(() => setDemoUpdatedAt(Date.now()), 30000)
+    return () => window.clearInterval(timer)
+  }, [demo])
   useEffect(() => {
     const changed = () => { setPage(currentPage()); setQueueState(window.location.hash.split('?')[1] ?? '') }
     window.addEventListener('hashchange', changed)
@@ -185,15 +193,14 @@ function App({ site }: { site: SiteSettings }) {
   const markdownPage = isGuide ? 'docs' : page === 'machines' ? 'machines' : page === 'policy' ? 'policy' : null
   return <>
     <a className="skip" href="#main" onClick={(event) => { event.preventDefault(); document.getElementById('main')?.focus() }}>Skip to content</a>
-    <header className="topbar"><a href="#overview" className="brand">{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <GenericMark/>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">{demo ? 'Sample cluster monitor' : 'Slurm cluster monitor'}</span></span></a>
-      <div className="header-buttons"><FontButton/><AccentButton/></div>
+    <header className="topbar"><a href="#overview" className="brand">{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <GenericMark/>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">{demo ? 'lightweight Slurm cluster and monitoring tool' : 'Slurm cluster monitor'}</span></span></a>
+      <div className="header-buttons"><AboutButton/><FontButton/><AccentButton/></div>
     </header>
     <div className="layout"><aside className="sidebar">
       <nav aria-label="Cluster navigation">{pages.map(({ id, title, icon: Icon }) => <a key={id} href={`#${id}`} aria-current={page === id ? 'page' : undefined}><Icon size={19}/><span>{title}</span></a>)}</nav>
     </aside>
     <main id="main" tabIndex={-1}>
-      <div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}{markdownPage && <a className="markdown-link" href={`${markdownPage}.md`} aria-label={`Open ${selected.title} in Markdown`}>MD</a>}{!isGuide && <div className={`freshness ${failed || stale ? 'warning' : ''}`}>{demo ? 'Sample data' : <><span className="status-dot"/>{failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{data && <small>Last update {new Date(data.generated_at).toLocaleTimeString()}</small>}</>}</div>}</div></div>
-      {demo && <div className="notice neutral">Public demo with fictional machines, users, jobs and charts. No live cluster is connected.</div>}
+      <div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}{markdownPage && <a className="markdown-link" href={`${markdownPage}.md`} aria-label={`Open ${selected.title} in Markdown`}>MD</a>}{!isGuide && <div className={`freshness ${failed || stale ? 'warning' : ''}`}><span className="status-dot"/>{demo ? 'Updates every 30s' : failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{(demo || data) && <small>Last update {new Date(demo ? demoUpdatedAt : data!.generated_at).toLocaleTimeString()}</small>}</div>}</div></div>
       {!isGuide && (failed || stale) && <div role="alert" className="notice">{data ? 'Showing stale data.' : 'Monitoring data unavailable.'}</div>}
       {page === 'overview' && <>
         <section aria-label="Cluster summary" className="stat-grid">

@@ -122,12 +122,20 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { no
     if (demo) {
       const to = Date.now()
       const from = to - ranges[range].windowMs
-      const points = Array.from({ length: 49 }, (_, index) => {
-        const point: ChartPoint = { time: from + index * ranges[range].windowMs / 48, idle: 0 }
-        for (const [machineIndex, machine] of machines.entries()) point[machine.name] = Math.min(machine.total_gpus ?? 0, Math.max(0, Math.round((machine.total_gpus ?? 0) / 2 + Math.sin(index / 5 + machineIndex) * 1.5)))
+      const count = range === '24h' ? 288 : range === '7d' ? 336 : 360
+      const samples = Array.from({ length: count + 1 }, (_, index) => {
+        const position = index / count
+        const point: ChartPoint = { time: from + position * ranges[range].windowMs, idle: 0 }
+        for (const [machineIndex, machine] of machines.entries()) {
+          const peak = Math.exp(-Math.pow((position - 0.25 - machineIndex * 0.035) / 0.07, 2))
+          const later = Math.exp(-Math.pow((position - 0.72 + machineIndex * 0.04) / 0.14, 2))
+          const fraction = Math.min(0.95, 0.12 + peak * 0.58 + later * 0.3)
+          point[machine.name] = (machine.total_gpus ?? 0) * fraction
+        }
         point.idle = machines.reduce((sum, machine) => sum + (machine.total_gpus ?? 0) - point[machine.name], 0)
         return point
       })
+      const points = averageBlocks(samples, [...machines.map(machine => machine.name), 'idle'], ranges[range].blockMs)
       setChart({ range, points, from, to })
       setState('ready')
       return

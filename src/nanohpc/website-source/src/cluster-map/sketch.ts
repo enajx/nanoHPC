@@ -11,6 +11,7 @@ export type MapMachine = {
   front: boolean
   health: string
   gpuModel: string | null
+  fpgaUsagePercent: number | null
   totalGpus: number
   allocatedGpus: number
   runningJobs: number
@@ -373,7 +374,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     packets = packets.filter(p => !p.done)
     // A compute machine's load eases toward its allocated GPU share.
     for (const n of nodes) {
-      const target = n.front || !n.totalGpus ? 0 : n.allocatedGpus / n.totalGpus
+      const target = n.fpgaUsagePercent !== null ? n.fpgaUsagePercent / 100 : n.front || !n.totalGpus ? 0 : n.allocatedGpus / n.totalGpus
       n.load += (target - n.load) * Math.min(1, dt * 2)
     }
   }
@@ -582,7 +583,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
 
   const subtitle = (n: Node) => n.front
     ? `${n.pendingJobs} pending`
-    : `${n.allocatedGpus}/${n.totalGpus} GPUs`
+    : n.fpgaUsagePercent !== null ? `FPGA ${Math.round(n.fpgaUsagePercent)}%` : n.totalGpus ? `${n.allocatedGpus}/${n.totalGpus} GPUs` : 'CPU'
 
   // Label box like the website's cards: the name in the page font, numbers in monospace.
   function drawLabel(p: p5, n: Node) {
@@ -597,7 +598,8 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     p.textStyle(p.BOLD)
     p.textSize(12)
     const w = p.textWidth(n.name) + subW + 34
-    const h = n.front ? 30 : 42
+    const hasBar = n.totalGpus > 0 || n.fpgaUsagePercent !== null
+    const h = hasBar ? 42 : 30
     const x = b.cx - w / 2
     const y = b.y - h - 14
     p.stroke(23, 35, 34, alpha)
@@ -608,8 +610,8 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     p.fill(23, 35, 34, alpha)
     p.textAlign(p.LEFT, p.TOP)
     p.text(n.name, x + 11, y + 8)
-    if (!n.front) {
-      // Allocated GPU share, filled with the theme accent.
+    if (hasBar) {
+      // GPU allocation, or FPGA usage when the machine has an FPGA instead of GPUs.
       const bw = w - 22
       p.fill(255, alpha)
       p.stroke(23, 35, 34, alpha)
@@ -648,8 +650,8 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     const n = hovered
     const rows = n.front
       ? ['Front node', `Health: ${n.health}`, `Serves the shared home to ${n.out} machine${n.out === 1 ? '' : 's'}`, `Pending jobs: ${n.pendingJobs}`]
-      : ['Compute', `Health: ${n.health}`, n.gpuModel ? `${n.totalGpus} × ${n.gpuModel}` : `${n.totalGpus} GPUs`,
-        `GPUs allocated: ${n.allocatedGpus} of ${n.totalGpus}`, `Running jobs: ${n.runningJobs}`,
+      : ['Compute', `Health: ${n.health}`, n.fpgaUsagePercent !== null ? `FPGA usage: ${Math.round(n.fpgaUsagePercent)}%` : n.gpuModel ? `${n.totalGpus} × ${n.gpuModel}` : n.totalGpus ? `${n.totalGpus} GPUs` : 'CPU only',
+        ...(n.totalGpus ? [`GPUs allocated: ${n.allocatedGpus} of ${n.totalGpus}`] : []), `Running jobs: ${n.runningJobs}`,
         n.nfsRequests === null ? 'Shared home: not measured' : `Shared home: ${Math.round(n.nfsRequests)} requests/s (${Math.round(n.nfsWrites ?? 0)} writes)`,
         ...n.gpus.map((gpu, i) => `GPU ${i}: ${gpu.user === null ? 'free' : gpu.user || 'allocated'}, busy ${gpu.busy === null ? 'unknown' : `${Math.round(gpu.busy)}%`}`)]
     p.textFont(font)

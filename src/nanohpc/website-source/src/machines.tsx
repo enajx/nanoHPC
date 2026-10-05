@@ -8,6 +8,7 @@ export type MachineSpecs = {
   ram_bytes: number | null
   gpu_count: number | null
   gpus: { index: string; model: string; memory_bytes: number }[]
+  unified_memory_gb?: number
   driver: string | null
   cuda_driver: string | null
   cuda_toolkits: string[] | null
@@ -17,7 +18,7 @@ export type MachineSpecs = {
   needs_restart: boolean | null
   disks: { mount: string; total_bytes: number; used_bytes: number | null; available_bytes: number | null }[]
 }
-export type Machine = { name: string; role: string; health?: string; health_details?: string[]; gpu_usage?: string; total_gpus?: number; available_gpus?: number | null; specs?: MachineSpecs }
+export type Machine = { name: string; role: string; health?: string; health_details?: string[]; gpu_usage?: string; fpga_usage_percent?: number; total_gpus?: number; available_gpus?: number | null; specs?: MachineSpecs }
 
 /** Use binary storage units without turning unavailable values into zero. */
 export function size(bytes: number | null | undefined): string {
@@ -76,9 +77,10 @@ export function MachineCards({ nodes, stale }: { nodes: Machine[]; stale: boolea
           <Detail label="Needs update" value={s?.pending_updates == null ? 'Unknown' : s.pending_updates > 0 ? 'Yes' : 'No'}/>
           <Detail label="Needs restart" value={s?.needs_restart == null ? 'Unknown' : s.needs_restart ? 'Yes' : 'No'}/>
           <Detail label="HD used" value={rootDisk(s)}/>
+          {node.fpga_usage_percent != null && <Detail label="FPGA usage" value={stale ? 'Unknown' : `${node.fpga_usage_percent}%`}/>}
         </dl></section>
         <section><h3>Hardware</h3><dl>
-          <Detail label="GPUs" value={models}/><Detail label="GPU memory" value={memory}/>
+          <Detail label="GPUs" value={models}/>{s?.unified_memory_gb != null ? <Detail label="Unified memory" value={`${s.unified_memory_gb} GB`}/> : <Detail label="GPU memory" value={memory}/>}
           <Detail label="CPU cores" value={s?.cpu_cores}/><Detail label="RAM" value={wholeGib(s?.ram_bytes)}/>
         </dl></section>
         <section><h3>Software</h3><dl>

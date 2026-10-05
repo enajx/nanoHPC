@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 
 /** Accent sets in cycle order; their colors live in style.css under :root[data-accent]. */
-const accents = ['blue', 'sand', 'ocean', 'coral', 'grape', 'sunset', 'pastel'] as const
+const accents = ['coral', 'sand'] as const
 type Accent = typeof accents[number]
 const accentStorageKey = 'accent-colors'
 
-/** Read the last chosen accent set; Palette 3 (coral) when none is stored or storage is blocked. */
+/** Read the last chosen accent set; coral when none is stored or the saved palette was removed. */
 export function storedAccent(): Accent {
   try {
     const value = localStorage.getItem(accentStorageKey)

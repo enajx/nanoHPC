@@ -148,6 +148,8 @@ flowchart LR
 ### Release
 
 - [x] The static demo build lets visitors browse every frontend page with fictional cluster data and interactive sample charts, without using the REAL lab deployment (see [DONE.md](md/DONE.md)).
+- [x] The public demo uses the nanoHPC name and subtitle, the requested sample machines and users, a working help pop-up, a current-time refresh display, and smoother sample GPU history; the website offers only the default and coral/sand themes (see [DONE.md](md/DONE.md)).
+- [x] The demo How to and Cluster policy pages show the useful layout and generic guidance from the reference deployment with fictional values and no REAL or ITU details (see [DONE.md](md/DONE.md)).
 - [ ] At v0.1, make the repository public, enable GitHub Pages, publish and check the demo, then link it from the README.
 - [ ] A README, curated by the user: a nanoHPC title, a lightweight Slurm cluster description, a concise feature list, setup steps, the tech stack, and the MIT license. The current draft is under review (`README.md`, `assets/nanohpc-title.svg`, `assets/cluster.png`).
   - [x] The README uses a static, transparent PNG with the chosen turquoise cluster layout: Threadripper left of three 4-GPU H100 machines and FPGA on the right (`assets/cluster.png`).

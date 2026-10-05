@@ -201,7 +201,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   // How to: the cluster's own values and live partitions.
   await nav.getByRole('link', { name: 'How to', exact: true }).click()
   await expect(page.getByRole('heading', { name: '1. SSH into mylab', exact: true })).toBeVisible()
-  await expect(page.locator('.instruction.panel')).toHaveCount(4)
+  await expect(page.locator('.instruction.panel')).toHaveCount(5)
   await expect(page.locator('.instruction').filter({ hasText: 'HostName login.mylab.example.org' })).toHaveCount(1)
   await expect(page.getByText('soft quota of 250 GB and a hard quota of 300 GB', { exact: false })).toBeVisible()
   await expect(page.getByText('main (default): 24 hours, gpu1,cpu1', { exact: true }).first()).toBeVisible()

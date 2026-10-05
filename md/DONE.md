@@ -7,6 +7,12 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - The normal website can also be built as a static demo with fictional machines, users, jobs, and interactive sample charts. All seven pages work without a Slurm cluster or Grafana server. The Pages workflow is ready; public launch and the README link are queued for v0.1, when the repository becomes public.
 - Files: `src/nanohpc/website-source/{src,tests/demo.spec.ts,scripts/build-demo.mjs}`, `src/nanohpc/website/`, `.github/workflows/public-demo.yml`, `md/testing.md`.
 
+## 2026-10-05: public demo content and chart
+
+- The demo shows nanoHPC branding, the selected H100, H200, Nvidia DGX, Threadripper, and FPGA machines, and Alice, Bob, and Mike. Its help menu opens the project repository and How to page. The displayed update time advances every 30 seconds. The GPU chart uses the live chart's time-block averaging and a smooth sample history. The website keeps the default and coral/sand themes.
+- The How to page has generic job guides and tabs, and the policy page has partition, login, and queue details using fictional values. The generated demo docs contain no REAL or ITU details.
+- Files: `src/nanohpc/website-source/{src,scripts/build-demo.mjs,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`.
+
 ## 2026-09-30: design decisions for the port
 
 - Agreed with the user how SLURM-REAL is ported into nanoHPC: scope (up to about 100 heterogeneous machines), role layout (optional separate `/home` storage and backup machines), Slurm built from source, Ubuntu 22.04/24.04/26.04, local users, `cluster.yml` with a wizard, admin-defined partitions, kept extras, HTTPS, rsync backup, MIT license.

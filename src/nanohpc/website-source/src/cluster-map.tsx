@@ -92,6 +92,7 @@ function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, mea
     return {
       name: node.name, front: node.role === 'Front node', health: node.health ?? 'Unknown',
       gpuModel: node.specs?.gpus[0]?.model ?? null, totalGpus: total,
+      fpgaUsagePercent: node.fpga_usage_percent ?? null,
       allocatedGpus: allocated,
       runningJobs: running.length, pendingJobs: node.role === 'Front node' ? pending : 0,
       nfsRequests: measured?.nfs.get(node.name) ?? null, nfsWrites: measured?.nfs.has(node.name) ? measured.writes.get(node.name) ?? 0 : null,
@@ -104,7 +105,7 @@ function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, mea
 function describe(machines: MapMachine[]): string {
   return `Cluster map: ${machines.map(m => m.front
     ? `${m.name}: front node, ${m.pendingJobs} pending job${m.pendingJobs === 1 ? '' : 's'}`
-    : `${m.name}: ${m.allocatedGpus} of ${m.totalGpus} GPUs allocated, ${m.runningJobs} running job${m.runningJobs === 1 ? '' : 's'}, ${
+    : `${m.name}: ${m.fpgaUsagePercent !== null ? `FPGA usage ${m.fpgaUsagePercent}%` : `${m.allocatedGpus} of ${m.totalGpus} GPUs allocated`}, ${m.runningJobs} running job${m.runningJobs === 1 ? '' : 's'}, ${
       m.nfsRequests === null ? 'shared home traffic unknown' : `shared home ${Math.round(m.nfsRequests)} requests per second (${Math.round(m.nfsWrites ?? 0)} writes)`}${
       !m.gpus.length ? '' : m.gpus.some(gpu => gpu.busy === null) ? ', GPU busy unknown' : `, GPUs busy ${m.gpus.map(gpu => `${Math.round(gpu.busy!)}%`).join(', ')}`}`).join('; ')}`
 }

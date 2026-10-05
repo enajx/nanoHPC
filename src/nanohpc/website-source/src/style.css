@@ -1,12 +1,8 @@
 /* Hard borders, offset shadows, and flat color follow neobrutalism-components. */
-:root { --accent: #5294ff; --card-1: #c0f2dc; --card-2: #fff1a8; --card-3: #dbd8f6; --card-4: #f5d7dd; --card-1-text: #172322; --card-2-text: #172322; --card-3-text: #172322; --card-4-text: #172322; }
-/* Supplied colorhunt.co palettes: cards use the colors as given, with white text on the dark ones. */
+:root { --accent: #06d6a0; --card-1: #ff7f50; --card-2: #ffd166; --card-3: #06d6a0; --card-4: #118ab2; --card-1-text: #172322; --card-2-text: #172322; --card-3-text: #172322; --card-4-text: #172322; }
+/* The two palettes use the colors selected for the cluster website. */
 :root[data-accent="sand"] { --accent: #f2765e; --card-1: #f5ebdd; --card-2: #f2765e; --card-3: #315b8c; --card-4: #413333; --card-3-text: #ffffff; --card-4-text: #ffffff; }
-:root[data-accent="ocean"] { --accent: #8acff8; --card-1: #006199; --card-2: #8acff8; --card-3: #f4eb6c; --card-4: #ffd444; --card-1-text: #ffffff; }
 :root[data-accent="coral"] { --accent: #06d6a0; --card-1: #ff7f50; --card-2: #ffd166; --card-3: #06d6a0; --card-4: #118ab2; }
-:root[data-accent="grape"] { --accent: #ff3f7f; --card-1: #450693; --card-2: #8c00ff; --card-3: #ff3f7f; --card-4: #ffc400; --card-1-text: #ffffff; --card-2-text: #ffffff; }
-:root[data-accent="sunset"] { --accent: #ffa239; --card-1: #8ce4ff; --card-2: #feee91; --card-3: #ffa239; --card-4: #ff5656; }
-:root[data-accent="pastel"] { --accent: #f38181; --card-1: #f38181; --card-2: #fce38a; --card-3: #eaffd0; --card-4: #95e1d3; }
 :root { --font: 'Arial', sans-serif; }
 :root[data-font="space-grotesk"] { --font: 'Space Grotesk', sans-serif; }
 :root[data-font="inter"] { --font: 'Inter', sans-serif; }
@@ -22,6 +18,18 @@ code, pre, .eyebrow, .small-label, .step { font-family: ui-monospace, SFMono-Reg
 .topbar { height: 94px; border-bottom: 2px solid #172322; padding: 0 38px; display: flex; align-items: center; justify-content: space-between; background: white; }
 .brand { display: flex; align-items: center; gap: 16px; font-size: 36px; font-weight: 900; letter-spacing: -1px; }
 .header-buttons { display: flex; flex: none; gap: 10px; }
+.about { position: relative; }
+.about-button { width: 30px; height: 30px; padding: 0; border: 2px solid #172322; background: white; color: #172322; box-shadow: 3px 3px 0 #172322; font: inherit; font-size: 16px; font-weight: 800; line-height: 1; cursor: pointer; }
+.about-button:hover { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #172322; }
+.about-box { position: absolute; top: 40px; right: 0; z-index: 20; width: max-content; max-width: calc(100vw - 32px); padding: 12px 16px; border: 2px solid #172322; background: white; box-shadow: 4px 4px 0 #172322; font-size: 14px; }
+.about-box p { margin: 0 0 6px; }
+.about-box p:last-child { margin: 0; }
+.about-box a { text-decoration: underline; }
+.do-dont { margin-bottom: 16px; }
+.do-dont p { margin: 0 0 6px; }
+.guide-subtabs .guide-tabs { background: #f0f2ee; }
+.guide-subtabs .guide-tabs button { padding: 11px 12px; font-size: 14px; background: transparent; }
+.guide-subtabs .guide-tabs button[aria-selected="true"] { background: var(--accent); }
 .font-button { width: 30px; height: 30px; padding: 0; border: 2px solid #172322; background: white; color: #172322; box-shadow: 3px 3px 0 #172322; font: inherit; font-size: 13px; font-weight: 700; line-height: 1; cursor: pointer; }
 .font-button:hover { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #172322; }
 .accent-button { flex: none; width: 30px; height: 30px; padding: 0; border: 2px solid #172322; background: var(--accent); box-shadow: 3px 3px 0 #172322; cursor: pointer; }
