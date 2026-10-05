@@ -183,6 +183,11 @@ test('the site renders every tab from the fixture data under a non-root path', a
   const logo = page.locator('img.brand-mark')
   await expect(logo).toHaveAttribute('src', 'logo.svg')
   await expect.poll(() => logo.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+  await expect(page.locator('main footer')).toContainText('mylab runs on nanoHPC')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toContainText('read-only cluster monitor')
+  await page.getByRole('button', { name: 'Close settings' }).click()
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toHaveCount(0)
 
   // Overview: summary, compute machines only, GPU chart, current jobs.
   await expect(page.getByText('Updates every 30s')).toBeVisible()

@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-05: website Settings and footer
+
+- The website and demo show a Settings option at the bottom of the sidebar. It opens a read-only notice and closes with its button, Escape, or a click outside. Each page has a footer linking to nanoHPC; the demo uses generic wording. The Settings option remains available on narrow screens.
+- Files: `src/nanohpc/website-source/src/{main.tsx,settings-button.tsx,style.css}`, `src/nanohpc/website-source/tests/{demo.spec.ts,website.spec.ts}`, `src/nanohpc/website/`.
+
 ## 2026-10-05: public demo build
 
 - The normal website can also be built as a static demo with fictional machines, users, jobs, and interactive sample charts. All seven pages work without a Slurm cluster or Grafana server. The Pages workflow is ready; public launch and the README link are queued for v0.1, when the repository becomes public.

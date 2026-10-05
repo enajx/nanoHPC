@@ -14,6 +14,7 @@ import { FontButton, storedFont } from './font-button'
 import { ClusterMap, MapToggle, storedMapShown } from './cluster-map'
 import { DemoDashboard } from './demo-dashboard'
 import { AboutButton } from './about-button'
+import { SettingsButton } from './settings-button'
 import './style.css'
 
 type Page = 'overview' | 'queue' | 'machines' | 'users' | 'usage' | 'docs' | 'policy'
@@ -198,6 +199,7 @@ function App({ site }: { site: SiteSettings }) {
     </header>
     <div className="layout"><aside className="sidebar">
       <nav aria-label="Cluster navigation">{pages.map(({ id, title, icon: Icon }) => <a key={id} href={`#${id}`} aria-current={page === id ? 'page' : undefined}><Icon size={19}/><span>{title}</span></a>)}</nav>
+      <SettingsButton/>
     </aside>
     <main id="main" tabIndex={-1}>
       <div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}{markdownPage && <a className="markdown-link" href={`${markdownPage}.md`} aria-label={`Open ${selected.title} in Markdown`}>MD</a>}{!isGuide && <div className={`freshness ${failed || stale ? 'warning' : ''}`}><span className="status-dot"/>{demo ? 'Updates every 30s' : failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{(demo || data) && <small>Last update {new Date(demo ? demoUpdatedAt : data!.generated_at).toLocaleTimeString()}</small>}</div>}</div></div>
@@ -225,6 +227,7 @@ function App({ site }: { site: SiteSettings }) {
           <section className="partition-summary"><h2>Partitions</h2><PartitionSummary partitions={data?.partitions ?? null}/></section>
         </div>
       </>}
+      <footer><p>{demo ? 'This demo' : site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
     </main></div>
   </>
 }
