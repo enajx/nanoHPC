@@ -9,11 +9,11 @@ policy), and one command sets up every machine.
 
 - A single `cluster.yml` to define machines, users, partitions, and queue policy.
 - Slurm scheduling for GPU and CPU jobs, with fair-share and per-user limits.
-- A ready-made front-end monitor, built on Prometheus and Grafana, for machines, the queue, and GPU use.
+- A ready-made front-end monitoring cluster usage, queue and machines health.
 - Health checks on every machine, plus `nanohpc check` for a cluster-wide report.
-- Playbooks for setup, node changes, policy updates, and nightly `/home` backups, with a dry run before each deploy.
+- Playbooks for setup, node changes, policy updates, and nightly backups.
 - Shared `/home` and local scratch, with optional copy-back of job results.
-- Optional Slack notifications when checks, backups, or automatic deploys fail, and when checks recover.
+- Slack alerts for cluster issues.
 - Isometric visualisation of the cluster topology in real time:
 
   <p align="center">
