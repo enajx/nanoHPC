@@ -4,7 +4,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-05: demo usage curve
 
-- The overview usage curve keeps its smooth stacked shape and shows whole GPU counts in the demo tooltip. It reaches all 13 sample GPUs twice, holds around half capacity between those periods, and ends near 20%. A softer curve rounds the transitions while retaining the full-use spans.
+- The overview usage curve keeps its smooth stacked shape and shows whole GPU counts in the demo tooltip. The final example has a smaller first bump, a broader full-capacity second bump, and low use at the end. A soft curve rounds the transitions.
 - Files: `src/nanohpc/website-source/src/gpu-allocation-chart.tsx`, `src/nanohpc/website-source/tests/demo.spec.ts`, `src/nanohpc/website/`.
 
 ## 2026-10-05: five demo machines
