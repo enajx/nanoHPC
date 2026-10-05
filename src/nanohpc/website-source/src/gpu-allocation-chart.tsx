@@ -105,7 +105,7 @@ function blockLabel(start: number, range: RangeKey): string {
 }
 
 /** Show 24 hours, 7 days, or 30 days of Slurm allocations as stacked machine and idle GPU capacity. */
-export function GpuAllocationChart({ nodes, refreshSeconds, failed }: { nodes: GpuMachine[] | null; refreshSeconds: number; failed: boolean }) {
+export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { nodes: GpuMachine[] | null; refreshSeconds: number; failed: boolean; demo?: boolean }) {
   const machines = (nodes ?? []).filter(node => node.role === 'Compute' && Number.isFinite(node.total_gpus) && (node.total_gpus ?? 0) > 0)
     .sort((left, right) => left.name.localeCompare(right.name))
   const names = machines.map(machine => machine.name).join('\u0000')
@@ -119,6 +119,19 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed }: { nodes: G
   useEffect(() => {
     if (!machines.length) return
     setState('loading')
+    if (demo) {
+      const to = Date.now()
+      const from = to - ranges[range].windowMs
+      const points = Array.from({ length: 49 }, (_, index) => {
+        const point: ChartPoint = { time: from + index * ranges[range].windowMs / 48, idle: 0 }
+        for (const [machineIndex, machine] of machines.entries()) point[machine.name] = Math.min(machine.total_gpus ?? 0, Math.max(0, Math.round((machine.total_gpus ?? 0) / 2 + Math.sin(index / 5 + machineIndex) * 1.5)))
+        point.idle = machines.reduce((sum, machine) => sum + (machine.total_gpus ?? 0) - point[machine.name], 0)
+        return point
+      })
+      setChart({ range, points, from, to })
+      setState('ready')
+      return
+    }
     const controller = new AbortController()
     const load = () => {
       const end = new Date()
@@ -144,7 +157,7 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed }: { nodes: G
     load()
     const timer = window.setInterval(load, Math.max(30, refreshSeconds) * 1000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [names, refreshSeconds, range])
+  }, [names, refreshSeconds, range, demo])
   const title = `Cluster Usage (${ranges[range].title})`
   // Until the chosen range has loaded, show loading instead of the previous range's data.
   const current = chart?.range === range ? chart : null

@@ -12,6 +12,7 @@ import { PanelLink } from './panel-link'
 import { AccentButton, storedAccent } from './accent-button'
 import { FontButton, storedFont } from './font-button'
 import { ClusterMap, MapToggle, storedMapShown } from './cluster-map'
+import { DemoDashboard } from './demo-dashboard'
 import './style.css'
 
 type Page = 'overview' | 'queue' | 'machines' | 'users' | 'usage' | 'docs' | 'policy'
@@ -70,7 +71,7 @@ function currentPage(): Page {
 }
 
 /** Load only the fixed, public snapshot; stale and missing data are explicit. */
-function useSnapshot(): { data: Snapshot | null; failed: boolean; stale: boolean } {
+function useSnapshot(demo: boolean): { data: Snapshot | null; failed: boolean; stale: boolean } {
   const [data, setData] = useState<Snapshot | null>(null)
   const [failed, setFailed] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -95,10 +96,10 @@ function useSnapshot(): { data: Snapshot | null; failed: boolean; stale: boolean
         .catch(() => { if (!controller.signal.aborted) setFailed(true) })
     }
     update()
-    const timer = window.setInterval(update, Math.max(5, data?.refresh_seconds ?? 30) * 1000)
-    return () => { controller.abort(); window.clearInterval(timer) }
-  }, [data?.refresh_seconds])
-  return { data, failed, stale: data !== null && now - Date.parse(data.generated_at) > Math.max(90, data.refresh_seconds * 3) * 1000 }
+    const timer = demo ? null : window.setInterval(update, Math.max(5, data?.refresh_seconds ?? 30) * 1000)
+    return () => { controller.abort(); if (timer !== null) window.clearInterval(timer) }
+  }, [data?.refresh_seconds, demo])
+  return { data, failed, stale: !demo && data !== null && now - Date.parse(data.generated_at) > Math.max(90, data.refresh_seconds * 3) * 1000 }
 }
 
 /** Render a same-origin dashboard without embedding any service credentials. */
@@ -153,7 +154,8 @@ function App({ site }: { site: SiteSettings }) {
   const [page, setPage] = useState<Page>(currentPage)
   const [mapShown, setMapShown] = useState(storedMapShown)
   const [queueState, setQueueState] = useState(window.location.hash.split('?')[1] ?? '')
-  const { data, failed, stale } = useSnapshot()
+  const demo = site.demo === true
+  const { data, failed, stale } = useSnapshot(demo)
   useEffect(() => {
     const changed = () => { setPage(currentPage()); setQueueState(window.location.hash.split('?')[1] ?? '') }
     window.addEventListener('hashchange', changed)
@@ -167,6 +169,9 @@ function App({ site }: { site: SiteSettings }) {
   const selected = pages.find((item) => item.id === page) ?? pages[0]
   const refresh = data?.refresh_seconds ?? 30
   const graph = (uid: string, from: string) => `grafana/d/${uid}?orgId=1&kiosk&hideLogo=true&refresh=${refresh}s&from=${from}&to=now`
+  const dashboard = (name: string, kind: 'queue' | 'queue-history' | 'usage' | 'machines' | 'history', path: string) => demo
+    ? <DemoDashboard name={name} kind={kind} jobs={data?.jobs} queueFilter={queueFilter}/>
+    : <Dashboard name={name} path={path}/>
   const requestedState = new URLSearchParams(queueState).get('state')
   const queueFilter = requestedState === 'RUNNING' || requestedState === 'PENDING' ? requestedState : 'RUNNING|PENDING'
   const requestedMachine = new URLSearchParams(queueState).get('machine')
@@ -180,30 +185,31 @@ function App({ site }: { site: SiteSettings }) {
   const markdownPage = isGuide ? 'docs' : page === 'machines' ? 'machines' : page === 'policy' ? 'policy' : null
   return <>
     <a className="skip" href="#main" onClick={(event) => { event.preventDefault(); document.getElementById('main')?.focus() }}>Skip to content</a>
-    <header className="topbar"><a href="#overview" className="brand">{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <GenericMark/>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">Slurm cluster monitor</span></span></a>
+    <header className="topbar"><a href="#overview" className="brand">{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <GenericMark/>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">{demo ? 'Sample cluster monitor' : 'Slurm cluster monitor'}</span></span></a>
       <div className="header-buttons"><FontButton/><AccentButton/></div>
     </header>
     <div className="layout"><aside className="sidebar">
       <nav aria-label="Cluster navigation">{pages.map(({ id, title, icon: Icon }) => <a key={id} href={`#${id}`} aria-current={page === id ? 'page' : undefined}><Icon size={19}/><span>{title}</span></a>)}</nav>
     </aside>
     <main id="main" tabIndex={-1}>
-      <div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}{markdownPage && <a className="markdown-link" href={`${markdownPage}.md`} aria-label={`Open ${selected.title} in Markdown`}>MD</a>}{!isGuide && <div className={`freshness ${failed || stale ? 'warning' : ''}`}><span className="status-dot"/>{failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{data && <small>Last update {new Date(data.generated_at).toLocaleTimeString()}</small>}</div>}</div></div>
+      <div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}{markdownPage && <a className="markdown-link" href={`${markdownPage}.md`} aria-label={`Open ${selected.title} in Markdown`}>MD</a>}{!isGuide && <div className={`freshness ${failed || stale ? 'warning' : ''}`}>{demo ? 'Sample data' : <><span className="status-dot"/>{failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{data && <small>Last update {new Date(data.generated_at).toLocaleTimeString()}</small>}</>}</div>}</div></div>
+      {demo && <div className="notice neutral">Public demo with fictional machines, users, jobs and charts. No live cluster is connected.</div>}
       {!isGuide && (failed || stale) && <div role="alert" className="notice">{data ? 'Showing stale data.' : 'Monitoring data unavailable.'}</div>}
       {page === 'overview' && <>
         <section aria-label="Cluster summary" className="stat-grid">
           {[['Running jobs', data?.running_jobs, '#queue?state=RUNNING'], ['Pending jobs', data?.pending_jobs, '#queue?state=PENDING'], ['GPUs allocated', data ? `${data.allocated_gpus} / ${data.total_gpus}` : undefined, '#machines'], ['30days waiting time', waitingTime(data?.average_wait_seconds_30d), '#queue']].map(([label, value, href]) => <a key={label} className="stat panel" href={String(href)}><span>{label}</span><strong>{value ?? '—'}</strong></a>)}
         </section>
-        <div className="overview-machine-charts"><MachineTable data={data} stale={stale || failed} link="#machines"/><GpuAllocationChart nodes={data?.nodes ?? null} refreshSeconds={refresh} failed={failed}/></div>
+        <div className="overview-machine-charts"><MachineTable data={data} stale={stale || failed} link="#machines"/><GpuAllocationChart nodes={data?.nodes ?? null} refreshSeconds={refresh} failed={failed} demo={demo}/></div>
         <OverviewJobs jobs={stale || failed ? null : data?.jobs ?? null}/>
       </>}
-      {page === 'queue' && <div className="queue-dashboards"><Dashboard name="Running Jobs and Queue" path={`${graph('nanohpc-queue', 'now-6h')}&var-state=${encodeURIComponent(queueFilter)}`}/><Dashboard name="Queue history" path={graph('nanohpc-queue-history', 'now-7d')}/></div>}
-      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh}/>}<MachineTable data={data} stale={stale || failed} link={null}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed}/></>}
+      {page === 'queue' && <div className="queue-dashboards">{dashboard('Running Jobs and Queue', 'queue', `${graph('nanohpc-queue', 'now-6h')}&var-state=${encodeURIComponent(queueFilter)}`)}{dashboard('Queue history', 'queue-history', graph('nanohpc-queue-history', 'now-7d'))}</div>}
+      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh} demo={demo}/>}<MachineTable data={data} stale={stale || failed} link={null}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed}/></>}
       {page === 'users' && <>
         <section className="panel table-panel"><h2>User ranking</h2><div className="table-scroll"><table><thead><tr><th>Rank</th><th>User</th><th>Allocated GPU-hours</th><th>Fair-share factor</th></tr></thead><tbody>{data && [...data.ranking].sort((left, right) => right.gpu_hours - left.gpu_hours || left.user.localeCompare(right.user)).map((row, index) => <tr key={row.user}><td>{index + 1}</td><th><a className="user-link" href={`#users?user=${encodeURIComponent(row.user)}`}>{row.user}</a></th><td>{row.gpu_hours.toFixed(3)}</td><td>{row.fairshare.toFixed(4)}</td></tr>)}</tbody></table></div></section>
         <UserCards users={data?.users ?? []} stale={stale || failed}/>
-        <Dashboard name="GPU usage history" path={graph('nanohpc-usage', 'now-7d')}/>
+        {dashboard('GPU usage history', 'usage', graph('nanohpc-usage', 'now-7d'))}
       </>}
-      {page === 'usage' && <><Dashboard name="Machine and GPU metrics" path={`${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0`}/><Dashboard name="Long-term history (daily summaries, kept 5 years)" path={graph('nanohpc-history', 'now-1y')}/></>}
+      {page === 'usage' && <>{dashboard('Machine and GPU metrics', 'machines', `${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0`)}{dashboard('Long-term history (daily summaries, kept 5 years)', 'history', graph('nanohpc-history', 'now-1y'))}</>}
       {isGuide && <HowToUse values={siteValues(site)} partitions={data?.partitions ?? null}/>}
       {page === 'policy' && <>
         <h2 className="section-heading">Partition policy</h2>

@@ -77,6 +77,11 @@ p { line-height: 1.6; }
 .machine-list > p { padding: 16px 22px; }
 .pill { font-family: monospace; font-size: 14px; border: 1px solid #172322; padding: 5px 8px; }
 .dashboard iframe { border: 0; width: 100%; height: 690px; display: block; background: #f8f8f6; }
+.demo-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; padding: 20px; }
+.demo-chart { min-width: 0; border: 1px solid #deded8; padding: 15px; }
+.demo-chart h3 { font-size: 15px; margin: 0 0 12px; }
+.demo-chart-plot { height: 210px; }
+.demo-queue { padding: 12px 20px 20px; }
 .queue-dashboards .dashboard:first-child iframe { height: 560px; }
 .queue-dashboards .dashboard:last-child iframe { height: 500px; }
 .frame-note { font-size: 14px; color: #65716c; padding: 0 20px; }

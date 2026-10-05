@@ -11,6 +11,7 @@
  *     "home_quota_soft_gb": int,    // per-user /home quotas
  *     "home_quota_hard_gb": int,
  *     "scratch_cleanup_days": int   // staged scratch data unused this long is deleted
+ *     "demo": bool                    // optional; generated sample site only
  *   }
  *
  * Partitions, policies, and limits are not here: they come from data/status.json.
@@ -22,9 +23,11 @@ export type SiteSettings = {
   home_quota_soft_gb: number
   home_quota_hard_gb: number
   scratch_cleanup_days: number
+  demo?: boolean
 }
 
-const settingNames = ['cluster_name', 'logo', 'login_address', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days']
+const settingNames = ['cluster_name', 'logo', 'login_address', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'demo']
+const requiredNames = settingNames.filter(name => name !== 'demo')
 
 /** Check site.json's content against the contract above and name the first problem. */
 export function checkSiteSettings(value: unknown): SiteSettings {
@@ -32,7 +35,7 @@ export function checkSiteSettings(value: unknown): SiteSettings {
   const settings = value as Record<string, unknown>
   const names = Object.keys(settings)
   const unknown = names.filter(name => !settingNames.includes(name))
-  const missing = settingNames.filter(name => !names.includes(name))
+  const missing = requiredNames.filter(name => !names.includes(name))
   if (unknown.length || missing.length) throw new Error(`site.json: unknown settings [${unknown.join(', ')}], missing settings [${missing.join(', ')}]`)
   for (const name of ['cluster_name', 'login_address']) {
     if (typeof settings[name] !== 'string' || !settings[name]) throw new Error(`site.json: ${name} must be a non-empty string`)
@@ -40,6 +43,7 @@ export function checkSiteSettings(value: unknown): SiteSettings {
   for (const name of ['home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days']) {
     if (!Number.isInteger(settings[name])) throw new Error(`site.json: ${name} must be a whole number`)
   }
+  if (settings.demo !== undefined && typeof settings.demo !== 'boolean') throw new Error('site.json: demo must be a boolean')
   const logo = settings.logo
   // A relative URL keeps the logo under the site's own path.
   if (logo !== null && (typeof logo !== 'string' || !logo || logo.startsWith('/') || logo.includes(':'))) {

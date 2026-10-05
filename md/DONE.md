@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-05: public demo build
+
+- The normal website can also be built as a static demo with fictional machines, users, jobs, and interactive sample charts. All seven pages work without a Slurm cluster or Grafana server. The Pages workflow is ready; public launch and the README link are queued for v0.1, when the repository becomes public.
+- Files: `src/nanohpc/website-source/{src,tests/demo.spec.ts,scripts/build-demo.mjs}`, `src/nanohpc/website/`, `.github/workflows/public-demo.yml`, `md/testing.md`.
+
 ## 2026-09-30: design decisions for the port
 
 - Agreed with the user how SLURM-REAL is ported into nanoHPC: scope (up to about 100 heterogeneous machines), role layout (optional separate `/home` storage and backup machines), Slurm built from source, Ubuntu 22.04/24.04/26.04, local users, `cluster.yml` with a wizard, admin-defined partitions, kept extras, HTTPS, rsync backup, MIT license.

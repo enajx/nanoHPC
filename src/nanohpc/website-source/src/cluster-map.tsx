@@ -110,7 +110,7 @@ function describe(machines: MapMachine[]): string {
 }
 
 /** Animated isometric map of the machines Slurm knows, with traffic from their running jobs. */
-export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds }: { nodes: Machine[]; jobs: OverviewJob[]; pendingJobs: number; stale: boolean; refreshSeconds: number }) {
+export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, demo }: { nodes: Machine[]; jobs: OverviewJob[]; pendingJobs: number; stale: boolean; refreshSeconds: number; demo?: boolean }) {
   const box = useRef<HTMLDivElement>(null)
   const sketch = useRef<Sketch | null>(null)
   const [layout, setLayout] = useState<LayoutName>(storedLayout)
@@ -119,12 +119,20 @@ export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds }: 
 
   // Measurements refresh with the snapshot; a failed query means no traffic is shown, not zero.
   useEffect(() => {
+    if (demo) {
+      setMeasured({
+        nfs: new Map(nodes.map((node, index) => [node.name, index * 12 + 8])),
+        writes: new Map(nodes.map((node, index) => [node.name, index * 3 + 2])),
+        busy: new Map(nodes.filter(node => (node.total_gpus ?? 0) > 0).map(node => [node.name, Array.from({ length: node.total_gpus ?? 0 }, (_, index) => index * 18 + 25)])),
+      })
+      return
+    }
     const controller = new AbortController()
     const load = () => measure(controller.signal).then(setMeasured).catch(() => { if (!controller.signal.aborted) setMeasured(null) })
     load()
     const timer = window.setInterval(load, Math.max(5, refreshSeconds) * 1000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [refreshSeconds])
+  }, [refreshSeconds, demo])
   const latest = useRef({ machines, stale })
   latest.current = { machines, stale }
 
