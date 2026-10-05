@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Ansible-EE0000?logo=ansible&amp;logoColor=white" alt="Ansible" height="16">
-  <img src="https://img.shields.io/badge/Slurm-0B3D91" alt="Slurm" height="16">
-  <img src="https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&amp;logoColor=white" alt="Prometheus" height="16">
-  <img src="https://img.shields.io/badge/Grafana-F46800?logo=grafana&amp;logoColor=white" alt="Grafana" height="16">
-  <img src="https://img.shields.io/badge/nginx-009639?logo=nginx&amp;logoColor=white" alt="nginx" height="16">
-  <img src="https://img.shields.io/badge/Let%27s_Encrypt-003A70?logo=letsencrypt&amp;logoColor=white" alt="Let's Encrypt" height="16">
-  <img src="https://img.shields.io/badge/Textual-121212" alt="Textual" height="16">
-  <img src="https://img.shields.io/badge/Lima-5C2D91" alt="Lima" height="16">
+  <img src="https://img.shields.io/badge/Ansible-EE0000?logo=ansible&amp;logoColor=white" alt="Ansible" height="18">
+  <img src="https://img.shields.io/badge/Slurm-0B3D91" alt="Slurm" height="18">
+  <img src="https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&amp;logoColor=white" alt="Prometheus" height="18">
+  <img src="https://img.shields.io/badge/Grafana-F46800?logo=grafana&amp;logoColor=white" alt="Grafana" height="18">
+  <img src="https://img.shields.io/badge/nginx-009639?logo=nginx&amp;logoColor=white" alt="nginx" height="18">
+  <img src="https://img.shields.io/badge/Let%27s_Encrypt-003A70?logo=letsencrypt&amp;logoColor=white" alt="Let's Encrypt" height="18">
+  <img src="https://img.shields.io/badge/Textual-121212" alt="Textual" height="18">
+  <img src="https://img.shields.io/badge/Lima-5C2D91" alt="Lima" height="18">
 </p>
 
 <p align="center">
