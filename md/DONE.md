@@ -160,3 +160,9 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - Ubuntu 24.04 VM checks passed from a fresh cluster: restart the home server, front node, and two compute nodes one at a time after a deploy. They check the home disk, NFS mounts, active quota limits, scratch disk and image, and files read and written after boot. A separate VM test passed after restarting the front node when `/home` is a bind mount on its root disk.
 - The reboot test refreshes Lima's forwarded SSH port after each restart. `sim up` checks for the known stuck `systemd-logind` process on fresh Ubuntu VMs and restarts it when CPU use stays high.
 - Files: `tests/test_sim.py`, `src/nanohpc/sim.py`, `md/testing.md`.
+
+## 2026-10-05: XFS disks and NFS quota enforcement
+
+- A fresh Ubuntu 24.04 VM cluster passed with an XFS home disk and XFS scratch disk. The test checks the configured home quota limits, reads and writes files through NFS and on local scratch, then confirms that an over-limit write through NFS fails with a quota error.
+- The test uses its own simulated cluster so it can format test disks without touching another test's disks. A separate agent reviewed the test and its quota check.
+- Files: `tests/sim/xfs-quota.yml`, `tests/test_sim.py`, `md/testing.md`.

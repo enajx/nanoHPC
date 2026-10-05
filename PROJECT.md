@@ -137,6 +137,7 @@ flowchart LR
 - Built: daily cleanup of kept `cluster-submit` job copies, with a separate seven-day default. The full deploy and `--only users` paths passed on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md).
 - Built: changed `/etc/fstab` entries remount existing `/home` and `/scratch` during deploy; the live `nosuid,nodev` options are checked. Ubuntu 24.04 VM tests cover home disk, NFS, root-disk bind, scratch disk, and scratch image. See [DONE.md](md/DONE.md).
 - Checked: a deployed machine comes back after a reboot with `/home`, NFS, quotas, and `/scratch`. Ubuntu 24.04 VM tests cover a separate home server, NFS clients, both scratch layouts, and `/home` on the front node's root disk. See [testing.md](md/testing.md).
+- Checked: XFS home and scratch disks work on Ubuntu 24.04 VMs. nanoHPC sets the configured XFS home quotas, and a user over the hard limit cannot write to `/home` through NFS. See [testing.md](md/testing.md).
 - Next: v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - Known gaps to close before it can be reused (from a review of the source deployment):

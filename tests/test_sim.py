@@ -1857,6 +1857,67 @@ class SimRebootTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimXfsQuotaTest(SimUsersBase):
+    """XFS home and scratch disks work, and the home quota stops writes over NFS."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "xfs-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "xfs-quota"
+        super().setUp()
+
+    def test_xfs_disks_and_nfs_quota(self) -> None:
+        _, config, _ = self.up_with_test_key()
+        for machine in ("store", "gpu4"):
+            installed = self.ssh(machine, "sudo apt-get install -y xfsprogs")
+            self.assertEqual(installed.returncode, 0, f"{machine}: {installed.stdout}{installed.stderr}")
+            filesystem = self.ssh(machine, "sudo blkid -s TYPE -o value /dev/vdb")
+            self.assertEqual(filesystem.returncode, 0, f"{machine}: {filesystem.stdout}{filesystem.stderr}")
+            if filesystem.stdout.strip() != "xfs":
+                mounted = self.ssh(machine, "findmnt -n -o TARGET --source /dev/vdb")
+                self.assertEqual(mounted.stdout.strip(), "", f"{machine}: /dev/vdb is mounted at {mounted.stdout}")
+                formatted = self.ssh(machine, "sudo mkfs.xfs -f -q /dev/vdb")
+                self.assertEqual(formatted.returncode, 0, f"{machine}: {formatted.stdout}{formatted.stderr}")
+        deployed = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(deployed.returncode, 0, self.failure(deployed))
+
+        home = self.on_front("findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home")
+        self.assertIn("nfs4", home)
+        disk = self.ssh("store", "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home")
+        self.assertEqual(disk.returncode, 0, disk.stderr)
+        self.assertIn("/dev/vdb xfs", disk.stdout)
+        scratch = self.ssh("gpu4", "findmnt -n -o SOURCE,FSTYPE --mountpoint /scratch")
+        self.assertEqual(scratch.returncode, 0, scratch.stderr)
+        self.assertEqual(scratch.stdout.strip(), "/dev/vdb xfs")
+        scratch_file = self.ssh(
+            "gpu4",
+            "sudo -u alice sh -c 'echo xfs > /scratch/alice/nanohpc-xfs-check; cat /scratch/alice/nanohpc-xfs-check'",
+        )
+        self.assertEqual(scratch_file.returncode, 0, scratch_file.stdout + scratch_file.stderr)
+        self.assertEqual(scratch_file.stdout.strip(), "xfs")
+        home_file = self.ssh(
+            "front", "sudo -u alice sh -c 'echo xfs > /home/alice/nanohpc-xfs-check; cat /home/alice/nanohpc-xfs-check'"
+        )
+        self.assertEqual(home_file.returncode, 0, home_file.stdout + home_file.stderr)
+        self.assertEqual(home_file.stdout.strip(), "xfs")
+        quotas = self.ssh("store", "sudo repquota -u -O csv /home")
+        self.assertEqual(quotas.returncode, 0, quotas.stdout + quotas.stderr)
+        rows = {row.split(",")[0]: row.split(",") for row in quotas.stdout.splitlines()}
+        columns = rows["User"]
+        self.assertEqual(
+            (rows["alice"][columns.index("BlockSoftLimit")], rows["alice"][columns.index("BlockHardLimit")]),
+            (str(config["home"]["quota_soft_gb"] * 1024 * 1024), str(config["home"]["quota_hard_gb"] * 1024 * 1024)),
+        )
+
+        limited = self.ssh("store", "sudo setquota -u alice 2048 2048 0 0 /home")
+        self.assertEqual(limited.returncode, 0, limited.stdout + limited.stderr)
+        written = self.ssh(
+            "front", "sudo -u alice dd if=/dev/zero of=/home/alice/nanohpc-quota-check bs=1M count=4 status=none"
+        )
+        self.assertNotEqual(written.returncode, 0, written.stdout + written.stderr)
+        self.assertIn("Disk quota exceeded", written.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimHomeOnStorageTest(SimUsersBase):
     """/home served by the storage machine instead of the front node. Real Lima VMs."""
 
