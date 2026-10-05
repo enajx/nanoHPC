@@ -125,8 +125,10 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { no
       const from = to - ranges[range].windowMs
       const capacity = totalCapacity
       const stages: [number, number][] = [
-        [0, 0.2], [0.1, 0.4], [0.18, 0.7], [0.25, 1], [0.38, 1],
-        [0.46, 0.5], [0.55, 0.5], [0.63, 1], [0.76, 1], [0.84, 0.6],
+        [0, 0.2], [0.1, 0.4], [0.18, 0.7],
+        [0.25, 1], [0.29, 1], [0.34, 1], [0.38, 1],
+        [0.46, 0.5], [0.5, 0.5], [0.55, 0.5],
+        [0.63, 1], [0.67, 1], [0.72, 1], [0.76, 1], [0.84, 0.6],
         [0.9, 0.2], [1, 0.2],
       ]
       const points = stages.map(([position, fraction]) => {
@@ -194,8 +196,8 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { no
               {demo && <YAxis domain={[0, totalCapacity]} hide />}
               <CartesianGrid vertical={false} stroke="#deded8" />
               <Tooltip labelFormatter={(_, payload) => demo ? new Date(Number(payload[0]?.payload.time)).toLocaleString() : blockLabel(Number(payload[0]?.payload.time), range)} formatter={(value, name) => { const gpus = demo ? Math.round(Number(value)) : Number(Number(value).toFixed(1)); return [`${gpus} GPU${gpus === 1 ? '' : 's'}`, name] }} contentStyle={{ background: '#fff', border: '3px solid #172322', borderRadius: 12, boxShadow: '4px 4px 0 #172322', color: '#172322' }} itemStyle={{ color: '#172322' }} />
-              {machines.map((machine, index) => <Area key={machine.name} dataKey={machine.name} name={machine.name} type="monotone" stackId="gpus" stroke="#172322" strokeWidth={2} strokeLinejoin="round" fill={colors[index % colors.length]} isAnimationActive={false} />)}
-              <Area dataKey="idle" name="Idle" type="monotone" stackId="gpus" stroke="none" fill="#fff" isAnimationActive={false} />
+              {machines.map((machine, index) => <Area key={machine.name} dataKey={machine.name} name={machine.name} type={demo ? 'basis' : 'monotone'} stackId="gpus" stroke="#172322" strokeWidth={2} strokeLinejoin="round" fill={colors[index % colors.length]} isAnimationActive={false} />)}
+              <Area dataKey="idle" name="Idle" type={demo ? 'basis' : 'monotone'} stackId="gpus" stroke="none" fill="#fff" isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer></div>
         </div>}
