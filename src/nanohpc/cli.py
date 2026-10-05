@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from nanohpc import check, deploy, fixuid, probe, restart, restart_check, sim
+from nanohpc import check, deploy, fixuid, probe, restart, restart_check, sim, update_report
 from nanohpc.config import load_config
 from nanohpc.render import render_forwarding_rules
 
@@ -213,6 +213,11 @@ def main() -> None:
     report.add_argument("path", type=Path, help="path to cluster.yml")
     report.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
     report.add_argument("--before-restart", action="store_true", help="check saved boot settings on every machine")
+    updates = commands.add_parser(
+        "update-report", help="report waiting package updates on every machine without changing anything"
+    )
+    updates.add_argument("path", type=Path, help="path to cluster.yml")
+    updates.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
     restart_command = commands.add_parser("restart", help="restart one confirmed compute machine")
     restart_command.add_argument("path", type=Path, help="path to cluster.yml")
     restart_command.add_argument("machine", help="one compute machine in cluster.yml")
@@ -267,6 +272,8 @@ def main() -> None:
         )
     if arguments.command == "restart":
         sys.exit(restart.run(arguments.path, arguments.machine, arguments.confirm, arguments.ssh_config))
+    if arguments.command == "update-report":
+        sys.exit(update_report.run(arguments.path, arguments.ssh_config))
     if arguments.command == "forwarding-rules":
         sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":

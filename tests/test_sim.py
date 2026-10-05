@@ -2074,6 +2074,30 @@ class SimKernelQuotaTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimUpdateReportTest(SimUsersBase):
+    """The read-only update report reaches all Ubuntu 24.04 VMs and leaves APT lists alone."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_update_report_on_vms(self) -> None:
+        cluster, config, _ = self.up_with_test_key()
+        names = list(config["machines"])
+        list_state = "find /var/lib/apt/lists -maxdepth 1 -type f -printf '%f %T@ %s\\n' | sort"
+        before = {name: self.ssh(name, list_state).stdout for name in names}
+        result = self.run_command(
+            "uv", "run", "nanohpc", "update-report", str(cluster), "--ssh-config", str(self.state / "ssh_config")
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name in names:
+            self.assertIn(f"{name}: ", result.stdout)
+            self.assertIn("package lists from ", result.stdout)
+            self.assertEqual(self.ssh(name, list_state).stdout, before[name])
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimRestartCheckTest(SimUsersBase):
     """The read-only restart check reaches every Ubuntu 24.04 VM and reports a real fstab problem."""
 
