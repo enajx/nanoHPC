@@ -6,7 +6,7 @@
 
 ## Queue ranking
 
-GPU-hours are allocated GPU count multiplied by runtime. CPU and RAM do not contribute to fair-share usage. Recent usage decays over time; users with less recent usage receive a higher fair-share factor. Waiting time also contributes to priority. Running jobs are not interrupted by ranking, and priority does not guarantee a start time.
+GPU-hours are allocated GPU count multiplied by runtime. CPU and RAM do not contribute to fair-share usage. Recent usage decays over time; users with less recent usage receive a higher fair-share factor. Waiting time also contributes to priority, and jobs with a shorter requested time may receive a bonus. Running jobs are not interrupted by ranking, and priority does not guarantee a start time.
 
 ```bash
 sshare -al

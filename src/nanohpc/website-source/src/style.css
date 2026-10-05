@@ -1,12 +1,11 @@
 /* Hard borders, offset shadows, and flat color follow neobrutalism-components. */
-:root { --accent: #5294ff; --card-1: #c0f2dc; --card-2: #fff1a8; --card-3: #dbd8f6; --card-4: #f5d7dd; --card-1-text: #172322; --card-2-text: #172322; --card-3-text: #172322; --card-4-text: #172322; }
-/* Supplied colorhunt.co palettes: cards use the colors as given, with white text on the dark ones. */
+:root { --accent: #06d6a0; --card-1: #ff7f50; --card-2: #ffd166; --card-3: #06d6a0; --card-4: #118ab2; --card-1-text: #172322; --card-2-text: #172322; --card-3-text: #172322; --card-4-text: #172322; }
+/* The two palettes use the colors selected for the cluster website. */
 :root[data-accent="sand"] { --accent: #f2765e; --card-1: #f5ebdd; --card-2: #f2765e; --card-3: #315b8c; --card-4: #413333; --card-3-text: #ffffff; --card-4-text: #ffffff; }
-:root[data-accent="ocean"] { --accent: #8acff8; --card-1: #006199; --card-2: #8acff8; --card-3: #f4eb6c; --card-4: #ffd444; --card-1-text: #ffffff; }
 :root[data-accent="coral"] { --accent: #06d6a0; --card-1: #ff7f50; --card-2: #ffd166; --card-3: #06d6a0; --card-4: #118ab2; }
-:root[data-accent="grape"] { --accent: #ff3f7f; --card-1: #450693; --card-2: #8c00ff; --card-3: #ff3f7f; --card-4: #ffc400; --card-1-text: #ffffff; --card-2-text: #ffffff; }
-:root[data-accent="sunset"] { --accent: #ffa239; --card-1: #8ce4ff; --card-2: #feee91; --card-3: #ffa239; --card-4: #ff5656; }
-:root[data-accent="pastel"] { --accent: #f38181; --card-1: #f38181; --card-2: #fce38a; --card-3: #eaffd0; --card-4: #95e1d3; }
+/* Machine labels use the same status colors as the reference cluster. */
+:root { --status-green: #06d6a0; --status-blue: #118ab2; --status-blue-text: #172322; --status-yellow: #ffd166; --status-red: #ff7f50; }
+:root[data-accent="sand"] { --status-blue: #315b8c; --status-blue-text: #ffffff; --status-red: #f2765e; }
 :root { --font: 'Arial', sans-serif; }
 :root[data-font="space-grotesk"] { --font: 'Space Grotesk', sans-serif; }
 :root[data-font="inter"] { --font: 'Inter', sans-serif; }
@@ -22,6 +21,18 @@ code, pre, .eyebrow, .small-label, .step { font-family: ui-monospace, SFMono-Reg
 .topbar { height: 94px; border-bottom: 2px solid #172322; padding: 0 38px; display: flex; align-items: center; justify-content: space-between; background: white; }
 .brand { display: flex; align-items: center; gap: 16px; font-size: 36px; font-weight: 900; letter-spacing: -1px; }
 .header-buttons { display: flex; flex: none; gap: 10px; }
+.about { position: relative; }
+.about-button { width: 30px; height: 30px; padding: 0; border: 2px solid #172322; background: white; color: #172322; box-shadow: 3px 3px 0 #172322; font: inherit; font-size: 16px; font-weight: 800; line-height: 1; cursor: pointer; }
+.about-button:hover { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #172322; }
+.about-box { position: absolute; top: 40px; right: 0; z-index: 20; width: max-content; max-width: calc(100vw - 32px); padding: 12px 16px; border: 2px solid #172322; background: white; box-shadow: 4px 4px 0 #172322; font-size: 14px; }
+.about-box p { margin: 0 0 6px; }
+.about-box p:last-child { margin: 0; }
+.about-box a { text-decoration: underline; }
+.do-dont { margin-bottom: 16px; }
+.do-dont p { margin: 0 0 6px; }
+.guide-subtabs .guide-tabs { background: #f0f2ee; }
+.guide-subtabs .guide-tabs button { padding: 11px 12px; font-size: 14px; background: transparent; }
+.guide-subtabs .guide-tabs button[aria-selected="true"] { background: var(--accent); }
 .font-button { width: 30px; height: 30px; padding: 0; border: 2px solid #172322; background: white; color: #172322; box-shadow: 3px 3px 0 #172322; font: inherit; font-size: 13px; font-weight: 700; line-height: 1; cursor: pointer; }
 .font-button:hover { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #172322; }
 .accent-button { flex: none; width: 30px; height: 30px; padding: 0; border: 2px solid #172322; background: var(--accent); box-shadow: 3px 3px 0 #172322; cursor: pointer; }
@@ -37,6 +48,16 @@ nav { margin-top: 22px; display: grid; gap: 10px; }
 nav a { display: flex; align-items: center; gap: 12px; padding: 13px 11px; font-size: 16px; font-weight: 700; border: 2px solid transparent; }
 nav a:hover { background: #e0e7e1; }
 nav a[aria-current] { background: var(--accent); border-color: #172322; box-shadow: 3px 3px 0 #172322; }
+.sidebar-bottom { position: sticky; bottom: 0; margin-top: auto; padding: 10px 0 22px; background: #f0f2ee; border-top: 1px solid #c8cdc7; }
+.settings-button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 11px; font: inherit; font-size: 16px; font-weight: 700; color: inherit; background: none; border: 2px solid transparent; cursor: pointer; text-align: left; }
+.settings-button:hover { background: #e0e7e1; }
+.settings-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 16px; background: rgba(23, 35, 34, .45); }
+.settings-box { position: relative; width: min(440px, 100%); padding: 24px 28px; border: 2px solid #172322; background: white; box-shadow: 6px 6px 0 #172322; font-size: 16px; }
+.settings-box h2 { font-size: 22px; margin: 0 40px 14px 0; }
+.settings-box p { margin: 0 0 8px; }
+.settings-box p:last-child { margin: 0; }
+.settings-close { position: absolute; top: 14px; right: 14px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 2px solid #172322; background: white; color: #172322; box-shadow: 2px 2px 0 #172322; cursor: pointer; }
+.settings-close:hover { transform: translate(1px, 1px); box-shadow: 1px 1px 0 #172322; }
 main { max-width: 1640px; width: 100%; padding: 40px 42px 20px; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 30px; }
 .page-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: 18px; }
@@ -76,9 +97,21 @@ p { line-height: 1.6; }
 .machine-row small { display: block; color: #65716c; font-size: 14px; margin-top: 5px; }
 .machine-list > p { padding: 16px 22px; }
 .pill { font-family: monospace; font-size: 14px; border: 1px solid #172322; padding: 5px 8px; }
+.machine-list table { min-width: 790px; }
+.machine-list .speed-good { background: var(--status-green); }
 .dashboard iframe { border: 0; width: 100%; height: 690px; display: block; background: #f8f8f6; }
+.demo-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; padding: 20px; }
+.demo-chart { min-width: 0; border: 1px solid #deded8; padding: 15px; }
+.demo-chart h3 { font-size: 15px; margin: 0 0 12px; }
+.demo-chart-plot { height: 210px; }
+.demo-queue { padding: 12px 20px 20px; }
 .queue-dashboards .dashboard:first-child iframe { height: 560px; }
 .queue-dashboards .dashboard:last-child iframe { height: 500px; }
+.queue-dashboards .demo-snapshot-queue iframe { height: 400px; }
+.queue-dashboards .demo-snapshot-queue-history iframe { height: 420px; }
+.demo-snapshot-usage iframe { height: 470px; }
+.demo-snapshot-machines iframe { height: 1320px; }
+.demo-snapshot iframe { background: #111217; }
 .frame-note { font-size: 14px; color: #65716c; padding: 0 20px; }
 .notice { display: flex; align-items: center; gap: 12px; background: #fff1a8; border: 1.5px solid; padding: 14px 18px; font-size: 16px; line-height: 1.6; margin-bottom: 24px; }
 .notice.neutral { background: #eaf0ed; }
@@ -98,6 +131,8 @@ dt { font-size: 14px; color: #65716c; } dd { margin: 5px 0; font-size: 16px; fon
 .instruction p { color: #52605a; font-size: 16px; }
 pre { overflow-x: auto; background: #172322; color: #eff8ed; padding: 17px; font-size: 14px; line-height: 1.8; margin: 20px -24px -24px; }
 footer { border-top: 1px solid #c8cdc7; margin-top: 36px; padding: 20px 0 0; font-size: 14px; text-align: right; color: #65716c; }
+footer p { margin: 0 0 4px; }
+footer a { text-decoration: underline; }
 .skip { position: absolute; left: 10px; top: -100px; z-index: 10; background: white; padding: 10px; border: 2px solid; }.skip:focus { top: 10px; }
 .stat { display: block; }
 .stat:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #172322; }
@@ -137,20 +172,20 @@ footer { border-top: 1px solid #c8cdc7; margin-top: 36px; padding: 20px 0 0; fon
 .overview-job-list thead { position: sticky; top: 0; }
 @media (max-width: 1100px) { .overview-job-groups { grid-template-columns: 1fr; } }
 .pill { display: inline-block; white-space: nowrap; }
-/* Normal states follow the theme's card colors; problem states keep fixed colors in every theme. */
-.state-healthy, .state-idle { background: var(--card-1); color: var(--card-1-text); }
-.state-active { background: var(--card-2); color: var(--card-2-text); }
-.state-full { background: var(--card-3); color: var(--card-3-text); }
-.state-warning { background: #fff1a8; }
-.state-offline { background: #f5d7dd; }
-.state-unknown, .state-not-applicable { background: #f0f2ee; }
+.state-healthy, .state-active, .state-full { background: var(--status-green); }
+.state-idle { background: var(--status-blue); color: var(--status-blue-text); }
+.state-warning { background: var(--status-yellow); }
+.state-problem, .state-offline { background: var(--status-red); }
+.state-maintenance, .state-unknown, .state-not-applicable, .state-neutral { background: #f0f2ee; }
 .user-guide { max-width: 880px; }
-.user-guide section { padding: 12px 0 30px; margin-bottom: 24px; border-bottom: 1px solid #c8cdc7; }
+.user-guide section { padding: 12px 0 30px; margin-bottom: 24px; }
 .user-guide h2 { font-size: 24px; margin-bottom: 22px; }
 .user-guide h3 { font-size: 17px; }
 .user-guide p { font-size: 16px; color: #37443e; }
 .user-guide pre { margin: 18px 0; font-size: 14px; }
 .reference-heading { margin-top: 42px; }
+.user-guide > section:has(> .reference-heading) { padding: 0; margin-bottom: 0; }
+.user-guide > section > .reference-heading { margin-top: 60px; font-size: 28px; }
 .guide-alt { max-width: none; }
 .setup-cards { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
 .guide-alt .instruction.panel { padding: 24px; margin: 0; border: 2px solid #172322; }
@@ -207,6 +242,8 @@ footer { border-top: 1px solid #c8cdc7; margin-top: 36px; padding: 20px 0 0; fon
 @media (max-width: 1100px) { .layout { grid-template-columns: 200px minmax(0,1fr); } main { padding: 30px 26px; } .sidebar { padding: 28px 15px; } .stat-grid { grid-template-columns: repeat(2,1fr); } .docs-grid { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .topbar { height: 78px; padding: 0 20px; } .brand { font-size: 32px; } .brand-sub { font-size: 13px; } .public-badge { display: none; } .layout { display: block; } .sidebar { border-right: 0; border-bottom: 2px solid; padding: 12px; } .sidebar > .eyebrow, .sidebar-note, .sidebar-bottom { display: none; } nav { margin: 0; display: flex; overflow-x: auto; gap: 8px; padding-bottom: 5px; scroll-padding-inline: 12px; } nav a { white-space: nowrap; padding: 10px; font-size: 16px; scroll-margin-inline: 12px; } nav svg { display: none; } main { padding: 26px 18px; } .page-heading { align-items: start; } .page-heading-actions { gap: 10px; } .freshness { font-size: 14px; white-space: normal; max-width: 125px; } .overview-row, .policies dl { grid-template-columns: 1fr; } .stat-grid { gap: 14px; } .stat { padding: 16px; margin-bottom: 14px; } .stat strong { font-size: 30px; } .small-label { display: none; } .dashboard iframe { height: 640px; } footer { gap: 20px; line-height: 1.6; } }
 @media (max-width: 720px) { .queue-dashboards .dashboard:last-child iframe { height: 1300px; } }
+@media (max-width: 720px) { .queue-dashboards .demo-snapshot-queue iframe { height: 430px; } .queue-dashboards .demo-snapshot-queue-history iframe { height: 1200px; } .demo-snapshot-usage iframe { height: 850px; } .demo-snapshot-machines iframe { height: 3100px; } }
 @media (max-width: 1100px) { .stat-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 @media (max-width: 720px) { .stat-grid { gap: 10px; } .stat { padding: 13px 10px; } .stat span { font-size: 14px; } .stat strong { font-size: 25px; } .machine-list th, .machine-list td { padding: 12px 8px; } }
 @media (max-width: 720px) { .spec-card-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 720px) { .sidebar-bottom { display: block; position: static; margin-top: 8px; padding: 0; border-top: 0; } .settings-button { width: auto; padding: 8px 10px; } }

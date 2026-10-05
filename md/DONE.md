@@ -2,6 +2,54 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-05: How to guide layout
+
+- Removed the terminal, worktree, quota, and node-selection text shown in the screenshot from the Submit a job card and generated Markdown. The guide has no section dividers, uses larger headings for the tabbed topics, and shows Jobs examples before the other topics.
+- Files: `src/nanohpc/website-source/src/{documentation.ts,style.css}`, `src/nanohpc/website-source/tests/website.spec.ts`, `src/nanohpc/website/`.
+
+## 2026-10-05: demo partitions and dark Grafana previews
+
+- The demo Training partition contains H100, H200, and B200. Inference contains Threadripper and Nvidia DGX and appears on the left side of the Partitions map. The public demo opens its Grafana snapshots in the dark theme.
+- Files: `src/nanohpc/website-source/{scripts/build-demo.mjs,src/cluster-map/sketch.ts,src/demo-dashboard.tsx,src/style.css,tests/demo.spec.ts}`, `src/nanohpc/website/`.
+
+## 2026-10-05: demo usage curve
+
+- The overview usage curve keeps its smooth stacked shape and shows whole GPU counts in the demo tooltip. The final example has a smaller first bump, a broader full-capacity second bump, and low use at the end. A soft curve rounds the transitions.
+- Files: `src/nanohpc/website-source/src/gpu-allocation-chart.tsx`, `src/nanohpc/website-source/tests/demo.spec.ts`, `src/nanohpc/website/`.
+
+## 2026-10-05: five demo machines
+
+- The demo lists H100, H200, B200, Threadripper, and Nvidia DGX in that order. Four GPU machines have running sample jobs. The overview usage curve gives each GPU machine a distinct smooth pattern, and the Grafana queue and machine samples match the new data.
+- Files: `src/nanohpc/website-source/{scripts/build-demo.mjs,scripts/build-demo-snapshots.py,src/gpu-allocation-chart.tsx,src/demo-dashboard.tsx,tests/demo.spec.ts}`, `src/nanohpc/website/`.
+
+## 2026-10-05: Machines map and table
+
+- The Machines table now lists compute machines only, without Internet. GPU availability has a grey box. Status labels use green for healthy and active, yellow for attention, coral for problems, and blue for idle. Cluster usage has a titled Machine and GPU metrics panel and no long-term history panel.
+- The map opens by default and offers Default, Partitions, and Geographic views. The demo groups machines into fictional buildings. The machine list and sample jobs were later revised to five machines, as recorded above.
+- Files: `src/nanohpc/website-source/{src,scripts,tests}`, `src/nanohpc/files/cluster-monitor-snapshot`, `tests/test_monitor_snapshot.py`, `src/nanohpc/website/`.
+
+## 2026-10-05: Grafana snapshots and Machines table
+
+- The public demo embeds four permanent Grafana snapshots with fictional data for Running Jobs and Queue, Queue history, GPU usage history, and Machine and GPU metrics. They cover a fixed sample week and need no live Grafana server. Filtered queue links still show the local sample jobs table. The current machine list is recorded above.
+- The Machines table shows compute machines, State, `/home` speed, and GPU availability. The demo shows fictional speeds. Live clusters show Unknown until speed checks are added.
+- Files: `src/nanohpc/website-source/{scripts/build-demo-snapshots.py,scripts/build-demo.mjs,src/demo-dashboard.tsx,src/main.tsx,src/machines.tsx,src/style.css,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`, `md/testing.md`.
+
+## 2026-10-05: website Settings and footer
+
+- The website and demo show a Settings option at the bottom of the sidebar. It opens a read-only notice and closes with its button, Escape, or a click outside. Each page has a footer linking to nanoHPC; the demo uses generic wording. The Settings option remains available on narrow screens.
+- Files: `src/nanohpc/website-source/src/{main.tsx,settings-button.tsx,style.css}`, `src/nanohpc/website-source/tests/{demo.spec.ts,website.spec.ts}`, `src/nanohpc/website/`.
+
+## 2026-10-05: public demo build
+
+- The normal website can also be built as a static demo with fictional machines, users, jobs, and sample charts. All seven pages work without a Slurm cluster or Grafana server. The [public demo](https://najarro.science/nanoHPC/) is published by the Pages workflow on `main`; the README links to it. The live pages and all four Grafana snapshots were checked in Chromium on 2026-10-05.
+- Files: `src/nanohpc/website-source/{src,tests/demo.spec.ts,scripts/build-demo.mjs}`, `src/nanohpc/website/`, `.github/workflows/public-demo.yml`, `md/testing.md`.
+
+## 2026-10-05: public demo content and chart
+
+- The demo shows nanoHPC branding and Alice, Bob, and Mike. Its help menu opens the project repository and How to page. The displayed update time advances every 30 seconds. The GPU chart uses the live chart's time-block averaging and a smooth sample history. The website keeps the default and coral/sand themes.
+- The How to page has generic job guides and tabs, and the policy page has partition, login, and queue details using fictional values. The generated demo docs contain no REAL or ITU details.
+- Files: `src/nanohpc/website-source/{src,scripts/build-demo.mjs,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`.
+
 ## 2026-09-30: design decisions for the port
 
 - Agreed with the user how SLURM-REAL is ported into nanoHPC: scope (up to about 100 heterogeneous machines), role layout (optional separate `/home` storage and backup machines), Slurm built from source, Ubuntu 22.04/24.04/26.04, local users, `cluster.yml` with a wizard, admin-defined partitions, kept extras, HTTPS, rsync backup, MIT license.
@@ -131,9 +179,9 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 ## 2026-10-04: README cluster image
 
 - The user chose turquoise pipes from three GIF previews using the website's default coral theme, then chose a static image with a transparent background. The README image shows Threadripper (a two-layer CPU machine), three 4-GPU machines all labelled H100 in the center, and FPGA on the right with no GPU bar. The live website map was not changed.
-- The original GIF was checked in Chromium and decoded. The static PNG replaced it on 2026-10-04; the GIF was restored below it on 2026-10-05.
+- The original GIF was checked in Chromium and decoded; the README uses the transparent static `assets/cluster.png`.
 - The Tech stack badges sit on one source line in their section and also appear above the title. The user removed the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges.
-- Files: `README.md`, `assets/cluster.png`, `assets/cluster.gif`.
+- Files: `README.md`, `assets/cluster.png`.
 
 ## 2026-10-04: README feature descriptions
 
