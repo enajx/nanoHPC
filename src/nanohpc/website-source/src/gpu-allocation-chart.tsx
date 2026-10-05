@@ -127,9 +127,10 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { no
         const position = index / count
         const point: ChartPoint = { time: from + position * ranges[range].windowMs, idle: 0 }
         for (const [machineIndex, machine] of machines.entries()) {
-          const peak = Math.exp(-Math.pow((position - 0.25 - machineIndex * 0.035) / 0.07, 2))
-          const later = Math.exp(-Math.pow((position - 0.72 + machineIndex * 0.04) / 0.14, 2))
-          const fraction = Math.min(0.95, 0.12 + peak * 0.58 + later * 0.3)
+          const peak = Math.exp(-Math.pow((position - 0.18 - machineIndex * 0.13) / (0.07 + machineIndex * 0.015), 2))
+          const later = Math.exp(-Math.pow((position - 0.78 + machineIndex * 0.09) / 0.12, 2))
+          const wave = (Math.sin(position * Math.PI * (3 + machineIndex) + machineIndex * 1.4) + 1) * 0.06
+          const fraction = Math.min(0.95, 0.06 + peak * (0.42 + machineIndex * 0.04) + later * 0.27 + wave)
           point[machine.name] = (machine.total_gpus ?? 0) * fraction
         }
         point.idle = machines.reduce((sum, machine) => sum + (machine.total_gpus ?? 0) - point[machine.name], 0)

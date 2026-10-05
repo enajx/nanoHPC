@@ -2,15 +2,20 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-05: five demo machines
+
+- The demo lists H100, H200, B200, Threadripper, and Nvidia DGX in that order. Four GPU machines have running sample jobs. The overview usage curve gives each GPU machine a distinct smooth pattern, and the Grafana queue and machine samples match the new data.
+- Files: `src/nanohpc/website-source/{scripts/build-demo.mjs,scripts/build-demo-snapshots.py,src/gpu-allocation-chart.tsx,src/demo-dashboard.tsx,tests/demo.spec.ts}`, `src/nanohpc/website/`.
+
 ## 2026-10-05: Machines map and table
 
 - The Machines table now lists compute machines only, without Internet. GPU availability has a grey box. Status labels use green for healthy and active, yellow for attention, coral for problems, and blue for idle. Cluster usage has a titled Machine and GPU metrics panel and no long-term history panel.
-- The map opens by default and offers Default, Partitions, and Geographic views. The demo groups machines into fictional buildings. It uses H200, Nvidia DGX, and Threadripper; H100 and the added 8-GPU example are absent. The four Grafana samples match those machines and jobs.
+- The map opens by default and offers Default, Partitions, and Geographic views. The demo groups machines into fictional buildings. The machine list and sample jobs were later revised to five machines, as recorded above.
 - Files: `src/nanohpc/website-source/{src,scripts,tests}`, `src/nanohpc/files/cluster-monitor-snapshot`, `tests/test_monitor_snapshot.py`, `src/nanohpc/website/`.
 
 ## 2026-10-05: Grafana snapshots and Machines table
 
-- The public demo embeds four permanent Grafana snapshots with fictional data for Running Jobs and Queue, Queue history, GPU usage history, and Machine and GPU metrics. They cover a fixed sample week and need no live Grafana server. Filtered queue links still show the local sample jobs table. The example website uses H200, Nvidia DGX, and Threadripper.
+- The public demo embeds four permanent Grafana snapshots with fictional data for Running Jobs and Queue, Queue history, GPU usage history, and Machine and GPU metrics. They cover a fixed sample week and need no live Grafana server. Filtered queue links still show the local sample jobs table. The current machine list is recorded above.
 - The Machines table shows compute machines, State, `/home` speed, and GPU availability. The demo shows fictional speeds. Live clusters show Unknown until speed checks are added.
 - Files: `src/nanohpc/website-source/{scripts/build-demo-snapshots.py,scripts/build-demo.mjs,src/demo-dashboard.tsx,src/main.tsx,src/machines.tsx,src/style.css,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`, `md/testing.md`.
 
@@ -26,7 +31,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-05: public demo content and chart
 
-- The demo shows nanoHPC branding, H200, Nvidia DGX, and Threadripper machines, and Alice, Bob, and Mike. Its help menu opens the project repository and How to page. The displayed update time advances every 30 seconds. The GPU chart uses the live chart's time-block averaging and a smooth sample history. The website keeps the default and coral/sand themes.
+- The demo shows nanoHPC branding and Alice, Bob, and Mike. Its help menu opens the project repository and How to page. The displayed update time advances every 30 seconds. The GPU chart uses the live chart's time-block averaging and a smooth sample history. The website keeps the default and coral/sand themes.
 - The How to page has generic job guides and tabs, and the policy page has partition, login, and queue details using fictional values. The generated demo docs contain no REAL or ITU details.
 - Files: `src/nanohpc/website-source/{src,scripts/build-demo.mjs,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`.
 

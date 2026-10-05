@@ -12,10 +12,10 @@ const panels: Record<DashboardName, string[]> = {
   history: ['Allocated GPU-hours at daily sample', '24-hour mean CPU usage', '24-hour mean GPU utilization', 'Observed fraction of the 24-hour window'],
 }
 const snapshots: Partial<Record<DashboardName, string>> = {
-  queue: '9QDxO6t8FwjbL6S8C6PikE9NxehX4qx2',
-  'queue-history': '0yXYXRAkrE61IXTwceQ2r2ytXUwykXoW',
+  queue: '6sySV3ro5hdon5juwtrrt6R89bUxSfDI',
+  'queue-history': 'jpXnKWBJkZ8bPCCeyrYFPVEWGFH1O9Vl',
   usage: 'SHRHlxj8nchgir5pVEzMFIvTWVhs52qi',
-  machines: 'J6ibvQtxT0GlFuaATGCamYvTNTNoe392',
+  machines: 'bEN62fpqN1DvIL8IkDlDgDhda5FB3xGD',
 }
 
 /** Stable fictional points for the static demo, with a different span for each control. */
