@@ -137,7 +137,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-04: README feature descriptions
 
-- Rewrote Features as seven short bullets, without bold lead-ins: one `cluster.yml`, Slurm scheduling, the front-end monitor, health checks, playbooks for cluster changes and backups, shared and scratch storage, and Slack notifications.
+- Rewrote Features as eight short bullets, without bold lead-ins: one `cluster.yml`, Slurm scheduling, the front-end monitor, health checks, playbooks for cluster changes and backups, shared and scratch storage, Slack notifications, and an isometric cluster view. The cluster image follows the last bullet, before Set up.
 - Checked the claims against `PROJECT.md` and `TODO.md`; the text describes supported policy changes without claiming system package updates.
 - File: `README.md`.
 
