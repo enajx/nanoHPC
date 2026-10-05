@@ -131,9 +131,9 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 ## 2026-10-04: README cluster image
 
 - The user chose turquoise pipes from three GIF previews using the website's default coral theme, then chose a static image with a transparent background. The README image shows Threadripper (a two-layer CPU machine), three 4-GPU machines all labelled H100 in the center, and FPGA on the right with no GPU bar. The live website map was not changed.
-- The original GIF was checked in Chromium and decoded; it has been replaced by `assets/cluster.png`.
-- The Tech stack badges sit on one source line, so Markdown readers do not turn each badge into a separate row. The user removed the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges.
-- Files: `README.md`, `assets/cluster.png`.
+- The original GIF was checked in Chromium and decoded. The static PNG replaced it on 2026-10-04; the GIF was restored below it on 2026-10-05.
+- The Tech stack badges sit on one source line in their section and also appear above the title. The user removed the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges.
+- Files: `README.md`, `assets/cluster.png`, `assets/cluster.gif`.
 
 ## 2026-10-04: README feature descriptions
 
