@@ -179,3 +179,9 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - The home server installs the extra-module package for its running kernel and a package that tracks quota modules with later Ubuntu kernel updates. It uses the installed kernel image package's update track and stops with a clear error if tracks conflict or the matching package is unavailable.
 - A fresh Ubuntu 24.04 VM test passed: deploy twice, upgrade to a newer kernel, reboot, check the separate `/home` disk, active quotas, and a user's file, then deploy again. A separate agent reviewed the package selection.
 - Files: `src/nanohpc/ansible/roles/home_server/tasks/main.yml`, `tests/sim/kernel-quota.yml`, `tests/test_sim.py`, `md/testing.md`.
+
+## 2026-10-05: restart checks before a restart
+
+- `nanohpc check CLUSTER_YML --before-restart` reads every machine over SSH and reports pass or failure for fstab, GRUB's selected kernel, the NVIDIA module on GPU machines, saved versus live network settings, and automatic update restart settings. A separate `/boot` needs `nofail` and a live mount. Netplan and persistent NetworkManager profiles support static and DHCP settings; temporary or unverifiable settings fail the check. The command changes nothing.
+- The focused CLI tests passed. `SimRestartCheckTest` passed on three Ubuntu 24.04 VMs: it reached every machine, reported an injected fstab problem on the front node, and left fstab unchanged. Lima's cloud-init Netplan file changed after boot, so the strict network check reported that it could not verify those VM settings. A separate agent reviewed the checks, and its findings were fixed.
+- Files: `src/nanohpc/{cli,restart_check}.py`, `tests/{test_restart_check,test_sim}.py`, `md/testing.md`.

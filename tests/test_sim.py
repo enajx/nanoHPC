@@ -2074,6 +2074,42 @@ class SimKernelQuotaTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimRestartCheckTest(SimUsersBase):
+    """The read-only restart check reaches every Ubuntu 24.04 VM and reports a real fstab problem."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_restart_check_on_vms(self) -> None:
+        cluster, config, _ = self.up_with_test_key()
+        names = list(config["machines"])
+        changed = self.ssh(
+            "front", "echo 'UUID=missing /restart-check-example ext4 defaults 0 2' | sudo tee -a /etc/fstab"
+        )
+        self.assertEqual(changed.returncode, 0, changed.stderr)
+        before = {name: self.ssh(name, "sha256sum /etc/fstab").stdout for name in names}
+        result = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "check",
+            str(cluster),
+            "--before-restart",
+            "--ssh-config",
+            str(self.state / "ssh_config"),
+        )
+        self.assertIn("machine", result.stdout, result.stdout + result.stderr)
+        for name in names:
+            self.assertRegex(result.stdout, rf"(?m)^{name}\s+ok\s+")
+            self.assertEqual(self.ssh(name, "sha256sum /etc/fstab").stdout, before[name])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("front: fstab: /restart-check-example has no nofail", result.stdout)
+        self.assertNotIn("restart check could not run", result.stdout)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimHomeOnStorageTest(SimUsersBase):
     """/home served by the storage machine instead of the front node. Real Lima VMs."""
 
