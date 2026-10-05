@@ -8,6 +8,7 @@
 #   cluster_health_check_state{check="<id>"} 0 ok, 1 warning, 2 failing
 #   cluster_health_timestamp_seconds          when this run finished
 # The id is the label cut at the first " (" or ":", so it stays the same when numbers or machine lists change.
+# In monitor mode (/etc/nanohpc/mode), checks use measured machine health and accepted GPU inventory without Slurm.
 set -uo pipefail
 
 usage() {
@@ -33,6 +34,7 @@ roles=" $(cat "$root/etc/nanohpc/roles" 2>/dev/null) "
 problems=0
 check_ids=()
 check_states=()
+gpu_inventory_mismatch=""
 
 has() { case "$roles" in *" $1 "*) return 0 ;; esac; return 1; }
 
@@ -81,6 +83,11 @@ write_metrics() {
     echo "# HELP cluster_health_timestamp_seconds When cluster-health last finished on this machine (Unix time)."
     echo "# TYPE cluster_health_timestamp_seconds gauge"
     echo "cluster_health_timestamp_seconds $(date +%s)"
+    if test -n "$gpu_inventory_mismatch"; then
+      echo "# HELP cluster_monitor_gpu_inventory_mismatch Accepted GPU inventory differs from the current measured inventory."
+      echo "# TYPE cluster_monitor_gpu_inventory_mismatch gauge"
+      echo "cluster_monitor_gpu_inventory_mismatch $gpu_inventory_mismatch"
+    fi
   } >"$temporary" || exit 1
   chmod 0644 "$temporary" || exit 1
   mv -f "$temporary" "$path" || exit 1
@@ -124,6 +131,91 @@ disk /
 check "service nanohpc-node-exporter (metrics)" systemctl is-active --quiet nanohpc-node-exporter
 note "metrics certificate valid for at least 30 more days" sh -c \
   'openssl x509 -noout -checkend 2592000 -in /etc/nanohpc/metrics-tls/$(test -f /etc/nanohpc/metrics-tls/prometheus.crt && echo prometheus || echo node).crt'
+
+# Compare the accepted GPU inventory with the last fresh local specs collector result. A missing or old
+# reading is unknown, not proof that hardware has changed or stayed the same.
+monitor_gpu_inventory_state() {
+  python3 - "$root/etc/nanohpc/monitor-gpus.json" "$root/var/lib/nanohpc/metrics-textfile/specs.prom" <<'PY'
+import json
+import re
+import sys
+import time
+from pathlib import Path
+
+accepted = json.loads(Path(sys.argv[1]).read_text())
+lines = Path(sys.argv[2]).read_text().splitlines()
+stamps = [float(line.split()[1]) for line in lines if line.startswith("cluster_machine_specs_timestamp_seconds ")]
+if len(stamps) != 1 or not 0 <= time.time() - stamps[0] < 900:
+    print("stale")
+    sys.exit(0)
+counts = [int(float(line.split()[1])) for line in lines if line.startswith("cluster_machine_gpu_count ")]
+models = []
+for line in lines:
+    if line.startswith("cluster_machine_gpu_memory_bytes{"):
+        match = re.search(r'model=("(?:\\.|[^"\\])*")}', line)
+        if match is None:
+            print("invalid")
+            sys.exit(0)
+        models.append(json.loads(match[1]))
+if len(counts) != 1 or counts[0] < 0 or len(models) != counts[0]:
+    print("invalid")
+elif counts[0] == accepted["count"] and sorted(models) == sorted(accepted["models"]):
+    print("match")
+else:
+    print("changed")
+PY
+}
+
+mode=$(cat "$root/etc/nanohpc/mode" 2>/dev/null || true)
+if test "$mode" = monitor; then
+  check "monitor role is recorded" sh -c 'test "$1" = monitor -o "$1" = machine' sh \
+    "$(tr -d '\n' < "$root/etc/nanohpc/roles")"
+  check "machine specs collector timer" systemctl is-active --quiet nanohpc-machine-specs.timer
+  check "the machine specs collector's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-machine-specs.service'
+  if test -f "$root/etc/systemd/system/nanohpc-gpu-metrics.timer"; then
+    check "GPU metrics collector timer" systemctl is-active --quiet nanohpc-gpu-metrics.timer
+    check "the GPU metrics collector's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-gpu-metrics.service'
+  fi
+  check "accepted GPU inventory is recorded" test -s "$root/etc/nanohpc/monitor-gpus.json"
+  if test -s "$root/etc/nanohpc/monitor-gpus.json"; then
+    gpu_state=$(monitor_gpu_inventory_state)
+    case "$gpu_state" in
+      match) gpu_inventory_mismatch=0; report ok "GPU inventory matches accepted hardware" ;;
+      changed) gpu_inventory_mismatch=1; report FAIL "GPU inventory matches accepted hardware" ;;
+      stale) report WARN "GPU inventory reading is fresh" ;;
+      *) report FAIL "GPU inventory reading is valid" ;;
+    esac
+  fi
+  if has monitor; then
+    for service in nanohpc-prometheus nanohpc-history nanohpc-alertmanager nanohpc-grafana; do
+      check "service $service" systemctl is-active --quiet "$service"
+    done
+    check "status collector timer" systemctl is-active --quiet nanohpc-monitor-snapshot.timer
+    check "the status collector's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-monitor-snapshot.service'
+    check "the status snapshot is fresh (under 2 minutes old)" \
+      test "$(( $(date +%s) - $(stat -c %Y "$root/var/lib/nanohpc/monitor/status.json" 2>/dev/null || echo 0) ))" -lt 120
+    check "website address is recorded" test -s "$root/etc/nanohpc/website/address"
+    if test -s "$root/etc/nanohpc/website/address"; then
+      read -r web_host web_path < "$root/etc/nanohpc/website/address"
+      check "service nginx (website)" systemctl is-active --quiet nginx
+      for page in "" site.json grafana/d/nanohpc-machines; do
+        check "the website answers over HTTPS (${web_path}${page})" \
+          curl -sfk -o /dev/null --max-time 10 --resolve "$web_host:443:127.0.0.1" "https://$web_host${web_path}${page}"
+      done
+      note "the website certificate is valid for at least 14 more days" sh -c \
+        "openssl s_client -connect 127.0.0.1:443 -servername '$web_host' </dev/null 2>/dev/null | openssl x509 -noout -checkend 1209600"
+      if test -f "$root/etc/systemd/system/nanohpc-website-certificate.timer"; then
+        check "website certificate renewal timer" systemctl is-active --quiet nanohpc-website-certificate.timer
+        note "the last website certificate renewal check worked" \
+          sh -c '! systemctl is-failed --quiet nanohpc-website-certificate.service'
+      fi
+    fi
+  fi
+  if test -n "$metrics_path"; then
+    write_metrics "$metrics_path"
+  fi
+  exit "$problems"
+fi
 
 
 if has front || has compute; then

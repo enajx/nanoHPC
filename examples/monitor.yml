@@ -1,0 +1,26 @@
+# Monitor machines where people run work directly, without Slurm.
+# nanoHPC installs monitoring services and the website, not user accounts or storage.
+
+cluster:
+  name: lab
+  mode: monitor
+  monitor_host: host             # machine that serves monitoring and the website
+  website:
+    hostname: lab.example.org
+    https: letsencrypt          # letsencrypt | own
+    path: /cluster/
+    allow: []                   # empty: anyone can open the website
+
+machines:
+  host:
+    address: 192.168.1.10
+  gpu1:
+    address: 192.168.1.11
+    aliases: [gpu1.example.org] # optional extra DNS names
+  cpu1:
+    address: 192.168.1.12
+
+users: [alice, bob]             # existing login names shown on the website; [] is valid
+
+alerts:
+  slack: false                  # true needs NANOHPC_SLACK_WEBHOOK in .env

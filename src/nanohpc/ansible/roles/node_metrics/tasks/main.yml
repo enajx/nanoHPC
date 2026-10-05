@@ -93,7 +93,7 @@
       Group=cluster-node-exporter
       ExecStart={{ node_exporter_dir }}/node_exporter \
         {% if on_front %}--web.listen-address=127.0.0.1:9100{% else %}--web.listen-address={{ nanohpc.machines[inventory_hostname].address }}:9100 --web.config.file=/etc/nanohpc/metrics-tls/web.yml{% endif %} \
-        --collector.systemd --collector.systemd.unit-include=(slurmd|slurmctld|slurmdbd|munge|mariadb|nfs-server)\.service \
+        --collector.systemd --collector.systemd.unit-include=({% if nanohpc.mode | default('slurm') == 'monitor' %}nanohpc-node-exporter|nanohpc-machine-specs|nanohpc-gpu-metrics|nanohpc-prometheus|nanohpc-history|nanohpc-alertmanager|nanohpc-grafana|nanohpc-monitor-snapshot|nginx{% else %}slurmd|slurmctld|slurmdbd|munge|mariadb|nfs-server{% endif %})\.(service|timer) \
         --collector.textfile.directory=/var/lib/nanohpc/metrics-textfile \
         {% if on_front %}--collector.textfile.directory=/var/lib/nanohpc/monitor-textfile {% endif %}\
         --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker)($|/)

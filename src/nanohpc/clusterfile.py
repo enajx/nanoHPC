@@ -68,6 +68,30 @@ partitions:
     max_time: "24:00:00"
 """
 
+NEW_MONITOR_FILE = """\
+# nanoHPC monitor configuration: machines running work directly, without Slurm.
+# Written by `nanohpc init --mode monitor`.
+
+cluster:
+  name: NAME
+  mode: monitor
+  monitor_host: null            # machine that serves monitoring and the website
+  website:
+    hostname: HOSTNAME
+    https: letsencrypt          # letsencrypt | own
+    path: /cluster/
+    allow: []                   # empty: anyone can open the website
+
+# Every machine to monitor, by name. GPU models and counts are discovered.
+machines: {}
+
+# Existing login names shown on the website; nanoHPC does not manage accounts.
+users: []
+
+alerts:
+  slack: false                  # true needs NANOHPC_SLACK_WEBHOOK in .env
+"""
+
 # The sections new() adds from config.py's defaults, each with the comment written above it.
 NEW_SECTIONS: tuple[tuple[str, dict[str, Any], str], ...] = (
     ("policy", POLICY_DEFAULTS, "Queue policy for every user: limits, default CPUs and memory, and job priority."),
@@ -488,14 +512,16 @@ def load(path: Path) -> ClusterFile:
     return ClusterFile(data)
 
 
-def new(name: str) -> ClusterFile:
+def new(name: str, mode: str = "slurm") -> ClusterFile:
     """Return a new cluster.yml with simple defaults and short comments, for the cluster `name`. It needs
     machines and users before it is valid."""
-    data = yaml_handler().load(NEW_FILE)
+    if mode not in ("slurm", "monitor"):
+        raise ValueError(f"unknown cluster mode: {mode}")
+    data = yaml_handler().load(NEW_MONITOR_FILE if mode == "monitor" else NEW_FILE)
     file = ClusterFile(data)
     file.set_value(["cluster", "name"], name)
     file.set_value(["cluster", "website", "hostname"], f"{name}.example.org")
-    for section, defaults, comment in NEW_SECTIONS:
+    for section, defaults, comment in () if mode == "monitor" else NEW_SECTIONS:
         file.set_value([section], dict(defaults))
         data.ca.items[section][1] = [
             CommentToken("\n", CommentMark(0), None),

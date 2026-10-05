@@ -1,0 +1,48 @@
+# Read-only checks before a monitor-only deploy changes a machine.
+
+- name: Require a supported Ubuntu release
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version in ['22.04', '24.04', '26.04']
+    fail_msg: "{{ inventory_hostname }} runs an unsupported OS or Ubuntu release"
+
+- name: Read a previous nanoHPC mode
+  ansible.builtin.stat:
+    path: /etc/nanohpc/mode
+  register: monitor_mode_file
+
+- name: Read previous mode content
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/mode
+  register: monitor_mode_content
+  when: monitor_mode_file.stat.exists
+
+- name: Check whether nanoHPC already owns this machine
+  ansible.builtin.stat:
+    path: /etc/nanohpc/roles
+  register: monitor_roles_file
+
+- name: Refuse a different nanoHPC setup
+  ansible.builtin.assert:
+    that:
+      - not monitor_roles_file.stat.exists or (monitor_mode_file.stat.exists and (monitor_mode_content.content | b64decode | trim) == 'monitor')
+    fail_msg: "{{ inventory_hostname }} has another nanoHPC setup; monitor mode does not convert it"
+
+- name: Name ports that monitor mode needs
+  ansible.builtin.set_fact:
+    monitor_ports: "{{ [9100, 80, 443, 3000, 9090, 9091, 9093] if inventory_hostname in groups['role_front'] else [9100] }}"
+
+- name: Check ports on a new monitor machine
+  ansible.builtin.command: "ss -ltnH sport = :{{ item }}"
+  check_mode: false
+  register: monitor_port_check
+  changed_when: false
+  failed_when: monitor_port_check.rc != 0 or monitor_port_check.stdout | trim != ''
+  loop: "{{ monitor_ports }}"
+  when: not monitor_mode_file.stat.exists
+
+- name: Refresh Ubuntu package lists for monitoring packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600

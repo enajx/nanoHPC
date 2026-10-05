@@ -24,6 +24,7 @@ function GuideContentBlock({ block, partitions }: { block: GuideBlock; partition
   if (block.kind === 'heading') return <h3>{block.text}</h3>
   if (block.kind === 'paragraph') return <p>{block.text}</p>
   if (block.kind === 'code') return <pre><code>{block.text}</code></pre>
+  if (block.kind === 'pair') return <div className="do-dont"><p><strong>Do:</strong> {block.do}</p><p><strong>Don't:</strong> {block.dont}</p></div>
   if (block.kind === 'links') return <p>{block.items.map((item, index) => <span key={item.href}>{index > 0 && ' · '}<a href={item.href}>{item.label}</a></span>)}</p>
   return <ul className="job-downloads">{block.items.map((item) => <li key={item.file}><a href={`job-examples/${item.file}`} download={item.file}>Download {item.file}</a>: {item.description}</li>)}</ul>
 }
@@ -59,16 +60,22 @@ function CopyCode({ command }: { command: string }) {
 
 /** Show one panel's topics as tabs, with the selected topic's text and code. */
 function TopicTabs({ panel, prefix, allTopics }: { panel: GuidePanel; prefix: string; allTopics: GuideTopic[] }) {
+  const [group, setGroup] = useState(0)
   const [topic, setTopic] = useState(0)
-  const topics = allTopics.filter(item => item.panel === panel)
+  const all = allTopics.filter(item => item.panel === panel)
+  const groups = [...new Set(all.flatMap(item => item.group ? [item.group] : []))]
+  const topics = groups.length ? all.filter(item => item.group === groups[group]) : all
   const selected = topics[topic]
+  const tabPrefix = groups.length ? `${prefix}-${group}` : prefix
   return <div className="optional-tabs panel">
-    <TabBar labels={topics.map(item => item.title)} selected={topic} select={setTopic} name={panel} prefix={prefix}/>
-    <div role="tabpanel" id={`${prefix}-panel-${topic}`} aria-labelledby={`${prefix}-tab-${topic}`}>
+    {groups.length > 0 && <TabBar labels={groups} selected={group} select={(index) => { setGroup(index); setTopic(0) }} name={panel} prefix={`${prefix}-group`}/>}
+    <div className={groups.length ? 'guide-subtabs' : undefined} role={groups.length ? 'tabpanel' : undefined} id={groups.length ? `${prefix}-group-panel-${group}` : undefined} aria-labelledby={groups.length ? `${prefix}-group-tab-${group}` : undefined}>
+      <TabBar labels={topics.map(item => item.title)} selected={topic} select={setTopic} name={groups.length ? groups[group] : panel} prefix={tabPrefix}/>
+    <div role="tabpanel" id={`${tabPrefix}-panel-${topic}`} aria-labelledby={`${tabPrefix}-tab-${topic}`}>
       <p className="topic-text">{selected.text}</p>
       {selected.whenToUse && <p className="topic-text topic-use"><strong>When to use:</strong> {selected.whenToUse}</p>}
       <CopyCode key={selected.title} command={selected.command}/>
-    </div>
+    </div></div>
   </div>
 }
 

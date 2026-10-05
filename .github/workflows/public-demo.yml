@@ -1,0 +1,47 @@
+name: Public demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/public-demo.yml
+      - src/nanohpc/website-source/**
+      - src/nanohpc/website/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: public-demo-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/nanohpc/website-source/package-lock.json
+      - uses: actions/configure-pages@v5
+      - run: npm ci
+        working-directory: src/nanohpc/website-source
+      - run: npm run build:demo
+        working-directory: src/nanohpc/website-source
+      - run: npx playwright install --with-deps chromium
+        working-directory: src/nanohpc/website-source
+      - run: npm test -- tests/demo.spec.ts
+        working-directory: src/nanohpc/website-source
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: src/nanohpc/website-demo
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,9 +1,16 @@
 <p align="center">
-  <img src="assets/nanohpc-title.svg" alt="nanoHPC" width="420">
+  <img src="https://img.shields.io/badge/Ansible-EE0000?logo=ansible&amp;logoColor=white" alt="Ansible" height="18">
+  <img src="https://img.shields.io/badge/Slurm-0B3D91" alt="Slurm" height="18">
+  <img src="https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&amp;logoColor=white" alt="Prometheus" height="18">
+  <img src="https://img.shields.io/badge/Grafana-F46800?logo=grafana&amp;logoColor=white" alt="Grafana" height="18">
+  <img src="https://img.shields.io/badge/nginx-009639?logo=nginx&amp;logoColor=white" alt="nginx" height="18">
+  <img src="https://img.shields.io/badge/Let%27s_Encrypt-003A70?logo=letsencrypt&amp;logoColor=white" alt="Let's Encrypt" height="18">
+  <img src="https://img.shields.io/badge/Textual-121212" alt="Textual" height="18">
+  <img src="https://img.shields.io/badge/Lima-5C2D91" alt="Lima" height="18">
 </p>
 
 <p align="center">
-  <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="640">
+  <img src="assets/nanohpc-title.svg" alt="nanoHPC" width="380">
 </p>
 
 `nanoHPC` is a lightweight Slurm cluster and monitoring tool for small computational labs.
@@ -13,18 +20,23 @@ policy), and one command sets up every machine.
 
 - A single `cluster.yml` to define machines, users, partitions, and queue policy.
 - Slurm scheduling for GPU and CPU jobs, with fair-share and per-user limits.
-- A ready-made front-end monitor, built on Prometheus and Grafana, for machines, the queue, and GPU use.
-- Health checks on every machine, plus `nanohpc check` for a cluster-wide report.
-- Playbooks for setup, node changes, policy updates, and nightly `/home` backups, with a dry run before each deploy.
-- Shared `/home` and local scratch, with optional copy-back of job results.
-- Optional Slack notifications when checks, backups, or automatic deploys fail, and when checks recover.
+- A ready-made front-end monitoring cluster usage, queue and machines health.
+- Playbooks for setup, node changes, policy updates, and nightly backups.
+- Automatic health checks and Slack alerts for jobs and issues.
+- Isometric visualisation of the cluster topology in real time:
+
+<div align="center">
+  <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="520">
+</div>
+
+See a [demo of nanoHPC](https://najarro.science/nanoHPC/).
 
 ## Set up
 
 You need:
 
-- A set of Linux machines running Ubuntu 22.04, 24.04, or 26.04 (the releases nanoHPC is tested on), with NVIDIA
-  drivers already installed on GPU machines.
+- A set of machines with NVIDIA GPUs running Linux (nanoHPC has been tested on Ubuntu 22.04/24.04/26.04). CPU-only
+  machines are also supported. AMD ROCm support is coming soon.
 - SSH access to every machine as an administrator with sudo.
 - [uv](https://docs.astral.sh/uv/) on your own computer (macOS or Linux).
 
@@ -34,7 +46,35 @@ Install nanoHPC on your computer:
 uv tool install git+https://github.com/enajx/nanoHPC
 ```
 
-Write `cluster.yml` with the wizard, or start from [examples/cluster.yml](examples/cluster.yml):
+Here is a short Slurm-mode `cluster.yml` excerpt. The [full example](examples/cluster.yml) includes the required
+machine details and SSH keys:
+
+```yaml
+cluster:
+  name: mylab
+  admins: [alice]
+  website: {hostname: cluster.mylab.org}
+
+machines:
+  front: {address: 10.0.0.10, roles: [front, home]}
+  H100:
+    roles: [compute]
+    gpu: {type: h100, count: 4}
+    partitions: [main]
+  H200:
+    roles: [compute]
+    gpu: {type: h200, count: 4}
+    partitions: [interactive]
+
+users:
+  - {name: alice, uid: 2000}
+  - {name: bob, uid: 2001}
+partitions:
+  main: {default: true, max_time: "24:00:00"}
+  interactive: {jobs: interactive, max_time: "08:00:00"}
+```
+
+Write your file with the wizard, or start from the full [example](examples/cluster.yml):
 
 ```sh
 nanohpc init
@@ -55,15 +95,33 @@ nanohpc deploy cluster.yml --only users      # also: policy, partitions, node NA
 nanohpc check cluster.yml                    # report every machine against cluster.yml
 ```
 
-AI agents setting up a cluster follow [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md).
+If you prefer having your AI agents setting up the cluster, you can point them to
+[SETUP-for-AGENTS.md](SETUP-for-AGENTS.md).
 
 ### Deploy Monitor only (without Slurm)
 
-TBA
+Monitor mode shows machine health, GPU use, usage history, and existing login names on a website. It does not set up
+Slurm, user accounts, SSH access, or storage. Choose one machine as the monitor host; it can also run work.
+
+Create `cluster.yml` with the wizard or [monitor example](examples/monitor.yml), then validate and deploy:
+
+```sh
+nanohpc init cluster.yml --mode monitor
+nanohpc validate cluster.yml
+nanohpc deploy-monitor cluster.yml --dry-run
+nanohpc deploy-monitor cluster.yml
+```
 
 ## Tech stack
 
-![Ansible](https://img.shields.io/badge/Ansible-EE0000?logo=ansible&logoColor=white) ![Slurm](https://img.shields.io/badge/Slurm-0B3D91) ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) ![nginx](https://img.shields.io/badge/nginx-009639?logo=nginx&logoColor=white) ![Let's Encrypt](https://img.shields.io/badge/Let%27s_Encrypt-003A70?logo=letsencrypt&logoColor=white) ![Textual](https://img.shields.io/badge/Textual-121212) ![Lima](https://img.shields.io/badge/Lima-5C2D91)
+<img src="https://img.shields.io/badge/Ansible-EE0000?logo=ansible&amp;logoColor=white" alt="Ansible" height="18">
+<img src="https://img.shields.io/badge/Slurm-0B3D91" alt="Slurm" height="18">
+<img src="https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&amp;logoColor=white" alt="Prometheus" height="18">
+<img src="https://img.shields.io/badge/Grafana-F46800?logo=grafana&amp;logoColor=white" alt="Grafana" height="18">
+<img src="https://img.shields.io/badge/nginx-009639?logo=nginx&amp;logoColor=white" alt="nginx" height="18">
+<img src="https://img.shields.io/badge/Let%27s_Encrypt-003A70?logo=letsencrypt&amp;logoColor=white" alt="Let's Encrypt" height="18">
+<img src="https://img.shields.io/badge/Textual-121212" alt="Textual" height="18">
+<img src="https://img.shields.io/badge/Lima-5C2D91" alt="Lima" height="18">
 
 - `Ansible` runs the setup on every machine; `nanohpc` writes its inventory and variables from `cluster.yml`.
 - `Slurm` with `Munge` manages the queue and schedules jobs, and their GPUs, on the compute machines.

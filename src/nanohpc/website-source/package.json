@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build && node scripts/hash-source.mjs",
+    "build:demo": "npm run build && node scripts/build-demo.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "test": "playwright test",
     "test:live": "playwright test -c playwright.live.config.ts"

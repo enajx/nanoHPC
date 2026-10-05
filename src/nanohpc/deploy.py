@@ -12,6 +12,7 @@ import getpass
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,7 +27,7 @@ from typing import Any
 
 import yaml
 
-from nanohpc.render import compute_machines, front_machine, home_clients, home_server, render
+from nanohpc.render import compute_machines, front_machine, home_clients, home_server, render, render_prometheus
 
 SLURM: dict[str, Any] = {
     "version": "26.05.4",
@@ -277,6 +278,21 @@ def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
     return {"all": {"children": groups}}
 
 
+def monitor_inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
+    """Return groups for a monitoring host and the other monitored machines."""
+    host = config["cluster"]["monitor_host"]
+    machine_vars = {"ansible_remote_tmp": "$XDG_RUNTIME_DIR/ansible-tmp"}
+    groups = {
+        "role_front": {"hosts": {host: None}, "vars": machine_vars},
+        "role_machine": {
+            "hosts": {name: None for name in config["machines"] if name != host},
+            "vars": machine_vars,
+        },
+        "only_node": {"hosts": {} if node is None else {node: None}},
+    }
+    return {"all": {"children": groups}}
+
+
 def home_variables(config: dict[str, Any]) -> dict[str, Any]:
     """Return where /home is served, who mounts it, and each user's quota in setquota's 1 KiB blocks."""
     server = home_server(config)
@@ -373,7 +389,7 @@ def website_variables(config: dict[str, Any], simulated: bool) -> dict[str, Any]
         "forwarded_by": website["forwarded_by"],
         "build": website["build"],
         "logo": None if logo is None else {"source": logo, "name": "logo" + Path(logo).suffix.lower()},
-        "deploy_hook": config["auto_deploy"]["webhook"] is True,
+        "deploy_hook": config.get("auto_deploy", {}).get("webhook") is True,
         "certbot": CERTBOT,
         "acme": TEST_ACME if simulated and website["https"] == "letsencrypt" else None,
         "package": str(resources.files("nanohpc").joinpath("website")),
@@ -504,6 +520,14 @@ def website_source_hash(source: Path) -> str:
 def site_data(config: dict[str, Any]) -> dict[str, Any]:
     """Return site.json: what the website shows that comes from cluster.yml (read by the page when it loads)."""
     website = config["cluster"]["website"]
+    if config["cluster"].get("mode") == "monitor":
+        return {
+            "mode": "monitor",
+            "cluster_name": config["cluster"]["name"],
+            "logo": None if website["logo"] is None else "logo" + Path(website["logo"]).suffix.lower(),
+            "login_address": website["login_address"],
+            "users": config["users"],
+        }
     return {
         "cluster_name": config["cluster"]["name"],
         "logo": None if website["logo"] is None else "logo" + Path(website["logo"]).suffix.lower(),
@@ -520,6 +544,26 @@ def monitor_machines(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     Only services node_exporter's systemd collector reports can be listed (see the node_metrics role).
     """
+    if config["cluster"].get("mode") == "monitor":
+        return {
+            name: {
+                "role": "monitor" if name == config["cluster"]["monitor_host"] else "machine",
+                "units": (
+                    [
+                        "nanohpc-node-exporter.service",
+                        "nanohpc-prometheus.service",
+                        "nanohpc-history.service",
+                        "nanohpc-alertmanager.service",
+                        "nanohpc-grafana.service",
+                        "nanohpc-monitor-snapshot.timer",
+                    ]
+                    if name == config["cluster"]["monitor_host"]
+                    else ["nanohpc-node-exporter.service"]
+                ),
+                "mounts": ["/"],
+            }
+            for name in config["machines"]
+        }
     server = home_server(config)
     clients = home_clients(config)
     result: dict[str, dict[str, Any]] = {}
@@ -597,6 +641,237 @@ def prepare(
     )
     (work / "inventory.yml").write_text(yaml.safe_dump(inventory(config, node)))
     (work / "ansible.cfg").write_text(ansible_cfg(ssh_config))
+
+
+def prepare_monitor(
+    config: dict[str, Any],
+    ssh_config: Path | None,
+    simulated: bool,
+    gpus: dict[str, dict[str, Any]],
+    work: Path,
+    node: str | None,
+) -> None:
+    """Write only the monitoring inputs for a monitor-mode playbook."""
+    files = work / "files"
+    files.mkdir(parents=True, exist_ok=True)
+    (files / "prometheus.yml").write_text(render_prometheus(config))
+    (files / "monitor-machines.json").write_text(json.dumps(monitor_machines(config), indent=2))
+    (files / "site.json").write_text(json.dumps(site_data(config), indent=2))
+    secrets = work / "secrets.json"
+    secrets.touch(mode=0o600)
+    secrets.chmod(0o600)
+    secrets.write_text(json.dumps({"nanohpc_secrets": config["secrets"]}))
+    host = config["cluster"]["monitor_host"]
+    values = {
+        "mode": "monitor",
+        "cluster_name": config["cluster"]["name"],
+        "version": metadata.version("nanohpc"),
+        "users": config["users"],
+        "machines": {
+            name: {"address": machine["address"], "roles": ["monitor" if name == host else "machine"]}
+            for name, machine in config["machines"].items()
+        },
+        "files": str(files),
+        "package_files": str(resources.files("nanohpc").joinpath("files")),
+        "uv": UV,
+        "website": website_variables(config, simulated),
+        "alerts": {"slack": config["alerts"]["slack"]},
+        "gpu_baseline": gpus,
+        "metrics": {
+            **METRICS,
+            "front_address": config["machines"][host]["address"],
+            "gpus": {
+                name: {"count": gpu["count"], "type": gpu["models"][0], "fake": gpu["fake"]}
+                for name, gpu in gpus.items()
+                if gpu["count"] > 0
+            },
+        },
+    }
+    (work / "vars.json").write_text(json.dumps({"nanohpc": values}, indent=2))
+    (work / "inventory.yml").write_text(yaml.safe_dump(monitor_inventory(config, node)))
+    (work / "ansible.cfg").write_text(ansible_cfg(ssh_config))
+
+
+MONITOR_GPU_PROBE = """\
+import json, shutil, subprocess, sys
+if shutil.which("nvidia-smi") is None:
+    print(json.dumps({"count": 0, "models": [], "fake": False}))
+else:
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+        capture_output=True, text=True, timeout=25, check=False,
+    )
+    models = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if result.returncode != 0 or not models:
+        sys.stderr.write(result.stderr or "nvidia-smi did not report a GPU")
+        sys.exit(1)
+    print(json.dumps({"count": len(models), "models": models, "fake": False}))
+"""
+
+
+def probe_monitor_gpus(
+    machines: list[str], ssh_config: Path | None, fake_gpus: dict[str, dict[str, Any]]
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Discover GPU counts and models over SSH, keeping test-only fake GPUs outside cluster.yml."""
+    command = "python3 -c " + shlex.quote(MONITOR_GPU_PROBE)
+
+    def read(name: str) -> subprocess.CompletedProcess[str] | None:
+        if name in fake_gpus:
+            return None
+        return subprocess.run(ssh_command(ssh_config, name, command), capture_output=True, text=True, check=False)
+
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        found = dict(zip(machines, pool.map(read, machines), strict=True))
+    inventory: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+    for name, result in found.items():
+        if result is None:
+            fake = fake_gpus[name]
+            inventory[name] = {
+                "count": fake["count"],
+                "models": [fake["type"]] * fake["count"],
+                "fake": True,
+            }
+        elif result.returncode != 0:
+            errors.append(f"{name}: GPU discovery failed: {result.stderr.strip() or 'no output'}")
+        else:
+            inventory[name] = json.loads(result.stdout)
+    return inventory, errors
+
+
+def read_monitor_baseline(host: str, ssh_config: Path | None) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
+    """Read the monitoring host's accepted GPU inventory without changing it."""
+    command = "if test -f /etc/nanohpc/monitor-gpus-cluster.json; then cat /etc/nanohpc/monitor-gpus-cluster.json; else echo null; fi"
+    result = subprocess.run(ssh_command(ssh_config, host, command), capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return None, f"{host}: cannot read the accepted GPU inventory: {result.stderr.strip()}"
+    return json.loads(result.stdout), None
+
+
+def deploy_monitor(
+    config: dict[str, Any],
+    ssh_config: Path | None,
+    simulated: bool,
+    fake_gpus: dict[str, dict[str, Any]],
+    dry_run_only: bool,
+    only: Only | None,
+    accept_hardware_change: str | None,
+) -> int:
+    """Deploy monitoring only, after checking mode conflicts and accepted GPU inventory."""
+    names = list(config["machines"])
+    host = config["cluster"]["monitor_host"]
+    node = None if only is None else only.node
+    if only is not None and (only.part != "node" or node not in config["machines"]):
+        print(f"Nothing was changed: --only node needs a machine in cluster.yml (got {node}).", file=sys.stderr)
+        return 1
+    if accept_hardware_change is not None and accept_hardware_change not in config["machines"]:
+        print(f"Nothing was changed: {accept_hardware_change} is not a machine in cluster.yml.", file=sys.stderr)
+        return 1
+    if node is not None and accept_hardware_change is not None and accept_hardware_change != node:
+        print(
+            "Nothing was changed: --accept-hardware-change must name the machine selected by --only node.",
+            file=sys.stderr,
+        )
+        return 1
+    selected = names if node is None else list(dict.fromkeys([host, node]))
+    found = probe(selected, ssh_config)
+    if found.errors:
+        print("Nothing was changed: some machines cannot be used.", file=sys.stderr)
+        for error in found.errors:
+            print(f"  {error}", file=sys.stderr)
+        return 1
+    incompatible = [name for name, roles in found.deployed.items() if roles and roles not in (["monitor"], ["machine"])]
+    if incompatible:
+        print(
+            f"Nothing was changed: another nanoHPC setup is present on {', '.join(incompatible)}; monitor mode does not convert it.",
+            file=sys.stderr,
+        )
+        return 1
+    if node is not None and not found.deployed.get(host):
+        print("Nothing was changed: deploy the monitoring host before --only node.", file=sys.stderr)
+        return 1
+    observed, errors = probe_monitor_gpus(selected, ssh_config, fake_gpus)
+    if errors:
+        print("Nothing was changed: GPU discovery failed.", file=sys.stderr)
+        for error in errors:
+            print(f"  {error}", file=sys.stderr)
+        return 1
+    recorded, error = read_monitor_baseline(host, ssh_config)
+    if error is not None:
+        print(f"Nothing was changed: {error}", file=sys.stderr)
+        return 1
+    if recorded is None and found.deployed.get(host):
+        print("Nothing was changed: the monitoring host has no GPU inventory record.", file=sys.stderr)
+        return 1
+    baseline = {} if recorded is None else dict(recorded)
+    mismatches = [
+        name
+        for name in selected
+        if name in baseline and baseline[name] != observed[name] and name != accept_hardware_change
+    ]
+    if mismatches:
+        print(
+            "Nothing was changed: GPU inventory changed on "
+            + ", ".join(mismatches)
+            + "; inspect the machines, then use --accept-hardware-change NAME for an intentional change.",
+            file=sys.stderr,
+        )
+        return 1
+    for name in selected:
+        if name not in baseline or name == accept_hardware_change:
+            baseline[name] = observed[name]
+    baseline = {name: baseline[name] for name in names if name in baseline}
+    if found.needs_password and not sys.stdin.isatty():
+        print(
+            f"Nothing was changed: sudo needs a password on {', '.join(found.needs_password)}, and no terminal is available.",
+            file=sys.stderr,
+        )
+        return 1
+    work = CACHE / "clusters" / config["cluster"]["name"] / "monitor"
+    work.mkdir(parents=True, exist_ok=True)
+    prepare_monitor(config, ssh_config, simulated, baseline, work, node)
+    machines = names if node is None else list(dict.fromkeys([node, host]))
+    playbook = Path(sys.executable).parent / "ansible-playbook"
+    command = [
+        str(playbook),
+        "-i",
+        str(work / "inventory.yml"),
+        str(ANSIBLE / "monitor.yml"),
+        *([] if node is None else ["--limit", ",".join(machines)]),
+        "-e",
+        f"@{work / 'vars.json'}",
+        "-e",
+        f"@{work / 'secrets.json'}",
+    ]
+    with tempfile.TemporaryDirectory(prefix="nanohpc-monitor-", dir="/tmp") as private:
+        environment = {
+            **os.environ,
+            "ANSIBLE_CONFIG": str(work / "ansible.cfg"),
+            "ANSIBLE_SSH_CONTROL_PATH_DIR": private,
+        }
+        if found.needs_password:
+            password_file = Path(private) / "sudo"
+            password_file.touch(mode=0o600)
+            password_file.write_text(getpass.getpass(f"sudo password on {', '.join(found.needs_password)}: "))
+            command += ["--become-password-file", str(password_file)]
+
+        def run(arguments: list[str], record: Path) -> int:
+            run_environment = {**environment, "NANOHPC_RECORD": str(record)}
+            return subprocess.run(
+                [*command, *arguments], env=run_environment, stdin=subprocess.DEVNULL, check=False
+            ).returncode
+
+        needed = {host: "the monitoring host"}
+        if node is not None:
+            needed[node] = "the machine of --only node"
+        code = check_then_apply(run, machines, needed, Path(private), dry_run_only)
+        (work / "secrets.json").unlink()
+        for socket in Path(private).iterdir():
+            if socket.is_socket():
+                subprocess.run(
+                    ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", "nanohpc"], capture_output=True, check=False
+                )
+        return code
 
 
 def only_words(only: Only) -> str:

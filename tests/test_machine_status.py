@@ -166,6 +166,49 @@ class MachineStatusTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.machine_status("store", "Backup", "", 0, units, mounts, health, [], END)
 
+    def test_monitor_machine_health_and_gpu_inventory(self) -> None:
+        """Monitor machines use exporter health and measured GPU inventory, without Slurm state."""
+        module = load()
+        readings = healthy("gpu1", ["node-exporter.service"], ["/"], True)
+        readings.extend(
+            [
+                sample("gpu1", "cluster_machine_specs_timestamp_seconds", END, {}),
+                sample("gpu1", "cluster_machine_gpu_count", 1, {}),
+            ]
+        )
+        history = [{"metric": {"machine": "gpu1", "uuid": "GPU-1"}, "values": [[t, "0"] for t in TIMES]}]
+
+        def status() -> dict[str, Any]:
+            return module.monitor_machine_status("gpu1", "Machine", ["node-exporter.service"], ["/"], readings, history, END)
+
+        self.assertEqual((status()["health"], status()["gpu_usage"], status()["total_gpus"]), ("Healthy", "Idle", 1))
+        self.assertNotIn("Slurm", " ".join(status()["health_details"]))
+        readings[0]["value"][1] = "0"
+        self.assertEqual(status()["health"], "Offline")
+        readings[0]["value"][1] = "1"
+        readings[-2]["value"][1] = str(END - 1000)
+        self.assertIsNone(status()["total_gpus"])
+        self.assertEqual(status()["gpu_usage"], "Unknown")
+        self.assertEqual(status()["health"], "Unknown")
+
+    def test_monitor_cpu_and_service_failure(self) -> None:
+        """Fresh zero GPUs is CPU-only; an inactive required unit warns."""
+        module = load()
+        readings = healthy("front", ["prometheus.service"], ["/"], False)
+        readings.extend(
+            [
+                sample("front", "cluster_machine_specs_timestamp_seconds", END, {}),
+                sample("front", "cluster_machine_gpu_count", 0, {}),
+            ]
+        )
+        result = module.monitor_machine_status("front", "Monitor", ["prometheus.service"], ["/"], readings, [], END)
+        self.assertEqual((result["health"], result["gpu_usage"], result["total_gpus"]), ("Healthy", "Not applicable", 0))
+        readings[4]["value"][1] = "0"
+        self.assertEqual(
+            module.monitor_machine_status("front", "Monitor", ["prometheus.service"], ["/"], readings, [], END)["health"],
+            "Warning",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

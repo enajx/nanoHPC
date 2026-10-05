@@ -295,7 +295,7 @@
       - --resolve
       - "{{ nanohpc.website.hostname }}:443:127.0.0.1"
       - "https://{{ nanohpc.website.hostname }}{{ nanohpc.website.path }}{{ item }}"
-  loop: ["", site.json, docs.md, grafana/d/nanohpc-overview]
+  loop: "{{ ['', 'site.json', 'grafana/d/nanohpc-machines', 'grafana/d/nanohpc-history'] if nanohpc.mode | default('slurm') == 'monitor' else ['', 'site.json', 'docs.md', 'grafana/d/nanohpc-overview'] }}"
   register: website_answer
   until: website_answer.rc == 0
   retries: 5

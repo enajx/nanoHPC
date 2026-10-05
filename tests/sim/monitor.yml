@@ -1,0 +1,13 @@
+# Direct-use machine monitor on Lima. GPU activity on gpu1 is simulated.
+cluster: ../../examples/monitor.yml
+ubuntu: "24.04"
+fake_gpus:
+  gpu1:
+    count: 2
+    type: A6000
+vms:
+  default:
+    cpus: 1
+    memory_gb: 1
+    disk_gb: 10
+extra_disk_gb: 10

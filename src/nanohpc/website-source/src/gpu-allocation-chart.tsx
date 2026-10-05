@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useThemeColors } from './accent-button'
 
 type GpuMachine = { name: string; role: string; total_gpus?: number | null }
@@ -105,9 +105,10 @@ function blockLabel(start: number, range: RangeKey): string {
 }
 
 /** Show 24 hours, 7 days, or 30 days of Slurm allocations as stacked machine and idle GPU capacity. */
-export function GpuAllocationChart({ nodes, refreshSeconds, failed }: { nodes: GpuMachine[] | null; refreshSeconds: number; failed: boolean }) {
+export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { nodes: GpuMachine[] | null; refreshSeconds: number; failed: boolean; demo?: boolean }) {
   const machines = (nodes ?? []).filter(node => node.role === 'Compute' && Number.isFinite(node.total_gpus) && (node.total_gpus ?? 0) > 0)
     .sort((left, right) => left.name.localeCompare(right.name))
+  const totalCapacity = machines.reduce((sum, machine) => sum + (machine.total_gpus ?? 0), 0)
   const names = machines.map(machine => machine.name).join('\u0000')
   // The first machine uses the theme accent, then the theme's card colors, skipping any equal to the accent.
   const theme = useThemeColors()
@@ -119,6 +120,35 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed }: { nodes: G
   useEffect(() => {
     if (!machines.length) return
     setState('loading')
+    if (demo) {
+      const to = Date.now()
+      const from = to - ranges[range].windowMs
+      const capacity = totalCapacity
+      const stages: [number, number][] = [
+        [0, 0.2], [0.09, 0.3], [0.18, 0.5],
+        [0.25, 0.55], [0.3, 0.55], [0.35, 0.5],
+        [0.43, 0.3], [0.48, 0.3], [0.53, 0.35],
+        [0.62, 0.75], [0.68, 1], [0.72, 1], [0.77, 1], [0.81, 1],
+        [0.88, 0.55], [0.94, 0.2], [1, 0.2],
+      ]
+      const points = stages.map(([position, fraction]) => {
+        const point: ChartPoint = { time: from + position * ranges[range].windowMs, idle: 0 }
+        const allocation = machines.map(() => 0)
+        const used = Math.round(capacity * fraction)
+        let machineIndex = 0
+        for (let gpu = 0; gpu < used; gpu++) {
+          while (allocation[machineIndex] >= (machines[machineIndex].total_gpus ?? 0)) machineIndex = (machineIndex + 1) % machines.length
+          allocation[machineIndex]++
+          machineIndex = (machineIndex + 1) % machines.length
+        }
+        machines.forEach((machine, index) => { point[machine.name] = allocation[index] })
+        point.idle = capacity - used
+        return point
+      })
+      setChart({ range, points, from, to })
+      setState('ready')
+      return
+    }
     const controller = new AbortController()
     const load = () => {
       const end = new Date()
@@ -144,7 +174,7 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed }: { nodes: G
     load()
     const timer = window.setInterval(load, Math.max(30, refreshSeconds) * 1000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [names, refreshSeconds, range])
+  }, [names, totalCapacity, refreshSeconds, range, demo])
   const title = `Cluster Usage (${ranges[range].title})`
   // Until the chosen range has loaded, show loading instead of the previous range's data.
   const current = chart?.range === range ? chart : null
@@ -163,10 +193,11 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed }: { nodes: G
           <div className="gpu-chart-svg"><ResponsiveContainer width="100%" height="100%">
             <AreaChart data={points} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
               <XAxis dataKey="time" type="number" domain={[current.from, current.to]} hide />
+              {demo && <YAxis domain={[0, totalCapacity]} hide />}
               <CartesianGrid vertical={false} stroke="#deded8" />
-              <Tooltip labelFormatter={(_, payload) => blockLabel(Number(payload[0]?.payload.time), range)} formatter={(value, name) => { const gpus = Number(Number(value).toFixed(1)); return [`${gpus} GPU${gpus === 1 ? '' : 's'}`, name] }} contentStyle={{ background: '#fff', border: '3px solid #172322', borderRadius: 12, boxShadow: '4px 4px 0 #172322', color: '#172322' }} itemStyle={{ color: '#172322' }} />
-              {machines.map((machine, index) => <Area key={machine.name} dataKey={machine.name} name={machine.name} type="monotone" stackId="gpus" stroke="#172322" strokeWidth={2} strokeLinejoin="round" fill={colors[index % colors.length]} isAnimationActive={false} />)}
-              <Area dataKey="idle" name="Idle" type="monotone" stackId="gpus" stroke="none" fill="#fff" isAnimationActive={false} />
+              <Tooltip labelFormatter={(_, payload) => demo ? new Date(Number(payload[0]?.payload.time)).toLocaleString() : blockLabel(Number(payload[0]?.payload.time), range)} formatter={(value, name) => { const gpus = demo ? Math.round(Number(value)) : Number(Number(value).toFixed(1)); return [`${gpus} GPU${gpus === 1 ? '' : 's'}`, name] }} contentStyle={{ background: '#fff', border: '3px solid #172322', borderRadius: 12, boxShadow: '4px 4px 0 #172322', color: '#172322' }} itemStyle={{ color: '#172322' }} />
+              {machines.map((machine, index) => <Area key={machine.name} dataKey={machine.name} name={machine.name} type={demo ? 'basis' : 'monotone'} stackId="gpus" stroke="#172322" strokeWidth={2} strokeLinejoin="round" fill={colors[index % colors.length]} isAnimationActive={false} />)}
+              <Area dataKey="idle" name="Idle" type={demo ? 'basis' : 'monotone'} stackId="gpus" stroke="none" fill="#fff" isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer></div>
         </div>}

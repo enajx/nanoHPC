@@ -66,11 +66,16 @@ class Dialog[ResultType](ModalScreen[ResultType]):
 class NameScreen(Dialog[str | None]):
     """Ask the name of a new cluster."""
 
+    def __init__(self, mode: str) -> None:
+        super().__init__()
+        self.mode = mode
+
     def compose(self) -> ComposeResult:
         """Show the name field."""
         with Vertical(classes="dialog"):
             yield Static("NEW CLUSTER", classes="heading")
-            yield Label("The cluster's name (shown in the website, dashboards, and Slurm):")
+            suffix = "website and dashboards" if self.mode == "monitor" else "website, dashboards, and Slurm"
+            yield Label(f"The cluster's name (shown in the {suffix}):")
             yield Input(placeholder="mylab", id="cluster-name")
             yield plain("", "form-error", "form-error")
             yield Horizontal(

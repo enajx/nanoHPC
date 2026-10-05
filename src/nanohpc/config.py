@@ -221,11 +221,14 @@ def with_defaults(checker: Checker, value: Any, path: str, defaults: dict[str, A
     return {**defaults, **(section or {})}
 
 
-def check_cluster(checker: Checker, value: Any, users: set[str]) -> dict[str, Any] | None:
+def check_cluster(checker: Checker, value: Any, users: set[str], mode: str) -> dict[str, Any] | None:
     """Check the cluster section: name, admins, and website."""
-    cluster = checker.mapping(value, "cluster", ("name", "admins", "website"), ())
+    required = ("name", "monitor_host", "website") if mode == "monitor" else ("name", "admins", "website")
+    cluster = checker.mapping(value, "cluster", required, ("mode",))
     if cluster is None:
         return None
+    if "mode" in cluster and cluster["mode"] not in ("slurm", "monitor"):
+        checker.fail("cluster.mode", "must be slurm or monitor")
     if "name" in cluster:
         checker.matches(
             cluster["name"],
@@ -304,6 +307,83 @@ def check_cluster(checker: Checker, value: Any, users: set[str]) -> dict[str, An
                 website["login_address"] = website.get("hostname")
             cluster["website"] = website
     return cluster
+
+
+def check_monitor_users(checker: Checker, value: Any) -> list[str]:
+    """Check login names shown on a monitor website; accounts are never managed."""
+    if not isinstance(value, list):
+        checker.fail("users", "must be a list of login names")
+        return []
+    names: list[str] = []
+    for index, item in enumerate(value):
+        name = checker.matches(item, USER_NAME, f"users[{index}]", "a lowercase Linux user name")
+        if name is None:
+            continue
+        if name in names:
+            checker.fail(f"users[{index}]", f"{name} is already used")
+        names.append(name)
+    return names
+
+
+def check_monitor_machines(checker: Checker, value: Any) -> dict[str, dict[str, Any]]:
+    """Check machine names and addresses without Slurm roles or declared hardware."""
+    if not isinstance(value, Mapping) or not value:
+        checker.fail("machines", "must be a non-empty mapping")
+        return {}
+    machines: dict[str, dict[str, Any]] = {}
+    addresses: dict[str, str] = {}
+    hostnames: dict[str, str] = {}
+    for name, item in value.items():
+        path = f"machines.{name}"
+        if not isinstance(name, str) or not MACHINE_NAME.fullmatch(name):
+            checker.fail(f"{path}:", "the name must be letters, digits, _ or -, starting with a letter")
+            continue
+        machine = checker.mapping(item, path, ("address",), ("aliases",))
+        if machine is None:
+            continue
+        address = machine.get("address")
+        if "address" in machine:
+            if not isinstance(address, str) or not is_ipv4(address):
+                checker.fail(f"{path}.address", "must be an IPv4 address")
+            elif address.startswith(("127.", "0.")) or address == "255.255.255.255":
+                checker.fail(f"{path}.address", "must be the machine's network address, not a loopback or placeholder")
+            elif address in addresses:
+                checker.fail(f"{path}.address", f"{address} is already used by machines.{addresses[address]}")
+            else:
+                addresses[address] = name
+        machine.setdefault("aliases", [])
+        aliases = checker.string_list(machine["aliases"], f"{path}.aliases") or []
+        for hostname in [name, *aliases]:
+            if not HOST_NAME.fullmatch(hostname):
+                checker.fail(f"{path}.aliases:", f"{hostname} is not a valid host name")
+            elif hostname.lower() in ("localhost", "localhost.localdomain"):
+                checker.fail(f"{path}.aliases:", f"{hostname} is reserved")
+            elif hostnames.get(hostname.lower(), name) != name:
+                checker.fail(
+                    f"{path}.aliases:", f"{hostname} is already used by machines.{hostnames[hostname.lower()]}"
+                )
+            else:
+                hostnames[hostname.lower()] = name
+        machines[name] = machine
+    return machines
+
+
+def check_monitor_config(checker: Checker, raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the monitoring-only configuration and fill shared website and alert defaults."""
+    top = checker.mapping(raw, "", ("cluster", "machines", "users"), ("alerts",))
+    if top is None:
+        return {}
+    users = check_monitor_users(checker, top.get("users"))
+    machines = check_monitor_machines(checker, top.get("machines"))
+    cluster = check_cluster(checker, top.get("cluster"), set(users), "monitor")
+    if cluster is not None:
+        host = cluster.get("monitor_host")
+        if not isinstance(host, str) or host not in machines:
+            checker.fail("cluster.monitor_host", "must name a machine in machines")
+        cluster["mode"] = "monitor"
+    alerts = with_defaults(checker, top.get("alerts"), "alerts", ALERTS_DEFAULTS)
+    checker.boolean(alerts["slack"], "alerts.slack")
+    return {"cluster": cluster, "machines": machines, "users": users, "alerts": alerts}
 
 
 def check_users(checker: Checker, value: Any) -> list[dict[str, Any]]:
@@ -666,6 +746,10 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
     checker = Checker()
     if not isinstance(raw, Mapping):
         return {}, [TOP_SECTIONS]
+    cluster = raw.get("cluster")
+    if isinstance(cluster, Mapping) and cluster.get("mode") == "monitor":
+        config = check_monitor_config(checker, raw)
+        return config, checker.errors
     top = checker.mapping(raw, "", ("cluster", "machines", "users", "partitions"), TOP_FIELDS)
     if top is None or checker.errors:
         # The sections depend on each other: stop at missing or unknown sections to avoid follow-on errors.
@@ -675,7 +759,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
     machines = check_machines(checker, top.get("machines"), partitions)
     config: dict[str, Any] = {
         "cluster": check_cluster(
-            checker, top.get("cluster"), {user["name"] for user in users if isinstance(user.get("name"), str)}
+            checker, top.get("cluster"), {user["name"] for user in users if isinstance(user.get("name"), str)}, "slurm"
         ),
         "machines": machines,
         "users": users,
@@ -784,7 +868,7 @@ def secrets(config: dict[str, Any], folder: Path) -> list[str]:
         errors.append(f"alerts.slack is true but {env_path} has no NANOHPC_SLACK_WEBHOOK")
     if webhook is not None and not re.fullmatch(r"https?://[^\s'\"]+", webhook):
         errors.append("NANOHPC_SLACK_WEBHOOK in .env must be an http(s) URL")
-    if config["auto_deploy"]["webhook"] is True and not deploy_secret:
+    if config.get("auto_deploy", {}).get("webhook") is True and not deploy_secret:
         errors.append(f"auto_deploy.webhook is true but {env_path} has no NANOHPC_DEPLOY_WEBHOOK_SECRET")
     if deploy_secret is not None and len(deploy_secret) < 32:
         errors.append(

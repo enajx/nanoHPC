@@ -135,10 +135,13 @@
 
 - name: Mount /scratch now
   ansible.builtin.command: mount /scratch
-  when: scratch_mount.stdout == '' or scratch_disk_fstab is changed or scratch_image_fstab is changed
-  register: scratch_mounted
+  when: scratch_mount.stdout == ''
   changed_when: true
-  failed_when: scratch_mounted.rc != 0 and 'already mounted' not in scratch_mounted.stderr
+
+- name: Apply changed /scratch mount options now
+  ansible.builtin.command: mount -o remount /scratch
+  when: scratch_mount.stdout != '' and (scratch_disk_fstab is changed or scratch_image_fstab is changed)
+  changed_when: true
 
 # The dry run cannot check a mount it has not made yet.
 - name: Note whether /scratch is mounted in this run
@@ -151,6 +154,14 @@
   changed_when: false
   check_mode: false
   failed_when: not scratch_now.stdout.startswith('/dev/')
+  when: not scratch_mount_pending
+
+- name: Check that /scratch has the required mount options
+  ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /scratch
+  register: scratch_options_now
+  changed_when: false
+  check_mode: false
+  failed_when: "'nodev' not in scratch_options_now.stdout.split(',') or 'nosuid' not in scratch_options_now.stdout.split(',')"
   when: not scratch_mount_pending
 
 - name: Check that /scratch is the scratch disk from cluster.yml

@@ -51,7 +51,7 @@
     name: dry_run_check
   vars:
     check_content: null
-    check_source: "{{ nanohpc.package_files }}/prometheus-daily-rules.yml"
+    check_source: "{{ nanohpc.package_files }}/prometheus-{{ 'monitor-' if nanohpc.mode | default('slurm') == 'monitor' else '' }}daily-rules.yml"
     check_command: "{{ prometheus_dir }}/promtool check rules %s"
   when: ansible_check_mode and not promtool_pending
 
@@ -60,7 +60,7 @@
     name: dry_run_check
   vars:
     check_content: null
-    check_source: "{{ nanohpc.package_files }}/prometheus-alert-rules.yml"
+    check_source: "{{ nanohpc.package_files }}/prometheus-{{ 'monitor-' if nanohpc.mode | default('slurm') == 'monitor' else '' }}alert-rules.yml"
     check_command: "{{ prometheus_dir }}/promtool check rules %s"
   when: ansible_check_mode and not promtool_pending
 
@@ -75,7 +75,7 @@
 
 - name: Install the daily summary rules (checked with promtool first)
   ansible.builtin.copy:
-    src: "{{ nanohpc.package_files }}/prometheus-daily-rules.yml"
+    src: "{{ nanohpc.package_files }}/prometheus-{{ 'monitor-' if nanohpc.mode | default('slurm') == 'monitor' else '' }}daily-rules.yml"
     dest: /etc/nanohpc/prometheus/daily-rules.yml
     mode: "0644"
     validate: "{{ prometheus_dir }}/promtool check rules %s"
@@ -83,7 +83,7 @@
 
 - name: Install the alert rules (checked with promtool first)
   ansible.builtin.copy:
-    src: "{{ nanohpc.package_files }}/prometheus-alert-rules.yml"
+    src: "{{ nanohpc.package_files }}/prometheus-{{ 'monitor-' if nanohpc.mode | default('slurm') == 'monitor' else '' }}alert-rules.yml"
     dest: /etc/nanohpc/prometheus/alert-rules.yml
     mode: "0644"
     validate: "{{ prometheus_dir }}/promtool check rules %s"

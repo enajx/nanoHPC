@@ -1,0 +1,81 @@
+# Alerts for machines that run jobs directly. No scheduler or shared-storage checks are assumed.
+groups:
+  - name: monitor-alerts
+    rules:
+      - alert: HealthCheckFailing
+        expr: cluster_health_check_state{check!="GPU inventory matches accepted hardware"} == 2
+        for: 7m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The check "{{ $labels.check }}" is failing on {{ $labels.machine }}.'
+
+      - alert: HealthCheckWarning
+        expr: cluster_health_check_state == 1
+        for: 7m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The check "{{ $labels.check }}" has a warning on {{ $labels.machine }}.'
+
+      - alert: HealthChecksNotRunning
+        expr: time() - cluster_health_timestamp_seconds > 900
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The health checks on {{ $labels.machine }} have not run for more than 15 minutes.'
+
+      - alert: HealthChecksMissing
+        expr: up{job=~"node|node-.+"} == 1 unless on(machine) cluster_health_timestamp_seconds
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The health checks on {{ $labels.machine }} have never reported.'
+
+      - alert: MachineMetricsMissing
+        expr: up{job=~"node|node-.+"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Prometheus cannot read metrics from {{ $labels.machine }} for 5 minutes.'
+
+      - alert: MonitorMachineOffline
+        expr: cluster_monitor_machine_health{health="Offline"} == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.machine }} is offline in the latest monitor snapshot.'
+
+      - alert: MonitorMachineUnhealthy
+        expr: cluster_monitor_machine_health{health=~"Warning|Unknown"} == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.machine }} has {{ $labels.health }} health in the latest monitor snapshot.'
+
+      - alert: SnapshotStale
+        expr: time() - cluster_snapshot_timestamp_seconds > 120
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The monitor snapshot on {{ $labels.machine }} is more than 2 minutes old.'
+
+      - alert: GpuMetricsStale
+        expr: (time() - cluster_gpu_collection_timestamp_seconds > 120) or (cluster_machine_gpu_count > 0 unless on(machine) cluster_gpu_collection_timestamp_seconds)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'GPU readings from {{ $labels.machine }} are missing or more than 2 minutes old.'
+
+      - alert: GPUInventoryChanged
+        expr: cluster_monitor_gpu_inventory_mismatch == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The GPUs on {{ $labels.machine }} differ from the accepted hardware inventory.'

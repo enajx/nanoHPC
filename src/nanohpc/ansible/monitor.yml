@@ -1,0 +1,98 @@
+# Install only nanoHPC's monitoring services. The machine's existing accounts, SSH, storage,
+# jobs, and scheduler are outside this playbook.
+
+- name: Check monitor machines before changing them
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Leave out a machine whose dry run failed
+      ansible.builtin.fail:
+        msg: "{{ inventory_hostname }} is left out: its dry run failed"
+      when: inventory_hostname in nanohpc_left_out
+  roles: [monitor_preflight]
+
+- name: Record monitor mode and GPU inventory
+  hosts: all
+  become: true
+  tasks:
+    - name: Create nanoHPC folders
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [/etc/nanohpc, /var/lib/nanohpc]
+
+    - name: Record mode, role, and version
+      ansible.builtin.copy:
+        dest: "/etc/nanohpc/{{ item.name }}"
+        content: "{{ item.value }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - {name: mode, value: monitor}
+        - {name: roles, value: "{{ nanohpc.machines[inventory_hostname].roles[0] }}"}
+        - {name: version, value: "{{ nanohpc.version }}"}
+
+    - name: Record the accepted GPU inventory
+      ansible.builtin.copy:
+        dest: /etc/nanohpc/monitor-gpus.json
+        content: "{{ nanohpc.gpu_baseline[inventory_hostname] | to_json }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Record the whole cluster's accepted GPU inventory on the monitoring host
+      ansible.builtin.copy:
+        dest: /etc/nanohpc/monitor-gpus-cluster.json
+        content: "{{ nanohpc.gpu_baseline | to_json }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      when: inventory_hostname in groups['role_front']
+
+- name: Metrics certificates and exporters
+  hosts: all
+  become: true
+  roles: [metrics_tls, node_metrics, machine_metrics]
+
+- name: Prometheus, alerts, and Grafana
+  hosts: role_front
+  become: true
+  roles: [prometheus, alerts, grafana]
+
+- name: Status collector
+  hosts: role_front
+  become: true
+  roles: [monitoring]
+
+- name: Test certificate server for simulated clusters
+  hosts: role_front
+  become: true
+  roles: [test_acme]
+
+- name: Install the certificate tool dependency
+  hosts: role_front
+  become: true
+  roles: [uv]
+
+- name: Website
+  hosts: role_front
+  become: true
+  roles: [website]
+
+- name: Health checks
+  hosts: all
+  become: true
+  roles: [health]
+
+- name: Check the monitoring result
+  hosts: all
+  become: true
+  tasks:
+    - name: Run cluster-health
+      ansible.builtin.import_role:
+        name: health
+        tasks_from: check

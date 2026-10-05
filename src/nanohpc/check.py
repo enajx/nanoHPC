@@ -17,6 +17,7 @@ import shlex
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,15 @@ CHECK_TIMEOUT = 300  # seconds for the whole SSH call to one machine (more than 
 HEALTH_TIMEOUT = 150  # seconds for cluster-health on the machine (it limits its own slow checks to 10 seconds each)
 TOOL_TIMEOUT = 20  # seconds for each other tool on the machine (6 at most: 150 + 6 * 20 < 300)
 COLUMNS = ("machine", "ssh", "health", "users", "mounts", "gpus", "slurm", "version")
+MONITOR_COLUMNS = ("machine", "ssh", "health", "gpus", "monitoring", "version")
+MONITOR_HOST_UNITS = (
+    "nanohpc-node-exporter.service",
+    "nanohpc-prometheus.service",
+    "nanohpc-history.service",
+    "nanohpc-alertmanager.service",
+    "nanohpc-grafana.service",
+    "nanohpc-monitor-snapshot.timer",
+)
 # Slurm node states that need no attention (sinfo %T, lowercase).
 SLURM_OK = ("idle", "mixed", "allocated", "completing")
 
@@ -73,6 +83,51 @@ if ARGUMENTS["sinfo"]:
 print(json.dumps(facts))
 """
 
+# Monitor mode reads its own recorded GPU baseline and services. It never reads Slurm, accounts, or mounts.
+MONITOR_CHECK_PROGRAM = r"""
+import json, os, pwd, re, shutil, subprocess, sys
+
+ARGUMENTS = json.loads(sys.argv[1])
+ENVIRONMENT = dict(os.environ, LC_ALL="C")
+SUDO = ["sudo", "-S", "-p", ""]
+
+def run(command, seconds):
+    result = subprocess.run(["timeout", str(seconds), *command], capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL, env=ENVIRONMENT)
+    return {"code": result.returncode, "out": result.stdout, "err": result.stderr}
+
+def read(path):
+    if not os.path.exists(path):
+        return None
+    with open(path) as file:
+        return file.read().strip()
+
+health = shutil.which("cluster-health")
+sudo = run([*SUDO, "true"], ARGUMENTS["tool_timeout"])["code"] == 0
+facts = {
+    "user": pwd.getpwuid(os.getuid()).pw_name,
+    "sudo": sudo,
+    "health": None if health is None else run([*(SUDO if sudo else []), health], ARGUMENTS["health_timeout"]),
+    "version": read("/etc/nanohpc/version"),
+    "baseline": None,
+    "nvidia_smi": None,
+    "gpu_devices": len([name for name in os.listdir("/dev") if re.fullmatch(r"nvidia[0-9]+", name)]),
+    "services": {unit: run(["systemctl", "is-active", unit], ARGUMENTS["tool_timeout"])
+                 for unit in ARGUMENTS["units"]},
+    "snapshot": None,
+}
+baseline = read("/etc/nanohpc/monitor-gpus.json")
+if baseline is not None:
+    facts["baseline"] = json.loads(baseline)
+if shutil.which("nvidia-smi"):
+    facts["nvidia_smi"] = run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], ARGUMENTS["tool_timeout"])
+if ARGUMENTS["host"]:
+    snapshot = read("/var/lib/nanohpc/monitor/status.json")
+    if snapshot is not None:
+        facts["snapshot"] = json.loads(snapshot)
+print(json.dumps(facts))
+"""
+
 
 @dataclass(frozen=True)
 class Report:
@@ -90,6 +145,25 @@ def read_machine(
     """Read one machine's facts over one SSH call (read-only). Return the facts, or None and why it failed."""
     arguments = {"keys": keys, "sinfo": sinfo, "tool_timeout": TOOL_TIMEOUT, "health_timeout": HEALTH_TIMEOUT}
     command = f"python3 -c {shlex.quote(CHECK_PROGRAM)} {shlex.quote(json.dumps(arguments))}"
+    result = run_remote(name, ssh_config, command, True, CHECK_TIMEOUT)
+    failure = ssh_failure(name, result)
+    if failure is not None:
+        return None, failure
+    if result.returncode != 0:
+        lines = result.stderr.strip().splitlines()
+        return None, f"the check could not run on {name}: {lines[-1] if lines else 'no output'}"
+    return json.loads(result.stdout), None
+
+
+def read_monitor_machine(name: str, ssh_config: Path | None, host: bool) -> tuple[dict[str, Any] | None, str | None]:
+    """Read monitor health, recorded hardware, and services in one read-only SSH call."""
+    arguments = {
+        "host": host,
+        "units": MONITOR_HOST_UNITS if host else ("nanohpc-node-exporter.service",),
+        "tool_timeout": TOOL_TIMEOUT,
+        "health_timeout": HEALTH_TIMEOUT,
+    }
+    command = f"python3 -c {shlex.quote(MONITOR_CHECK_PROGRAM)} {shlex.quote(json.dumps(arguments))}"
     result = run_remote(name, ssh_config, command, True, CHECK_TIMEOUT)
     failure = ssh_failure(name, result)
     if failure is not None:
@@ -273,10 +347,90 @@ def machine_report(
     return report
 
 
-def table(reports: list[Report]) -> str:
+def monitor_machine_report(name: str, facts: dict[str, Any] | None, failure: str | None, host: bool) -> Report:
+    """Compare observed monitor health and GPU models with the first recorded inventory."""
+    report = Report({"machine": name, **{column: "?" for column in MONITOR_COLUMNS[1:]}}, [], [], [])
+    if facts is None:
+        report.cells["ssh"] = "FAIL"
+        report.problems.append(str(failure))
+        return report
+    report.cells["ssh"] = "ok"
+    report.cells["version"] = facts["version"] or "unknown"
+    if facts["health"] is None:
+        report.cells["health"] = "not deployed"
+        report.problems.append("not deployed yet (cluster-health is not installed)")
+    else:
+        health_result(facts, report)
+
+    baseline = facts["baseline"]
+    if (
+        baseline is None
+        or not isinstance(baseline, dict)
+        or not isinstance(baseline.get("count"), int)
+        or not isinstance(baseline.get("models"), list)
+        or not isinstance(baseline.get("fake"), bool)
+    ):
+        report.cells["gpus"] = "?"
+        report.problems.append("recorded GPU inventory is missing or invalid")
+    elif baseline["fake"]:
+        report.cells["gpus"] = f"recorded {baseline['count']} (simulated)"
+        report.notes.append("simulated GPU inventory: hardware is checked by the monitoring collector")
+    else:
+        expected = baseline["count"]
+        smi = facts["nvidia_smi"]
+        if smi is None:
+            found_models: list[str] = []
+            if expected:
+                report.problems.append(f"nvidia-smi is missing; recorded GPU inventory has {expected} GPUs")
+        elif smi["code"] != 0:
+            found_models = []
+            report.problems.append(f"nvidia-smi fails: {first_line(smi)}")
+        else:
+            found_models = [line.strip() for line in smi["out"].splitlines() if line.strip()]
+        known = (smi is None and expected == 0) or (smi is not None and smi["code"] == 0)
+        report.cells["gpus"] = f"{len(found_models)}/{expected}" if known else f"?/{expected}"
+        if smi is not None and smi["code"] == 0:
+            if len(found_models) != expected:
+                report.problems.append(f"GPU inventory changed: found {len(found_models)} GPUs, recorded {expected}")
+            elif sorted(found_models) != sorted(baseline["models"]):
+                report.problems.append("GPU inventory changed: models differ from the recorded inventory")
+
+    failed_units = [
+        unit for unit, state in facts["services"].items() if state["code"] != 0 or state["out"].strip() != "active"
+    ]
+    report.cells["monitoring"] = "FAIL" if failed_units else "ok"
+    report.problems.extend(f"monitoring service {unit} is inactive" for unit in failed_units)
+    if host:
+        snapshot = facts["snapshot"]
+        if snapshot is None:
+            report.cells["monitoring"] = "FAIL"
+            report.problems.append("monitoring snapshot is missing")
+        elif (
+            not isinstance(snapshot, dict)
+            or snapshot.get("mode") != "monitor"
+            or not isinstance(snapshot.get("refresh_seconds"), (int, float))
+            or not isinstance(snapshot.get("generated_at"), str)
+        ):
+            report.cells["monitoring"] = "FAIL"
+            report.problems.append("monitoring snapshot is invalid")
+        else:
+            try:
+                stamp = datetime.fromisoformat(snapshot["generated_at"])
+                age = (datetime.now(UTC) - stamp).total_seconds()
+            except (TypeError, ValueError):
+                report.cells["monitoring"] = "FAIL"
+                report.problems.append("monitoring snapshot has an invalid timestamp")
+            else:
+                if age > max(90, snapshot["refresh_seconds"] * 3):
+                    report.cells["monitoring"] = "FAIL"
+                    report.problems.append("monitoring snapshot is stale")
+    return report
+
+
+def table(reports: list[Report], columns: tuple[str, ...]) -> str:
     """Return the reports as a table with aligned columns, a header first."""
-    rows = [list(COLUMNS)] + [[report.cells[column] for column in COLUMNS] for report in reports]
-    widths = [max(len(row[index]) for row in rows) for index in range(len(COLUMNS))]
+    rows = [list(columns)] + [[report.cells[column] for column in columns] for report in reports]
+    widths = [max(len(row[index]) for row in rows) for index in range(len(columns))]
     return "\n".join("  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip() for row in rows)
 
 
@@ -289,6 +443,8 @@ def listing(title: str, items: list[tuple[str, str]]) -> str:
 
 def check(config: dict[str, Any], ssh_config: Path | None) -> int:
     """Read every machine in parallel, print the report, and return the exit code (0: no problems, 1: problems)."""
+    if config["cluster"].get("mode") == "monitor":
+        return check_monitor(config, ssh_config)
     names = list(config["machines"])
     front_name = front_machine(config)[0]
     keys = [user["name"] for user in config["users"]] + [str(user["uid"]) for user in config["users"]]
@@ -308,7 +464,39 @@ def check(config: dict[str, Any], ssh_config: Path | None) -> int:
     problems = [(report.cells["machine"], text) for report in ordered for text in report.problems]
     warnings = [(report.cells["machine"], text) for report in ordered for text in report.warnings]
     notes = [(report.cells["machine"], text) for report in ordered for text in report.notes]
-    output = table(ordered) + listing("Problems", problems) + listing("Warnings", warnings) + listing("Notes", notes)
+    output = (
+        table(ordered, COLUMNS)
+        + listing("Problems", problems)
+        + listing("Warnings", warnings)
+        + listing("Notes", notes)
+    )
+    print(output + ("" if problems else "\n\nNo problems."))
+    return 1 if problems else 0
+
+
+def check_monitor(config: dict[str, Any], ssh_config: Path | None) -> int:
+    """Read every monitored machine and report monitoring health without scheduler checks."""
+    names = list(config["machines"])
+    host = config["cluster"]["monitor_host"]
+
+    def read(name: str) -> tuple[dict[str, Any] | None, str | None]:
+        return read_monitor_machine(name, ssh_config, name == host)
+
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        found = dict(zip(names, pool.map(read, names), strict=True))
+    reports = {name: monitor_machine_report(name, *found[name], name == host) for name in names}
+    ordered = [reports[name] for name in names if reports[name].problems] + [
+        reports[name] for name in names if not reports[name].problems
+    ]
+    problems = [(report.cells["machine"], text) for report in ordered for text in report.problems]
+    warnings = [(report.cells["machine"], text) for report in ordered for text in report.warnings]
+    notes = [(report.cells["machine"], text) for report in ordered for text in report.notes]
+    output = (
+        table(ordered, MONITOR_COLUMNS)
+        + listing("Problems", problems)
+        + listing("Warnings", warnings)
+        + listing("Notes", notes)
+    )
     print(output + ("" if problems else "\n\nNo problems."))
     return 1 if problems else 0
 

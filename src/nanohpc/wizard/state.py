@@ -29,6 +29,13 @@ STEPS: tuple[tuple[str, str], ...] = (
     ("extras", "Extras"),
     ("review", "Review"),
 )
+MONITOR_STEPS: tuple[tuple[str, str], ...] = (
+    ("machines", "Machines"),
+    ("users", "Users"),
+    ("website", "Website"),
+    ("alerts", "Alerts"),
+    ("review", "Review"),
+)
 MACHINES, STORAGE, USERS, PARTITIONS, WEBSITE, EXTRAS, REVIEW = range(len(STEPS))
 FIRST_UID = 2000
 COMPUTE_ONLY = ("cpu", "memory_mb", "gpu", "partitions", "scratch")
@@ -68,6 +75,7 @@ class WizardState:
     deps: Dependencies
     file: ClusterFile
     saved_text: str | None  # the text on disk; None for a new file not saved yet
+    steps: tuple[tuple[str, str], ...]
     # How the wizard reaches each machine with ssh: what the administrator typed, or the machine's name
     # (which is what `nanohpc deploy` uses).
     targets: dict[str, str]
@@ -101,7 +109,10 @@ def new_state(
     path: Path, ssh_config: Path | None, deps: Dependencies, file: ClusterFile, saved: str | None
 ) -> WizardState:
     """Return the state of a wizard that has just opened `file`."""
-    return WizardState(path, ssh_config, deps, file, saved, {}, {}, set(), {}, {}, set())
+    mode = file.get(["cluster", "mode"])
+    return WizardState(
+        path, ssh_config, deps, file, saved, MONITOR_STEPS if mode == "monitor" else STEPS, {}, {}, set(), {}, {}, set()
+    )
 
 
 def widget_id(prefix: str, name: str) -> str:
@@ -127,6 +138,7 @@ def shape_problems(data: Any) -> list[str]:
     if not isinstance(data, dict):
         return ["the file must be a mapping with the sections of cluster.yml"]
     problems = unsupported_values(data, "")
+    mode = (data.get("cluster") or {}).get("mode") if isinstance(data.get("cluster"), dict) else None
 
     def expect(value: Any, kind: type, path: str) -> bool:
         if value is None or isinstance(value, kind):
@@ -159,17 +171,29 @@ def shape_problems(data: Any) -> list[str]:
             for key in ("roles", "partitions", "aliases"):
                 expect(machine.get(key), list, f"machines.{name}.{key}")
     users = data.get("users")
-    for index, user in enumerate(users if isinstance(users, list) else []):
-        if expect(user, dict, f"users[{index}]") and isinstance(user, dict):
-            expect(user.get("ssh_keys"), list, f"users[{index}].ssh_keys")
+    if mode != "monitor":
+        for index, user in enumerate(users if isinstance(users, list) else []):
+            if expect(user, dict, f"users[{index}]") and isinstance(user, dict):
+                expect(user.get("ssh_keys"), list, f"users[{index}].ssh_keys")
     partitions = data.get("partitions")
     for name, partition in partitions.items() if isinstance(partitions, dict) else []:
         expect(partition, dict, f"partitions.{name}")
     return problems
 
 
-def error_step(error: str) -> int:
+def error_step(error: str, mode: str = "slurm") -> int:
     """Return the step where a validation error is fixed."""
+    if mode == "monitor":
+        head = error.split(" ", 1)[0]
+        if head.startswith(("machines", "cluster.monitor_host")):
+            return 0
+        if head.startswith("users"):
+            return 1
+        if head.startswith("cluster"):
+            return 2
+        if head.startswith(("alerts", "NANOHPC_")) or ".env" in error:
+            return 3
+        return 4
     if ".env" in error or error.startswith("NANOHPC_"):
         return EXTRAS
     head = error.split(" ", 1)[0].rstrip(":")

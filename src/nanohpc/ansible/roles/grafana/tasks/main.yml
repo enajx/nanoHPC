@@ -180,11 +180,12 @@
 # Grafana reads the dashboard files again every 30 seconds, so a changed dashboard needs no restart.
 - name: Install the dashboards
   ansible.builtin.copy:
-    src: "{{ nanohpc.package_files }}/grafana/"
+    src: "{{ nanohpc.package_files }}/grafana/{{ 'monitor-history.json' if nanohpc.mode | default('slurm') == 'monitor' and item == 'history.json' else item }}"
     dest: /etc/nanohpc/grafana/dashboards/
     owner: root
     group: root
     mode: "0644"
+  loop: "{{ ['machines.json', 'history.json'] if nanohpc.mode | default('slurm') == 'monitor' else ['overview.json', 'machines.json', 'usage.json', 'history.json', 'queue.json', 'queue-history.json'] }}"
 
 - name: Install the Grafana service
   ansible.builtin.copy:
@@ -245,13 +246,14 @@
   delay: 2
   when: not ansible_check_mode  # checks this deploy's result
 
-- name: Check that the six dashboards are loaded and readable without logging in
+- name: Check that the dashboards are loaded and readable without logging in
   ansible.builtin.uri:
     url: "http://127.0.0.1:3000{{ nanohpc.website.path }}grafana/api/search?type=dash-db"
     return_content: true
   register: grafana_dashboards
   until: >-
-    (grafana_dashboards.json | map(attribute='uid') | select('match', '^nanohpc-') | list | length) == 6
+    (grafana_dashboards.json | map(attribute='uid') | select('match', '^nanohpc-') | list | length) ==
+    (2 if nanohpc.mode | default('slurm') == 'monitor' else 6)
   retries: 15
   delay: 2
   when: not ansible_check_mode  # checks this deploy's result
