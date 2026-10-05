@@ -23,6 +23,70 @@
     install_recommends: false
   when: quota_module.rc != 0
 
+# A version-specific package covers this boot only. Keep the extra modules attached to the
+# machine's existing kernel update track, so the next installed kernel can mount /home with quotas.
+- name: Find the package that tracks quota modules for future kernels
+  ansible.builtin.shell: |
+    set -eu
+    images="$(dpkg-query -W -f='${Package}\t${Status}\n' 'linux-image-*' 2>/dev/null |
+      awk -F '\t' '$2 == "install ok installed" { print $1 }')"
+    kernel="{{ ansible_facts.kernel }}"
+    case "$kernel" in
+      *-generic)
+        tracks="$(printf '%s\n' "$images" | grep -E '^linux-image-virtual($|-)' || true)"
+        if [ -n "$tracks" ]; then
+          kind=virtual
+          generic_tracks="$(printf '%s\n' "$images" | grep -E '^linux-image-generic($|-)' || true)"
+        else
+          tracks="$(printf '%s\n' "$images" | grep -E '^linux-image-generic($|-)' || true)"
+          kind=generic
+        fi
+        ;;
+      *-aws|*-azure|*-gcp|*-gke|*-gkeop|*-oracle)
+        flavor="${kernel##*-}"
+        tracks="$(printf '%s\n' "$images" | grep -E "^linux-image-${flavor}($|-)" || true)"
+        kind=cloud
+        ;;
+      *)
+        echo "$kernel: no known Ubuntu extra-module tracking package; keep the matching kernel image and extra modules installed before a reboot" >&2
+        exit 1
+        ;;
+    esac
+    count="$(printf '%s\n' "$tracks" | sed '/^$/d' | wc -l | tr -d ' ')"
+    if [ "$count" != 1 ]; then
+      echo "$kernel: expected one installed image tracking package, found: $tracks" >&2
+      exit 1
+    fi
+    if [ "$kind" = virtual ]; then
+      virtual_suffix="${tracks#linux-image-virtual}"
+      for generic_track in $generic_tracks; do
+        generic_suffix="${generic_track#linux-image-generic}"
+        if [ "$generic_suffix" != "$virtual_suffix" ]; then
+          echo "$kernel: $tracks and $generic_track use different kernel update tracks; choose one before deploying quotas" >&2
+          exit 1
+        fi
+      done
+    fi
+    case "$kind" in
+      virtual) target="linux-image-extra-virtual${tracks#linux-image-virtual}" ;;
+      generic) target="$tracks" ;;
+      cloud) target="linux-modules-extra-${tracks#linux-image-}" ;;
+    esac
+    if ! apt-cache show "$target" >/dev/null 2>&1; then
+      echo "$kernel: $target is not available from Ubuntu's package sources" >&2
+      exit 1
+    fi
+    printf '%s\n' "$target"
+  register: quota_tracking_package
+  changed_when: false
+  check_mode: false
+
+- name: Install the package that tracks quota modules for future kernels
+  ansible.builtin.apt:
+    name: "{{ quota_tracking_package.stdout }}"
+    state: present
+    install_recommends: false
+
 - name: Load the quota modules at boot
   ansible.builtin.copy:
     dest: /etc/modules-load.d/nanohpc-quota.conf

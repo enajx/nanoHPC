@@ -2030,6 +2030,50 @@ class SimXfsQuotaTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimKernelQuotaTest(SimUsersBase):
+    """A new Ubuntu kernel still has quota modules when the home machine reboots."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_home_quotas_after_kernel_update(self) -> None:
+        self.up_and_deploy()
+        extra_meta = self.on_front("dpkg-query -W -f='${Status}' linux-image-extra-virtual")
+        self.assertEqual(extra_meta, "install ok installed", "future virtual kernels need their extra modules")
+        meta = self.on_front("dpkg-query -W -f='${Status}' linux-image-generic")
+        self.assertEqual(meta, "install ok installed", "the future generic kernels need their extra modules")
+        redeploy = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(redeploy.returncode, 0, self.failure(redeploy))
+        self.on_front("sudo -u alice sh -c 'echo before > /home/alice/nanohpc-kernel-check'")
+        before = self.on_front("uname -r").strip()
+        self.on_front("sudo apt-get update -qq")
+        self.on_front(
+            "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y linux-virtual linux-image-extra-virtual"
+        )
+        dependency = self.on_front("dpkg-query -W -f='${Depends}' linux-image-virtual").strip()
+        self.assertTrue(dependency.startswith("linux-image-"), dependency)
+        new_kernel = dependency.removeprefix("linux-image-")
+        if new_kernel == before:
+            self.skipTest("no newer Ubuntu kernel is available")
+        extra = self.on_front(f"dpkg-query -W -f='${{Status}}' linux-modules-extra-{new_kernel}")
+        self.assertEqual(extra, "install ok installed")
+        front = next(vm.instance for vm in plan_of(self.sim).vms if vm.machine == "front")
+        self.reboot_vm("front", front)
+        self.assertEqual(self.wait_for_vm("front", "uname -r").strip(), new_kernel)
+        self.assertIn("/dev/vdb ext4", self.wait_for_vm("front", "findmnt -n -o SOURCE,FSTYPE --mountpoint /home"))
+        self.assertIn(" is on", self.wait_for_vm("front", "sudo quotaon -p -u /home | grep -F ' is on'"))
+        self.assertEqual(
+            self.wait_for_vm("front", "sudo -u alice cat /home/alice/nanohpc-kernel-check").strip(), "before"
+        )
+        self.wait_for_vm("front", "sudo -u alice sh -c 'echo after > /home/alice/nanohpc-kernel-check'")
+        redeploy = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(redeploy.returncode, 0, self.failure(redeploy))
+        self.assertIn(" is on", self.on_front("sudo quotaon -p -u /home | grep -F ' is on'"))
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimHomeOnStorageTest(SimUsersBase):
     """/home served by the storage machine instead of the front node. Real Lima VMs."""
 

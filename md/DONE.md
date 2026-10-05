@@ -173,3 +173,9 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - `cluster.mode: monitor` uses machine addresses, optional aliases, and existing login names. The example, `nanohpc init --mode monitor` wizard, validation, `nanohpc check`, dry run, `--only node NAME`, and explicit GPU hardware change acceptance support this mode. The website shows Overview, Machines, Usage, and Users, with measured GPU data and monitor-specific history. It has no job or queue claims.
 - A separate agent reviewed the implementation. The focused tests passed. `SimMonitorDeployTest` passed on three Ubuntu 24.04 VMs, checking the live HTTPS site, snapshot, measured fake-GPU metrics, and absence of Slurm and listed user accounts. A node-only dry run and apply also passed on the VMs.
 - Files: `src/nanohpc/{cli,config,clusterfile,deploy,render,sim,check}.py`, `src/nanohpc/wizard/`, `src/nanohpc/ansible/monitor.yml`, monitoring roles and collectors, monitor Prometheus rules and Grafana history, `src/nanohpc/website-source/`, `examples/monitor.yml`, `tests/`, `README.md`, `md/testing.md`.
+
+## 2026-10-05: home quotas across kernel upgrades
+
+- The home server installs the extra-module package for its running kernel and a package that tracks quota modules with later Ubuntu kernel updates. It uses the installed kernel image package's update track and stops with a clear error if tracks conflict or the matching package is unavailable.
+- A fresh Ubuntu 24.04 VM test passed: deploy twice, upgrade to a newer kernel, reboot, check the separate `/home` disk, active quotas, and a user's file, then deploy again. A separate agent reviewed the package selection.
+- Files: `src/nanohpc/ansible/roles/home_server/tasks/main.yml`, `tests/sim/kernel-quota.yml`, `tests/test_sim.py`, `md/testing.md`.
