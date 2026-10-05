@@ -2,6 +2,10 @@
   <img src="assets/nanohpc-title.svg" alt="nanoHPC" width="380">
 </p>
 
+<div align="center">
+  <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="260">
+</div>
+
 `nanoHPC` is a lightweight Slurm cluster and monitoring tool for small computational labs.
 
 The whole cluster is defined in a single file, `cluster.yml` (the machines, the users, the partitions, and the queue
@@ -12,11 +16,7 @@ policy), and one command sets up every machine.
 - A ready-made front-end monitoring cluster usage, queue and machines health.
 - Playbooks for setup, node changes, policy updates, and nightly backups.
 - Automatic health checks and Slack alerts for jobs and issues.
-- Isometric visualisation of the cluster topology in real time:
-
-<div align="center">
-  <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="520">
-</div>
+- Isometric visualisation of the cluster topology in real time.
 
 ## Set up
 
@@ -33,29 +33,32 @@ Install nanoHPC on your computer:
 uv tool install git+https://github.com/enajx/nanoHPC
 ```
 
-Here is a short Slurm-mode `cluster.yml` excerpt:
+Here is a short Slurm-mode `cluster.yml` excerpt. The [full example](examples/cluster.yml) includes the required
+machine details and SSH keys:
 
 ```yaml
 cluster:
   name: mylab
   admins: [alice]
-  website: {hostname: cluster.mylab.example.org, https: letsencrypt}
+  website: {hostname: cluster.mylab.org}
 
 machines:
   front: {address: 10.0.0.10, roles: [front, home]}
-  gpu1:
-    address: 10.0.0.11
+  H100:
     roles: [compute]
-    cpu: {sockets: 1, cores_per_socket: 16, threads_per_core: 2}
-    memory_mb: 128000
-    gpu: {type: rtx4090, count: 2}
+    gpu: {type: h100, count: 4}
     partitions: [main]
-    scratch: {image_gb: 500}
+  H200:
+    roles: [compute]
+    gpu: {type: h200, count: 4}
+    partitions: [interactive]
 
 users:
-  - {name: alice, uid: 2000, ssh_keys: ["ssh-ed25519 <your-public-key>"]}
+  - {name: alice, uid: 2000}
+  - {name: bob, uid: 2001}
 partitions:
   main: {default: true, max_time: "24:00:00"}
+  interactive: {jobs: interactive, max_time: "08:00:00"}
 ```
 
 Write your file with the wizard, or start from the full [example](examples/cluster.yml):
@@ -84,7 +87,18 @@ If you prefer having your AI agents setting up the cluster, you can point them t
 
 ### Deploy Monitor only (without Slurm)
 
-TBA
+Monitor mode shows machine health, GPU use, usage history, and existing login names on a website. It does not set up
+Slurm, user accounts, SSH access, or storage. Choose one machine as the monitor host; it can also run work.
+
+Create a monitor-mode `cluster.yml` with the wizard, or start from the [monitor example](examples/monitor.yml). Then
+validate and deploy it:
+
+```sh
+nanohpc init cluster.yml --mode monitor
+nanohpc validate cluster.yml
+nanohpc deploy-monitor cluster.yml --dry-run
+nanohpc deploy-monitor cluster.yml
+```
 
 ## Tech stack
 
