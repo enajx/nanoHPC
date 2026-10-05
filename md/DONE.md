@@ -154,3 +154,9 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - `SimHomeOnStorageTest` passed on Ubuntu 24.04 VMs: home disk, NFS `/home`, scratch disk, and scratch image gained `nosuid,nodev` in the same deploy after their fstab entries changed; a dry run changed nothing and a later deploy found no work. `SimHomeBindRemountTest` passed on Ubuntu 24.04 VMs for `/home` on the root disk. A separate agent reviewed the changed tasks.
 - NFS-specific options such as transport and version cannot generally change through a remount. That remaining case is queued in [TODO.md](../TODO.md) (at the repo root).
 - Files: `src/nanohpc/ansible/roles/{home_client,home_server,scratch}/tasks/main.yml`, `tests/test_sim.py`, `md/testing.md`.
+
+## 2026-10-05: storage and quotas after reboot
+
+- Ubuntu 24.04 VM checks passed from a fresh cluster: restart the home server, front node, and two compute nodes one at a time after a deploy. They check the home disk, NFS mounts, active quota limits, scratch disk and image, and files read and written after boot. A separate VM test passed after restarting the front node when `/home` is a bind mount on its root disk.
+- The reboot test refreshes Lima's forwarded SSH port after each restart. `sim up` checks for the known stuck `systemd-logind` process on fresh Ubuntu VMs and restarts it when CPU use stays high.
+- Files: `tests/test_sim.py`, `src/nanohpc/sim.py`, `md/testing.md`.

@@ -281,8 +281,31 @@ fi
 FORMAT_TEST_DISK = "blkid {device} >/dev/null || mkfs.ext4 -q {options} {device}"
 
 
+# Some fresh Lima Ubuntu VMs start systemd-logind at 100% CPU. SSH logins then wait two minutes
+# and have no XDG_RUNTIME_DIR, so Ansible cannot make its private temporary directory. A normal
+# Lima shell does not set XDG_RUNTIME_DIR either, so check sustained CPU use instead.
+REPAIR_STUCK_LOGIND = r"""
+high_cpu() { ps -o pcpu= -C systemd-logind | awk '$1 + 0 >= 80 { high = 1 } END { exit !high }'; }
+if high_cpu; then
+  sleep 3
+  if high_cpu; then
+    echo 'restarting stuck systemd-logind'
+    sudo systemctl restart systemd-logind
+    sleep 3
+    if high_cpu; then
+      echo 'systemd-logind is still using at least 80% CPU after restart' >&2
+      exit 1
+    fi
+  fi
+fi
+"""
+
+
 def prepare_vm(vm: Vm) -> None:
     """Make a started VM behave like a real machine where Lima differs, and format its test disks."""
+    repaired = lima("shell", "--workdir", "/", vm.instance, "sh", "-c", REPAIR_STUCK_LOGIND)
+    if repaired.strip():
+        print(f"{vm.instance}: {repaired.strip()}")
     lima("shell", "--workdir", "/", vm.instance, "sudo", "sh", "-c", VSOCK_SSHD_DROPIN)
     for disk in vm.disks:
         device = "/dev/" + disk.rsplit("-", 1)[1]

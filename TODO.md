@@ -88,7 +88,7 @@ flowchart LR
 - [x] Daily cleanup removes kept failed `cluster-submit` job copies after `scratch.job_retention_days` days from their Slurm end time (7 by default), while keeping recent, running, and unknown jobs.
 - [x] A deploy remounts existing `/scratch` disk or image, `/home` disk or bind mount, and shared `/home` when its `/etc/fstab` entry changes; the managed `nosuid,nodev` options take effect without a reboot.
 - [ ] Handle changes to NFS-specific `/home` mount options that Linux cannot apply by remounting, without requiring a reboot.
-- [ ] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on the simulated cluster; no test reboots a machine yet).
+- [x] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on Ubuntu 24.04 VMs). See [DONE.md](md/DONE.md).
 - [ ] XFS home and scratch disks, and quota enforcement over NFS (a user over the hard limit cannot write), are checked on the simulated cluster.
 - [ ] Quotas survive kernel upgrades: on Ubuntu cloud kernels the quota modules come from `linux-modules-extra-<kernel>`, which nanoHPC installs for the running kernel only. After a kernel upgrade the `/home` mount with quotas could fail at boot until the next deploy.
 - [ ] A read-only check before a restart reports each pass or failure on any machine, including the front node: nonessential `/etc/fstab` mounts have `nofail` (except `/`, `/boot/efi`, and swap); the kernel GRUB will boot has the NVIDIA module built for it; saved network settings match the running ones; and automatic updates cannot restart the machine.

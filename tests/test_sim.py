@@ -371,6 +371,47 @@ class SimUsersBase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, self.failure(result))
         return cluster, config, public_key
 
+    def reboot_vm(self, machine: str, instance: str) -> None:
+        """Power-cycle one Lima VM and require a new Linux boot ID."""
+        before = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
+        self.assertEqual(before.returncode, 0, before.stderr)
+        stopped = self.run_command("limactl", "stop", instance)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", instance)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        # Lima assigns a new forwarded SSH port when a VM starts again.
+        listing = self.run_command("limactl", "list", "--format", "{{.Name}} {{.SSHLocalPort}}")
+        self.assertEqual(listing.returncode, 0, listing.stdout + listing.stderr)
+        port = dict(line.split() for line in listing.stdout.splitlines() if line.strip())[instance]
+        config = self.state / "ssh_config"
+        lines = config.read_text().splitlines()
+        current = ""
+        replaced = False
+        for index, line in enumerate(lines):
+            if line.startswith("Host "):
+                current = line.removeprefix("Host ")
+            elif current == machine and line.startswith("  Port "):
+                lines[index] = f"  Port {port}"
+                replaced = True
+        self.assertTrue(replaced, f"{machine} is missing from {config}")
+        config.write_text("\n".join(lines) + "\n")
+        for _ in range(24):
+            after = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
+            if after.returncode == 0:
+                break
+            time.sleep(5)
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertNotEqual(after.stdout.strip(), before.stdout.strip(), machine)
+
+    def wait_for_vm(self, machine: str, command: str) -> str:
+        """Wait for a boot service or mount to become usable, then return its output."""
+        for _ in range(24):
+            result = self.ssh(machine, command)
+            if result.returncode == 0:
+                return result.stdout
+            time.sleep(5)
+        self.fail(f"{machine}: {command} did not become ready: {result.stdout}{result.stderr}")
+
     def finished_job(self, job: str) -> tuple[str, str]:
         """Return the state and node of a job, once accounting has recorded it."""
         command = (
@@ -1717,6 +1758,102 @@ class SimHomeBindRemountTest(SimUsersBase):
         self.assertIn("nodev", options)
         self.assertIn("nosuid", options)
         self.assertEqual(len(self.on_front("findmnt -n -o TARGET --mountpoint /home").splitlines()), 1)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimRootHomeRebootTest(SimUsersBase):
+    """A root-disk /home bind mount and its quotas survive a reboot."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "variations.yml"
+        self.state = ROOT / ".nanohpc-sim" / "variations"
+        super().setUp()
+
+    def test_root_home_survives_reboot(self) -> None:
+        _, config, _ = self.up_and_deploy()
+        self.on_front("sudo -u alice sh -c 'echo reboot-check > /home/alice/nanohpc-reboot-check'")
+        front = next(vm.instance for vm in plan_of(self.sim).vms if vm.machine == "front")
+        self.reboot_vm("front", front)
+        mount = self.wait_for_vm("front", "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home")
+        _, fstype, options = mount.strip().split()
+        self.assertEqual(fstype, "ext4")
+        self.assertIn("nodev", options.split(","))
+        self.assertIn("nosuid", options.split(","))
+        self.assertEqual(
+            self.wait_for_vm("front", "sudo -u alice cat /home/alice/nanohpc-reboot-check").strip(), "reboot-check"
+        )
+        self.assertIn(" is on", self.wait_for_vm("front", "sudo quotaon -p -u / | grep -F ' is on'"))
+        quotas = self.wait_for_vm("front", "sudo repquota -u -O csv /")
+        rows = {row.split(",")[0]: row.split(",") for row in quotas.splitlines()}
+        columns = rows["User"]
+        self.assertEqual(
+            (rows["alice"][columns.index("BlockSoftLimit")], rows["alice"][columns.index("BlockHardLimit")]),
+            (str(config["home"]["quota_soft_gb"] * 1024 * 1024), str(config["home"]["quota_hard_gb"] * 1024 * 1024)),
+        )
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimRebootTest(SimUsersBase):
+    """A deployed home disk, NFS clients, quotas, and both scratch kinds survive a machine reboot."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "home-on-storage.yml"
+        self.state = ROOT / ".nanohpc-sim" / "home-on-storage"
+        super().setUp()
+
+    def test_mounts_and_quotas_survive_reboot(self) -> None:
+        _, config, _ = self.up_and_deploy()
+        instances = {vm.machine: vm.instance for vm in plan_of(self.sim).vms}
+        store_address = config["machines"]["store"]["address"]
+        marker = "sudo -u alice timeout 10 cat /home/alice/nanohpc-reboot-check"
+        made = self.ssh("store", "sudo -u alice sh -c 'echo reboot-check > /home/alice/nanohpc-reboot-check'")
+        self.assertEqual(made.returncode, 0, made.stderr)
+        for machine in ("gpu4", "gpu2"):
+            made = self.ssh(machine, "sudo -u alice sh -c 'echo before > /scratch/alice/nanohpc-reboot-check'")
+            self.assertEqual(made.returncode, 0, f"{machine}: {made.stdout}{made.stderr}")
+
+        for machine in ("store", "front", "gpu4", "gpu2"):
+            with self.subTest(machine=machine):
+                self.reboot_vm(machine, instances[machine])
+                mount = self.wait_for_vm(machine, "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home")
+                source, fstype, options = mount.strip().split()
+                if machine == "store":
+                    self.assertEqual((source, fstype), ("/dev/vdb", "ext4"))
+                    self.assertIn(" is on", self.wait_for_vm(machine, "sudo quotaon -p -u /home | grep -F ' is on'"))
+                    quotas = self.wait_for_vm(machine, "sudo repquota -u -O csv /home")
+                    rows = {row.split(",")[0]: row.split(",") for row in quotas.splitlines()}
+                    columns = rows["User"]
+                    self.assertEqual(
+                        (
+                            rows["alice"][columns.index("BlockSoftLimit")],
+                            rows["alice"][columns.index("BlockHardLimit")],
+                        ),
+                        (
+                            str(config["home"]["quota_soft_gb"] * 1024 * 1024),
+                            str(config["home"]["quota_hard_gb"] * 1024 * 1024),
+                        ),
+                    )
+                else:
+                    self.assertEqual((source, fstype), (f"{store_address}:/home", "nfs4"))
+                self.assertEqual(self.wait_for_vm(machine, marker).strip(), "reboot-check")
+                self.assertIn("nodev", options.split(","))
+                self.assertIn("nosuid", options.split(","))
+
+                if machine in ("gpu4", "gpu2"):
+                    scratch = self.wait_for_vm(machine, "findmnt -n -o SOURCE,OPTIONS --mountpoint /scratch")
+                    scratch_source, scratch_options = scratch.strip().split()
+                    if machine == "gpu4":
+                        self.assertEqual(scratch_source, "/dev/vdb")
+                    else:
+                        self.assertTrue(scratch_source.startswith("/dev/loop"), scratch_source)
+                    self.assertIn("nodev", scratch_options.split(","))
+                    self.assertIn("nosuid", scratch_options.split(","))
+                    self.wait_for_vm(
+                        machine,
+                        'sudo -u alice sh -c \'test "$(cat /scratch/alice/nanohpc-reboot-check)" = before '
+                        "&& echo after > /scratch/alice/nanohpc-reboot-check "
+                        '&& test "$(cat /scratch/alice/nanohpc-reboot-check)" = after\'',
+                    )
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
