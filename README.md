@@ -2,10 +2,6 @@
   <img src="assets/nanohpc-title.svg" alt="nanoHPC" width="380">
 </p>
 
-<div align="center">
-  <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="260">
-</div>
-
 `nanoHPC` is a lightweight Slurm cluster and monitoring tool for small computational labs.
 
 The whole cluster is defined in a single file, `cluster.yml` (the machines, the users, the partitions, and the queue
@@ -16,7 +12,11 @@ policy), and one command sets up every machine.
 - A ready-made front-end monitoring cluster usage, queue and machines health.
 - Playbooks for setup, node changes, policy updates, and nightly backups.
 - Automatic health checks and Slack alerts for jobs and issues.
-- Isometric visualisation of the cluster topology in real time.
+- Isometric visualisation of the cluster topology in real time:
+
+<div align="center">
+  <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="520">
+</div>
 
 ## Set up
 
