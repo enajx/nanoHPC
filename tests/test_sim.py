@@ -2110,6 +2110,88 @@ class SimRestartCheckTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimComputeRestartTest(SimUsersBase):
+    """A confirmed restart uses real Slurm and SSH on Ubuntu 24.04 VMs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_failed_precheck_leaves_cpu_node_drained(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+        changed = self.ssh("cpu1", "echo 'UUID=missing /unsafe ext4 defaults 0 2' | sudo tee -a /etc/fstab")
+        self.assertEqual(changed.returncode, 0, changed.stderr)
+        before = self.ssh("cpu1", "cat /proc/sys/kernel/random/boot_id").stdout
+        ssh_config = self.ssh_config_for("alice")
+        result = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "restart",
+            str(cluster),
+            "cpu1",
+            "--confirm",
+            "cpu1",
+            "--ssh-config",
+            str(ssh_config),
+            agent=True,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("/unsafe has no nofail", result.stderr)
+        self.assertEqual(self.ssh("cpu1", "cat /proc/sys/kernel/random/boot_id").stdout, before)
+        state = self.on_front("scontrol show node cpu1 -o")
+        self.assertIn("DRAIN", state)
+
+    def test_confirmed_cpu_restart_runs_slurm_job(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+        ssh_config = self.ssh_config_for("alice")
+        before = self.ssh("cpu1", "cat /proc/sys/kernel/random/boot_id").stdout.strip()
+        job = self.on_front(
+            "sudo -u alice sbatch --parsable --partition=main --nodelist=cpu1 "
+            "--cpus-per-task=1 --mem=1G --time=00:01:00 --chdir=/tmp --output=/dev/null --wrap='sleep 15'"
+        ).strip()
+        self.assertTrue(job.isdigit(), job)
+        self.on_front(
+            f"for i in $(seq 20); do state=$(squeue -h -j {job} -o %T); "
+            '[ "$state" = RUNNING ] && exit 0; sleep 1; done; exit 1'
+        )
+        # Lima's base image changes saved network and boot files after boot. The separate
+        # failed-precheck VM test covers that refusal; this test exercises the real reboot,
+        # SSH, storage, Slurm reservation, and job path with only that precheck bypassed.
+        script = (
+            "from nanohpc import restart; "
+            "restart.POLL_JOBS_SECONDS=1; "
+            "restart.before_restart=lambda machine, ssh_config, gpu: "
+            "restart.read(machine, ssh_config, 'uname -r', 30); "
+            "from nanohpc.cli import main; main()"
+        )
+        result = self.run_command(
+            "uv",
+            "run",
+            "python",
+            "-c",
+            script,
+            "restart",
+            str(cluster),
+            "cpu1",
+            "--confirm",
+            "cpu1",
+            "--ssh-config",
+            str(ssh_config),
+            agent=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"waiting for running jobs: {job}", result.stdout)
+        self.assertEqual(self.finished_job(job), ("COMPLETED", "cpu1"))
+        after = self.ssh("cpu1", "cat /proc/sys/kernel/random/boot_id").stdout.strip()
+        self.assertNotEqual(after, before)
+        state = self.on_front("scontrol show node cpu1 -o")
+        self.assertNotIn("DRAIN", state)
+        self.assertNotIn("MAINT", state)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimHomeOnStorageTest(SimUsersBase):
     """/home served by the storage machine instead of the front node. Real Lima VMs."""
 
