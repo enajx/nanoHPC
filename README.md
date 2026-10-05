@@ -18,6 +18,8 @@ policy), and one command sets up every machine.
   <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="520">
 </div>
 
+See a [demo of nanoHPC](https://enajx.github.io/nanoHPC/).
+
 ## Set up
 
 You need:
@@ -90,8 +92,7 @@ If you prefer having your AI agents setting up the cluster, you can point them t
 Monitor mode shows machine health, GPU use, usage history, and existing login names on a website. It does not set up
 Slurm, user accounts, SSH access, or storage. Choose one machine as the monitor host; it can also run work.
 
-Create a monitor-mode `cluster.yml` with the wizard, or start from the [monitor example](examples/monitor.yml). Then
-validate and deploy it:
+Create `cluster.yml` with the wizard or [monitor example](examples/monitor.yml), then validate and deploy:
 
 ```sh
 nanohpc init cluster.yml --mode monitor
