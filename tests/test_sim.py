@@ -25,7 +25,7 @@ from typing import Any
 import yaml
 from textual.widgets import DataTable
 
-from nanohpc import fixuid, probe, wizard
+from nanohpc import fixuid, probe, ssh_update, wizard
 from nanohpc.config import check_config, load_config
 from nanohpc.probe import probe_machine
 from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config
@@ -2095,6 +2095,242 @@ class SimUpdateReportTest(SimUsersBase):
             self.assertIn(f"{name}: ", result.stdout)
             self.assertIn("package lists from ", result.stdout)
             self.assertEqual(self.ssh(name, list_state).stdout, before[name])
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimComputeUpdateTest(SimUsersBase):
+    """A confirmed update installs a real APT upgrade on an Ubuntu 24.04 compute VM."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_dry_run_and_apply_on_vm(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+        home = self.ssh("cpu1", "awk '$2 == \"/home\" {print $4}' /etc/fstab")
+        self.assertEqual(home.returncode, 0, home.stdout + home.stderr)
+        self.assertIn("nofail", home.stdout.strip().split(","))
+        reboot_setting = self.ssh("cpu1", "apt-config dump Unattended-Upgrade::Automatic-Reboot")
+        self.assertIn('Unattended-Upgrade::Automatic-Reboot "false";', reboot_setting.stdout)
+        # Lima writes Netplan after boot and its base /boot entry lacks nofail. The real saved-setting
+        # checks should pass on a safe baseline, while SimRestartCheckTest covers refusal of unsafe settings.
+        baseline = r"""
+import os, pathlib, time
+fstab = pathlib.Path('/etc/fstab')
+lines = []
+for line in fstab.read_text().splitlines():
+    fields = line.split()
+    if len(fields) >= 4 and fields[1] == '/boot' and 'nofail' not in fields[3].split(','):
+        fields[3] += ',nofail'
+        line = '\t'.join(fields)
+    lines.append(line)
+fstab.write_text('\n'.join(lines) + '\n')
+boot_time = time.time() - float(pathlib.Path('/proc/uptime').read_text().split()[0])
+for path in pathlib.Path('/etc/netplan').glob('*.yaml'):
+    os.utime(path, (boot_time - 10, boot_time - 10))
+"""
+        safe = self.ssh("cpu1", "sudo /usr/bin/python3 -c " + shlex.quote(baseline))
+        self.assertEqual(safe.returncode, 0, safe.stdout + safe.stderr)
+        setup = """
+set -eu
+sudo apt-get install -y dpkg-dev
+for name in nanohpc-update-fixture openssh-nanohpc-fixture; do
+  for version in 1 2; do
+    folder=/tmp/$name-$version
+    mkdir -p "$folder/DEBIAN"
+    printf 'Package: %s\\nVersion: %s\\nArchitecture: all\\nMaintainer: nanoHPC test <test@example.invalid>\\nDescription: disposable update test\\n' "$name" "$version" > "$folder/DEBIAN/control"
+    dpkg-deb --build "$folder" "/tmp/${name}_${version}_all.deb" >/dev/null
+  done
+  sudo dpkg -i "/tmp/${name}_1_all.deb"
+done
+printf 'Package: *\nPin: release o=Ubuntu\nPin-Priority: -1\n' | sudo tee /etc/apt/preferences.d/nanohpc-update-fixture >/dev/null
+mkdir -p /tmp/nanohpc-update-repo
+cp /tmp/nanohpc-update-fixture_2_all.deb /tmp/openssh-nanohpc-fixture_2_all.deb /tmp/nanohpc-update-repo/
+cd /tmp/nanohpc-update-repo
+dpkg-scanpackages . /dev/null > Packages
+gzip -kf Packages
+echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/sources.list.d/nanohpc-update-fixture.list >/dev/null
+"""
+        prepared = self.ssh("cpu1", "bash -se", stdin=setup)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        admin_config = self.ssh_config_for("alice")
+        environment = {
+            **os.environ,
+            "SSH_AUTH_SOCK": self.agent_socket,
+            "XDG_STATE_HOME": str(self.keys / "state"),
+        }
+        command = [
+            "uv",
+            "run",
+            "nanohpc",
+            "update",
+            str(cluster),
+            "cpu1",
+            "--include",
+            "extra",
+            "--ssh-config",
+            str(admin_config),
+        ]
+        preview = subprocess.run(
+            [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        self.assertIn("nanohpc-update-fixture=2", preview.stdout)
+        applied = subprocess.run(
+            [*command, "--confirm", "cpu1"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        version = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nanohpc-update-fixture")
+        self.assertEqual(version.stdout.strip(), "2", version.stdout + version.stderr)
+        self.assertNotIn("systemctl reboot", applied.stdout)
+        state = self.on_front("scontrol show node cpu1 -o")
+        self.assertNotIn("DRAIN", state, applied.stdout + applied.stderr)
+
+        ssh_command = command.copy()
+        ssh_command[ssh_command.index("extra")] = "ssh,extra"
+        ssh_preview = subprocess.run(
+            [*ssh_command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(ssh_preview.returncode, 0, ssh_preview.stdout + ssh_preview.stderr)
+        self.assertIn("openssh-nanohpc-fixture=2", ssh_preview.stdout)
+        ssh_applied = subprocess.run(
+            [*ssh_command, "--confirm", "cpu1"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(ssh_applied.returncode, 0, ssh_applied.stdout + ssh_applied.stderr)
+        ssh_version = self.ssh("cpu1", "dpkg-query -W -f='${Version}' openssh-nanohpc-fixture")
+        self.assertEqual(ssh_version.stdout.strip(), "2", ssh_version.stdout + ssh_version.stderr)
+        cleared = self.ssh("cpu1", "sudo test ! -e /root/nanohpc-ssh-update-undo")
+        self.assertEqual(cleared.returncode, 0, cleared.stdout + cleared.stderr)
+        for user in ("root", "alice"):
+            login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "cpu1", "true")
+            self.assertEqual(login.returncode, 0, f"{user}: {login.stdout}{login.stderr}")
+
+        unpin = self.ssh("cpu1", "sudo rm /etc/apt/preferences.d/nanohpc-update-fixture")
+        self.assertEqual(unpin.returncode, 0, unpin.stdout + unpin.stderr)
+        self.check_ssh_undo_on_vm(admin_config, environment, command)
+
+    def check_ssh_undo_on_vm(self, admin_config: Path, environment: dict[str, str], command: list[str]) -> None:
+        """Exercise the real timer, backup, restored logins, and a separate manual package repair."""
+        instance = "nanohpc-kernel-quota-cpu1"
+        holds: list[subprocess.Popen[str]] = []
+        self.addCleanup(ssh_update.close_holds, holds)
+        holds.append(ssh_update.hold_root("cpu1", admin_config))
+        holds.append(ssh_update.hold_root("cpu1", admin_config))
+        ssh_update.require_holds("cpu1", holds)
+
+        def on_vm(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return self.run_command("limactl", "shell", instance, "--", *arguments)
+
+        source = ssh_update.PREPARE_PROGRAM.replace("UNDO_SOURCE", repr(ssh_update.UNDO_PROGRAM))
+        prepared = on_vm("sudo", "/usr/bin/python3", "-c", source)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        before_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertEqual(before_binary.returncode, 0, before_binary.stderr)
+        timer = on_vm("sudo", "systemctl", "is-active", ssh_update.TIMER + ".timer")
+        self.assertEqual(timer.stdout.strip(), "active", timer.stdout + timer.stderr)
+        canceled = on_vm("sudo", "/usr/bin/python3", "-c", ssh_update.CANCEL_PROGRAM)
+        self.assertEqual(canceled.returncode, 0, canceled.stdout + canceled.stderr)
+        cleared = on_vm("sudo", "test", "!", "-e", ssh_update.BACKUP)
+        self.assertEqual(cleared.returncode, 0, cleared.stdout + cleared.stderr)
+        prepared = on_vm("sudo", "/usr/bin/python3", "-c", source)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        upgraded = on_vm(
+            "sudo",
+            "env",
+            "DEBIAN_FRONTEND=noninteractive",
+            "NEEDRESTART_MODE=l",
+            "apt-get",
+            "install",
+            "-y",
+            "--reinstall",
+            "--only-upgrade",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+            "openssh-server",
+            "openssh-client",
+            "openssh-sftp-server",
+        )
+        self.assertEqual(upgraded.returncode, 0, upgraded.stdout + upgraded.stderr)
+        upgraded_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertEqual(upgraded_binary.returncode, 0, upgraded_binary.stderr)
+        damage = """
+import os
+from pathlib import Path
+target = Path('/usr/sbin/sshd')
+replacement = Path('/usr/sbin/.sshd-nanohpc-test-broken')
+replacement.write_bytes(b'broken OpenSSH test binary\\n')
+replacement.chmod(0o755)
+os.replace(replacement, target)
+"""
+        damaged = on_vm("sudo", "/usr/bin/python3", "-c", damage)
+        self.assertEqual(damaged.returncode, 0, damaged.stdout + damaged.stderr)
+        damaged_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertNotEqual(damaged_binary.stdout, before_binary.stdout)
+        failed_start = on_vm("sudo", "systemctl", "restart", "ssh.service")
+        self.assertNotEqual(failed_start.returncode, 0, "damaged sshd unexpectedly started")
+        broken = on_vm(
+            "sudo",
+            "sh",
+            "-c",
+            "printf 'bad-key\\n' > /etc/ssh/authorized_keys/root; printf 'bad-key\\n' > /etc/ssh/authorized_keys/alice",
+        )
+        self.assertEqual(broken.returncode, 0, broken.stdout + broken.stderr)
+        denied = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", "root", "cpu1", "true")
+        self.assertNotEqual(denied.returncode, 0, "the recovery test did not break fresh root login")
+        ssh_update.require_holds("cpu1", holds)
+        restored = on_vm("sudo", "systemctl", "start", ssh_update.TIMER + ".service")
+        self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+        for _ in range(120):
+            service = on_vm("sudo", "systemctl", "show", "-p", "ActiveState", "--value", ssh_update.TIMER + ".service")
+            self.assertEqual(service.returncode, 0, service.stderr)
+            if service.stdout.strip() in ("inactive", "failed"):
+                break
+            time.sleep(1)
+        if service.stdout.strip() != "inactive":
+            journal = on_vm("sudo", "journalctl", "-u", ssh_update.TIMER + ".service", "-n", "80", "--no-pager")
+            self.fail(f"SSH undo service {service.stdout.strip()}: {journal.stdout}{journal.stderr}")
+        stopped = on_vm("sudo", "systemctl", "stop", ssh_update.TIMER + ".timer")
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        marker = on_vm("sudo", "test", "-f", ssh_update.BACKUP + "/needs-review")
+        self.assertEqual(marker.returncode, 0, marker.stdout + marker.stderr)
+        restored_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertEqual(restored_binary.stdout, before_binary.stdout)
+        valid = on_vm("sudo", "sshd", "-t")
+        self.assertEqual(valid.returncode, 0, valid.stdout + valid.stderr)
+        for user in ("root", "alice"):
+            login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "cpu1", "true")
+            self.assertEqual(login.returncode, 0, f"{user}: {login.stdout}{login.stderr}")
+        ssh_update.require_holds("cpu1", holds)
+        blocked = subprocess.run(
+            [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn("SSH undo backup", blocked.stderr)
+        repaired = on_vm(
+            "sudo",
+            "env",
+            "DEBIAN_FRONTEND=noninteractive",
+            "NEEDRESTART_MODE=l",
+            "apt-get",
+            "install",
+            "-y",
+            "--reinstall",
+            "--only-upgrade",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+            "openssh-server",
+            "openssh-client",
+            "openssh-sftp-server",
+        )
+        self.assertEqual(repaired.returncode, 0, repaired.stdout + repaired.stderr)
+        repaired_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertEqual(repaired_binary.stdout, upgraded_binary.stdout)
+        for user in ("root", "alice"):
+            login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "cpu1", "true")
+            self.assertEqual(login.returncode, 0, f"after package repair, {user}: {login.stdout}{login.stderr}")
+        removed = on_vm("sudo", "rm", "-rf", ssh_update.BACKUP)
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

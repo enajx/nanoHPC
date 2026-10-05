@@ -96,7 +96,8 @@ flowchart LR
 - [x] `nanohpc check --before-restart` reports saved boot settings on every machine and fails on unsafe or unverified fstab, GRUB, NVIDIA, network, or automatic update restart settings. See [DONE.md](md/DONE.md).
 - [x] A confirmed `nanohpc restart` of one compute machine drains, waits for jobs, checks, reboots, and releases it only after a Slurm test job passes; failures leave it drained. See [DONE.md](md/DONE.md).
 - [x] `nanohpc update-report CLUSTER_YML` reports waiting updates on every machine from saved APT lists, including the lists' age, with each package in one built-in care, security, extra-source, or rest group. It changes nothing and fails clearly when any machine cannot be checked. See [DONE.md](md/DONE.md).
-- [ ] A confirmed update of one compute machine drains it and waits for jobs, shows the proposed packages, then installs waiting Ubuntu updates except the named care groups and extra sources unless the administrator names them for that run. It checks `sshd -t`, fresh root and administrator logins, network, NVIDIA modules for every installed kernel, `nvidia-smi`, `slurmd`, and other services; it reports whether a restart is needed and resumes only on success. An update never restarts the machine. Agree with the user on the separate front-node update procedure before building it.
+- [x] A confirmed `nanohpc update` of one compute machine uses a matching dry run, named care groups, SSH undo protection, and checks before resuming or awaiting `nanohpc restart`. See [DONE.md](md/DONE.md).
+- [ ] Agree with the user on the separate front-node update procedure before building it.
 - [ ] The default configuration enables automatic security updates on every machine after any backlog is installed through the update procedure. Automatic updates never restart a machine or install NVIDIA/CUDA packages; driver changes need the administrator's confirmation.
 - [ ] A machine that serves `/home` from a local disk does not export an empty `/home` if that disk fails to mount at boot, while administrators still have a recovery path over SSH. Agree on the exact behavior with the user alongside the front-node update procedure.
 - [x] Admins have direct key-only root login on every machine for recovery, with their keys from `cluster.yml` on local disk; a dry run stops before replacing other root keys that would lose access. See [DONE.md](md/DONE.md).
@@ -112,6 +113,7 @@ flowchart LR
 - [x] Grafana dashboards (queue, queue history, GPU usage, machines, long-term history) work for any number of nodes, GPU and CPU-only.
 - [x] The status collector writes the website snapshot every 30 seconds.
 - [x] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
+- [ ] Reduce the size of things on the website's Overview page so they fit without scrolling.
 - [x] Cluster name, logo, login address, and the user guide on the website come from the configuration.
 - [x] The website is served by its own nginx over HTTPS, with a Let's Encrypt certificate or the administrator's own certificate.
 - [x] The website is served under a configurable path (default `/cluster/`), with Grafana under it.

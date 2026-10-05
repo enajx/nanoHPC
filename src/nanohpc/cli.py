@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from nanohpc import check, deploy, fixuid, probe, restart, restart_check, sim, update_report
+from nanohpc import check, deploy, fixuid, probe, restart, restart_check, sim, update, update_report
 from nanohpc.config import load_config
 from nanohpc.render import render_forwarding_rules
 
@@ -218,6 +218,13 @@ def main() -> None:
     )
     updates.add_argument("path", type=Path, help="path to cluster.yml")
     updates.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines (default: your own)")
+    update_command = commands.add_parser("update", help="update one compute machine after a matching dry run")
+    update_command.add_argument("path", type=Path, help="path to cluster.yml")
+    update_command.add_argument("machine", help="one compute machine in cluster.yml")
+    update_command.add_argument("--dry-run", action="store_true", help="refresh APT lists and preview updates only")
+    update_command.add_argument("--confirm", help="repeat the machine name to authorize the real update")
+    update_command.add_argument("--include", metavar="GROUPS", help="comma-separated care groups or extra sources")
+    update_command.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machine")
     restart_command = commands.add_parser("restart", help="restart one confirmed compute machine")
     restart_command.add_argument("path", type=Path, help="path to cluster.yml")
     restart_command.add_argument("machine", help="one compute machine in cluster.yml")
@@ -274,6 +281,17 @@ def main() -> None:
         sys.exit(restart.run(arguments.path, arguments.machine, arguments.confirm, arguments.ssh_config))
     if arguments.command == "update-report":
         sys.exit(update_report.run(arguments.path, arguments.ssh_config))
+    if arguments.command == "update":
+        sys.exit(
+            update.run(
+                arguments.path,
+                arguments.machine,
+                arguments.confirm,
+                arguments.dry_run,
+                arguments.include or "",
+                arguments.ssh_config,
+            )
+        )
     if arguments.command == "forwarding-rules":
         sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":
