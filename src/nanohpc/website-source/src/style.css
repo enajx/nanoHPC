@@ -111,6 +111,7 @@ p { line-height: 1.6; }
 .queue-dashboards .demo-snapshot-queue-history iframe { height: 420px; }
 .demo-snapshot-usage iframe { height: 470px; }
 .demo-snapshot-machines iframe { height: 1320px; }
+.demo-snapshot iframe { background: #111217; }
 .frame-note { font-size: 14px; color: #65716c; padding: 0 20px; }
 .notice { display: flex; align-items: center; gap: 12px; background: #fff1a8; border: 1.5px solid; padding: 14px 18px; font-size: 16px; line-height: 1.6; margin-bottom: 24px; }
 .notice.neutral { background: #eaf0ed; }

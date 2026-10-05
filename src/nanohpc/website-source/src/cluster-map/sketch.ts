@@ -80,7 +80,6 @@ const MAX_ZOOM = 0.8
 const MARGIN = 16
 const TOP_MARGIN = 44
 const LABEL_HALF_WIDTH = 60
-const BLOCK_GAP = 3
 // A quarter of the original's speeds, in world units per second.
 const FORWARD_SPEED = 85
 const BACK_SPEED = 65
@@ -189,9 +188,9 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     return out
   }
 
-  // Front nodes in the middle; compute machines split over the four sides around them.
-  function layoutGeographic(): Piece[] {
-    const areas = areaPieces('geographic')
+  // Front nodes in the middle; each partition or building takes one side.
+  function layoutSides(name: 'partitions' | 'geographic'): Piece[] {
+    const areas = areaPieces(name)
     const center = areas.filter(area => area.group === 'front')
     const centerLine = stackLine(center)
     for (const [n, off] of centerLine) { n.tx = 0; n.ty = off }
@@ -214,36 +213,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     return out
   }
 
-  // Each group packed into a near-square block; blocks in columns by tier.
-  function layoutPartitions(): Piece[] {
-    const out: Piece[] = []
-    const areas = areaPieces('partitions')
-    let x = 0
-    for (let t = 0; t <= Math.max(...nodes.map(n => n.tier)); t++) {
-      const runs = areas.filter(area => area.members[0].tier === t)
-      if (!runs.length) continue
-      const blocks = runs.map(r => {
-        const cols = Math.ceil(Math.sqrt(r.members.length))
-        const rows = Math.ceil(r.members.length / cols)
-        const step = Math.max(BLOCK_GAP, ...r.members.map(n => Math.ceil(n.scale * 2)))
-        return { r, cols, step, w: (rows - 1) * step, h: (cols - 1) * step }
-      })
-      const colWidth = Math.max(...blocks.map(b => b.w))
-      let y = -(blocks.reduce((s, b) => s + b.h, 0) + GROUP_GAP * (blocks.length - 1)) / 2
-      for (const b of blocks) {
-        b.r.members.forEach((n, i) => {
-          n.tx = x + (colWidth - b.w) / 2 + Math.floor(i / b.cols) * b.step
-          n.ty = y + (i % b.cols) * b.step
-        })
-        y += b.h + GROUP_GAP
-      }
-      out.push(...runs)
-      x += colWidth + TIER_GAP
-    }
-    return out
-  }
-
-  const layouts: Record<LayoutName, () => Piece[]> = { default: layoutDefault, partitions: layoutPartitions, geographic: layoutGeographic }
+  const layouts: Record<LayoutName, () => Piece[]> = { default: layoutDefault, partitions: () => layoutSides('partitions'), geographic: () => layoutSides('geographic') }
 
   function applyLayout(instant: boolean) {
     if (!nodes.length) { pieces = []; return }

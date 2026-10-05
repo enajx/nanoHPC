@@ -42,7 +42,7 @@ test('the four demo dashboards embed fixed Grafana snapshots', async ({ page }) 
     await nav.getByRole('link', { name: section, exact: true }).click()
     for (const title of titles) {
       const frame = page.locator(`iframe[title="${title}"]`)
-      await expect(frame).toHaveAttribute('src', /^https:\/\/snapshots\.raintank\.io\/dashboard\/snapshot\/[A-Za-z0-9]+\?theme=light&kiosk$/)
+      await expect(frame).toHaveAttribute('src', /^https:\/\/snapshots\.raintank\.io\/dashboard\/snapshot\/[A-Za-z0-9]+\?theme=dark&kiosk$/)
     }
   }
 })
@@ -135,7 +135,7 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await nav.getByRole('link', { name: 'Users', exact: true }).click()
   for (const name of ['Alice', 'Bob', 'Mike']) await expect(page.getByText(name, { exact: true }).first()).toBeVisible()
   await nav.getByRole('link', { name: 'Cluster policy', exact: true }).click()
-  for (const name of ['main (default)', 'interactive', 'Login on front', 'All partitions', 'Queue ranking', 'Partitions']) {
+  for (const name of ['training (default)', 'inference', 'Login on front', 'All partitions', 'Queue ranking', 'Partitions']) {
     await expect(page.getByRole('heading', { name, exact: true }).first()).toBeVisible()
   }
   await expect(page.locator('.partition-summary')).toContainText('Nvidia DGX')
@@ -151,7 +151,7 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await page.getByRole('button', { name: 'Geographic', exact: true }).click()
   await expect(page.getByRole('img', { name: /Cluster map:/ })).toHaveAttribute('aria-label', /LAB A: H100, H200, B200, Threadripper; LAB B: Nvidia DGX/)
   await page.getByRole('button', { name: 'Partitions', exact: true }).click()
-  await expect(page.getByRole('img', { name: /Cluster map:/ })).toHaveAttribute('aria-label', /INTERACTIVE \+ MAIN:/)
+  await expect(page.getByRole('img', { name: /Cluster map:/ })).toHaveAttribute('aria-label', /TRAINING: H100, H200, B200; INFERENCE: Threadripper, Nvidia DGX/)
   await expect(page.getByRole('img', { name: /Cluster map:/ })).toBeVisible()
   await expect(page.getByRole('img', { name: /Cluster map:/ })).not.toHaveAttribute('aria-label', /FPGA/)
   expect(await page.locator('iframe').count()).toBe(0)

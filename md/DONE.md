@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-05: demo partitions and dark Grafana previews
+
+- The demo Training partition contains H100, H200, and B200. Inference contains Threadripper and Nvidia DGX and appears on the left side of the Partitions map. The public demo opens its Grafana snapshots in the dark theme.
+- Files: `src/nanohpc/website-source/{scripts/build-demo.mjs,src/cluster-map/sketch.ts,src/demo-dashboard.tsx,src/style.css,tests/demo.spec.ts}`, `src/nanohpc/website/`.
+
 ## 2026-10-05: demo usage curve
 
 - The overview usage curve keeps its smooth stacked shape and shows whole GPU counts in the demo tooltip. The final example has a smaller first bump, a broader full-capacity second bump, and low use at the end. A soft curve rounds the transitions.

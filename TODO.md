@@ -159,6 +159,8 @@ flowchart LR
 - [x] The demo cluster usage curve stays smooth, shows whole GPU counts in its tooltip, reaches full capacity for sustained periods, drops to about half, returns to full capacity, and ends near 20% (see [DONE.md](md/DONE.md)).
 - [x] The demo cluster usage curve has softer transitions between its full, half, and low periods (see [DONE.md](md/DONE.md)).
 - [x] The demo cluster usage curve has an asymmetric shape: a smaller first bump, a larger full-capacity second bump, then low use at the end (see [DONE.md](md/DONE.md)).
+- [x] The demo Training partition contains H100, H200, and B200; Inference contains Threadripper and Nvidia DGX and appears on the left side of the Partitions map (see [DONE.md](md/DONE.md)).
+- [x] The public demo embeds its Grafana snapshots with the dark theme (see [DONE.md](md/DONE.md)).
 - [ ] At v0.1, make the repository public, enable GitHub Pages, publish and check the demo, then link it from the README.
 - [ ] A README, curated by the user: a nanoHPC title, a lightweight Slurm cluster description, a concise feature list, setup steps, the tech stack, and the MIT license. The current draft is under review (`README.md`, `assets/nanohpc-title.svg`, `assets/cluster.png`).
   - [x] The README uses a static, transparent PNG with the chosen turquoise cluster layout: Threadripper left of three 4-GPU H100 machines and FPGA on the right (`assets/cluster.png`).

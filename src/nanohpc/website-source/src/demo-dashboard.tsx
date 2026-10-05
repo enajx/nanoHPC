@@ -35,7 +35,7 @@ export function DemoDashboard({ name, kind, jobs, queueFilter }: { name: string;
   if (snapshot && (kind !== 'queue' || queueFilter === 'RUNNING|PENDING')) {
     return <section className={`dashboard demo-snapshot demo-snapshot-${kind} panel`} aria-label={name}>
       <div className="panel-heading"><h2>{name}</h2></div>
-      <iframe title={name} src={`https://snapshots.raintank.io/dashboard/snapshot/${snapshot}?theme=light&kiosk`} loading="lazy" referrerPolicy="no-referrer"/>
+      <iframe title={name} src={`https://snapshots.raintank.io/dashboard/snapshot/${snapshot}?theme=dark&kiosk`} loading="lazy" referrerPolicy="no-referrer"/>
     </section>
   }
   return <section className="dashboard demo-dashboard panel">
