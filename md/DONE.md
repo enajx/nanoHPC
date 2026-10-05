@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-05: demo usage curve
+
+- The overview usage curve keeps its smooth stacked shape and shows whole GPU counts in the demo tooltip. It reaches all 13 sample GPUs twice, holds around half capacity between those periods, and ends near 20%.
+- Files: `src/nanohpc/website-source/src/gpu-allocation-chart.tsx`, `src/nanohpc/website-source/tests/demo.spec.ts`, `src/nanohpc/website/`.
+
 ## 2026-10-05: five demo machines
 
 - The demo lists H100, H200, B200, Threadripper, and Nvidia DGX in that order. Four GPU machines have running sample jobs. The overview usage curve gives each GPU machine a distinct smooth pattern, and the Grafana queue and machine samples match the new data.

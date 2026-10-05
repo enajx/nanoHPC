@@ -92,9 +92,7 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await expect(page.locator('.gpu-allocation-chart .recharts-area').first()).toBeVisible()
   await expect(page.locator('.gpu-allocation-chart .recharts-area')).toHaveCount(5)
   const curve = await page.locator('.gpu-allocation-chart .recharts-area path').first().getAttribute('d') ?? ''
-  const curveSegments = (curve.match(/C/g) ?? []).length
-  expect(curveSegments).toBeGreaterThan(40)
-  expect(curveSegments).toBeLessThan(150)
+  expect((curve.match(/C/g) ?? []).length).toBeGreaterThan(8)
   await expect(page.getByRole('button', { name: 'About nanoHPC' })).toBeVisible()
   await page.getByRole('button', { name: 'About nanoHPC' }).click()
   await expect(page.getByRole('dialog', { name: 'About nanoHPC' })).toBeVisible()
