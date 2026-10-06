@@ -81,11 +81,16 @@ const MAX_ZOOM = 0.8
 const MARGIN = 16
 const TOP_MARGIN = 44
 const LABEL_HALF_WIDTH = 60
+const LABEL_SHADOW = 3
+const LABEL_GAP = 6
+const SPREAD = 1.1
+const BLOCK_GAP = 3
 // A quarter of the original's speeds, in world units per second.
 const FORWARD_SPEED = 85
 const BACK_SPEED = 65
 // Shared-home requests one dot stands for.
 const REQUESTS_PER_DOT = 10
+const DOT_GAP = 30
 // Job colors on the GPU lights, one per user.
 // The Overview chart's machine palette.
 const USER_COLORS = ['#5294ff', '#ff8a67', '#a184f5', '#42b883', '#f7ce46', '#ed77b5', '#65b7c1', '#b9d064']
@@ -105,6 +110,8 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   let heightTarget: number | null = null
   let hovered: Node | null = null
   let accent = '#5294ff'
+  let writeColor = '#ffd166'
+  let healthColors = { green: '#06d6a0', yellow: '#ffd166' }
   let font = 'Arial'
   let sketch: p5
 
@@ -153,7 +160,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     links = nextLinks
     hovered = null
     if (changed || !pieces.length) applyLayout(!nodes.some(n => n.x !== null))
-    else pieces = layouts[layoutName]()
+    else placeMachines()
   }
 
   // ---------------------------------------------------------------- layouts
@@ -214,11 +221,67 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     return out
   }
 
-  const layouts: Record<LayoutName, () => Piece[]> = { default: layoutDefault, partitions: () => layoutSides('partitions'), geographic: () => layoutSides('geographic') }
+  /** Put each partition in a compact block and keep the front node in its own tier. */
+  function layoutPartitions(): Piece[] {
+    const out: Piece[] = []
+    const areas = areaPieces('partitions')
+    let x = 0
+    for (let t = 0; t <= Math.max(...nodes.map(n => n.tier)); t++) {
+      const runs = areas.filter(a => a.members[0].tier === t)
+      if (!runs.length) continue
+      const blocks = runs.map(r => {
+        const cols = Math.ceil(Math.sqrt(r.members.length))
+        const rows = Math.ceil(r.members.length / cols)
+        const step = Math.max(BLOCK_GAP, ...r.members.map(n => Math.ceil(n.scale * 2)))
+        return { r, cols, step, w: (rows - 1) * step, h: (cols - 1) * step }
+      })
+      const colWidth = Math.max(...blocks.map(b => b.w))
+      let y = -(blocks.reduce((sum, b) => sum + b.h, 0) + GROUP_GAP * (blocks.length - 1)) / 2
+      for (const b of blocks) {
+        b.r.members.forEach((n, i) => {
+          n.tx = x + (colWidth - b.w) / 2 + Math.floor(i / b.cols) * b.step
+          n.ty = y + (i % b.cols) * b.step
+        })
+        y += b.h + GROUP_GAP
+      }
+      out.push(...runs)
+      x += colWidth + TIER_GAP
+    }
+    return out
+  }
+
+  const layouts: Record<LayoutName, () => Piece[]> = { default: layoutDefault, partitions: layoutPartitions, geographic: () => layoutSides('geographic') }
+
+  /** Spread a layout until every name box clears the other names and servers. */
+  function placeMachines() {
+    readPageFont()
+    pieces = layouts[layoutName]()
+    for (let step = 0; step < 40 && labelsOverlap(); step++) for (const n of nodes) { n.tx *= SPREAD; n.ty *= SPREAD }
+    container.dataset.labelBoxes = JSON.stringify(nodes.map(n => ({ name: n.name, ...withShadow(labelBox(n, n.tx, n.ty)), server: serverOutline(n) })))
+  }
+
+  function labelsOverlap(): boolean {
+    type Box = { x: number; y: number; w: number; h: number }
+    const near = (a: Box, b: Box) => a.x < b.x + b.w + LABEL_GAP && b.x < a.x + a.w + LABEL_GAP && a.y < b.y + b.h + LABEL_GAP && b.y < a.y + a.h + LABEL_GAP
+    const boxes = nodes.map(n => withShadow(labelBox(n, n.tx, n.ty)))
+    const servers = nodes.map(serverOutline)
+    return boxes.some((a, i) => boxes.some((b, j) => i !== j && (near(a, b) || near(a, servers[j]))))
+  }
+
+  function serverOutline(n: Node) {
+    const b = serverAt(n, n.tx, n.ty)
+    return { x: b.x, y: b.y, w: b.w, h: b.h }
+  }
+
+  const withShadow = (box: { x: number; y: number; w: number; h: number }) => ({ ...box, w: box.w + LABEL_SHADOW, h: box.h + LABEL_SHADOW })
+
+  function readPageFont() {
+    font = getComputedStyle(container).fontFamily.split(',')[0].trim().replace(/["']/g, '')
+  }
 
   function applyLayout(instant: boolean) {
     if (!nodes.length) { pieces = []; return }
-    pieces = layouts[layoutName]()
+    placeMachines()
     for (const n of nodes) if (instant || n.x === null) { n.x = n.tx; n.y = n.ty }
     fitView(!instant)
   }
@@ -317,8 +380,11 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
       const others = stale ? 0 : Math.max(0, (l.to.nfsRequests ?? 0) - writes)
       l.dueIn = others ? l.dueIn + dt * others / REQUESTS_PER_DOT : 0
       l.dueOut = writes ? l.dueOut + dt * writes / REQUESTS_PER_DOT : 0
-      for (; l.dueIn >= 1; l.dueIn--) packets.push({ link: l, d: 0, dir: 1, kind: 'forward', size: 6 })
-      for (; l.dueOut >= 1; l.dueOut--) packets.push({ link: l, d: 0, dir: -1, kind: 'back', size: 6 })
+      const lastStart = (dir: Packet['dir']) => Math.min(Infinity, ...packets.filter(p => p.link === l && p.dir === dir).map(p => p.d))
+      if (l.dueIn >= 1 && lastStart(1) >= DOT_GAP) { packets.push({ link: l, d: 0, dir: 1, kind: 'forward', size: 6 }); l.dueIn-- }
+      if (l.dueOut >= 1 && lastStart(-1) >= DOT_GAP) { packets.push({ link: l, d: 0, dir: -1, kind: 'back', size: 6 }); l.dueOut-- }
+      l.dueIn = Math.min(l.dueIn, 1)
+      l.dueOut = Math.min(l.dueOut, 1)
     }
     for (const p of packets) {
       p.d += dt * (p.kind === 'forward' ? FORWARD_SPEED : BACK_SPEED)
@@ -380,9 +446,12 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     updateHover(p)
     // Transparent, so the page background shows through.
     p.clear()
-    accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || accent
-    // p5 quotes a family name with spaces, so pass only the page's first font.
-    font = getComputedStyle(container).fontFamily.split(',')[0].trim().replace(/["']/g, '')
+    const theme = getComputedStyle(document.documentElement)
+    accent = theme.getPropertyValue('--accent').trim() || accent
+    const [second, third] = ['--card-2', '--card-3'].map(name => theme.getPropertyValue(name).trim())
+    writeColor = (second.toLowerCase() === accent.toLowerCase() ? third : second) || writeColor
+    healthColors = { green: theme.getPropertyValue('--status-green').trim() || healthColors.green, yellow: theme.getPropertyValue('--status-yellow').trim() || healthColors.yellow }
+    readPageFont()
     if (!nodes.length) return
     const regions = currentRegions()
     p.push()
@@ -403,7 +472,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   type Region = ReturnType<typeof currentRegions>[number]
   const regionCorners = (r: Region) => [iso(r.from[0], r.from[1]), iso(r.to[0], r.from[1]), iso(r.to[0], r.to[1]), iso(r.from[0], r.to[1])]
 
-  const dotColor = (kind: Packet['kind']) => (kind === 'forward' ? accent : INK)
+  const dotColor = (kind: Packet['kind']) => (kind === 'forward' ? accent : writeColor)
 
   // A box like the website's cards: white, dark border, hard offset shadow.
   function drawBox(p: p5, x: number, y: number, w: number, h: number, border: number, shadow: number, radius: number, alpha: number) {
@@ -538,7 +607,12 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
       }
     }
     const height = b.layers * b.lh
-    face([up(b.N, height), up(b.E, height), up(b.S, height), up(b.W, height)], accent)
+    face([up(b.N, height), up(b.E, height), up(b.S, height), up(b.W, height)], topColor(n))
+  }
+
+  /** Use the same health colors as the machine labels. */
+  function topColor(n: Node): string {
+    return n.health === 'Healthy' ? healthColors.green : n.health === 'Warning' ? healthColors.yellow : COMPUTE_AREA
   }
 
   function userColor(user: string): string {
@@ -553,23 +627,28 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     ? `${n.pendingJobs} pending`
     : n.fpgaUsagePercent !== null ? `FPGA ${Math.round(n.fpgaUsagePercent)}%` : n.totalGpus ? `${n.allocatedGpus}/${n.totalGpus} GPUs` : 'CPU'
 
+  /** Return a machine's name box in map coordinates, before its hard shadow. */
+  function labelBox(n: Node, tx: number, ty: number) {
+    const b = serverAt(n, tx, ty)
+    sketch.textFont(MONO)
+    sketch.textStyle(sketch.NORMAL)
+    sketch.textSize(10)
+    const subW = sketch.textWidth(subtitle(n))
+    sketch.textFont(font)
+    sketch.textStyle(sketch.BOLD)
+    sketch.textSize(12)
+    const w = sketch.textWidth(n.name) + subW + 34
+    const h = n.totalGpus > 0 || n.fpgaUsagePercent !== null ? 42 : 30
+    return { x: b.cx - w / 2, y: b.y - h - 14, w, h }
+  }
+
   // Label box like the website's cards: the name in the page font, numbers in monospace.
   function drawLabel(p: p5, n: Node) {
     const b = nodeBox(n)
     const alpha = hovered !== null && hovered !== n ? 120 : 255
     const sub = subtitle(n)
-    p.textFont(MONO)
-    p.textStyle(p.NORMAL)
-    p.textSize(10)
-    const subW = p.textWidth(sub)
-    p.textFont(font)
-    p.textStyle(p.BOLD)
-    p.textSize(12)
-    const w = p.textWidth(n.name) + subW + 34
+    const { x, y, w, h } = labelBox(n, n.x!, n.y!)
     const hasBar = n.totalGpus > 0 || n.fpgaUsagePercent !== null
-    const h = hasBar ? 42 : 30
-    const x = b.cx - w / 2
-    const y = b.y - h - 14
     p.stroke(23, 35, 34, alpha)
     p.strokeWeight(1.5)
     p.line(b.cx, y + h, b.cx, b.topCy)

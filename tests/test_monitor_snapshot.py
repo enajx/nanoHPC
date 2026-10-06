@@ -33,11 +33,12 @@ if os.environ.get('TEST_FAIL') == name: sys.exit(2)
 if name=='sacct' and os.environ.get('SLURM_TIME_FORMAT')!='%s': sys.exit(4)
 if name=='scontrol' and 'nodes' in args:
  allocated=os.environ.get('TEST_ALLOCATED_GPUS','2')
- print('NodeName=gpu1 State=MIXED Partitions=interactive,main CfgTRES=cpu=32,gres/gpu=4,gres/gpu:a6000=4 AllocTRES=cpu=8,gres/gpu=' + allocated + ',gres/gpu:a6000=' + allocated)
+ print('NodeName=gpu1 State=' + os.environ.get('TEST_NODE_STATE','MIXED') + ' Reason=' + os.environ.get('TEST_DRAIN_REASON','None') + ' Partitions=interactive,main CfgTRES=cpu=32,gres/gpu=4,gres/gpu:a6000=4 AllocTRES=cpu=8,gres/gpu=' + allocated + ',gres/gpu:a6000=' + allocated)
  print('NodeName=cpu1 State=IDLE Partitions=main CfgTRES=cpu=16,mem=64G AllocTRES=')
 elif name=='scontrol' and 'partition' in args:
- print('PartitionName=interactive Default=NO Nodes=gpu1 MaxTime=08:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
- print('PartitionName=main Default=YES Nodes=gpu1,cpu1 MaxTime=1-00:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
+ state='DOWN' if os.environ.get('TEST_PARTITIONS_DOWN') else 'UP'
+ print('PartitionName=interactive State=' + state + ' Default=NO Nodes=gpu1 MaxTime=08:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
+ print('PartitionName=main State=' + state + ' Default=YES Nodes=gpu1,cpu1 MaxTime=1-00:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
 elif name=='scontrol':
  print('PriorityWeightFairshare = 10000\\nPriorityWeightAge = 1000\\nPriorityDecayHalfLife = 7-00:00:00\\nPriorityMaxAge = 7-00:00:00')
 elif name=='squeue' and '--json' in args:
@@ -53,7 +54,7 @@ elif name=='sacct' and 'Submit' in args:
 elif name=='sacct':
  if '--starttime=2025-09-01T12:00:00' not in args: sys.exit(6)
  print(f'alice|1|3600|billing=999,cpu=8,gres/gpu=2,gres/gpu:a6000=2|COMPLETED|{hour}|{int(now.timestamp())}\\nbob|2|1800|cpu=8|COMPLETED|{hour}|{int(now.timestamp())}\\nalice|3|1800|gres/gpu:a6000=1|RUNNING|{half}|Unknown\\nalice|4|3600|gres/gpu:a6000=1|COMPLETED|{old_start}|{old_end}\\nalice|5|3600|gres/gpu:a6000=1|COMPLETED|{year_start}|{year_end}')
-elif name=='sacctmgr': print('normal||30|\\ninteractive|08:00:00||gres/gpu=2\\nmain|1-00:00:00||')
+elif name=='sacctmgr': print('normal||30||\\ninteractive|08:00:00||gres/gpu=2|gres/gpu=2\\nmain|1-00:00:00|||gres/gpu=4')
 else: sys.exit(3)
 """
 
@@ -273,6 +274,8 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(data["nodes"][1]["building"], "Lab A")
             self.assertEqual((data["running_jobs"], data["pending_jobs"]), (1, 1))
             self.assertEqual(data["average_wait_seconds_30d"], 1200)
+            self.assertEqual(data["average_wait_seconds_1d"], 900)
+            self.assertEqual(data["average_wait_seconds_7d"], 900)
             self.assertEqual(
                 [(job["id"], job["user"], job["state"], job["gpus"]) for job in data["jobs"]],
                 [("1", "alice", "RUNNING", 1), ("2", "bob", "PENDING", 0)],
@@ -298,6 +301,7 @@ class SnapshotTests(unittest.TestCase):
             self.assertNotIn("root", [item["user"] for item in data["ranking"]])
             self.assertEqual(data["priorities"][0]["fairshare"], 5000)
             self.assertIn("30", " ".join(item["value"] for item in data["policies"]))
+            self.assertIn({"name": "main: GPUs per job (most)", "value": "gres/gpu=4"}, data["policies"])
             self.assertEqual(
                 data["partitions"],
                 [
@@ -313,6 +317,7 @@ class SnapshotTests(unittest.TestCase):
             self.assertIn('cluster_node_total_gpus{node="cpu1"} 0', text)
             self.assertNotIn('node="store"', text)
             self.assertIn("cluster_snapshot_timestamp_seconds", text)
+            self.assertIn("cluster_mean_wait_seconds_24h 900", text)
             self.assertIn('cluster_job_requested_gpus{job_id="1"} 1', text)
             self.assertIn('cluster_job_requested_memory_bytes{job_id="1"} 34359738368', text)
             self.assertIn('cluster_job_requested_gpus{job_id="2"} 0', text)
@@ -351,6 +356,20 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(json.loads(output.read_text())["nodes"][1]["available_gpus"], 0)
             self.assertIn('cluster_node_available_gpus{node="gpu1"} 0', metrics.read_text())
             self.assertIn('cluster_node_allocated_gpus{node="gpu1"} 4', metrics.read_text())
+            paused = subprocess.run(
+                args,
+                env=dict(env, TEST_PARTITIONS_DOWN="1", TEST_NODE_STATE="IDLE+MAINTENANCE"),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(paused.returncode, 0, paused.stderr)
+            paused_data = json.loads(output.read_text())
+            self.assertTrue(paused_data["queue_paused"])
+            # This command has no Prometheus URL, so maintenance cannot hide unknown machine health.
+            self.assertEqual(paused_data["nodes"][1]["health"], "Unknown")
+            self.assertEqual(paused_data["nodes"][2]["health"], "Unknown")
+            self.assertIn("The queue is paused", paused_data["nodes"][1]["health_details"][0])
             before = output.read_bytes()
             before_metrics = metrics.read_bytes()
             before_machines = machines.read_bytes()
@@ -458,30 +477,45 @@ class SnapshotTests(unittest.TestCase):
             args = [
                 sys.executable,
                 str(COLLECTOR),
-                "--mode", "monitor",
-                "--output", str(output),
-                "--metrics", str(metrics),
-                "--controller", "front",
-                "--cluster-name", "demo",
-                "--machines", str(machine_file),
-                "--refresh-seconds", "30",
-                "--machine-markdown-output", str(markdown),
-                "--prometheus-url", f"http://127.0.0.1:{server.server_address[1]}",
+                "--mode",
+                "monitor",
+                "--output",
+                str(output),
+                "--metrics",
+                str(metrics),
+                "--controller",
+                "front",
+                "--cluster-name",
+                "demo",
+                "--machines",
+                str(machine_file),
+                "--refresh-seconds",
+                "30",
+                "--machine-markdown-output",
+                str(markdown),
+                "--prometheus-url",
+                f"http://127.0.0.1:{server.server_address[1]}",
             ]
             empty_path = root / "no-commands"
             empty_path.mkdir()
-            result = subprocess.run(args, env=dict(os.environ, PATH=str(empty_path)), capture_output=True, text=True)
+            result = subprocess.run(
+                args, env=dict(os.environ, PATH=str(empty_path)), capture_output=True, text=True, check=False
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(output.read_text())
             self.assertEqual(data["mode"], "monitor")
             self.assertEqual(data["refresh_seconds"], 30)
             self.assertEqual(data["total_gpus"], 4)
             self.assertEqual(
-                [(node["name"], node["role"], node["health"], node["gpu_usage"], node["total_gpus"])
-                 for node in data["nodes"]],
-                [("front", "Monitor", "Healthy", "Not applicable", 0),
-                 ("gpu1", "Machine", "Healthy", "Idle", 4),
-                 ("cpu1", "Machine", "Healthy", "Not applicable", 0)],
+                [
+                    (node["name"], node["role"], node["health"], node["gpu_usage"], node["total_gpus"])
+                    for node in data["nodes"]
+                ],
+                [
+                    ("front", "Monitor", "Healthy", "Not applicable", 0),
+                    ("gpu1", "Machine", "Healthy", "Idle", 4),
+                    ("cpu1", "Machine", "Healthy", "Not applicable", 0),
+                ],
             )
             for key in ("jobs", "running_jobs", "pending_jobs", "allocated_gpus", "ranking", "partitions"):
                 self.assertNotIn(key, data)

@@ -54,11 +54,11 @@ test('Machines table shows compute states, home speeds, and GPU availability', a
   await page.goto(`${origin}${prefix}#machines`)
   const table = page.locator('.machine-list table')
   await expect(table.locator('thead th')).toHaveText(['Machine', 'Health', 'State', 'Link Speed', 'GPUs'])
-  await expect(table.locator('tbody tr')).toHaveCount(5)
-  await expect(table.locator('tbody tr th a')).toHaveText(['H100', 'H200', 'B200', 'Threadripper', 'DGX'])
-  await expect(table.getByRole('link', { name: 'front', exact: true })).toHaveCount(0)
+  await expect(table.locator('tbody tr')).toHaveCount(6)
+  await expect(table.locator('tbody tr th a')).toHaveText(['front', 'H100', 'H200', 'B200', 'Threadripper', 'DGX'])
+  await expect(table.getByRole('link', { name: 'front', exact: true })).toHaveCount(1)
   await expect(table.locator('tbody tr').filter({ hasText: 'Threadripper' })).toContainText('Idle')
-  await expect(table.locator('tbody tr td:nth-child(4)')).toHaveText(Array(5).fill('1 Gb/s'))
+  await expect(table.locator('tbody tr td:nth-child(4)')).toHaveText(['—', ...Array(5).fill('1 Gb/s')])
   await expect(table.getByRole('link', { name: 'B200', exact: true })).toHaveCount(1)
 })
 
@@ -81,6 +81,27 @@ test('demo GPU history changes with the selected time range', async ({ page }) =
   await expect(chart.getByRole('heading', { name: 'Cluster Usage (24 hours)' })).toBeVisible()
   await expect(curve).not.toHaveAttribute('d', week ?? '')
   await expect(ranges.getByRole('button', { name: '24h' })).toHaveAttribute('aria-pressed', 'true')
+})
+
+test('demo waiting time uses its selected period', async ({ page }) => {
+  await page.goto(`${origin}${prefix}`)
+  const card = page.locator('.waiting-card')
+  const periods = card.getByRole('group', { name: 'Waiting time period' })
+  await expect(card).toContainText('7 min')
+  await periods.getByRole('button', { name: '24h' }).click()
+  await expect(card).toContainText('3 min')
+  await periods.getByRole('button', { name: '30d' }).click()
+  await expect(card).toContainText('12 min')
+})
+
+test('demo header and Machines page fit a 320px phone', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 })
+  await page.goto(origin + prefix)
+  await expect(page.getByRole('button', { name: 'Change accent color' })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320)
+  await page.goto(origin + prefix + '#machines')
+  await expect(page.locator('.machine-list')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320)
 })
 
 test('static demo lets visitors browse all pages and view Grafana snapshots', async ({ page }) => {
@@ -147,7 +168,7 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await accents.click()
   await expect(page.locator('html')).toHaveAttribute('data-accent', 'coral')
   await page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '24h' }).click()
-  await expect(page.getByRole('button', { name: '24h' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '24h' })).toHaveAttribute('aria-pressed', 'true')
   const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
   for (const name of ['How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy']) {
     await nav.getByRole('link', { name, exact: true }).click()
@@ -157,7 +178,9 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await expect(page.getByRole('heading', { name: "Do's and don'ts" })).toBeVisible()
   await page.getByRole('tablist', { name: 'Shared vs scratch' }).getByRole('tab', { name: 'Scratch mode' }).click()
   await expect(page.getByRole('tablist', { name: 'Scratch mode' }).getByRole('tab', { name: 'Basic' })).toHaveAttribute('aria-selected', 'true')
-  for (const name of ['Home space', 'GPU software', 'Caches']) await expect(page.getByRole('tab', { name })).toBeVisible()
+  for (const name of ['Home space', 'GPU software', 'Containers', 'Interactive notebooks', 'Caches']) await expect(page.getByRole('tab', { name })).toBeVisible()
+  const notebook = await page.request.get(`${origin}${prefix}job-examples/interactive-notebook.sh`)
+  expect(notebook.ok()).toBe(true)
   await nav.getByRole('link', { name: 'Machines', exact: true }).click()
   for (const name of ['H100', 'H200', 'B200', 'Threadripper', 'DGX']) await expect(page.getByText(name, { exact: true }).first()).toBeVisible()
   await expect(page.locator('.machine-list')).not.toContainText('FPGA')
@@ -188,4 +211,19 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   expect(await page.locator('iframe').count()).toBe(0)
   expect(outside).toEqual([])
   expect(failed).toEqual([])
+})
+
+test('demo partition map keeps machine names clear of other names and servers', async ({ page }) => {
+  await page.goto(`${origin}${prefix}#machines`)
+  await page.getByRole('button', { name: 'Partitions', exact: true }).click()
+  const boxes = await page.locator('.cluster-map-canvas').getAttribute('data-label-boxes')
+  expect(boxes).not.toBeNull()
+  type Box = { name: string; x: number; y: number; w: number; h: number; server: { x: number; y: number; w: number; h: number } }
+  const labels = JSON.parse(boxes ?? '[]') as Box[]
+  expect(labels).toHaveLength(6)
+  const overlap = (a: Box, b: Pick<Box, 'x' | 'y' | 'w' | 'h'>) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+  for (const a of labels) for (const b of labels) if (a !== b) {
+    expect(overlap(a, b), `${a.name} label covers ${b.name} label`).toBe(false)
+    expect(overlap(a, b.server), `${a.name} label covers ${b.name} server`).toBe(false)
+  }
 })

@@ -125,6 +125,9 @@ test('the deployed site loads every tab without refused routes, errors, or CSP v
       if (await page.locator('.gpu-allocation-chart [role="alert"]').count()) problems.data.push('the GPU chart says: GPU history unavailable')
     }
     if (tab.hash === 'machines') {
+      const everyMachine = live.status.nodes.map(node => node.name)
+      const machineRows = await page.locator('.machine-list .machine-link').allInnerTexts()
+      if (JSON.stringify(machineRows) !== JSON.stringify(everyMachine)) problems.data.push(`Machines page shows ${machineRows.join(', ')}, status.json has ${everyMachine.join(', ')}`)
       // The cluster map also queries Grafana's query API.
       await page.getByRole('button', { name: 'Show cluster map' }).click()
       await expect(page.locator('.cluster-map-canvas canvas')).toBeVisible({ timeout: 30_000 })

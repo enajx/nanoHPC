@@ -21,6 +21,7 @@ def series(title: str, name: str, index: int, count: int) -> list[float]:
         "Allocated GPUs": 12,
         "Running jobs": 4,
         "Queue size": 6,
+        "Waiting time": 900,
         "Allocated GPU-hours": 35,
         "Fair-share factor": 0.7,
         "CPU in use": 40,
@@ -31,6 +32,8 @@ def series(title: str, name: str, index: int, count: int) -> list[float]:
         "GPU temperature": 60,
         "GPU power": 280,
     }[title]
+    if title == "Waiting time" and name.startswith("Longest"):
+        baseline = 1800
     if title == "Available memory":
         baseline = {"H100": 180, "H200": 180, "B200": 380, "Threadripper": 90, "DGX": 90}[name]
     spread = baseline * 0.2
@@ -121,13 +124,14 @@ def snapshot(kind: str) -> dict:
                 "sortBy": [{"displayName": "Priority", "desc": True}],
             }
         else:
-            names = (
-                (GPU_NODES if title.startswith("GPU ") else NODES)
-                if kind == "machines"
-                else ("Alice", "Bob", "Mike")
-                if kind == "usage"
-                else (title,)
-            )
+            if title == "Waiting time":
+                names = ("Mean wait, jobs started in the last 24 h", "Longest wait of a pending job")
+            elif kind == "machines":
+                names = GPU_NODES if title.startswith("GPU ") else NODES
+            elif kind == "usage":
+                names = ("Alice", "Bob", "Mike")
+            else:
+                names = (title,)
             panel["snapshotData"] = [time_frame(title, name, index) for index, name in enumerate(names)]
     return {"dashboard": dashboard, "name": f"nanoHPC demo: {dashboard['title']}"}
 

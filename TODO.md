@@ -26,7 +26,8 @@ flowchart LR
   S --> N[Add node + redeploy]:::queued
   W --> DEMO[Public demo build]:::done
   DEMO --> DP[Publish demo]:::done
-  DP --> R[Release v0.1]:::queued
+  DP --> WF[Website follow-ups]:::done
+  WF --> R[Release v0.1]:::queued
   BK --> R
   WZ --> R
   N --> R
@@ -106,6 +107,7 @@ flowchart LR
 
 ### Monitoring and website
 
+- [x] The chosen SLURM-REAL website improvements and demo updates work in the built site; live measurements, guide, Apptainer, and notebook helper are included. See [DONE.md](md/DONE.md).
 - [x] Deploy only monitoring tools on machines without Slurm, with a monitor-mode `cluster.yml`, wizard, dry run, check, and node deploy (see [DONE.md](md/DONE.md)).
 - [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
 - [x] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
@@ -164,7 +166,7 @@ flowchart LR
 - [x] The public demo shows 1 Gb/s for each compute machine's `/home` speed on the Overview and Machines pages. See [DONE.md](md/DONE.md).
 - [x] The public demo's machine table calls its speed column Link Speed. See [DONE.md](md/DONE.md).
 - [x] The public demo shows DGX with two GPUs and shows 12 of 14 GPUs allocated by default, with the sample jobs and machine availability in agreement. See [DONE.md](md/DONE.md).
-- [x] The Machines table lists compute machines only, shows GPU counts in grey boxes, and uses green for healthy and active, yellow for attention, coral for problems, and blue for idle. Cluster usage has one titled Machine and GPU metrics panel and no long-term history panel (see [DONE.md](md/DONE.md)).
+- [x] Overview keeps a compact compute-only table; Machines lists every configured machine and its role. Status colors show their meanings, and Cluster usage has a titled Machine and GPU metrics panel (see [DONE.md](md/DONE.md)).
 - [x] The Machines map is shown by default and offers Default, Partitions, and Geographic layouts (see [DONE.md](md/DONE.md)).
 - [x] The demo Machines table and map list H100, H200, B200, Threadripper, and DGX in that order, with jobs and Grafana samples using those machines (see [DONE.md](md/DONE.md)).
 - [x] The demo cluster usage curve stays smooth, shows whole GPU counts in its tooltip, reaches full capacity for sustained periods, drops to about half, returns to full capacity, and ends near 20% (see [DONE.md](md/DONE.md)).
@@ -191,8 +193,7 @@ flowchart LR
 
 ### Later
 
-- [ ] Real cluster websites show measured `/home` write and Internet download speeds for each machine; until speed checks are added, the table shows Unknown for these values.
-- [ ] Review features and setup decisions added in SLURM-REAL since the nanoHPC port began, then decide with the user which ones to bring into nanoHPC.
+- [ ] Review setup decisions added in SLURM-REAL since the nanoHPC port began, then decide with the user which ones to bring into nanoHPC.
 - [ ] The default configuration incorporates the policies in [policies_to_implement.md](policies_to_implement.md).
 - [ ] Explore whether nanoHPC can be sold as a commercial product while it stays fully open source. Very exploratory. Ideas to look at: providing some of the infrastructure on the server side, or an app to see the cluster status (the current view is that the website is the best way to do this).
 - [ ] restic backups with dated snapshots, and S3-style storage as a backup destination.
@@ -203,7 +204,6 @@ flowchart LR
 - [ ] Optional shared scratch on a separate storage machine (not the front node), seen by every compute node: a fast NFS server with NVMe or SSD disks first, BeeGFS later. Files unused for N days (30 to 90) are deleted by a daily cleanup. Needs a fast network; `stage-dataset --shared` builds on it.
 - [ ] A general "Welcome to <cluster name>" login banner (with a small "powered by nanoHPC") and some general info. Below it, notifications for that user only: when they are above the soft limit of their home usage (as defined in `cluster.yml`, the same for all users), they are told to clean up, with a summary of where most of their space is (for example a certain repository or certain worktrees).
 - [ ] See how the terminal login banner looks in SLURM-REAL and use it as inspiration for the login banner above. There it is `roles/job_modes/files/real-hpc` (big block-letter title with a short animation and time-of-day colours, then the user's jobs, the cluster's jobs, the 7-day waiting time, GPU-hours and ranking, an impact estimate, and home space with the largest folders), `roles/home_space` (each user's usage, readable only by them), and `roles/login_notice` (shown on interactive logins); tests in `tests/test_real_hpc.py`. In nanoHPC the title is the cluster name from `cluster.yml` and the links point to the cluster's own website; the impact estimate is kept as in SLURM-REAL (same fixed assumptions), to make configurable later (agreed 2026-10-03; the banner stays in Later).
-- [ ] SLURM-REAL's website added a Waiting time card (24h, 7d, 30d) and a "Powered by nanoHPC" footer (2026-10-03, commit b05616c); consider them for nanoHPC's website.
 - [ ] See how SLURM-REAL implements Slack notifications when a job ends and do the same: a private message to the job's user when their batch job ends, through a Slack app's bot token (job ID and name, how it ended with the exit code, run time, machine). Planned there on 2026-10-03 in `md/plan-slack.md` (commit 234223c); check whether it is built before porting.
 - [ ] Deploy only the cluster monitoring tools (metrics, alerts, status snapshot, Grafana, website) on a cluster that already has Slurm installed, without replacing its Slurm setup.
 - [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.

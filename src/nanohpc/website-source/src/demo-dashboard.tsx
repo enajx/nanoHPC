@@ -6,16 +6,16 @@ type DashboardName = 'queue' | 'queue-history' | 'usage' | 'machines' | 'history
 type Range = '24h' | '7d' | '30d'
 const panels: Record<DashboardName, string[]> = {
   queue: [],
-  'queue-history': ['Allocated GPUs', 'Running jobs', 'Queue size'],
+  'queue-history': ['Allocated GPUs', 'Running jobs', 'Queue size', 'Waiting time'],
   usage: ['Allocated GPU-hours', 'Fair-share factor'],
   machines: ['CPU in use', 'Available memory', 'Available filesystem space', 'GPU utilization', 'GPU memory used', 'GPU temperature', 'GPU power'],
   history: ['Allocated GPU-hours at daily sample', '24-hour mean CPU usage', '24-hour mean GPU utilization', 'Observed fraction of the 24-hour window'],
 }
 const snapshots: Partial<Record<DashboardName, string>> = {
-  queue: '5Cw5vd987wIPDLT1yheDbIFgCr8u7XqQ',
-  'queue-history': 'xbFs8ou07yMVCfbMjQI0fEZk8oyvAAYu',
-  usage: '2p0mk5O3JzOqepmXnrAfMbDcggnp3l8I',
-  machines: '4BmijI0IosJPdP5X0AjhMAsnsA7zkhLo',
+  queue: 'BOWfe1B3nmSA3NowZeoaHJPFFjC7WN2Q',
+  'queue-history': 'e7FhWXDoUkD30m1yBBKxlDiASt9eBZs8',
+  usage: 'vmtlXq8ieF4Yl4H9v4Revx2G9vyLw35Y',
+  machines: 'Jo3H3Uma3eSFWtYglY9TTZXBpVlPpILZ',
 }
 
 /** Stable fictional points for the static demo, with a different span for each control. */

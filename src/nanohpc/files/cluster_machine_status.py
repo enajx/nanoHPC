@@ -26,6 +26,7 @@ from urllib.request import urlopen
 ROLES = ("Front node", "Compute", "Storage", "Monitor", "Machine")
 HEALTH_QUERY = '{__name__=~"up|node_systemd_unit_state|node_filesystem_(readonly|avail_bytes|free_bytes|size_bytes|files_free)|node_boot_time_seconds|node_memory_MemTotal_bytes|cluster_machine_.*|cluster_gpu_collection_timestamp_seconds",job=~"node|node-.+"}'
 GPU_QUERY = "cluster_gpu_utilization_percent and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)"
+HOME_SPEED_TESTS = ("home_large_read", "home_large_write", "home_small_read", "home_small_write")
 
 
 def query(base: str, endpoint: str, parameters: dict[str, str | int]) -> list[dict[str, Any]]:
@@ -45,7 +46,7 @@ def measurements(base: str, end: int) -> tuple[list[dict[str, Any]], list[dict[s
     )
 
 
-def machine_specs(current: list[dict[str, Any]], end: int) -> dict[str, Any]:
+def machine_specs(current: list[dict[str, Any]], end: int, role: str) -> dict[str, Any]:
     """Join fixed exporter readings; stale inventory cannot claim current update status."""
 
     def value(metric: str, labels: dict[str, str]) -> float | None:
@@ -94,6 +95,11 @@ def machine_specs(current: list[dict[str, Any]], end: int) -> dict[str, Any]:
         if row["metric"]["__name__"] == "cluster_machine_gpu_memory_bytes" and fresh
     ]
     gpus.sort(key=lambda gpu: int(gpu["index"]))
+    speed_stamp = value("cluster_machine_speed_timestamp_seconds", {})
+    expected_speeds = (*HOME_SPEED_TESTS, "internet_download") if role == "Compute" else ("internet_download",)
+    speed_values = {name: value("cluster_machine_speed_mb_per_second", {"test": name}) for name in expected_speeds}
+    speed_fresh = speed_stamp is not None and 0 <= end - speed_stamp <= 2 * 86400
+    speed_complete = speed_fresh and all(value is not None and value >= 0 for value in speed_values.values())
     return {
         "collected_at": stamp if fresh else None,
         **{key: info.get(key) for key in ("os", "kernel", "cpu_model", "driver", "cuda_driver")},
@@ -107,6 +113,8 @@ def machine_specs(current: list[dict[str, Any]], end: int) -> dict[str, Any]:
         "pending_updates": measured("cluster_machine_pending_updates"),
         "updates_checked_at": measured("cluster_machine_updates_checked_timestamp_seconds"),
         "needs_restart": bool(restart) if restart in (0, 1) else None,
+        "speeds": speed_values if speed_complete else None,
+        "speeds_measured_at": speed_stamp if speed_complete else None,
         "disks": disks,
     }
 
@@ -204,7 +212,11 @@ def machine_status(
     status = (
         "Offline"
         if up == 0 and (role in ("Monitor", "Machine") or not responding)
-        else "Warning" if problems else "Unknown" if missing else "Healthy"
+        else "Warning"
+        if problems
+        else "Unknown"
+        if missing
+        else "Healthy"
     )
     return {
         "name": name,
@@ -212,8 +224,30 @@ def machine_status(
         "health": status,
         "health_details": problems + missing,
         "gpu_usage": gpu_usage,
-        **({"specs": machine_specs(current, end)} if role != "Front node" else {}),
+        "specs": machine_specs(current, end, role),
     }
+
+
+def maintenance_reason(slurm_state: str, drain_reason: str, partitions: list[str], down: set[str]) -> str | None:
+    """Name the Slurm state that marks a compute machine as down on purpose."""
+    if partitions and set(partitions) <= down:
+        return "The queue is paused (partitions down)"
+    if {"MAINT", "MAINTENANCE"} & set(slurm_state.split("+")):
+        return "A Slurm maintenance reservation"
+    if "DRAIN" in slurm_state and drain_reason.lower().startswith("maintenance"):
+        return "Drained: " + drain_reason
+    return None
+
+
+def apply_maintenance(status: dict[str, Any], reason: str) -> None:
+    """Keep planned work separate from machine faults in the public status."""
+    details = status["health_details"]
+    slurm_only = all(detail.startswith("Slurm state: ") for detail in details)
+    if status["health"] == "Healthy" or (status["health"] == "Warning" and slurm_only):
+        status["health"] = "Maintenance"
+        status["health_details"] = [reason]
+    else:
+        status["health_details"] = [reason] + details
 
 
 def monitor_machine_status(
@@ -229,7 +263,7 @@ def monitor_machine_status(
     if role not in ("Monitor", "Machine"):
         raise ValueError(f"Unknown monitor machine role {role!r} for {name}")
     current = [row for row in health if row["metric"].get("machine") == name]
-    specs = machine_specs(current, end)
+    specs = machine_specs(current, end, role)
     measured = specs["gpu_count"]
     count = int(measured) if measured is not None and measured >= 0 and float(measured).is_integer() else None
     result = machine_status(name, role, "", count or 0, units, mounts, health, history, end)

@@ -2,6 +2,13 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-06: website follow-ups and demo
+
+- The site now shows 24h, 7d, and 30d waiting times; ignores stale GPU history; separates planned maintenance from faults; shows all configured machines and their roles on Machines; explains health, speed, and update labels; shows live partition limits; and has a clearer map and phone layout. Queue history includes waiting time. The public demo keeps fictional data and its 1 Gb/s Link Speed labels.
+- Deployed clusters run nightly `/home` and Internet speed tests, with Internet-only tests on non-compute machines. Slurm machines install Apptainer from its official Ubuntu PPA. The guide includes supported container and interactive notebook steps, with a downloadable, token-protected Jupyter and browser VS Code helper.
+- Checked with 43 focused Python tests, 20 built-site browser tests, and a temporary Ubuntu 24.04 ARM VM: Apptainer ran an Alpine container as a normal user, the speed-test systemd service wrote all five measurements, and both notebook servers started. The VM was removed after testing.
+- Files: `src/nanohpc/ansible/{site.yml,partial.yml,roles/apptainer/,roles/machine_metrics/}`, `src/nanohpc/files/{cluster-monitor-snapshot,cluster_machine_status.py,cluster-speed-test,grafana/queue-history.json}`, `src/nanohpc/website-source/{src/,scripts/,public/job-examples/interactive-notebook.sh,tests/}`, `src/nanohpc/website/`, `tests/test_{machine_status,monitor_snapshot,dashboards,speed_test,notebook_helper}.py`.
+
 ## 2026-10-05: How to guide layout
 
 - Removed the terminal, worktree, quota, and node-selection text shown in the screenshot from the Submit a job card and generated Markdown. The guide has no section dividers, uses larger headings for the tabbed topics, and shows Jobs examples before the other topics.
@@ -24,14 +31,14 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-05: Machines map and table
 
-- The Machines table now lists compute machines only, without Internet. GPU availability has a grey box. Status labels use green for healthy and active, yellow for attention, coral for problems, and blue for idle. Cluster usage has a titled Machine and GPU metrics panel and no long-term history panel.
+- At this point the Machines table listed compute machines only, without Internet. The 2026-10-06 follow-up added all roles and real Internet measurements. GPU availability has a grey box. Status labels use green for healthy and active, yellow for attention, coral for problems, and blue for idle. Cluster usage has a titled Machine and GPU metrics panel and no long-term history panel.
 - The map opens by default and offers Default, Partitions, and Geographic views. The demo groups machines into fictional buildings. The machine list and sample jobs were later revised to five machines, as recorded above.
 - Files: `src/nanohpc/website-source/{src,scripts,tests}`, `src/nanohpc/files/cluster-monitor-snapshot`, `tests/test_monitor_snapshot.py`, `src/nanohpc/website/`.
 
 ## 2026-10-05: Grafana snapshots and Machines table
 
 - The public demo embeds four permanent Grafana snapshots with fictional data for Running Jobs and Queue, Queue history, GPU usage history, and Machine and GPU metrics. They cover a fixed sample week and need no live Grafana server. Filtered queue links still show the local sample jobs table. The current machine list is recorded above.
-- The Machines table shows compute machines, State, `/home` speed, and GPU availability. The demo shows fictional speeds. Live clusters show Unknown until speed checks are added.
+- The Machines table initially showed compute machines, State, `/home` speed, and GPU availability. The demo showed fictional speeds. The 2026-10-06 follow-up added the real speed checks and all machine roles.
 - Files: `src/nanohpc/website-source/{scripts/build-demo-snapshots.py,scripts/build-demo.mjs,src/demo-dashboard.tsx,src/main.tsx,src/machines.tsx,src/style.css,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`, `md/testing.md`.
 
 ## 2026-10-05: website Settings and footer
@@ -263,7 +270,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-06: demo range, link speed, and DGX sample
 
-- The demo's 24h, 7d, and 30d Cluster Usage controls show matching ends of one fictional 30-day history. Their chart shape, title, and selected button change together. The demo machine table calls its sample speed Link Speed; the live cluster table keeps Speed /home.
+- The demo's 24h, 7d, and 30d Cluster Usage controls show matching ends of one fictional 30-day history. Their chart shape, title, and selected button change together. The demo machine table calls its sample speed Link Speed; the 2026-10-06 follow-up added Internet to the live speed column.
 - DGX has two GPUs. Four running sample jobs allocate 12 of the demo's 14 GPUs: H100 and H200 use three each, B200 uses four, and DGX uses two. The machine table, overview count, jobs, and generated Grafana samples use the same names and counts. Four updated public Grafana snapshots were published and read back through their API.
 - The rebuilt demo passed all four browser tests, and the live-mode browser fixture kept Speed /home. A separate agent reviewed the data and chart ranges.
 - Files: `src/nanohpc/website-source/{scripts/build-demo.mjs,scripts/build-demo-snapshots.py,src/gpu-allocation-chart.tsx,src/main.tsx,src/demo-dashboard.tsx,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`, `md/testing.md`.

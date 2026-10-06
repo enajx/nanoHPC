@@ -194,11 +194,11 @@
         name: slurm_compute
         tasks_from: slurm_config
 
-- name: Slurm, scratch, job modes, and uv on the new machine
+- name: Slurm, scratch, job modes, uv, and Apptainer on the new machine
   hosts: only_node
   become: true
   tags: [node]
-  roles: [slurm_compute, scratch, job_modes, uv]
+  roles: [slurm_compute, scratch, job_modes, uv, apptainer]
 
 - name: The new machine's metrics certificate, signed by the front node
   hosts: only_node:role_front

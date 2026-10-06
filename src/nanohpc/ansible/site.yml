@@ -84,10 +84,10 @@
   become: true
   roles: [scratch]
 
-- name: Job modes (cluster-submit) and uv on the front node and the compute machines
+- name: Job modes (cluster-submit), uv, and Apptainer on the front node and compute machines
   hosts: role_slurm
   become: true
-  roles: [job_modes, uv]
+  roles: [job_modes, uv, apptainer]
 
 - name: Metrics certificates and node exporters on every machine
   hosts: all

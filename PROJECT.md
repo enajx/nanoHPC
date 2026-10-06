@@ -17,6 +17,7 @@ What a user of a Slurm cluster gets:
 - Fair GPU sharing: fair-share priority based on recent GPU usage, plus waiting time, and per-user limits.
 - Partitions defined by the administrator (for example a `main` partition for batch jobs and an `interactive` partition for a shell on a compute node).
 - Optional private scratch copies of a project for a job (`cluster-submit`), with declared outputs copied back.
+- Apptainer containers in Slurm jobs and a token-protected helper for interactive Jupyter or browser VS Code sessions.
 - A read-only website with live machine status, queue, GPU usage history, current policies, and a how-to guide.
 
 In monitor mode, a designated monitor host runs the shared monitoring services and website. The website shows machine health, measured GPU use, usage history, and existing login names. nanoHPC does not change Slurm, accounts, SSH access, or storage in this mode.
@@ -65,7 +66,9 @@ Tech stack. Most of it comes from the source deployment; changes from it are not
 - **Local scratch** on each compute node. Daily cleanup removes staged data unused for `scratch.cleanup_days` days and kept job copies `scratch.job_retention_days` days after their Slurm job ended (defaults: 14 and 7 days).
 - **rsync** backup of `/home` to a backup machine in the cluster or to an outside SSH server.
 - **uv** (pinned, checksum checked) installed for users' Python environments; `cluster-submit` runs jobs in a private scratch copy of a project; `cluster-health` checks each machine and runs at the end of every deploy.
+- **Apptainer** from its official Ubuntu PPA, in non-setuid mode, on front and compute machines. The website guide offers a downloadable helper for Jupyter or browser VS Code inside an interactive job.
 - **Prometheus** with **node_exporter** and GPU metrics. The front node or designated monitor host scrapes the other machines over mutually authenticated TLS. A second Prometheus keeps daily summaries for 5 years.
+- **Nightly speed tests** write `/home` read and write speeds on compute machines and Internet download speed on every machine; the website shows recent complete measurements.
 - **Grafana** with read-only dashboards embedded in the website: queue, queue history, GPU usage, machines, and long-term history in Slurm mode; machines and measured usage history in monitor mode.
 - **Python collector** (`cluster-monitor-snapshot`) that writes a `status.json` snapshot every 30 seconds for the website.
 - **React + TypeScript + Vite** website, shipped prebuilt in the package (or built on the machine serving it), served by its own **nginx** on the front node or monitor host over HTTPS (Let's Encrypt or the administrator's own certificate), under a configurable path. Monitor mode shows Overview, Machines, Usage, and Users without job or queue claims.
@@ -113,6 +116,7 @@ flowchart LR
 - Built: the website (M5): content from `cluster.yml` and the status snapshot, served by nginx on the front node under a configurable path (default `/cluster/`) over HTTPS (Let's Encrypt or the administrator's own certificate), optionally limited to listed networks, with forwarding rules for a lab's own website. Checked with a real browser on the simulated cluster. See [testing.md](md/testing.md).
 - Built: monitor-only deployment without Slurm: a monitor-mode `cluster.yml`, example, wizard, `deploy-monitor`, mode-aware `check`, alerts, snapshots, Grafana, and website. It leaves accounts, SSH, storage, and Slurm alone. Checked on three Ubuntu 24.04 VMs, including a node-only deploy. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
 - Published: the [public demo](https://najarro.science/nanoHPC/) uses fictional cluster data and four fixed Grafana snapshots. GitHub Pages rebuilds it from `main`; the live pages and snapshots were checked in Chromium. See [DONE.md](md/DONE.md).
+- Built: the selected website follow-ups show waiting time ranges, live machine and policy details, maintenance without hiding faults, nightly speed results, and a clearer map. The demo keeps fictional 1 Gb/s Link Speed values. Apptainer and both notebook helpers ran on a temporary Ubuntu 24.04 ARM VM; the built site passed 20 browser tests. See [DONE.md](md/DONE.md).
 - Built: nightly `/home` backup to the backup machine or an outside SSH server, and Slack alerts from the front node when a check starts failing or recovers (M6a).
 - Built: automatic deploys (M6b): the front node deploys the whole cluster from a branch of the configuration repository by itself (every few minutes or on a GitHub webhook), with the pinned nanoHPC version, its root login key limited to the front node, and failed commits reported and not retried.
 - Built: the setup wizard (M7): `nanohpc init`, a full-screen terminal app that probes the machines and writes or edits `cluster.yml`; `nanohpc fix-uid`; [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md) for agents.
