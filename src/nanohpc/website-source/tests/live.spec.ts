@@ -128,11 +128,15 @@ test('the deployed site loads every tab without refused routes, errors, or CSP v
       const everyMachine = live.status.nodes.map(node => node.name)
       const machineRows = await page.locator('.machine-list .machine-link').allInnerTexts()
       if (JSON.stringify(machineRows) !== JSON.stringify(everyMachine)) problems.data.push(`Machines page shows ${machineRows.join(', ')}, status.json has ${everyMachine.join(', ')}`)
-      // The cluster map also queries Grafana's query API.
-      await page.getByRole('button', { name: 'Show cluster map' }).click()
+      // The cluster map is visible by default and also queries Grafana's query API.
+      const mapToggle = page.getByRole('button', { name: 'Show cluster map' })
+      await expect(mapToggle).toHaveAttribute('aria-pressed', 'true')
       await expect(page.locator('.cluster-map-canvas canvas')).toBeVisible({ timeout: 30_000 })
       await page.waitForTimeout(3_000)
-      await page.getByRole('button', { name: 'Show cluster map' }).click()
+      await mapToggle.click()
+      await expect(page.locator('.cluster-map-canvas canvas')).toHaveCount(0)
+      await mapToggle.click()
+      await expect(page.locator('.cluster-map-canvas canvas')).toBeVisible({ timeout: 30_000 })
     }
     if (tab.hash === 'docs') {
       for (const file of ['docs.md', 'policy.md', 'machines.md']) {
