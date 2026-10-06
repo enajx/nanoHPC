@@ -62,7 +62,7 @@ class SimPlanTest(unittest.TestCase):
     """Reading a sim file and planning the VMs, without starting any."""
 
     def test_shipped_sim_files_are_valid(self) -> None:
-        for name, machines in [("everyday", 6), ("home-on-storage", 6), ("large", 21)]:
+        for name, machines in [("everyday", 6), ("home-on-storage", 6), ("large", 21), ("x86-build", 2)]:
             with self.subTest(name):
                 plan, errors = load_sim(SIM / f"{name}.yml")
                 self.assertEqual(errors, [])
@@ -754,6 +754,26 @@ class SimReleaseTest(SimUsersBase):
         self.assert_no_changes(result, len(config["machines"]))
         result = self.deploy(self.ssh_config_for("alice"), agent=True)
         self.assertEqual(result.returncode, 0, self.failure(result))
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimSmallSlurmDeployTest(SimUsersBase):
+    """Deploy two fresh VMs and run a Slurm job, sized for the manual Linux x86 runner."""
+
+    sim = SIM / "x86-build.yml"
+    state = ROOT / ".nanohpc-sim" / "x86-build"
+
+    def test_slurm_build_and_job(self) -> None:
+        self.up_with_test_key()
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        self.assertIn("Dry run passed: applying the changes.", result.stdout)
+        self.assertEqual(self.on_front("sinfo --version").strip(), "slurm 26.05.4")
+        self.assertEqual(self.ssh("cpu1", "slurmd --version").stdout.strip(), "slurm 26.05.4")
+        job = self.on_front(
+            "cd /tmp && sudo -u alice sbatch --parsable --wait -o /dev/null -p main -w cpu1 --wrap hostname"
+        ).strip()
+        self.assertEqual(self.finished_job(job), ("COMPLETED", "cpu1"))
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

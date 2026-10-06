@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-06: x86 Slurm build check
+
+- A manual Ubuntu 24.04 GitHub Actions run deployed nanoHPC on two x86_64 Lima VMs from a fresh runner. Slurm 26.05.4 ran on the front and compute machines, and a batch job completed on the compute machine. The [run](https://github.com/enajx/nanoHPC/actions/runs/37497159396) passed in 24 minutes. The same test passed locally on ARM first.
+- Files: `.github/workflows/sim-linux.yml`, `tests/test_sim.py`, `tests/sim/{x86-build.yml,cluster-x86-build.yml}`, `md/testing.md`.
+
 ## 2026-10-06: website follow-ups and demo
 
 - The site now shows 24h, 7d, and 30d waiting times; ignores stale GPU history; separates planned maintenance from faults; shows all configured machines and their roles on Machines; explains health, speed, and update labels; shows live partition limits; and has a clearer map and phone layout. Queue history includes waiting time. The public demo keeps fictional data and its 1 Gb/s Link Speed labels.

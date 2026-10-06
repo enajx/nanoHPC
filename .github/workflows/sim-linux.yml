@@ -1,7 +1,7 @@
-# Runs the simulated test cluster on a Linux x86 host (GitHub's runner, with KVM), to check that
-# `nanohpc sim up/down` works on Linux as well as on macOS. See md/testing.md.
+# Runs the simulated test cluster on a Linux x86 host (GitHub's runner, with KVM),
+# then deploys Slurm on two VMs and runs a job. See md/testing.md.
 # Started by hand only (`gh workflow run sim-linux.yml`): free Actions minutes are limited,
-# so it runs only when the Linux check is needed, e.g. after changes to the sim code or before a release.
+# so it runs only when the Linux check is needed, e.g. before a release.
 name: sim-linux
 
 on:
@@ -10,7 +10,7 @@ on:
 jobs:
   sim:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       LIMA_VERSION: "2.2.0"
     steps:
@@ -39,6 +39,13 @@ jobs:
         env:
           NANOHPC_SIM: "1"
         run: uv run python -m unittest tests.test_sim.SimClusterTest
+
+      - name: Build Slurm and run a job on x86 VMs
+        env:
+          NANOHPC_SIM: "1"
+        run: |
+          test "$(uname -m)" = x86_64
+          uv run python -m unittest tests.test_sim.SimSmallSlurmDeployTest
 
       - name: Lima logs on failure
         if: failure()

@@ -45,6 +45,7 @@ Requires [Lima](https://lima-vm.io) (`brew install lima` on macOS). Each test cl
 | Sim file | Cluster |
 | --- | --- |
 | `tests/sim/everyday.yml` | [examples/cluster.yml](../examples/cluster.yml) (at the repo root): `/home` on the front node, backup to the storage machine |
+| `tests/sim/x86-build.yml` | Two Ubuntu 24.04 machines for the manual Linux x86 Slurm build and job check |
 | `tests/sim/home-on-storage.yml` | `tests/sim/cluster-home-on-storage.yml`: `/home` on the storage machine, no backup |
 | `tests/sim/large.yml` | `tests/sim/cluster-large.yml`: front node and 20 compute nodes |
 | `tests/sim/monitor.yml` | [examples/monitor.yml](../examples/monitor.yml) (at the repo root): a monitor host, one fake-GPU machine, and one CPU-only machine, without Slurm |
@@ -158,8 +159,8 @@ Not covered: the NVIDIA driver, CUDA, and binding a job to a specific GPU. These
 
 ## Linux host: GitHub Actions
 
-The workflow [sim-linux.yml](../.github/workflows/sim-linux.yml) (at the repo root) runs the unit tests and the real-VM test on GitHub's Linux x86 runner, which has KVM. It runs only when started by hand (`gh workflow run sim-linux.yml`), because free Actions minutes are limited: run it when the Linux check is needed, for example after changes to the sim code or before a release, not on every push. This checks that `nanohpc sim up/down` works on a Linux host with x86 VMs. The repository is private, so the runner has 2 CPUs and about 7 GB of memory, and the run uses Actions minutes.
+The workflow [sim-linux.yml](../.github/workflows/sim-linux.yml) (at the repo root) runs the unit tests and two real-VM tests on GitHub's Linux x86 runner, which has KVM. It runs only when started by hand (`gh workflow run sim-linux.yml`), because free Actions minutes are limited: run it when the Linux check is needed, for example before a release, not on every push. The first VM test checks `nanohpc sim up/down`. The second deploys Slurm from source on a two-machine Ubuntu 24.04 cluster, checks the installed version on both machines, and waits for a batch job on the compute VM to finish. Its VMs request 4 GB together. The repository is private, so the runner has 2 CPUs and about 7 GB of memory, and the run uses Actions minutes.
 
 ## CPU types
 
-The Mac makes ARM64 VMs. Most lab machines are x86. nanoHPC builds Slurm from source for each CPU type, so both work. Before a release, the full setup is also run on x86 machines (a Linux host with Lima, or cloud VMs), then once on a real GPU machine for the driver and CUDA.
+The Mac makes ARM64 VMs. Most lab machines are x86. nanoHPC builds Slurm from source for each CPU type. The manual Linux workflow checks an x86 Slurm deploy and batch job. Before a release, the full setup is also run on x86 machines (a Linux host with Lima, or cloud VMs), then once on a real GPU machine for the driver and CUDA.
