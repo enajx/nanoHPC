@@ -92,7 +92,7 @@ flowchart LR
 - [x] `stage-dataset --shared` copies a dataset from a read-only shared datasets area into private local scratch.
 - [x] Daily cleanup removes kept failed `cluster-submit` job copies after `scratch.job_retention_days` days from their Slurm end time (7 by default), while keeping recent, running, and unknown jobs.
 - [x] A deploy remounts existing `/scratch` disk or image, `/home` disk or bind mount, and shared `/home` when its `/etc/fstab` entry changes; the managed `nosuid,nodev` options take effect without a reboot.
-- [ ] Handle changes to NFS-specific `/home` mount options that Linux cannot apply by remounting, without requiring a reboot.
+- [x] A deploy applies changed NFS-specific `/home` mount options without a reboot, while protecting compute jobs and restoring the previous mount after failure. See [DONE.md](md/DONE.md).
 - [x] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on Ubuntu 24.04 VMs). See [DONE.md](md/DONE.md).
 - [x] XFS home and scratch disks, and quota enforcement over NFS (a user over the hard limit cannot write), are checked on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md).
 - [x] `/home` quotas survive an Ubuntu kernel upgrade and reboot; the new kernel's quota modules and a later deploy are checked on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md).
