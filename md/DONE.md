@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-06: full fix-uid file preview
+
+- `nanohpc fix-uid` lists every local file it would re-own, escapes unusual names, and rechecks the plan before applying. The ownership step receives only the reviewed paths. The process check covers both real and effective UID.
+- Checked with the CLI tests and `SimSetupTest` on Ubuntu 24.04 VMs, including more than five files and the remote ownership step; the VMs were removed after testing. Files: `src/nanohpc/{fixuid,probe}.py`, `tests/{test_fixuid,test_probe,test_sim}.py`, `md/testing.md`.
+
 ## 2026-10-06: x86 Slurm build check
 
 - A manual Ubuntu 24.04 GitHub Actions run deployed nanoHPC on two x86_64 Lima VMs from a fresh runner. Slurm 26.05.4 ran on the front and compute machines, and a batch job completed on the compute machine. The [run](https://github.com/enajx/nanoHPC/actions/runs/37497159396) passed in 24 minutes. The same test passed locally on ARM first.

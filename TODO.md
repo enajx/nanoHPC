@@ -67,7 +67,7 @@ flowchart LR
 - [x] Users listed in the configuration are created on every machine with the same UID and their SSH keys. Login is by SSH key only; password login is off.
 - [x] If a machine already has a listed user with a different UID or group ID, the deploy stops on that machine without changing it, and says what conflicts and what to do next.
 - [x] If a machine has a local `/home` with data, the deploy stops on that machine without changing it, and says what to do next.
-- [ ] `nanohpc fix-uid USER MACHINE` harmonises a user's UID on one machine safely, only when the administrator runs it: it refuses while the user has running processes, and lists the files it will re-own before changing anything.
+- [x] `nanohpc fix-uid USER MACHINE` refuses while the user has running processes and lists every local file it will re-own before an administrator applies the UID change. See [DONE.md](md/DONE.md).
 - [x] Users can log in to the front node. Only administrators can log in to the other machines directly.
 - [x] nanoHPC never adds passwordless sudo rules. Administrators listed in `cluster.yml` use `sudo` through their forwarded SSH key (`ssh -A`, `pam_ssh_agent_auth`), by hand and for later deploys, so no password is typed or stored.
 - [x] Administrators' sudo by forwarded key also works on Ubuntu 26.04+ machines that mount `/home` (OpenSSH 10.1+ keeps the agent socket in the home folder): `/home` is exported with `no_root_squash` and mounted `nosuid,nodev` on every machine, so no program in `/home` can gain root.

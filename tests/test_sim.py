@@ -1835,6 +1835,9 @@ class SimSetupTest(SimUsersBase):
         with self.subTest("fix-uid: a read-only plan, then the renumbering after --apply"):
             self.assertEqual(self.ssh("gpu4", "sudo useradd -u 3005 -U -m alice").returncode, 0)
             self.assertEqual(self.ssh("gpu4", "sudo -u alice touch /tmp/alice-file").returncode, 0)
+            paths = [f"/tmp/alice-file-{index}" for index in range(6)]
+            created = self.ssh("gpu4", "sudo -u alice sh -c 'for i in 0 1 2 3 4 5; do touch /tmp/alice-file-$i; done'")
+            self.assertEqual(created.returncode, 0, created.stdout + created.stderr)
             command = [
                 "uv",
                 "run",
@@ -1849,9 +1852,14 @@ class SimSetupTest(SimUsersBase):
             dry = self.run_command(*command)
             self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
             self.assertIn("nothing was changed", dry.stdout)
+            for path in paths:
+                self.assertIn(f'    "{path}"\n', dry.stdout)
             self.assertIn("alice:x:3005:3005:", self.ssh("gpu4", "getent passwd alice").stdout)
             applied = self.run_command(*command, "--apply")
             self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+            preview = applied.stdout.split("ran as root on gpu4:", 1)[0]
+            for path in paths:
+                self.assertIn(f'    "{path}"\n', preview)
             self.assertIn("alice:x:2000:2000:", self.ssh("gpu4", "getent passwd alice").stdout)
             self.assertEqual(
                 self.ssh("gpu4", "stat -c %u:%g /tmp/alice-file /home/alice").stdout.split(), ["2000:2000", "2000:2000"]

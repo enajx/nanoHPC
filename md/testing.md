@@ -100,7 +100,7 @@ Which ones to run (agreed 2026-10-03), on Ubuntu 24.04 while developing:
 - `SimComputeUpdateTest` when the confirmed compute update changes. It deploys Ubuntu 24.04 VMs, runs dry runs and updates through `nanohpc update` for ordinary and SSH care group test packages, and checks the Slurm state and fresh logins. It also exercises the real SSH undo timer after reinstalling OpenSSH and deliberately damaging the test VM's `sshd` binary and login keys, checks their recovery, and verifies that another update is blocked until an administrator repairs the package state. Lima's `/boot` entry and cloud-init Netplan timestamp are normalized before the strict saved-setting check. Fake GPUs cannot verify NVIDIA drivers.
 - While fixing something, `NANOHPC_SIM_KEEP=1` keeps the simulated cluster up after the test, and the next run deploys onto it again, which is much quicker. A cluster that already ran a test may not behave like a new one, so the milestone still ends with a run from scratch.
 - `SimPartialDeployTest` when partial deploys (`--only`), `partial.yml`, or the role task files it runs change.
-- `SimSetupTest` (about half a minute once the Ubuntu image is cached) when the setup wizard, the probe, or fix-uid change: it probes fresh machines, runs the real wizard against them, and renumbers a user with fix-uid.
+- `SimSetupTest` (about half a minute once the Ubuntu image is cached) when the setup wizard, the probe, or fix-uid change: it probes fresh machines, runs the real wizard against them, lists all files in fix-uid's read-only plan, and renumbers a user.
 - Before the release: everything, also on Ubuntu 22.04 and 26.04 (`NANOHPC_SIM_FILE=ubuntu-2204` and `ubuntu-2604`).
 
 

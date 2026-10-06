@@ -46,6 +46,17 @@ def run_remote(
         return subprocess.CompletedProcess(arguments, TIMED_OUT, "", f"no answer within {timeout} seconds")
 
 
+def run_remote_input(
+    target: str, ssh_config: Path | None, command: str, forward_agent: bool, timeout: int, input_text: str
+) -> subprocess.CompletedProcess[str]:
+    """Run a remote command with text on stdin, with the same SSH and timeout behavior as run_remote."""
+    arguments = ssh_args(ssh_config, target, command, forward_agent)
+    try:
+        return subprocess.run(arguments, input=input_text, capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(arguments, TIMED_OUT, "", f"no answer within {timeout} seconds")
+
+
 def ssh_failure(target: str, result: subprocess.CompletedProcess[str]) -> str | None:
     """Return why SSH failed (it could not connect, an unknown host key, no answer in time), or None."""
     if result.returncode not in (255, TIMED_OUT):
