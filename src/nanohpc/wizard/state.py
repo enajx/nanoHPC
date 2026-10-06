@@ -166,7 +166,7 @@ def shape_problems(data: Any) -> list[str]:
     machines = data.get("machines")
     for name, machine in machines.items() if isinstance(machines, dict) else []:
         if expect(machine, dict, f"machines.{name}") and isinstance(machine, dict):
-            for key in ("cpu", "gpu", "home", "scratch", "backup"):
+            for key in ("cpu", "gpu", "home", "scratch", "backup", "shared"):
                 expect(machine.get(key), dict, f"machines.{name}.{key}")
             for key in ("roles", "partitions", "aliases"):
                 expect(machine.get(key), list, f"machines.{name}.{key}")
@@ -208,7 +208,7 @@ def error_step(error: str, mode: str = "slurm") -> int:
             return EXTRAS
         if len(parts) == 1:
             return STORAGE if "home role" in error else MACHINES
-        if len(parts) > 2 and parts[2] in ("home", "scratch"):
+        if len(parts) > 2 and parts[2] in ("home", "scratch", "shared"):
             return STORAGE
         if len(parts) > 2 and parts[2].startswith("partitions"):
             return PARTITIONS
@@ -350,6 +350,8 @@ def with_roles(machine: dict[str, Any], roles: list[str]) -> dict[str, Any]:
         result.pop("home", None)
     if "backup" not in roles:
         result.pop("backup", None)
+    if "shared" not in roles:
+        result.pop("shared", None)
     return result
 
 
@@ -431,8 +433,8 @@ def mkfs_command(device: str, home: bool) -> str:
     return f"sudo mkfs.ext4 -O quota {device}" if home else f"sudo mkfs.ext4 {device}"
 
 
-def disk_problem(facts: MachineFacts | None, device: str, home: bool) -> str | None:
-    """Return what keeps the chosen disk from being ready for /home or scratch (with the command to run for
+def disk_problem(facts: MachineFacts | None, device: str, home: bool | str) -> str | None:
+    """Return what keeps the chosen disk from being ready for /home, scratch, or shared datasets (with a command for
     an empty disk), or None when it is ready or the machine was not probed. The wizard never formats a disk:
     it only shows the command."""
     if facts is None or facts.error is not None:
@@ -441,11 +443,13 @@ def disk_problem(facts: MachineFacts | None, device: str, home: bool) -> str | N
     if disk is None:
         return f"{device} was not found on {facts.target}"
     use = disk_in_use(disk)
-    if use is not None:
-        return f"{device} is in use ({use}), so it cannot be used for /home or scratch: choose a spare disk."
+    shared = home == "shared"
+    if use is not None and not (shared and disk.mountpoint == "/shared"):
+        target = "/shared" if shared else "/home or scratch"
+        return f"{device} is in use ({use}), so it cannot be used for {target}: choose a spare disk."
     if disk.fstype is None:
         return (
-            f"{device} has no filesystem. On {facts.target}, run: {mkfs_command(device, home)}\n"
+            f"{device} has no filesystem. On {facts.target}, run: {mkfs_command(device, home is True)}\n"
             "The wizard never formats a disk; run this yourself, or skip and do it later (before the deploy)."
         )
     if disk.fstype not in ("ext4", "xfs"):
@@ -529,10 +533,15 @@ def checklist(state: WizardState, machine: str) -> list[CheckItem]:
     roles = values.get("roles") or []
     home = (values.get("home") or {}).get("device") if "home" in roles else None
     scratch = (values.get("scratch") or {}).get("device") if "compute" in roles else None
-    for key, device, is_home in (("home-disk", home, True), ("scratch-disk", scratch, False)):
+    shared = (values.get("shared") or {}).get("device") if "shared" in roles else None
+    for key, device, purpose in (
+        ("home-disk", home, True),
+        ("scratch-disk", scratch, False),
+        ("shared-disk", shared, "shared"),
+    ):
         if isinstance(device, str):
-            problem = disk_problem(facts, device, is_home)
-            what = "/home" if is_home else "scratch"
+            problem = disk_problem(facts, device, purpose)
+            what = "/home" if purpose is True else "/shared" if purpose == "shared" else "scratch"
             items.append(CheckItem(key, f"{what} disk {device} is ready", problem is None, problem or "", False))
     return items
 

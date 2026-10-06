@@ -17,6 +17,7 @@ What a user of a Slurm cluster gets:
 - Fair GPU sharing: fair-share priority based on recent GPU usage, plus waiting time, and per-user limits.
 - Partitions defined by the administrator (for example a `main` partition for batch jobs and an `interactive` partition for a shell on a compute node).
 - Optional private scratch copies of a project for a job (`cluster-submit`), with declared outputs copied back.
+- Optional read-only shared datasets, copied into a private local scratch cache with `stage-dataset --shared NAME`.
 - Apptainer containers in Slurm jobs and a token-protected helper for interactive Jupyter or browser VS Code sessions.
 - A read-only website with live machine status, queue, GPU usage history, current policies, and a how-to guide.
 
@@ -64,6 +65,7 @@ Tech stack. Most of it comes from the source deployment; changes from it are not
 - **systemd** services and timers for the collector, quotas, scratch cleanup, backup, and health checks.
 - **NFS** for the shared `/home`, with **disk quotas**, served from the front node or from a separate storage machine, on the administrator's disk (never formatted by nanoHPC) or the root disk. Exported `no_root_squash`, with `/home` mounted `nosuid,nodev` on every machine and `nofail` on NFS clients. The home server installs the extra-module package for its current kernel and the package that keeps quota modules with future kernel updates.
 - **Local scratch** on each compute node. Daily cleanup removes staged data unused for `scratch.cleanup_days` days and kept job copies `scratch.job_retention_days` days after their Slurm job ended (defaults: 14 and 7 days).
+- **Optional shared datasets** on a separate storage machine, distinct from the front and `/home` servers. nanoHPC mounts an administrator-prepared ext4 or XFS disk at `/shared`, exports only `/shared/datasets` read-only to compute machines, and mounts it there with `nosuid,nodev,nofail`. Each dataset has a `.dataset-version` file; `stage-dataset --shared NAME` copies it into a private local scratch cache, removed by the existing age cleanup. General user-writable shared scratch remains planned separately.
 - **rsync** backup of `/home` to a backup machine in the cluster or to an outside SSH server.
 - **uv** (pinned, checksum checked) installed for users' Python environments; `cluster-submit` runs jobs in a private scratch copy of a project; `cluster-health` checks each machine and runs at the end of every deploy.
 - **Apptainer** from its official Ubuntu PPA, in non-setuid mode, on front and compute machines. The website guide offers a downloadable helper for Jupyter or browser VS Code inside an interactive job.
@@ -82,6 +84,7 @@ Main components:
 - **nanoHPC command**: writes (wizard), validates, and turns the configuration into Ansible inventory. `nanohpc deploy` sets up Slurm mode; `nanohpc deploy-monitor` sets up monitoring only. Both support dry runs and node deploys.
 - **Front node**: Slurm controller and accounting database, login node, Prometheus, Grafana, the collector, and the website. By default also the `/home` server.
 - **Storage machine** (optional): serves `/home` over NFS instead of the front node.
+- **Shared datasets machine** (optional): serves `/shared/datasets` read-only to compute nodes from an administrator-prepared disk.
 - **Backup machine** (optional): receives the nightly `/home` backup. The backup can also go to an outside SSH server.
 - **Compute nodes**: `slurmd`, node and GPU exporters, local scratch. GPU or CPU-only.
 - **Monitor host and machines**: the host runs Prometheus, Grafana, alerts, the collector, and the website. Each directly used machine runs node and optional GPU exporters. The monitor host can also run work.
@@ -112,6 +115,7 @@ flowchart LR
 - Built: `nanohpc deploy`: Slurm, users, SSH access, sudo by forwarded key, and Munge (M3a), checked end to end on the simulated cluster (Ubuntu 24.04, ARM64). See [DONE.md](md/DONE.md).
 - Built: `/home` over NFS with quotas and local scratch with cleanup (M3b), checked on the simulated cluster with Ubuntu 22.04, 24.04, and 26.04, and both `/home` layouts.
 - Built: `cluster-submit` job modes, `stage-dataset`, uv for users, and `cluster-health`, which every deploy runs at the end (M3c). With this, setting up Slurm, users, storage, and scratch (phase 4's cluster part) is done; open follow-ups are in [TODO.md](TODO.md).
+- Built: optional read-only shared datasets with `stage-dataset --shared NAME`, including wizard setup, a narrow NFS export, private local staging and cleanup, health checks, and `--only node` updates. A fresh Ubuntu 24.04 VM test covered the server, both compute mounts, a refused source write, staging reuse, and a newly added CPU node. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
 - Built: metrics (M4a): certificates issued and renewed by a private authority on the front node, node exporters over mutual TLS on every machine, machine-spec and GPU collectors, Prometheus with 90-day detail and 5-year daily history.
 - Built: the status collector and Grafana (M4b): a 30-second `status.json` snapshot for the website, machine health from each machine's required services and mounts, users' quotas from the home machine, and six read-only Grafana dashboards on the front node's localhost. With this, monitoring (M4) is done.
 - Built: the website (M5): content from `cluster.yml` and the status snapshot, served by nginx on the front node under a configurable path (default `/cluster/`) over HTTPS (Let's Encrypt or the administrator's own certificate), optionally limited to listed networks, with forwarding rules for a lab's own website. Checked with a real browser on the simulated cluster. See [testing.md](md/testing.md).

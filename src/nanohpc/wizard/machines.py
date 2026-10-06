@@ -33,9 +33,10 @@ from nanohpc.wizard.state import (
 
 DEFAULT_IMAGE_GB = 100
 STORAGE_ADVICE = (
-    "Three kinds of storage: home (small, safe, backed up), shared scratch (large, fast, cleaned by age; "
-    "not built in nanoHPC yet), and local scratch (on each compute machine, for one job's data). "
-    "Before adding shared storage, get a faster network (10 GbE or more). As the cluster grows, move /home "
+    "Home holds user files and is backed up. Shared datasets are served read-only from /shared/datasets and copied "
+    "to each compute machine's local scratch with stage-dataset --shared. General shared scratch for user-written "
+    "files is planned separately. Before adding shared storage, consider a faster network (10 GbE or more). "
+    "As the cluster grows, move /home "
     "off the front node to its own storage machine (or a NAS)."
 )
 
@@ -301,7 +302,7 @@ class ScratchSizeInput(BoundInput):
 
 
 class StorageStep(Step):
-    """2 Storage: where /home lives and on which disk, scratch on each compute machine, and the quotas."""
+    """2 Storage: home, the optional shared dataset server, local scratch, and quotas."""
 
     def __init__(self, state: WizardState, index: int) -> None:
         super().__init__(state, index)
@@ -331,6 +332,42 @@ class StorageStep(Step):
             yield field("on", self.disk_select("home-device", home, device, ("the root disk", "root")))
             problem = disk_problem(state.facts.get(home), device, True) if device else None
             yield plain(problem or "", "warning" if problem else "", "home-advice")
+        yield Static("Shared datasets (optional)", classes="subheading")
+        shared = next((name for name, machine in machines.items() if "shared" in roles_of(machine)), None)
+        storage_machines = [
+            name
+            for name, machine in machines.items()
+            if "front" not in roles_of(machine)
+            and "compute" not in roles_of(machine)
+            and "home" not in roles_of(machine)
+            and any(role in roles_of(machine) for role in ("backup", "shared"))
+        ]
+        selected_shared = shared if shared in storage_machines else None
+        candidates = [selected_shared] if selected_shared is not None else storage_machines
+        shared_options: list[tuple[Text, str]] = [(Text(name), name) for name in candidates]
+        if selected_shared is None:
+            shared_options.insert(0, (Text("no shared datasets"), "none"))
+        yield field(
+            "served by",
+            Select(shared_options, value=selected_shared or "none", id="shared-machine"),
+        )
+        if selected_shared is not None:
+            device = ((machines[selected_shared] or {}).get("shared") or {}).get("device")
+            yield field("on", self.disk_select("shared-device", selected_shared, device, ("choose a disk", "choose")))
+            problem = disk_problem(state.facts.get(selected_shared), device, "shared") if device else None
+            yield plain(problem or "", "warning" if problem else "", "shared-advice")
+            yield Static(
+                "Prepare an ext4 or XFS disk for /shared. Put datasets under /shared/datasets, with a "
+                ".dataset-version file in each dataset folder. To change or turn this off, remove the shared "
+                "role or machine in step 1.",
+                classes="hint",
+            )
+        else:
+            yield Static(
+                "Choose an existing storage machine. To make a new one, set its role to shared in step 1, "
+                "then choose its disk here.",
+                classes="hint",
+            )
         yield Static("Scratch on each compute machine", classes="subheading")
         self.scratch_ids = {}
         for name, machine in machines.items():
@@ -425,6 +462,37 @@ class StorageStep(Step):
         else:
             machine["home"] = {"device": str(event.value)}
         self.state.file.set_machine(home, machine)
+        self.changed()
+        await self.reload()
+
+    @on(Select.Changed, "#shared-machine")
+    async def shared_machine(self, event: Select.Changed) -> None:
+        """Choose one non-front machine to serve shared datasets."""
+        if event.value in (Select.NULL, "none"):
+            return
+        machines = self.state.file.machines()
+        chosen = str(event.value)
+        roles = roles_of(machines[chosen])
+        if "front" in roles or "compute" in roles or "home" in roles or "shared" in roles or "backup" not in roles:
+            return
+        machine = with_roles(machines[chosen] or {}, [*roles, "shared"])
+        machine["shared"] = {}
+        self.state.file.set_machine(chosen, machine)
+        self.changed()
+        await self.reload()
+
+    @on(Select.Changed, "#shared-device")
+    async def shared_device(self, event: Select.Changed) -> None:
+        """Use the selected ext4 or XFS disk for /shared."""
+        if event.value in (Select.NULL, "probe", "choose"):
+            return
+        machines = self.state.file.machines()
+        shared = next(name for name, machine in machines.items() if "shared" in roles_of(machine))
+        machine = dict(machines[shared] or {})
+        if event.value == (machine.get("shared") or {}).get("device"):
+            return
+        machine["shared"] = {"device": str(event.value)}
+        self.state.file.set_machine(shared, machine)
         self.changed()
         await self.reload()
 

@@ -22,11 +22,14 @@ from nanohpc.deploy import (
     NANOHPC_REPOSITORY,
     REAL_RUN_FAILED,
     SLURM,
+    Only,
     ansible_cfg,
     check_then_apply,
     install_source,
     monitor_machines,
     nanohpc_wheel,
+    needed_machines,
+    only_machines,
     prepare,
     refusal,
 )
@@ -96,6 +99,37 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(scratch["job_retention_days"], 7)
         self.assertIn("/home 192.168.104.11(rw", (self.work / "files" / "exports").read_text())
         self.assertIn("node-store", (self.work / "files" / "prometheus.yml").read_text())
+
+    def test_shared_dataset_server_and_clients(self) -> None:
+        self.config["machines"]["store"]["roles"].append("shared")
+        self.config["machines"]["store"]["shared"] = {"device": "/dev/vdb"}
+        prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
+        groups = yaml.safe_load((self.work / "inventory.yml").read_text())["all"]["children"]
+        self.assertEqual(list(groups["role_shared"]["hosts"]), ["store"])
+        variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
+        self.assertEqual(
+            variables["shared"],
+            {
+                "server": "store",
+                "server_address": "192.168.104.20",
+                "device": "/dev/vdb",
+                "clients": ["gpu4", "gpu2", "cpu1", "gpu4i"],
+            },
+        )
+        machines = monitor_machines(self.config)
+        self.assertIn("/shared", machines["store"]["mounts"])
+        self.assertIn("/shared/datasets", machines["gpu4"]["mounts"])
+
+    def test_partial_node_includes_the_shared_datasets_server(self) -> None:
+        """A new compute node needs the shared server's updated export before mounting it."""
+        self.config["machines"]["datasets"] = {
+            "address": "192.168.104.30",
+            "roles": ["shared"],
+            "shared": {"device": "/dev/vdb"},
+        }
+        selected = only_machines(self.config, Only("node", "gpu4"))
+        self.assertIn("datasets", selected)
+        self.assertEqual(needed_machines(self.config, selected, "gpu4")["datasets"], "the shared datasets server")
 
     def test_metrics_variables(self) -> None:
         prepare(self.config, self.hostnames, None, True, ["gpu2"], False, None, self.work)

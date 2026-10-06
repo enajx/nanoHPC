@@ -169,7 +169,7 @@ class Part:
 
 # Each `--only` part. policy and partitions run the same plays: both live in slurm.conf, job_submit.lua, and the
 # QoS. `node NAME` runs everything on NAME, and only the shared parts on the other machines.
-EVERY_ROLE = ("front", "home", "backup", "compute")
+EVERY_ROLE = ("front", "home", "backup", "compute", "shared")
 ONLY: dict[str, Part] = {
     "users": Part(
         "users",
@@ -193,7 +193,7 @@ ONLY: dict[str, Part] = {
         "node",
         EVERY_ROLE,
         "everything on the machine, and the shared parts on the others: /etc/hosts, slurm.conf and Slurm's"
-        " restart, the /home exports, the Prometheus targets, and the machine lists of the status collector and of"
+        " restart, the /home and /shared exports, the Prometheus targets, and the machine lists of the status collector and of"
         " automatic deploys",
     ),
 }
@@ -271,7 +271,7 @@ def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
             "hosts": {name: None for name, machine in config["machines"].items() if role in machine["roles"]},
             "vars": machine_vars,
         }
-        for role in ("front", "home", "backup", "compute")
+        for role in ("front", "home", "backup", "compute", "shared")
     }
     groups["role_slurm"] = {"children": {"role_front": None, "role_compute": None}}
     groups["only_node"] = {"hosts": {} if node is None else {node: None}}
@@ -317,6 +317,20 @@ def home_variables(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def shared_variables(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the optional shared datasets server and its compute clients."""
+    servers = [(name, machine) for name, machine in config["machines"].items() if "shared" in machine["roles"]]
+    if not servers:
+        return None
+    name, machine = servers[0]
+    return {
+        "server": name,
+        "server_address": machine["address"],
+        "device": machine["shared"]["device"],
+        "clients": list(compute_machines(config)),
+    }
+
+
 def variables(
     config: dict[str, Any],
     work: Path,
@@ -345,6 +359,7 @@ def variables(
             "max_submit_jobs_per_user": config["policy"]["max_submit_jobs_per_user"],
             "max_gpus_per_user": -1 if policy_limit == "unlimited" else policy_limit,
             "home": home_variables(config),
+            "shared": shared_variables(config),
             "scratch": {
                 "machines": {name: machine["scratch"] for name, machine in compute_machines(config).items()},
                 "cleanup_days": config["scratch"]["cleanup_days"],
@@ -565,20 +580,27 @@ def monitor_machines(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
             for name in config["machines"]
         }
     server = home_server(config)
+    shared = shared_variables(config)
     clients = home_clients(config)
     result: dict[str, dict[str, Any]] = {}
     for name, machine in config["machines"].items():
         roles = machine["roles"]
-        nfs = ["nfs-server.service"] if name == server else []
+        nfs = ["nfs-server.service"] if name == server or (shared is not None and name == shared["server"]) else []
         home = ["/home"] if name == server or name in clients else []
+        shared_mount = []
+        if shared is not None:
+            if name == shared["server"]:
+                shared_mount = ["/shared"]
+            elif name in shared["clients"]:
+                shared_mount = ["/shared/datasets"]
         if "front" in roles:
             units = ["slurmctld.service", "slurmdbd.service", "munge.service", "mariadb.service", *nfs]
-            result[name] = {"role": "front", "units": units, "mounts": ["/", *home]}
+            result[name] = {"role": "front", "units": units, "mounts": ["/", *home, *shared_mount]}
         elif "compute" in roles:
             units = ["slurmd.service", "munge.service"]
-            result[name] = {"role": "compute", "units": units, "mounts": ["/", *home, "/scratch"]}
+            result[name] = {"role": "compute", "units": units, "mounts": ["/", *home, "/scratch", *shared_mount]}
         else:
-            result[name] = {"role": "storage", "units": nfs, "mounts": ["/", *home]}
+            result[name] = {"role": "storage", "units": nfs, "mounts": ["/", *home, *shared_mount]}
     return result
 
 
@@ -896,8 +918,8 @@ Options:
 
 def needed_machines(config: dict[str, Any], machines: list[str], node: str | None) -> dict[str, str]:
     """Return the machines the rest of a deploy depends on, among `machines` (the machines of this run), each with
-    what it is: the front node and the home machine (the same machine when /home is on the front node), and the
-    machine of `--only node` (`node`), whose shared parts the other machines get."""
+    what it is: the front node, the home machine, the optional shared datasets server, and the machine of
+    `--only node` (`node`), whose shared parts the other machines get."""
     front, _ = front_machine(config)
     home = home_server(config)
     needed = (
@@ -905,6 +927,12 @@ def needed_machines(config: dict[str, Any], machines: list[str], node: str | Non
         if front == home
         else {front: "the front node", home: "the home machine"}
     )
+    shared = shared_variables(config)
+    if shared is not None:
+        server = shared["server"]
+        needed[server] = (
+            f"{needed[server]} and the shared datasets server" if server in needed else "the shared datasets server"
+        )
     if node is not None:
         needed[node] = "the machine of --only node"
     return {machine: what for machine, what in needed.items() if machine in machines}

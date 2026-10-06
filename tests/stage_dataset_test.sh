@@ -11,9 +11,26 @@ export STAGE_SCRATCH_ROOT="$test_root/scratch/staged"
 export STAGE_LOCK_ROOT="$test_root/scratch/locks"
 export STAGE_CONFIG_FILE=/dev/null
 export STAGE_HOME_ROOT="$test_root/home/stageuser"
-mkdir -p "$STAGE_HOME_ROOT/private-data" "$STAGE_HOME_ROOT/broken"
+export STAGE_SHARED_ROOT="$test_root/shared/datasets"
+mkdir -p "$STAGE_HOME_ROOT/private-data" "$STAGE_HOME_ROOT/broken" "$STAGE_SHARED_ROOT/public-data"
 printf 'private\n' > "$STAGE_HOME_ROOT/private-data/data.txt"
 printf 'broken\n' > "$STAGE_HOME_ROOT/broken/data.txt"
+printf 'v1\n' > "$STAGE_SHARED_ROOT/public-data/.dataset-version"
+printf 'shared\n' > "$STAGE_SHARED_ROOT/public-data/data.txt"
+
+# A versioned dataset from the shared source has a reusable local copy.
+shared=$("$stage" --shared public-data)
+test -f "$shared/.ready"
+test "$(cat "$shared/data.txt")" = shared
+test "$(stat -c '%a' "$shared")" = 700
+test "$("$stage" --shared public-data)" = "$shared"
+printf 'v2\n' > "$STAGE_SHARED_ROOT/public-data/.dataset-version"
+test "$("$stage" --shared public-data)" != "$shared"
+
+# Names and versions must stay inside the shared source and local scratch.
+"$stage" --shared ../outside >/dev/null 2>&1 && exit 1
+printf '../escape\n' > "$STAGE_SHARED_ROOT/public-data/.dataset-version"
+"$stage" --shared public-data >/dev/null 2>&1 && exit 1
 
 # Staged once, reused while unchanged, private to the user.
 private=$("$stage" --private private-data)
@@ -50,4 +67,4 @@ fi
 # Paths outside the home folder are refused.
 "$stage" --private ../outside >/dev/null 2>&1 && exit 1
 "$stage" --private /etc >/dev/null 2>&1 && exit 1
-echo 'PASS: private staging, reuse, job tracking, concurrency, failed-copy and reserve guards, path checks'
+echo 'PASS: shared and private staging, reuse, job tracking, concurrency, failed-copy and reserve guards, path checks'

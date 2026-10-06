@@ -194,6 +194,7 @@
     - {path: /scratch, mode: "0755"}
     - {path: /scratch/staged, mode: "0711"}
     - {path: /scratch/staged/private, mode: "0711"}
+    - {path: /scratch/staged/shared, mode: "0711"}
     - {path: /scratch/locks, mode: "0755"}
 
 - name: Create the lock files

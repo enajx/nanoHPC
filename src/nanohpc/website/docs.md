@@ -181,7 +181,7 @@ sbatch job.sh
 
 ### Shared mode: With local scratch
 
-Keep code and results in your home, and put large datasets and temporary files on the compute machine’s local disk. Add these lines to job.sh. stage-dataset --private copies a dataset folder from your home (path relative to your home) to local scratch once, and later jobs on the same machine reuse it. A staged copy that no job has used for {{scratch_cleanup_days}} days is deleted automatically. Files in TMPDIR are not copied back; the last line deletes them.
+Keep code and results in your home, and put large datasets and temporary files on the compute machine’s local disk. Add these lines to job.sh. stage-dataset --private copies a dataset folder from your home (path relative to your home) to local scratch once, and later jobs on the same machine reuse it. If the administrator set up shared datasets, use stage-dataset --shared NAME to copy one from the read-only /shared/datasets area into your private local scratch. A staged copy that no job has used for {{scratch_cleanup_days}} days is deleted automatically. Files in TMPDIR are not copied back; the last line deletes them.
 
 When to use: large datasets that are read many times, or jobs that write many temporary files, where reading and writing over the shared home would slow the job.
 
