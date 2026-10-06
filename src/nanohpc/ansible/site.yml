@@ -5,8 +5,8 @@
 # Every deploy runs it twice. First in check mode, the dry run (`--check`): it changes nothing on the machines
 # except refreshing apt's package lists, and writes only temporary files in /tmp to check new configuration
 # files with their own checkers (the dry_run_check role). Then for real, on the machines whose dry run passed:
-# the others are left out, unchanged (nanohpc_left_out). If the front node or the home machine fails its dry
-# run, nanohpc deploy deploys nothing, since every other machine depends on them.
+# the others are left out, unchanged (nanohpc_left_out). If the front node, home machine, or configured
+# shared datasets server fails its dry run, nanohpc deploy deploys nothing, since other machines depend on them.
 # Read-only commands whose output later tasks use also run in the dry run (`check_mode: false` with
 # `changed_when: false`). A task that only makes sense after an earlier change is skipped in the dry run while
 # that change is still to be made (`ansible_check_mode and ...`), so a first deploy of a new machine can only be
@@ -24,6 +24,92 @@
         msg: "{{ inventory_hostname }} is left out of this deploy: its dry run failed"
       when: inventory_hostname in nanohpc_left_out
   roles: [preflight]
+
+# A removed shared role needs manual teardown. Stop before the base role replaces the
+# recorded roles, or an old /shared export or mount could silently remain in service.
+- name: Refuse stale shared datasets configuration
+  hosts: all
+  become: true
+  any_errors_fatal: true
+  vars:
+    shared_server_here: "{{ nanohpc.shared is not none and inventory_hostname == nanohpc.shared.server }}"
+    shared_client_here: "{{ nanohpc.shared is not none and inventory_hostname in nanohpc.shared.clients }}"
+  tasks:
+    - name: Look for the old shared datasets export
+      ansible.builtin.stat:
+        path: /etc/exports.d/nanohpc-shared.exports
+      register: shared_old_export
+
+    - name: Look for the old NFS mount requirement
+      ansible.builtin.stat:
+        path: /etc/systemd/system/nfs-server.service.d/nanohpc-shared.conf
+      register: shared_old_nfs_unit
+
+    - name: Look for the old shared datasets client marker
+      ansible.builtin.stat:
+        path: /etc/nanohpc/shared-datasets
+      register: shared_old_client
+
+    - name: Look for the machine's recorded roles
+      ansible.builtin.stat:
+        path: /etc/nanohpc/roles
+      register: shared_old_roles_file
+
+    - name: Read the machine's recorded roles
+      ansible.builtin.slurp:
+        src: /etc/nanohpc/roles
+      register: shared_old_roles
+      when: shared_old_roles_file.stat.exists
+
+    - name: Read any old /shared server fstab entry
+      ansible.builtin.command:
+        argv: [awk, '$2 == "/shared" { print }', /etc/fstab]
+      register: shared_old_server_fstab
+      changed_when: false
+      check_mode: false
+
+    - name: Read any old /shared/datasets client fstab entry
+      ansible.builtin.command:
+        argv: [awk, '$2 == "/shared/datasets" { print }', /etc/fstab]
+      register: shared_old_client_fstab
+      changed_when: false
+      check_mode: false
+
+    - name: Read any old /shared server mount
+      ansible.builtin.command: findmnt -n -o SOURCE --mountpoint /shared
+      register: shared_old_server_mount
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Read any old /shared/datasets client mount
+      ansible.builtin.command: findmnt -n -o SOURCE --mountpoint /shared/datasets
+      register: shared_old_client_mount
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Stop if a removed shared role still has setup on this machine
+      ansible.builtin.assert:
+        that:
+          - shared_server_here | bool or not shared_old_export.stat.exists
+          - shared_server_here | bool or not shared_old_nfs_unit.stat.exists
+          - shared_client_here | bool or not shared_old_client.stat.exists
+          - shared_server_here | bool or not (was_shared_server | bool) or (shared_old_server_fstab.stdout | trim == '' and shared_old_server_mount.stdout | trim == '')
+          - shared_client_here | bool or (shared_old_client_fstab.stdout | trim == '' and shared_old_client_mount.stdout | trim == '')
+        fail_msg: >-
+          {{ inventory_hostname }} still has shared datasets setup for a role no longer in cluster.yml.
+          Export: {{ shared_old_export.stat.exists }}; NFS mount requirement: {{ shared_old_nfs_unit.stat.exists }};
+          client marker: {{ shared_old_client.stat.exists }};
+          /shared in fstab: {{ shared_old_server_fstab.stdout | trim | default('none', true) }};
+          current /shared mount: {{ shared_old_server_mount.stdout | trim | default('none', true) }};
+          /shared/datasets in fstab: {{ shared_old_client_fstab.stdout | trim | default('none', true) }};
+          current /shared/datasets mount: {{ shared_old_client_mount.stdout | trim | default('none', true) }}.
+          Preserve any datasets, then remove the old export, NFS unit override, client marker, fstab entry,
+          and mount that belong to the removed role. Run deploy again after that manual teardown.
+        quiet: true
+      vars:
+        was_shared_server: "{{ 'shared' in ((shared_old_roles.content | default('') | b64decode).split()) }}"
 
 # Automatic deploys: a manual deploy pauses them; the front node's own key, which every machine accepts for
 # root from the front node only. A failure here stops the whole run (nothing is changed yet).
@@ -58,6 +144,20 @@
   hosts: all:!role_home:!role_backup
   become: true
   roles: [home_client]
+
+- name: Shared datasets on the storage machine
+  hosts: role_shared
+  become: true
+  roles:
+    - role: shared_server
+      when: nanohpc.shared is not none
+
+- name: Read-only shared datasets on the compute machines
+  hosts: role_compute
+  become: true
+  roles:
+    - role: shared_client
+      when: nanohpc.shared is not none
 
 - name: Munge authentication between Slurm machines
   hosts: role_slurm

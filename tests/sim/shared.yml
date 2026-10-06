@@ -1,0 +1,8 @@
+# Ubuntu 24.04 VMs for the managed shared datasets source and stage-dataset --shared.
+cluster: cluster-shared.yml
+ubuntu: "24.04"
+fake_gpus: [gpu4]
+vms:
+  default: {cpus: 1, memory_gb: 1, disk_gb: 10}
+  front: {cpus: 2, memory_gb: 3, disk_gb: 20}
+extra_disk_gb: 10

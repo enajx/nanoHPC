@@ -18,7 +18,7 @@
 #   snapshot for the website.
 # - node: everything on the machine in the only_node group (inventory), as site.yml would set up a compute
 #   machine; on the others only the shared parts: /etc/hosts, slurm.conf and the Slurm restart, the /home
-#   exports, the Prometheus targets, and the machine lists of the status collector and of automatic deploys.
+#   and /shared exports, the Prometheus targets, and the machine lists of the status collector and of automatic deploys.
 #   The front node also takes part in the Munge and metrics certificate steps, which read its key and its
 #   certificate authority (nothing changes there).
 
@@ -138,11 +138,27 @@
         name: home_server
         tasks_from: exports
 
+- name: The shared datasets server exports /shared to the new machine
+  hosts: role_shared
+  become: true
+  tags: [node]
+  roles:
+    - role: shared_server
+      when: nanohpc.shared is not none
+
 - name: The shared /home on the new machine
   hosts: only_node
   become: true
   tags: [node]
   roles: [home_client]
+
+- name: Read-only shared datasets on the new machine
+  hosts: only_node
+  become: true
+  tags: [node]
+  roles:
+    - role: shared_client
+      when: nanohpc.shared is not none
 
 - name: Munge on the new machine, with the front node's key
   hosts: only_node:role_front

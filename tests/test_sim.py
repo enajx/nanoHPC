@@ -62,7 +62,7 @@ class SimPlanTest(unittest.TestCase):
     """Reading a sim file and planning the VMs, without starting any."""
 
     def test_shipped_sim_files_are_valid(self) -> None:
-        for name, machines in [("everyday", 6), ("home-on-storage", 6), ("large", 21), ("x86-build", 2)]:
+        for name, machines in [("everyday", 6), ("home-on-storage", 6), ("large", 21), ("x86-build", 2), ("shared", 4)]:
             with self.subTest(name):
                 plan, errors = load_sim(SIM / f"{name}.yml")
                 self.assertEqual(errors, [])
@@ -80,6 +80,11 @@ class SimPlanTest(unittest.TestCase):
         self.assertEqual(vms["gpu4"].disks, ["nanohpc-everyday-gpu4-vdb"])
         self.assertEqual(vms["gpu2"].disks, [])
         self.assertEqual(plan.fake_gpus, ["gpu4", "gpu2", "gpu4i"])
+
+    def test_shared_dataset_server_has_its_own_disk(self) -> None:
+        plan = plan_of(SIM / "shared.yml")
+        vms = {vm.machine: vm for vm in plan.vms}
+        self.assertEqual(vms["store"].disks, ["nanohpc-shared-store-vdb"])
 
     def test_invalid_sim_files(self) -> None:
         cases: list[tuple[dict[str, Any], str]] = [
@@ -2477,6 +2482,59 @@ class SimComputeRestartTest(SimUsersBase):
         state = self.on_front("scontrol show node cpu1 -o")
         self.assertNotIn("DRAIN", state)
         self.assertNotIn("MAINT", state)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimSharedDatasetTest(SimUsersBase):
+    """Deploy a separate shared datasets server and stage one dataset on a compute VM."""
+
+    sim = SIM / "shared.yml"
+    state = ROOT / ".nanohpc-sim" / "shared"
+
+    def test_shared_dataset_from_server_to_local_scratch(self) -> None:
+        cluster, config, _ = self.up_with_test_key()
+        initial = yaml.safe_load(yaml.safe_dump(config))
+        initial["machines"].pop("cpu1")
+        cluster.write_text(yaml.safe_dump(initial))
+        deployed = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(deployed.returncode, 0, self.failure(deployed))
+        cluster.write_text(yaml.safe_dump(config))
+        added = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--only", "node", "cpu1")
+        self.assertEqual(added.returncode, 0, self.failure(added))
+        self.assertRegex(added.stdout, r"\nDry run: cpu1 would change \d+ things: ")
+        self.assertEqual(self.ssh("store", "findmnt -n -o SOURCE --mountpoint /shared").stdout.strip(), "/dev/vdb")
+        source = yaml.safe_load((self.state / "cluster.yml").read_text())["machines"]["store"]["address"]
+        for machine in ("gpu4", "cpu1"):
+            mount = self.ssh(machine, "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /shared/datasets")
+            self.assertEqual(mount.returncode, 0, mount.stderr)
+            mounted_source, filesystem, options = mount.stdout.split()
+            self.assertEqual(mounted_source, f"{source}:/shared/datasets")
+            self.assertEqual(filesystem, "nfs4")
+            self.assertTrue({"ro", "nosuid", "nodev"} <= set(options.split(",")))
+        created = self.ssh(
+            "store",
+            "sudo mkdir -p /shared/datasets/example && "
+            "printf 'v1\\n' | sudo tee /shared/datasets/example/.dataset-version >/dev/null && "
+            "printf 'dataset\\n' | sudo tee /shared/datasets/example/data.txt >/dev/null && "
+            "sudo chmod -R a+rX /shared/datasets/example",
+        )
+        self.assertEqual(created.returncode, 0, created.stdout + created.stderr)
+        refused = self.ssh("gpu4", "sudo -u alice touch /shared/datasets/example/forbidden")
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        staged = self.as_user("alice", "gpu4", "stage-dataset --shared example", agent=False)
+        self.assertEqual(staged.returncode, 0, staged.stdout + staged.stderr)
+        destination = staged.stdout.strip()
+        self.assertTrue(destination.startswith("/scratch/staged/shared/2000/example/v1"))
+        self.assertEqual(
+            self.ssh("gpu4", f"sudo -u alice cat {shlex.quote(destination)}/data.txt").stdout.strip(), "dataset"
+        )
+        again = self.as_user("alice", "gpu4", "stage-dataset --shared example", agent=False)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(again.stdout.strip(), destination)
+        self.assertNotEqual(self.ssh("gpu4", f"sudo -u bob ls {shlex.quote(destination)}").returncode, 0)
+        for machine in ("store", "gpu4", "cpu1"):
+            health = self.ssh(machine, "sudo cluster-health")
+            self.assertEqual(health.returncode, 0, f"{machine}: {health.stdout}{health.stderr}")
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

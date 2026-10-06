@@ -683,6 +683,64 @@ class PreparationTest(unittest.IsolatedAsyncioTestCase):
 class StorageTest(unittest.IsolatedAsyncioTestCase):
     """Disks in use are never offered a mkfs; an image larger than the free space is refused."""
 
+    async def test_new_shared_server_role_is_explicit(self) -> None:
+        fakes = Fakes({"datasets": [facts("datasets", ["192.168.104.21"], [], None)]}, {})
+        with tempfile.TemporaryDirectory() as folder:
+            app = WizardApp(example_copy(folder), None, fakes.dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await add_machine(pilot, "datasets", "datasets")
+                await go(pilot, 1)
+                values = [value for _, value in app.screen.query_one("#shared-machine", Select)._options]
+                self.assertNotIn("datasets", values)
+                await go(pilot, 0)
+                await select_row(pilot, "#machine-table", "datasets")
+                await pilot.press("enter")
+                await pilot.pause()
+                app.screen.query_one("#role-compute", Checkbox).value = False
+                app.screen.query_one("#role-shared", Checkbox).value = True
+                await pilot.click("#ok")
+                await settle(pilot)
+                self.assertEqual(app.state.file.get(["machines", "datasets", "roles"]), ["shared"])
+                self.assertNotIn("cpu", app.state.file.machines()["datasets"])
+                await go(pilot, 1)
+                self.assertEqual(app.screen.query_one("#shared-machine", Select).value, "datasets")
+                app.screen.query_one("#shared-device", Select).value = "/dev/vdb"
+                await settle(pilot)
+                self.assertEqual(app.state.file.get(["machines", "datasets", "shared", "device"]), "/dev/vdb")
+
+    async def test_shared_dataset_server_and_disk(self) -> None:
+        store_facts = facts("store", ["192.168.104.20"], [], None)
+        fakes = Fakes({"store": [store_facts]}, {})
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            app = WizardApp(path, None, fakes.dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await select_row(pilot, "#machine-table", "store")
+                await pilot.press("p")
+                await settle(pilot)
+                await go(pilot, 1)
+                shared_select = app.screen.query_one("#shared-machine", Select)
+                values = [value for _, value in shared_select._options]
+                self.assertIn("store", values)
+                self.assertNotIn("gpu4", values)
+                shared_select.value = "store"
+                await settle(pilot)
+                self.assertEqual(app.state.file.get(["machines", "store", "roles"]), ["backup", "shared"])
+                self.assertIn("compute", app.state.file.get(["machines", "gpu4", "roles"]))
+                await go(pilot, 6)
+                self.assertIn("machines.store.shared.device", text(app, "#errors ListItem Label"))
+                await go(pilot, 1)
+                app.screen.query_one("#shared-device", Select).value = "/dev/vdb"
+                await settle(pilot)
+                self.assertEqual(app.state.file.get(["machines", "store", "shared", "device"]), "/dev/vdb")
+                self.assertIn("sudo mkfs.ext4 /dev/vdb", text(app, "#shared-advice"))
+                await go(pilot, 0)
+                await select_row(pilot, "#machine-table", "store")
+                checklist = "\n".join(str(item.render()) for item in app.screen.query("#checklist Static"))
+                self.assertIn("/shared disk /dev/vdb is ready", checklist)
+
     def test_disk_rules(self) -> None:
         machine = facts("gpu4", ["10.0.0.4"], [], None)
         used = dataclasses.replace(machine, disks=[ROOT_DISK, ROOT_PART])
@@ -697,6 +755,8 @@ class StorageTest(unittest.IsolatedAsyncioTestCase):
         warning = str(scratch_warning(with_ext4, "/dev/vdc", None, None))
         self.assertIn("unused for 14 days", warning)
         self.assertIn("7 days after their jobs ended", warning)
+        mounted_shared = dataclasses.replace(ext4, mountpoint="/shared")
+        self.assertIsNone(disk_problem(dataclasses.replace(machine, disks=[mounted_shared]), "/dev/vdc", "shared"))
 
     async def test_image_size_is_limited_by_free_space(self) -> None:
         small = dataclasses.replace(facts("gpu2", ["192.168.104.12"], [], None), free_gb=50.0)

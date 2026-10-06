@@ -1,0 +1,152 @@
+# /shared is an administrator-prepared ext4 or XFS disk. Preflight checks the device and
+# any existing mount before this role changes the machine. nanoHPC never formats it.
+
+- name: Install the NFS server
+  ansible.builtin.apt:
+    name: nfs-kernel-server
+    state: present
+    install_recommends: false
+  register: shared_nfs_package
+
+- name: Read the current /shared mount
+  ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /shared
+  register: shared_mount_before
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Create the /shared mount point
+  ansible.builtin.file:
+    path: /shared
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: shared_mount_before.stdout | trim == ''
+
+- name: Mount the shared datasets disk at boot
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\S+\s+/shared\s'
+    line: "UUID={{ shared_fs.UUID }} /shared {{ shared_fs.TYPE }} defaults,nosuid,nodev,nofail 0 2"
+    backup: true
+    validate: findmnt --verify --tab-file %s
+  register: shared_fstab
+
+- name: Read the active shared datasets mount options
+  ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /shared
+  register: shared_options_before
+  changed_when: false
+  check_mode: false
+  when: shared_mount_before.stdout | trim != ''
+
+- name: Note whether the active shared datasets mount needs safer options
+  ansible.builtin.set_fact:
+    shared_options_missing: >-
+      {{ shared_mount_before.stdout | trim != '' and
+         (['nosuid', 'nodev'] | difference((shared_options_before.stdout | default('')).split(',')) | length > 0) }}
+
+- name: Show the planned repair of active shared datasets mount options
+  ansible.builtin.debug:
+    msg: The active /shared mount will be remounted with nosuid,nodev.
+  changed_when: true
+  when: ansible_check_mode and shared_options_missing | bool and not shared_fstab.changed
+
+- name: Mount the shared datasets disk now
+  ansible.builtin.command: mount /shared
+  when: not ansible_check_mode and shared_mount_before.stdout | trim == ''
+  changed_when: true
+
+- name: Apply changed shared datasets mount options now
+  ansible.builtin.command: mount -o remount /shared
+  when: not ansible_check_mode and shared_mount_before.stdout | trim != '' and (shared_fstab.changed or shared_options_missing | bool)
+  changed_when: true
+
+- name: Require the correct disk at /shared
+  ansible.builtin.command: findmnt -n -o UUID,FSTYPE --mountpoint /shared
+  register: shared_mount_now
+  changed_when: false
+  check_mode: false
+  failed_when: shared_mount_now.stdout.split() != [shared_fs.UUID, shared_fs.TYPE]
+  when: not (ansible_check_mode and shared_mount_before.stdout | trim == '')
+
+- name: Require safe active shared datasets mount options
+  ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /shared
+  register: shared_options_now
+  changed_when: false
+  check_mode: false
+  failed_when: "['nosuid', 'nodev'] | difference(shared_options_now.stdout.split(',')) | length > 0"
+  when: not (ansible_check_mode and (shared_mount_before.stdout | trim == '' or shared_fstab.changed or shared_options_missing | bool))
+
+- name: Create the shared datasets folder
+  ansible.builtin.file:
+    path: /shared/datasets
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not (ansible_check_mode and shared_mount_before.stdout | trim == '')
+
+# If the disk is absent at boot, NFS must fail to start instead of exporting the empty
+# mount-point directory. This also applies when the home server runs on this machine.
+- name: Create the NFS unit override folder
+  ansible.builtin.file:
+    path: /etc/systemd/system/nfs-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Require the shared datasets mount before NFS starts
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nfs-server.service.d/nanohpc-shared.conf
+    content: "[Unit]\nRequiresMountsFor=/shared\n"
+    owner: root
+    group: root
+    mode: "0644"
+  register: shared_nfs_unit
+
+- name: Reload the NFS unit after changing its mount requirement
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: shared_nfs_unit.changed and not ansible_check_mode
+
+- name: Check that NFS requires the shared datasets mount
+  ansible.builtin.command: systemctl show nfs-server.service --property=Requires --value
+  register: shared_nfs_requires
+  changed_when: false
+  check_mode: false
+  failed_when: "'shared.mount' not in shared_nfs_requires.stdout.split()"
+  when: not ansible_check_mode
+
+- name: Run the NFS server
+  ansible.builtin.service:
+    name: nfs-kernel-server
+    enabled: true
+    state: started
+  when: not (ansible_check_mode and shared_nfs_package.changed)
+
+- name: Create the folder for NFS exports
+  ansible.builtin.file:
+    path: /etc/exports.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Export /shared/datasets read-only to the compute machines
+  ansible.builtin.template:
+    src: shared.exports.j2
+    dest: /etc/exports.d/nanohpc-shared.exports
+    owner: root
+    group: root
+    mode: "0644"
+  register: shared_exports
+
+- name: Apply the shared datasets exports
+  ansible.builtin.command: exportfs -ra
+  when: shared_exports.changed and not ansible_check_mode
+
+- name: Mark the shared datasets server ready for its clients
+  ansible.builtin.set_fact:
+    shared_server_ready: true
