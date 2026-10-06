@@ -134,7 +134,7 @@ function MachineTable({ data, stale, link, demo }: { data: Snapshot | null; stal
   const speed = (value: number | null | undefined): string => value == null || stale ? 'Unknown' : demo ? `${Math.round(value * 8 / 1_000_000_000)} Gb/s` : `${Math.round(value / 1_000_000)} MB/s`
   return <section className="panel machine-list">
     {link ? <PanelLink href={link} title="Machines"/> : <div className="panel-heading"><h2>Machines</h2></div>}
-    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>State</th><th>Speed /home</th><th>GPUs</th></tr></thead>
+    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>State</th><th>{demo ? 'Link Speed' : 'Speed /home'}</th><th>GPUs</th></tr></thead>
       <tbody>{data?.nodes.filter(node => node.role === 'Compute').map((node) => {
         const health = stale ? 'Unknown' : node.health ?? 'Unknown'
         const state = stale ? 'Unknown' : node.role !== 'Compute' ? '—' : node.fpga_usage_percent != null ? `FPGA ${node.fpga_usage_percent}%` : node.total_gpus === 0 ? 'Idle' : node.gpu_usage ?? 'Unknown'

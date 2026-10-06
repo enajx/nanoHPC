@@ -20,6 +20,15 @@ const ranges = {
 } as const
 type RangeKey = keyof typeof ranges
 const rangeStorageKey = 'cluster-usage-range'
+// One fictional month. Shorter demo ranges use its most recent points.
+const demoStages: [number, number][] = [
+  [0, 0.2], [0.09, 0.3], [0.18, 0.5],
+  [0.25, 0.55], [0.3, 0.55], [0.35, 0.5],
+  [0.43, 0.3], [0.48, 0.3], [0.53, 0.35],
+  [0.62, 0.75], [0.68, 1], [0.72, 1], [1 - 7 / 30, 1], [0.77, 1], [0.81, 1],
+  [0.85, 0.75], [0.88, 0.55], [0.91, 0.35], [0.94, 0.2], [0.96, 0.23],
+  [1 - 1 / 30, 0.25], [0.975, 0.38], [0.985, 0.28], [0.99, 0.46], [0.995, 0.3], [1, 0.2],
+]
 
 /** Read the last chosen range; 7d when none is stored or storage is blocked. */
 function storedRange(): RangeKey {
@@ -114,6 +123,7 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { no
   const theme = useThemeColors()
   const colors = [theme.accent, ...theme.cards.filter(card => card.toLowerCase() !== theme.accent.toLowerCase()), ...extraColors]
   const [range, setRange] = useState<RangeKey>(storedRange)
+  const [demoEnd] = useState(() => Date.now())
   const [chart, setChart] = useState<{ range: RangeKey; points: ChartPoint[]; from: number; to: number } | null>(null)
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading')
   const choose = (next: RangeKey) => { storeRange(next); setRange(next) }
@@ -121,18 +131,13 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { no
     if (!machines.length) return
     setState('loading')
     if (demo) {
-      const to = Date.now()
+      const to = demoEnd
       const from = to - ranges[range].windowMs
       const capacity = totalCapacity
-      const stages: [number, number][] = [
-        [0, 0.2], [0.09, 0.3], [0.18, 0.5],
-        [0.25, 0.55], [0.3, 0.55], [0.35, 0.5],
-        [0.43, 0.3], [0.48, 0.3], [0.53, 0.35],
-        [0.62, 0.75], [0.68, 1], [0.72, 1], [0.77, 1], [0.81, 1],
-        [0.88, 0.55], [0.94, 0.2], [1, 0.2],
-      ]
-      const points = stages.map(([position, fraction]) => {
-        const point: ChartPoint = { time: from + position * ranges[range].windowMs, idle: 0 }
+      const monthMs = ranges['30d'].windowMs
+      const cutoff = 1 - ranges[range].windowMs / monthMs
+      const points = demoStages.filter(([position]) => position >= cutoff).map(([position, fraction]) => {
+        const point: ChartPoint = { time: to - monthMs + position * monthMs, idle: 0 }
         const allocation = machines.map(() => 0)
         const used = Math.round(capacity * fraction)
         let machineIndex = 0
@@ -174,7 +179,7 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { no
     load()
     const timer = window.setInterval(load, Math.max(30, refreshSeconds) * 1000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [names, totalCapacity, refreshSeconds, range, demo])
+  }, [names, totalCapacity, refreshSeconds, range, demo, demoEnd])
   const title = `Cluster Usage (${ranges[range].title})`
   // Until the chosen range has loaded, show loading instead of the previous range's data.
   const current = chart?.range === range ? chart : null

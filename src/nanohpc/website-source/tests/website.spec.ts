@@ -193,6 +193,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   await expect(page.getByText('Updates every 30s')).toBeVisible()
   await expect(page.locator('.stat').filter({ hasText: 'GPUs allocated' })).toContainText('2 / 4')
   const machineRows = page.locator('.machine-list tbody tr')
+  await expect(page.locator('.machine-list thead th').nth(3)).toHaveText('Speed /home')
   await expect(machineRows).toHaveCount(2)
   await expect(machineRows.nth(0)).toContainText('gpu1')
   await expect(machineRows.nth(1)).toContainText('cpu1')

@@ -9,7 +9,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-05: demo partitions and dark Grafana previews
 
-- The demo Training partition contains H100, H200, and B200. Inference contains Threadripper and Nvidia DGX and appears on the left side of the Partitions map. The public demo opens its Grafana snapshots in the dark theme.
+- The demo Training partition contains H100, H200, and B200. Inference contains Threadripper and DGX and appears on the left side of the Partitions map. The public demo opens its Grafana snapshots in the dark theme.
 - Files: `src/nanohpc/website-source/{scripts/build-demo.mjs,src/cluster-map/sketch.ts,src/demo-dashboard.tsx,src/style.css,tests/demo.spec.ts}`, `src/nanohpc/website/`.
 
 ## 2026-10-05: demo usage curve
@@ -19,7 +19,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-05: five demo machines
 
-- The demo lists H100, H200, B200, Threadripper, and Nvidia DGX in that order. Four GPU machines have running sample jobs. The overview usage curve gives each GPU machine a distinct smooth pattern, and the Grafana queue and machine samples match the new data.
+- The demo lists H100, H200, B200, Threadripper, and DGX in that order. Four GPU machines have running sample jobs. The overview usage curve gives each GPU machine a distinct smooth pattern, and the Grafana queue and machine samples match the new data.
 - Files: `src/nanohpc/website-source/{scripts/build-demo.mjs,scripts/build-demo-snapshots.py,src/gpu-allocation-chart.tsx,src/demo-dashboard.tsx,tests/demo.spec.ts}`, `src/nanohpc/website/`.
 
 ## 2026-10-05: Machines map and table
@@ -260,3 +260,10 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - GitHub renders the README Tech stack badges in one horizontal row that can wrap with the page width. The demo's five compute machines show 1 Gb/s for `/home` on Overview and Machines. The sample data uses 125 MB/s, which equals 1 Gb/s; live cluster speeds still use MB/s.
 - GitHub's Markdown renderer returned one paragraph containing all eight badges. The rebuilt demo passed all three browser tests, including the speed check on both pages.
 - Files: `README.md`, `src/nanohpc/website-source/{scripts/build-demo.mjs,src/main.tsx,tests/demo.spec.ts}`, `src/nanohpc/website/`.
+
+## 2026-10-06: demo range, link speed, and DGX sample
+
+- The demo's 24h, 7d, and 30d Cluster Usage controls show matching ends of one fictional 30-day history. Their chart shape, title, and selected button change together. The demo machine table calls its sample speed Link Speed; the live cluster table keeps Speed /home.
+- DGX has two GPUs. Four running sample jobs allocate 12 of the demo's 14 GPUs: H100 and H200 use three each, B200 uses four, and DGX uses two. The machine table, overview count, jobs, and generated Grafana samples use the same names and counts. Four updated public Grafana snapshots were published and read back through their API.
+- The rebuilt demo passed all four browser tests, and the live-mode browser fixture kept Speed /home. A separate agent reviewed the data and chart ranges.
+- Files: `src/nanohpc/website-source/{scripts/build-demo.mjs,scripts/build-demo-snapshots.py,src/gpu-allocation-chart.tsx,src/main.tsx,src/demo-dashboard.tsx,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`, `md/testing.md`.

@@ -162,13 +162,16 @@ flowchart LR
 - [x] The public demo shows Grafana snapshots with fictional, fixed-week data for Running Jobs and Queue, Queue history, GPU usage history, and Machine and GPU metrics (see [DONE.md](md/DONE.md)).
 - [x] The Machines table shows machine State, `/home` speed, and GPU availability (see [DONE.md](md/DONE.md)).
 - [x] The public demo shows 1 Gb/s for each compute machine's `/home` speed on the Overview and Machines pages. See [DONE.md](md/DONE.md).
+- [x] The public demo's machine table calls its speed column Link Speed. See [DONE.md](md/DONE.md).
+- [x] The public demo shows DGX with two GPUs and shows 12 of 14 GPUs allocated by default, with the sample jobs and machine availability in agreement. See [DONE.md](md/DONE.md).
 - [x] The Machines table lists compute machines only, shows GPU counts in grey boxes, and uses green for healthy and active, yellow for attention, coral for problems, and blue for idle. Cluster usage has one titled Machine and GPU metrics panel and no long-term history panel (see [DONE.md](md/DONE.md)).
 - [x] The Machines map is shown by default and offers Default, Partitions, and Geographic layouts (see [DONE.md](md/DONE.md)).
-- [x] The demo Machines table and map list H100, H200, B200, Threadripper, and Nvidia DGX in that order, with jobs and Grafana samples using those machines (see [DONE.md](md/DONE.md)).
+- [x] The demo Machines table and map list H100, H200, B200, Threadripper, and DGX in that order, with jobs and Grafana samples using those machines (see [DONE.md](md/DONE.md)).
 - [x] The demo cluster usage curve stays smooth, shows whole GPU counts in its tooltip, reaches full capacity for sustained periods, drops to about half, returns to full capacity, and ends near 20% (see [DONE.md](md/DONE.md)).
 - [x] The demo cluster usage curve has softer transitions between its full, half, and low periods (see [DONE.md](md/DONE.md)).
 - [x] The demo cluster usage curve has an asymmetric shape: a smaller first bump, a larger full-capacity second bump, then low use at the end (see [DONE.md](md/DONE.md)).
-- [x] The demo Training partition contains H100, H200, and B200; Inference contains Threadripper and Nvidia DGX and appears on the left side of the Partitions map (see [DONE.md](md/DONE.md)).
+- [x] The demo Cluster Usage chart's 24h, 7d, and 30d buttons show data for their selected periods, with the matching title and selected button. See [DONE.md](md/DONE.md).
+- [x] The demo Training partition contains H100, H200, and B200; Inference contains Threadripper and DGX and appears on the left side of the Partitions map (see [DONE.md](md/DONE.md)).
 - [x] The public demo embeds its Grafana snapshots with the dark theme (see [DONE.md](md/DONE.md)).
 - [x] The public demo is live on GitHub Pages and the README link opens it (see [DONE.md](md/DONE.md)).
 - [ ] A README, curated by the user: a nanoHPC title, a lightweight Slurm cluster description, a concise feature list, setup steps, the tech stack, and the MIT license. The current draft is under review (`README.md`, `assets/nanohpc-title.svg`, `assets/cluster.png`).
