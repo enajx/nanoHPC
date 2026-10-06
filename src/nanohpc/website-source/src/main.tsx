@@ -130,8 +130,8 @@ function Dashboard({ name, path }: { name: string; path: string }) {
 }
 
 /** Reuse the same observed machine states on Overview and Machines. */
-function MachineTable({ data, stale, link }: { data: Snapshot | null; stale: boolean; link: string | null }) {
-  const speed = (value: number | null | undefined): string => value == null || stale ? 'Unknown' : `${Math.round(value / 1_000_000)} MB/s`
+function MachineTable({ data, stale, link, demo }: { data: Snapshot | null; stale: boolean; link: string | null; demo: boolean }) {
+  const speed = (value: number | null | undefined): string => value == null || stale ? 'Unknown' : demo ? `${Math.round(value * 8 / 1_000_000_000)} Gb/s` : `${Math.round(value / 1_000_000)} MB/s`
   return <section className="panel machine-list">
     {link ? <PanelLink href={link} title="Machines"/> : <div className="panel-heading"><h2>Machines</h2></div>}
     <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>State</th><th>Speed /home</th><th>GPUs</th></tr></thead>
@@ -140,7 +140,7 @@ function MachineTable({ data, stale, link }: { data: Snapshot | null; stale: boo
         const state = stale ? 'Unknown' : node.role !== 'Compute' ? '—' : node.fpga_usage_percent != null ? `FPGA ${node.fpga_usage_percent}%` : node.total_gpus === 0 ? 'Idle' : node.gpu_usage ?? 'Unknown'
         const home = node.role === 'Compute' ? speed(node.specs?.speeds?.home_small_write) : '—'
         const available = stale ? 'Unknown' : node.role !== 'Compute' || node.total_gpus === 0 ? '—' : node.available_gpus != null && node.total_gpus != null ? `${node.available_gpus}/${node.total_gpus}` : 'Unknown'
-        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a></th><td><span className={`pill state-${health.toLowerCase()}`} title={stale ? 'Measurements are stale' : node.health_details?.join('; ')}>{health}</span></td><td><span className={`pill ${state.startsWith('FPGA') && !stale ? 'state-active' : `state-${state.toLowerCase()}`}`}>{state}</span></td><td><span className={`pill ${home.includes('MB/s') ? 'speed-good' : 'state-unknown'}`}>{home}</span></td><td><span className="pill state-neutral">{available}</span></td></tr>
+        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a></th><td><span className={`pill state-${health.toLowerCase()}`} title={stale ? 'Measurements are stale' : node.health_details?.join('; ')}>{health}</span></td><td><span className={`pill ${state.startsWith('FPGA') && !stale ? 'state-active' : `state-${state.toLowerCase()}`}`}>{state}</span></td><td><span className={`pill ${home === 'Unknown' ? 'state-unknown' : 'speed-good'}`}>{home}</span></td><td><span className="pill state-neutral">{available}</span></td></tr>
       })}</tbody></table></div>
     {!data && <p role="status">Machine status unavailable.</p>}
   </section>
@@ -211,11 +211,11 @@ function App({ site }: { site: SiteSettings }) {
         <section aria-label="Cluster summary" className="stat-grid">
           {[['Running jobs', data?.running_jobs, '#queue?state=RUNNING'], ['Pending jobs', data?.pending_jobs, '#queue?state=PENDING'], ['GPUs allocated', data ? `${data.allocated_gpus} / ${data.total_gpus}` : undefined, '#machines'], ['30days waiting time', waitingTime(data?.average_wait_seconds_30d), '#queue']].map(([label, value, href]) => <a key={label} className="stat panel" href={String(href)}><span>{label}</span><strong>{value ?? '—'}</strong></a>)}
         </section>
-        <div className="overview-machine-charts"><MachineTable data={data} stale={stale || failed} link="#machines"/><GpuAllocationChart nodes={data?.nodes ?? null} refreshSeconds={refresh} failed={failed} demo={demo}/></div>
+        <div className="overview-machine-charts"><MachineTable data={data} stale={stale || failed} link="#machines" demo={demo}/><GpuAllocationChart nodes={data?.nodes ?? null} refreshSeconds={refresh} failed={failed} demo={demo}/></div>
         <OverviewJobs jobs={stale || failed ? null : data?.jobs ?? null}/>
       </>}
       {page === 'queue' && <div className="queue-dashboards">{dashboard('Running Jobs and Queue', 'queue', `${graph('nanohpc-queue', 'now-6h')}&var-state=${encodeURIComponent(queueFilter)}`)}{dashboard('Queue history', 'queue-history', graph('nanohpc-queue-history', 'now-7d'))}</div>}
-      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh} demo={demo}/>}<MachineTable data={data} stale={stale || failed} link={null}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed}/></>}
+      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh} demo={demo}/>}<MachineTable data={data} stale={stale || failed} link={null} demo={demo}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed}/></>}
       {page === 'users' && <>
         <section className="panel table-panel"><h2>User ranking</h2><div className="table-scroll"><table><thead><tr><th>Rank</th><th>User</th><th>Allocated GPU-hours</th><th>Fair-share factor</th></tr></thead><tbody>{data && [...data.ranking].sort((left, right) => right.gpu_hours - left.gpu_hours || left.user.localeCompare(right.user)).map((row, index) => <tr key={row.user}><td>{index + 1}</td><th><a className="user-link" href={`#users?user=${encodeURIComponent(row.user)}`}>{row.user}</a></th><td>{row.gpu_hours.toFixed(3)}</td><td>{row.fairshare.toFixed(4)}</td></tr>)}</tbody></table></div></section>
         <UserCards users={data?.users ?? []} stale={stale || failed}/>

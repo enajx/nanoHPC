@@ -10,13 +10,14 @@ const site = {
 }
 const disks = [{ mount: '/', total_bytes: 500 * gib, used_bytes: 120 * gib, available_bytes: 380 * gib },
   { mount: '/scratch', total_bytes: 2000 * gib, used_bytes: 720 * gib, available_bytes: 1280 * gib }]
+const gigabitBytesPerSecond = 125e6
 const speeds = {
   front: { home_small_write: null, internet_download: null },
-  H100: { home_small_write: 13e6, internet_download: 133e6 },
-  H200: { home_small_write: 13e6, internet_download: 169e6 },
-  B200: { home_small_write: 15e6, internet_download: 143e6 },
-  Threadripper: { home_small_write: 13e6, internet_download: 99e6 },
-  'Nvidia DGX': { home_small_write: 16e6, internet_download: 95e6 },
+  H100: { home_small_write: gigabitBytesPerSecond, internet_download: 133e6 },
+  H200: { home_small_write: gigabitBytesPerSecond, internet_download: 169e6 },
+  B200: { home_small_write: gigabitBytesPerSecond, internet_download: 143e6 },
+  Threadripper: { home_small_write: gigabitBytesPerSecond, internet_download: 99e6 },
+  'Nvidia DGX': { home_small_write: gigabitBytesPerSecond, internet_download: 95e6 },
 }
 const specs = (cores, ram, gpuCount, gpuModel, cpuModel, unifiedMemoryGb) => ({
   collected_at: 0, os: 'Ubuntu 24.04 LTS', kernel: '6.8.0', cpu_model: cpuModel,

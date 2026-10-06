@@ -48,6 +48,8 @@ test('the four demo dashboards embed fixed Grafana snapshots', async ({ page }) 
 })
 
 test('Machines table shows compute states, home speeds, and GPU availability', async ({ page }) => {
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.machine-list table tbody tr td:nth-child(4)')).toHaveText(Array(5).fill('1 Gb/s'))
   await page.goto(`${origin}${prefix}#machines`)
   const table = page.locator('.machine-list table')
   await expect(table.locator('thead th')).toHaveText(['Machine', 'Health', 'State', 'Speed /home', 'GPUs'])
@@ -55,7 +57,7 @@ test('Machines table shows compute states, home speeds, and GPU availability', a
   await expect(table.locator('tbody tr th a')).toHaveText(['H100', 'H200', 'B200', 'Threadripper', 'Nvidia DGX'])
   await expect(table.getByRole('link', { name: 'front', exact: true })).toHaveCount(0)
   await expect(table.locator('tbody tr').filter({ hasText: 'Threadripper' })).toContainText('Idle')
-  await expect(table.locator('tbody tr').filter({ has: page.getByRole('link', { name: 'H200', exact: true }) })).toContainText('MB/s')
+  await expect(table.locator('tbody tr td:nth-child(4)')).toHaveText(Array(5).fill('1 Gb/s'))
   await expect(table.getByRole('link', { name: 'B200', exact: true })).toHaveCount(1)
 })
 
