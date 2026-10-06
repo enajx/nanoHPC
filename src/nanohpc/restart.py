@@ -15,6 +15,7 @@ from nanohpc.probe import run_remote, ssh_args, ssh_failure
 from nanohpc.render import front_machine, gpu_count, home_server
 
 LOCK = "/run/nanohpc-restart.lock"
+UPDATE_RESTART_REASON = "nanohpc-update-restart-required"
 WAIT_JOBS_SECONDS = 24 * 60 * 60
 WAIT_BOOT_SECONDS = 60 * 60
 POLL_JOBS_SECONDS = 60
@@ -86,13 +87,19 @@ def unlock(front: str, ssh_config: Path | None) -> None:
     root(front, ssh_config, ["rmdir", LOCK], 30)
 
 
-def node_state(front: str, machine: str, ssh_config: Path | None) -> str:
-    """Read the target's Slurm state before changing it."""
+def node_status(front: str, machine: str, ssh_config: Path | None) -> tuple[str, str]:
+    """Read the target's Slurm state and drain reason before changing it."""
     output = root(front, ssh_config, ["scontrol", "show", "node", machine, "-o"], 30)
     match = re.search(r"\bState=([^\s]+)", output)
     if match is None:
         raise RestartError(f"{machine}: cannot read its Slurm state")
-    return match[1]
+    reason = re.search(r"\bReason=([^\s]+)", output)
+    return match[1], reason[1] if reason is not None else ""
+
+
+def node_state(front: str, machine: str, ssh_config: Path | None) -> str:
+    """Read the target's Slurm state before changing it."""
+    return node_status(front, machine, ssh_config)[0]
 
 
 def drain(front: str, machine: str, ssh_config: Path | None, reason: str) -> None:
@@ -358,8 +365,10 @@ def execute(config: dict[str, Any], machine: str, ssh_config: Path | None) -> in
     success = False
     error: str | None = None
     try:
-        state = node_state(front, machine, ssh_config).upper()
-        if any(flag in state for flag in ("DRAIN", "DOWN", "FAIL", "MAINT")):
+        state, reason = node_status(front, machine, ssh_config)
+        state = state.upper()
+        update_drain = reason == UPDATE_RESTART_REASON and set(state.split("+")) <= {"IDLE", "DRAIN"}
+        if any(flag in state for flag in ("DRAIN", "DOWN", "FAIL", "MAINT")) and not update_drain:
             raise RestartError(f"{machine}: Slurm state is {state}; resolve that state before a restart")
         print(f"{machine}: draining in Slurm", flush=True)
         drain(front, machine, ssh_config, "restart by nanohpc")

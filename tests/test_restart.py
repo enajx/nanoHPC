@@ -41,7 +41,7 @@ elif "create reservation" in command:
 elif "delete ReservationName=" in command:
     state["reservation"] = False
 elif "scontrol show node" in command:
-    output = "NodeName=" + state["machine"] + " State=" + state["node_state"] + "\\n"
+    output = "NodeName=" + state["machine"] + " State=" + state["node_state"] + " Reason=" + state.get("reason", "none") + "\\n"
 elif "ip -4 -j addr show" in command:
     addresses = {{"front": "192.168.104.10", "gpu4": "192.168.104.11",
                   "cpu1": "192.168.104.13", "gpu4i": "192.168.104.14"}}
@@ -231,6 +231,17 @@ class RestartFlowTest(unittest.TestCase):
         self.assertEqual(state["node_state"], "DRAIN")
         self.assertEqual(state["boot_id"], "old-boot-id")
         self.assertFalse(state["lock"])
+
+    def test_update_drained_node_can_complete_required_restart(self) -> None:
+        """A successful update can hand its drained node to the existing restart command."""
+        self.state["node_state"] = "DRAIN"
+        self.state["reason"] = "nanohpc-update-restart-required"
+        self.state_path.write_text(json.dumps(self.state))
+        result = self.restart("gpu4")
+        state = json.loads(self.state_path.read_text())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(state["boot_id"], "new-boot-id")
+        self.assertEqual(state["node_state"], "IDLE")
 
     def test_success_reboots_then_tests_before_finishing(self) -> None:
         result = self.restart("gpu4")

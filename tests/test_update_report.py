@@ -49,6 +49,7 @@ class UpdateReportCommandTest(unittest.TestCase):
             machines.mkdir()
             packages = [
                 {"name": "linux-image-generic", "ubuntu": True, "security": True},
+                {"name": "linux-tools-6.8.0-146", "ubuntu": True, "security": False},
                 {"name": "openssh-server", "ubuntu": True, "security": True},
                 {"name": "libnm0", "ubuntu": True, "security": False},
                 {"name": "mariadb-server", "ubuntu": True, "security": False},
@@ -61,9 +62,8 @@ class UpdateReportCommandTest(unittest.TestCase):
             result = self.run_report(folder)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for name in MACHINES:
-            self.assertIn(f"{name}: 7 updates waiting, 3 security", result.stdout)
+            self.assertIn(f"{name}: 8 updates waiting, 3 security", result.stdout)
         for group, package in (
-            ("kernel", "linux-image-generic"),
             ("ssh", "openssh-server"),
             ("network", "libnm0"),
             ("mariadb", "mariadb-server"),
@@ -73,6 +73,9 @@ class UpdateReportCommandTest(unittest.TestCase):
         ):
             self.assertIn(f"{group} (1): {package}", result.stdout)
             self.assertEqual(result.stdout.count(package), len(MACHINES))
+        self.assertIn("kernel (2): linux-image-generic linux-tools-6.8.0-146", result.stdout)
+        self.assertEqual(result.stdout.count("linux-image-generic"), len(MACHINES))
+        self.assertEqual(result.stdout.count("linux-tools-6.8.0-146"), len(MACHINES))
         self.assertIn("package lists from 2025-01-01", result.stdout)
 
     def test_unreachable_machine_is_visible_and_fails_run(self) -> None:

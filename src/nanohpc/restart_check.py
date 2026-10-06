@@ -62,7 +62,7 @@ saved = [*pathlib.Path("/etc/netplan").glob("*.yaml"),
          *pathlib.Path("/etc/NetworkManager/system-connections").glob("*")]
 boot_time = time.time() - float(pathlib.Path("/proc/uptime").read_text().split()[0])
 route = output("ip", "-4", "-j", "route", "show", "default")
-addresses = output("ip", "-4", "-j", "addr", "show")
+addresses = output("ip", "-j", "addr", "show")
 device = ""
 if route:
     routes = json.loads(route)

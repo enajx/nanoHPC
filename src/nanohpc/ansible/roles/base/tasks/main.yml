@@ -26,6 +26,14 @@
     group: root
     mode: "0644"
 
+- name: Never restart a machine automatically after APT updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99nanohpc-no-automatic-reboot
+    content: "Unattended-Upgrade::Automatic-Reboot \"false\";\n"
+    owner: root
+    group: root
+    mode: "0644"
+
 # Also in the dry run, which needs the lists to know what the package tasks would install. The lists are
 # apt's copy of what the package sources offer: refreshing them changes no installed package or setting.
 - name: Refresh the package lists
