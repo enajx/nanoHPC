@@ -18,7 +18,7 @@ export const guidePanels = ['Jobs examples', 'Batch vs interactive', 'Shared vs 
 export type GuidePanel = typeof guidePanels[number]
 /** Short text shown under a panel's heading, before its tabs. */
 export const panelIntros: Partial<Record<GuidePanel, string>> = {
-  'Shared vs scratch': 'We recommend shared mode with a git worktree for most jobs. Use scratch mode for jobs that read or write a lot.',
+  'Shared vs scratch': 'Shared mode works on project files in your home; scratch mode works on a private copy on the compute machine. The tabs explain each way and its trade-offs.',
 }
 export type GuideTopic = { title: string; panel: GuidePanel; group?: string; text: string; whenToUse?: string; command: string }
 
@@ -74,6 +74,9 @@ export function guideSteps(values: GuideValues): GuideStep[] {
       { kind: 'heading', text: 'job.sh: save this file in your project' },
       { kind: 'code', text: '#!/bin/bash\n#SBATCH --gpus=1\n#SBATCH --time=00:05:00\n\nset -euo pipefail\nuv run --locked python script.py' },
       { kind: 'paragraph', text: 'set -euo pipefail stops the script when a command fails, an unset variable is used, or a command in a pipeline fails. Replace uv run --locked python script.py with the command that runs your code. uv is installed on the front node and the compute machines. If jobs have outbound internet access, uv can download locked packages; downloads use job time. Use nvidia-smi when you only want to check the GPU assigned to the job.' },
+      { kind: 'heading', text: 'Terminal: type these commands after saving job.sh' },
+      { kind: 'code', text: 'cd ~/YOUR_PROJECT\nsbatch job.sh' },
+      { kind: 'paragraph', text: 'Shared vs scratch below explains where to submit from and the trade-offs of each way.' },
     ] },
     { title: 'Example job scripts', column: 'left', blocks: [
       { kind: 'downloads', items: [
@@ -81,11 +84,12 @@ export function guideSteps(values: GuideValues): GuideStep[] {
         { file: 'one-gpu-uv-job.sh', description: 'one GPU, runs a uv Python script.' },
         { file: 'four-gpu-torchrun-job.sh', description: 'four GPUs, runs PyTorch distributed training.' },
         { file: 'cpu-memory-job.sh', description: 'one GPU with explicit CPU and RAM requests.' },
+        { file: 'interactive-notebook.sh', description: 'Jupyter or browser-based VS Code inside an interactive job.' },
       ] },
     ] },
     { title: "Do's and don'ts", column: 'left', blocks: [
-      { kind: 'pair', do: 'run installs and interactive tools inside a batch job or an interactive shell on a compute machine.',
-        dont: `run heavy or long-lived work on ${name}; the front node is shared by everyone.` },
+      { kind: 'pair', do: 'run installs, large downloads, Jupyter, and VS Code inside a batch job or an interactive shell on a compute machine. Keep notebook sessions protected by their token.',
+        dont: `run heavy or long-lived work on ${name}; the front node is shared by everyone. Do not leave personal services, crontabs, or open ports there.` },
     ] },
   ]
 }
@@ -105,6 +109,8 @@ export function guideTopics(values: GuideValues): GuideTopic[] {
     { title: 'Inspect your jobs', panel: 'Other settings', text: 'squeue shows queued and running jobs. sacct includes completed jobs. sstat shows CPU and memory use so far. An overlapping job step can inspect the assigned GPUs. seff is not installed; use sacct and sstat. Terminal output files and application checkpoints are separate outputs.', command: 'squeue --me\nsacct --starttime today --format=JobID,JobName,State,Elapsed,AllocTRES\nsstat -j JOB_ID.batch --format=JobID,AveCPU,MaxRSS\nsrun --jobid=JOB_ID --overlap nvidia-smi\nless training-JOB_ID.log' },
     { title: 'Home space', panel: 'Other settings', text: `Your home is shared between the front and compute machines. Its soft quota is ${values.home_quota_soft_gb} GB and its hard quota is ${values.home_quota_hard_gb} GB. Keep large temporary data on local scratch.`, command: 'du -sh "$HOME"\ndu -h -d 1 "$HOME" | sort -h' },
     { title: 'GPU software', panel: 'Other settings', text: 'The NVIDIA driver is installed on GPU machines. Check the assigned GPU and available driver from inside a job. Use the Machines page for the GPU model and memory on each machine.', command: 'nvidia-smi' },
+    { title: 'Containers', panel: 'Other settings', text: 'Apptainer runs containers inside Slurm jobs as your user, with no Docker daemon or root account in the container. It can use Docker registry images and existing Singularity .sif files. Add --nv for a GPU job; Slurm still controls which GPUs that job can use. Downloaded images and package data use your normal cache and storage settings.', command: '# Inside a GPU job or interactive shell:\napptainer exec --nv docker://nvidia/cuda:13.0.0-base-ubuntu22.04 nvidia-smi -L\n\n# Reuse a local image:\napptainer pull pytorch.sif docker://pytorch/pytorch\napptainer exec --nv pytorch.sif python train.py' },
+    { title: 'Interactive notebooks', panel: 'Other settings', text: 'Download interactive-notebook.sh to your laptop, copy it into your shared home on the cluster, then open an interactive Slurm shell on a compute machine. The helper starts Jupyter or browser-based VS Code and prints an SSH tunnel command to run on your laptop. The session uses a token and ends when the interactive job ends. Replace PARTITION with a partition that allows interactive shells.', command: `# On your laptop, after downloading interactive-notebook.sh:\nscp interactive-notebook.sh ${values.cluster_name}:~/interactive-notebook.sh\nssh ${values.cluster_name}\n\n# On the front node, then in the interactive shell:\nsrun --partition=PARTITION --gpus=1 --time=01:00:00 --pty bash -l\nbash ~/interactive-notebook.sh jupyter ${values.login_address}\n# Or: bash ~/interactive-notebook.sh vscode ${values.login_address}` },
     { title: 'Caches', panel: 'Other settings', text: 'uv, Hugging Face, and PyTorch caches are placed on local scratch on compute machines so package downloads do not fill the shared home.', command: 'printf "uv: %s\\nHugging Face: %s\\nPyTorch: %s\\n" "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME"' },
     { title: 'One GPU', panel: 'Jobs examples', text: 'Submit with sbatch from a git worktree, as shown in Shared vs scratch. The job goes to the default partition. The program must accept --output, or change that argument to match your program. Results go to an absolute path in your home, so they are saved as the job writes them.', command: '#!/bin/bash\n#SBATCH --gpus=1\n#SBATCH --time=02:00:00\nset -euo pipefail\nuv run --locked python train.py --output "$HOME/YOUR_PROJECT/results/$SLURM_JOB_ID"' },
     { title: 'Four GPUs', panel: 'Jobs examples', text: 'For training code that already supports four GPU workers. Requesting four GPUs does not make single-GPU code use them. Submit this script with sbatch job.sh from the shared project.', command: '#!/bin/bash\n#SBATCH --gpus=4\n#SBATCH --cpus-per-task=16\n#SBATCH --time=02:00:00\n#SBATCH --output=training-%j.log\nset -euo pipefail\nuv run --locked torchrun --nproc-per-node=4 train.py' },
@@ -114,7 +120,7 @@ export function guideTopics(values: GuideValues): GuideTopic[] {
 
 export const policyExplanation = {
   title: 'Queue ranking',
-  text: 'GPU-hours are allocated GPU count multiplied by runtime. CPU and RAM do not contribute to fair-share usage. Recent usage decays over time; users with less recent usage receive a higher fair-share factor. Waiting time also contributes to priority, and jobs with a shorter requested time may receive a bonus. Running jobs are not interrupted by ranking, and priority does not guarantee a start time.',
+  text: 'GPU-hours are allocated GPU count multiplied by runtime. CPU and RAM do not contribute to fair-share usage. Recent usage decays over time; users with less recent usage receive a higher fair-share factor. Waiting time also contributes to priority. Running jobs are not interrupted by ranking, and priority does not guarantee a start time.',
   command: 'sshare -al\nsprio',
   liveSummary: 'The partition names, default partition, time limits, and machines are live values. Open the website policy page for the current partition summary.',
 }

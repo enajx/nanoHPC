@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Activity, BookOpen, ChartNoAxesColumnIncreasing, ListOrdered, ScrollText, Server, UsersRound } from 'lucide-react'
-import { HowToUse, PartitionSummary, type Partition } from './guide'
+import { HowToUse, type Partition } from './guide'
 import { GpuAllocationChart } from './gpu-allocation-chart'
-import { MachineCards, type Machine } from './machines'
+import { healthText, MachineCards, SpeedBoxes, type Machine } from './machines'
+import { MachineLabel } from './machine-dialog'
 import { OverviewJobs, type OverviewJob } from './overview-jobs'
 import { UserCards, type User } from './users'
 import { policyExplanation, siteValues } from './documentation'
@@ -16,6 +17,7 @@ import { DemoDashboard } from './demo-dashboard'
 import { AboutButton } from './about-button'
 import { SettingsButton } from './settings-button'
 import { MonitorApp } from './monitor'
+import { PartitionBox } from './partition-box'
 import './style.css'
 
 type Page = 'overview' | 'queue' | 'machines' | 'users' | 'usage' | 'docs' | 'policy'
@@ -27,6 +29,9 @@ type Snapshot = {
   jobs: OverviewJob[]
   allocated_gpus: number
   total_gpus: number
+  queue_paused?: boolean
+  average_wait_seconds_1d?: number | null
+  average_wait_seconds_7d?: number | null
   average_wait_seconds_30d: number | null
   nodes: Machine[]
   policies: { name: string; value: string }[]
@@ -53,6 +58,22 @@ function waitingTime(seconds: number | null | undefined): string {
   if (minutes < 60) return `${minutes} min`
   const hours = Math.floor(minutes / 60)
   return `${hours} hr ${minutes % 60} min`
+}
+
+const waitingPeriods = [['24h', 'average_wait_seconds_1d'], ['7d', 'average_wait_seconds_7d'], ['30d', 'average_wait_seconds_30d']] as const
+
+/** Switch the Overview waiting-time figure between measured periods. */
+function WaitingTimeCard({ data }: { data: Snapshot | null }) {
+  const [period, setPeriod] = useState<typeof waitingPeriods[number][0]>('7d')
+  const key = waitingPeriods.find(([label]) => label === period)![1]
+  return <div className="stat panel waiting-card">
+    <div className="waiting-top"><span>Waiting time</span>
+      <div className="gpu-chart-ranges waiting-periods" role="group" aria-label="Waiting time period">
+        {waitingPeriods.map(([label]) => <button key={label} type="button" aria-pressed={period === label} onClick={() => setPeriod(label)}>{label}</button>)}
+      </div>
+    </div>
+    <a className="stat-link" href="#queue" aria-label={`Waiting time ${data ? waitingTime(data[key]) : 'unknown'}: open Jobs`}><strong>{data ? waitingTime(data[key]) : '—'}</strong></a>
+  </div>
 }
 
 /** Group policy rows by partition, default partition first, then rows for all partitions. */
@@ -131,16 +152,14 @@ function Dashboard({ name, path }: { name: string; path: string }) {
 
 /** Reuse the same observed machine states on Overview and Machines. */
 function MachineTable({ data, stale, link, demo }: { data: Snapshot | null; stale: boolean; link: string | null; demo: boolean }) {
-  const speed = (value: number | null | undefined): string => value == null || stale ? 'Unknown' : demo ? `${Math.round(value * 8 / 1_000_000_000)} Gb/s` : `${Math.round(value / 1_000_000)} MB/s`
   return <section className="panel machine-list">
     {link ? <PanelLink href={link} title="Machines"/> : <div className="panel-heading"><h2>Machines</h2></div>}
-    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>State</th><th>{demo ? 'Link Speed' : 'Speed /home'}</th><th>GPUs</th></tr></thead>
-      <tbody>{data?.nodes.filter(node => node.role === 'Compute').map((node) => {
+    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>State</th><th>{demo ? 'Link Speed' : 'Speed /home | Internet'}</th><th>GPUs</th></tr></thead>
+      <tbody>{data?.nodes.filter(node => !link || node.role === 'Compute').map((node) => {
         const health = stale ? 'Unknown' : node.health ?? 'Unknown'
-        const state = stale ? 'Unknown' : node.role !== 'Compute' ? '—' : node.fpga_usage_percent != null ? `FPGA ${node.fpga_usage_percent}%` : node.total_gpus === 0 ? 'Idle' : node.gpu_usage ?? 'Unknown'
-        const home = node.role === 'Compute' ? speed(node.specs?.speeds?.home_small_write) : '—'
+        const state = stale ? 'Unknown' : node.role === 'Front node' ? 'Active' : node.role !== 'Compute' ? '—' : node.fpga_usage_percent != null ? `FPGA ${node.fpga_usage_percent}%` : node.total_gpus === 0 ? 'Idle' : node.gpu_usage ?? 'Unknown'
         const available = stale ? 'Unknown' : node.role !== 'Compute' || node.total_gpus === 0 ? '—' : node.available_gpus != null && node.total_gpus != null ? `${node.available_gpus}/${node.total_gpus}` : 'Unknown'
-        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a></th><td><span className={`pill state-${health.toLowerCase()}`} title={stale ? 'Measurements are stale' : node.health_details?.join('; ')}>{health}</span></td><td><span className={`pill ${state.startsWith('FPGA') && !stale ? 'state-active' : `state-${state.toLowerCase()}`}`}>{state}</span></td><td><span className={`pill ${home === 'Unknown' ? 'state-unknown' : 'speed-good'}`}>{home}</span></td><td><span className="pill state-neutral">{available}</span></td></tr>
+        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a>{!link && <span className="pill state-neutral role-tag">{node.role}</span>}</th><td><MachineLabel node={node} topic="health" stale={stale} demo={demo} className={`state-${health.toLowerCase()}`} label={healthText(health)}>{healthText(health)}</MachineLabel></td><td><span className={`pill ${state.startsWith('FPGA') && !stale ? 'state-active' : `state-${state.toLowerCase()}`}`}>{state}</span></td><td><SpeedBoxes node={node} stale={stale} demo={demo} named={false}/></td><td><span className="pill state-neutral">{available}</span></td></tr>
       })}</tbody></table></div>
     {!data && <p role="status">Machine status unavailable.</p>}
   </section>
@@ -209,13 +228,14 @@ function App({ site }: { site: SiteSettings }) {
       {!isGuide && (failed || stale) && <div role="alert" className="notice">{data ? 'Showing stale data.' : 'Monitoring data unavailable.'}</div>}
       {page === 'overview' && <>
         <section aria-label="Cluster summary" className="stat-grid">
-          {[['Running jobs', data?.running_jobs, '#queue?state=RUNNING'], ['Pending jobs', data?.pending_jobs, '#queue?state=PENDING'], ['GPUs allocated', data ? `${data.allocated_gpus} / ${data.total_gpus}` : undefined, '#machines'], ['30days waiting time', waitingTime(data?.average_wait_seconds_30d), '#queue']].map(([label, value, href]) => <a key={label} className="stat panel" href={String(href)}><span>{label}</span><strong>{value ?? '—'}</strong></a>)}
+          {[['Running jobs', data?.running_jobs, '#queue?state=RUNNING'], ['Pending jobs', data?.pending_jobs, '#queue?state=PENDING'], ['GPUs allocated', data ? (data.queue_paused ? '0 / 0' : `${data.allocated_gpus} / ${data.total_gpus}`) : undefined, '#machines']].map(([label, value, href]) => <a key={label} className={`stat panel${label === 'GPUs allocated' && data?.queue_paused ? ' paused' : ''}`} href={String(href)}><span>{label}</span><strong>{value ?? '—'}</strong></a>)}
+          <WaitingTimeCard data={data}/>
         </section>
         <div className="overview-machine-charts"><MachineTable data={data} stale={stale || failed} link="#machines" demo={demo}/><GpuAllocationChart nodes={data?.nodes ?? null} refreshSeconds={refresh} failed={failed} demo={demo}/></div>
         <OverviewJobs jobs={stale || failed ? null : data?.jobs ?? null}/>
       </>}
       {page === 'queue' && <div className="queue-dashboards">{dashboard('Running Jobs and Queue', 'queue', `${graph('nanohpc-queue', 'now-6h')}&var-state=${encodeURIComponent(queueFilter)}`)}{dashboard('Queue history', 'queue-history', graph('nanohpc-queue-history', 'now-7d'))}</div>}
-      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh} demo={demo}/>}<MachineTable data={data} stale={stale || failed} link={null} demo={demo}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed}/></>}
+      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh} demo={demo}/>}<MachineTable data={data} stale={stale || failed} link={null} demo={demo}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed} roles={['Front node', 'Compute', 'Storage']} demo={demo}/></>}
       {page === 'users' && <>
         <section className="panel table-panel"><h2>User ranking</h2><div className="table-scroll"><table><thead><tr><th>Rank</th><th>User</th><th>Allocated GPU-hours</th><th>Fair-share factor</th></tr></thead><tbody>{data && [...data.ranking].sort((left, right) => right.gpu_hours - left.gpu_hours || left.user.localeCompare(right.user)).map((row, index) => <tr key={row.user}><td>{index + 1}</td><th><a className="user-link" href={`#users?user=${encodeURIComponent(row.user)}`}>{row.user}</a></th><td>{row.gpu_hours.toFixed(3)}</td><td>{row.fairshare.toFixed(4)}</td></tr>)}</tbody></table></div></section>
         <UserCards users={data?.users ?? []} stale={stale || failed}/>
@@ -227,7 +247,7 @@ function App({ site }: { site: SiteSettings }) {
         <h2 className="section-heading">Partition policy</h2>
         {data ? policyCards(data.policies, data.partitions ?? []).map((card) => <section className="panel policies" key={card.title}><div className="panel-heading"><h2>{card.title}</h2></div><dl>{card.rows.map((policy) => <div key={policy.name}><dt>{policy.name}</dt><dd>{policy.value}</dd></div>)}</dl></section>) : <section className="panel policies"><div className="panel-heading"><h2>Current policies</h2></div><p>Live policies are unavailable. Run <code>scontrol show partition</code> on the front node to inspect queue limits.</p></section>}
         <div className="user-guide"><section><h2>{policyExplanation.title}</h2><p>{policyExplanation.text}</p><pre><code>{policyExplanation.command}</code></pre></section>
-          <section className="partition-summary"><h2>Partitions</h2><PartitionSummary partitions={data?.partitions ?? null}/></section>
+          {data && <PartitionBox partitions={data.partitions ?? []} nodes={data.nodes} policies={data.policies}/>}
         </div>
       </>}
       <footer><p>{demo ? 'This demo' : site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>

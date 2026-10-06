@@ -160,7 +160,8 @@ export function GpuAllocationChart({ nodes, refreshSeconds, failed, demo }: { no
       const from = end.getTime() - ranges[range].windowMs
       const body = {
         from: new Date(from).toISOString(), to: end.toISOString(),
-        queries: ['cluster_node_allocated_gpus', 'cluster_node_total_gpus'].map((expr, index) => ({
+        // Each historical sample counts only while the controller's snapshot was fresh at that time.
+        queries: ['cluster_node_allocated_gpus', 'cluster_node_total_gpus'].map(name => `${name} and on() (time() - cluster_snapshot_timestamp_seconds < 90)`).map((expr, index) => ({
           refId: index ? 'B' : 'A', datasource: { uid: 'cluster-detail', type: 'prometheus' },
           expr, instant: false, range: true, intervalMs: 300000, maxDataPoints: 9000,
         })),

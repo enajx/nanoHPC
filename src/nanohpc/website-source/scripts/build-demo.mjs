@@ -33,7 +33,8 @@ const node = (name, role, cores, ram, gpus, available, gpuModel, cpuModel, unifi
 })
 const snapshot = {
   generated_at: '2026-01-01T00:00:00Z', refresh_seconds: 30, accounting_start: '2026-01-01T00:00:00Z',
-  running_jobs: 4, pending_jobs: 2, average_wait_seconds_30d: 745,
+  running_jobs: 4, pending_jobs: 2,
+  average_wait_seconds_1d: 180, average_wait_seconds_7d: 420, average_wait_seconds_30d: 745,
   total_gpus: 14, allocated_gpus: 12,
   jobs: [
     { id: '101', user: 'Alice', state: 'RUNNING', gpus: 3, node: 'H100', priority: 2500, seconds: 3725 },

@@ -57,18 +57,28 @@ uv run --locked python script.py
 
 set -euo pipefail stops the script when a command fails, an unset variable is used, or a command in a pipeline fails. Replace uv run --locked python script.py with the command that runs your code. uv is installed on the front node and the compute machines. If jobs have outbound internet access, uv can download locked packages; downloads use job time. Use nvidia-smi when you only want to check the GPU assigned to the job.
 
+### Terminal: type these commands after saving job.sh
+
+```bash
+cd ~/YOUR_PROJECT
+sbatch job.sh
+```
+
+Shared vs scratch below explains where to submit from and the trade-offs of each way.
+
 ## Example job scripts
 
 - [Download gpu-check-job.sh](job-examples/gpu-check-job.sh): one GPU, checks the assigned GPU.
 - [Download one-gpu-uv-job.sh](job-examples/one-gpu-uv-job.sh): one GPU, runs a uv Python script.
 - [Download four-gpu-torchrun-job.sh](job-examples/four-gpu-torchrun-job.sh): four GPUs, runs PyTorch distributed training.
 - [Download cpu-memory-job.sh](job-examples/cpu-memory-job.sh): one GPU with explicit CPU and RAM requests.
+- [Download interactive-notebook.sh](job-examples/interactive-notebook.sh): Jupyter or browser-based VS Code inside an interactive job.
 
 ## Do's and don'ts
 
-Do: run installs and interactive tools inside a batch job or an interactive shell on a compute machine.
+Do: run installs, large downloads, Jupyter, and VS Code inside a batch job or an interactive shell on a compute machine. Keep notebook sessions protected by their token.
 
-Don't: run heavy or long-lived work on {{cluster_name}}; the front node is shared by everyone.
+Don't: run heavy or long-lived work on {{cluster_name}}; the front node is shared by everyone. Do not leave personal services, crontabs, or open ports there.
 
 ## Jobs examples
 
@@ -139,7 +149,7 @@ srun --partition=PARTITION --gpus=1 --cpus-per-task=4 --time=01:00:00 --pty bash
 
 ## Shared vs scratch
 
-We recommend shared mode with a git worktree for most jobs. Use scratch mode for jobs that read or write a lot.
+Shared mode works on project files in your home; scratch mode works on a private copy on the compute machine. The tabs explain each way and its trade-offs.
 
 ### Shared mode: With a git worktree
 
@@ -259,6 +269,34 @@ The NVIDIA driver is installed on GPU machines. Check the assigned GPU and avail
 
 ```bash
 nvidia-smi
+```
+
+### Containers
+
+Apptainer runs containers inside Slurm jobs as your user, with no Docker daemon or root account in the container. It can use Docker registry images and existing Singularity .sif files. Add --nv for a GPU job; Slurm still controls which GPUs that job can use. Downloaded images and package data use your normal cache and storage settings.
+
+```bash
+# Inside a GPU job or interactive shell:
+apptainer exec --nv docker://nvidia/cuda:13.0.0-base-ubuntu22.04 nvidia-smi -L
+
+# Reuse a local image:
+apptainer pull pytorch.sif docker://pytorch/pytorch
+apptainer exec --nv pytorch.sif python train.py
+```
+
+### Interactive notebooks
+
+Download interactive-notebook.sh to your laptop, copy it into your shared home on the cluster, then open an interactive Slurm shell on a compute machine. The helper starts Jupyter or browser-based VS Code and prints an SSH tunnel command to run on your laptop. The session uses a token and ends when the interactive job ends. Replace PARTITION with a partition that allows interactive shells.
+
+```bash
+# On your laptop, after downloading interactive-notebook.sh:
+scp interactive-notebook.sh {{cluster_name}}:~/interactive-notebook.sh
+ssh {{cluster_name}}
+
+# On the front node, then in the interactive shell:
+srun --partition=PARTITION --gpus=1 --time=01:00:00 --pty bash -l
+bash ~/interactive-notebook.sh jupyter {{login_address}}
+# Or: bash ~/interactive-notebook.sh vscode {{login_address}}
 ```
 
 ### Caches

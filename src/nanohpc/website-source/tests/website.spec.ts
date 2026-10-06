@@ -51,6 +51,8 @@ function snapshot(): object {
     accounting_start: '2026-01-01T00:00:00',
     running_jobs: 1,
     pending_jobs: 1,
+    average_wait_seconds_1d: 90,
+    average_wait_seconds_7d: 3600,
     average_wait_seconds_30d: 754.5,
     total_gpus: 4,
     allocated_gpus: 2,
@@ -76,7 +78,10 @@ function snapshot(): object {
     policies: [
       { name: 'interactive: maximum runtime', value: '08:00:00' },
       { name: 'interactive: default memory per CPU', value: '8192 MiB' },
+      { name: 'interactive: GPUs per job (most)', value: 'gres/gpu=2' },
+      { name: 'interactive: simultaneous resources per user', value: 'gres/gpu=2' },
       { name: 'main: maximum runtime', value: '1-00:00:00' },
+      { name: 'main: GPUs per job (most)', value: 'gres/gpu=4' },
       { name: 'main: default memory per CPU', value: '8192 MiB' },
       { name: 'main: GPU defaults', value: 'DefCpuPerGPU=4' },
       { name: 'normal: running + pending jobs per user', value: '30' },
@@ -193,7 +198,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   await expect(page.getByText('Updates every 30s')).toBeVisible()
   await expect(page.locator('.stat').filter({ hasText: 'GPUs allocated' })).toContainText('2 / 4')
   const machineRows = page.locator('.machine-list tbody tr')
-  await expect(page.locator('.machine-list thead th').nth(3)).toHaveText('Speed /home')
+  await expect(page.locator('.machine-list thead th').nth(3)).toHaveText('Speed /home | Internet')
   await expect(machineRows).toHaveCount(2)
   await expect(machineRows.nth(0)).toContainText('gpu1')
   await expect(machineRows.nth(1)).toContainText('cpu1')
@@ -211,7 +216,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   await expect(page.getByRole('heading', { name: '1. SSH into mylab', exact: true })).toBeVisible()
   await expect(page.locator('.instruction.panel')).toHaveCount(5)
   await expect(page.locator('.instruction').filter({ hasText: 'HostName login.mylab.example.org' })).toHaveCount(1)
-  await expect(page.getByRole('heading', { name: 'Terminal: type these commands after saving job.sh' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Terminal: type these commands after saving job.sh' })).toBeVisible()
   await expect(page.getByText('We recommend submitting from a git worktree:', { exact: false })).toHaveCount(0)
   const submitCard = page.locator('.instruction.panel').filter({ has: page.getByRole('heading', { name: '2. Submit a job' }) })
   await expect(submitCard.getByRole('heading', { name: 'job.sh: save this file in your project' })).toBeVisible()
@@ -231,9 +236,9 @@ test('the site renders every tab from the fixture data under a non-root path', a
   expect(await page.locator('iframe').evaluateAll(frames => frames.map(frame => new URL((frame as HTMLIFrameElement).src).pathname)))
     .toEqual([`${prefix}grafana/d/nanohpc-queue`, `${prefix}grafana/d/nanohpc-queue-history`])
 
-  // Machines: a card per compute machine, including the CPU-only one; the map opens by default.
+  // Machines: a card per configured machine; the map opens by default.
   await nav.getByRole('link', { name: 'Machines', exact: true }).click()
-  await expect(page.locator('.machine-spec')).toHaveCount(2)
+  await expect(page.locator('.machine-spec')).toHaveCount(4)
   const cpuCard = page.getByRole('region', { name: 'cpu1 specs' })
   await expect(cpuCard).toContainText('Not applicable')
   await expect(page.getByRole('region', { name: 'gpu1 specs' })).toContainText('4× NVIDIA RTX A6000')
@@ -267,6 +272,126 @@ test('the site renders every tab from the fixture data under a non-root path', a
   expect(seen.errors).toEqual([])
 })
 
+test('Overview waiting time switches between the three measured periods', async ({ page }) => {
+  await mockGrafana(page)
+  await page.goto(`${origin}${prefix}`)
+  const card = page.locator('.waiting-card')
+  const periods = card.getByRole('group', { name: 'Waiting time period' })
+  await expect(card).toContainText('1 hr 0 min')
+  await periods.getByRole('button', { name: '24h' }).click()
+  await expect(card).toContainText('2 min')
+  await expect(periods.getByRole('button', { name: '24h' })).toHaveAttribute('aria-pressed', 'true')
+  await periods.getByRole('button', { name: '30d' }).click()
+  await expect(card).toContainText('13 min')
+})
+
+test('Machines lists every configured machine with its role while Overview stays compact', async ({ page }) => {
+  await mockGrafana(page)
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.machine-list tbody tr')).toHaveCount(2)
+  await page.goto(`${origin}${prefix}#machines`)
+  const rows = page.locator('.machine-list tbody tr')
+  await expect(rows).toHaveCount(4)
+  await expect(rows.locator('th')).toContainText(['front', 'gpu1', 'cpu1', 'store'])
+  await expect(rows.locator('.role-tag')).toHaveText(['Front node', 'Compute', 'Compute', 'Storage'])
+  await expect(page.locator('.machine-spec')).toHaveCount(4)
+})
+
+test('machine labels explain health, speed, and waiting updates', async ({ page }) => {
+  await mockGrafana(page)
+  const data = snapshot() as { nodes: { name: string; specs?: object }[] }
+  await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: {
+    ...data, nodes: data.nodes.map(node => node.name === 'gpu1' ? {
+      ...node, specs: { ...node.specs, pending_updates: 3, speeds: {
+        home_large_read: 125, home_large_write: 118, home_small_read: 114, home_small_write: 112, internet_download: 95,
+      }, speeds_measured_at: Date.now() / 1000 },
+    } : node),
+  } }))
+  await page.goto(`${origin}${prefix}`)
+  const row = page.locator('.machine-list tbody tr').filter({ hasText: 'gpu1' })
+  await row.getByRole('button', { name: 'Healthy' }).click()
+  await expect(page.getByRole('dialog', { name: 'gpu1: Healthy' })).toContainText('No health problems reported')
+  await page.getByRole('button', { name: 'Close' }).click()
+  await expect(row.getByRole('button', { name: '/home speed' })).toContainText('112 MB/s')
+  await expect(row.getByRole('button', { name: 'Internet speed' })).toContainText('95 MB/s')
+  await row.getByRole('button', { name: '/home speed' }).click()
+  await expect(page.getByRole('dialog', { name: 'gpu1: /home speed' })).toContainText('One large file: read 125 MB/s')
+  await page.keyboard.press('Escape')
+  await page.goto(`${origin}${prefix}#machines`)
+  const card = page.getByRole('region', { name: 'gpu1 specs' })
+  await card.getByRole('button', { name: 'Needs update' }).click()
+  await expect(page.getByRole('dialog', { name: 'gpu1: Needs update' })).toContainText('package update')
+})
+
+test('the guide covers supported containers and interactive notebooks without claiming unsupported queue rules', async ({ page }) => {
+  await mockGrafana(page)
+  await page.goto(`${origin}${prefix}#docs`)
+  await expect(page.getByRole('heading', { name: 'Other settings' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Containers' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Containers' }).click()
+  await expect(page.getByText('apptainer exec --nv', { exact: false })).toBeVisible()
+  await page.getByRole('tab', { name: 'Interactive notebooks' }).click()
+  await expect(page.locator('.user-guide code').filter({ hasText: 'interactive-notebook.sh' }).first()).toBeVisible()
+  await expect(page.locator('.user-guide code').filter({ hasText: 'scp interactive-notebook.sh' }).first()).toBeVisible()
+  const docs = await page.request.get(`${origin}${prefix}docs.md`)
+  expect(await docs.text()).toContain('Apptainer')
+  expect(await docs.text()).toContain('scp interactive-notebook.sh')
+  expect(await docs.text()).not.toContain('Every job must state --time')
+  const helper = await page.request.get(`${origin}${prefix}job-examples/interactive-notebook.sh`)
+  expect(helper.ok()).toBe(true)
+})
+
+test('Cluster Usage excludes samples from a stale snapshot', async ({ page }) => {
+  await mockGrafana(page)
+  const expressions: string[] = []
+  await page.route(`**${prefix}grafana/api/ds/query`, route => {
+    const body = route.request().postDataJSON() as { queries: { refId: string; expr: string }[] }
+    if (body.queries[0]?.refId !== 'A') return route.fallback()
+    expressions.push(...body.queries.map(query => query.expr))
+    const fresh = body.queries.every(query => query.expr.includes('time() - cluster_snapshot_timestamp_seconds < 90'))
+    const times = [Date.now() - 60_000, Date.now()]
+    const frame = (values: number[]) => ({ schema: { fields: [{}, { labels: { node: 'gpu1' } }] }, data: { values: [times, values] } })
+    return route.fulfill({ json: { results: { A: { frames: fresh ? [] : [frame([2, 3])] }, B: { frames: fresh ? [] : [frame([4, 4])] } } } })
+  })
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.gpu-allocation-chart')).toContainText('No GPU history yet')
+  expect(expressions).toHaveLength(2)
+})
+
+test('planned maintenance is distinct from a machine fault and a paused queue shows 0 / 0', async ({ page }) => {
+  await mockGrafana(page)
+  const data = snapshot() as { nodes: { name: string; health: string; health_details: string[] }[] }
+  const nodes = data.nodes.map(node => node.name === 'gpu1' ? { ...node, health: 'Maintenance', health_details: ['The queue is paused (partitions down)'] } : node)
+  await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: { ...data, nodes, queue_paused: true } }))
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.stat').filter({ hasText: 'GPUs allocated' })).toContainText('0 / 0')
+  await expect(page.locator('.machine-list tbody tr').filter({ hasText: 'gpu1' })).toContainText('Scheduled maintenance')
+})
+
+test('Cluster policy shows live partition GPU and policy limits', async ({ page }) => {
+  await mockGrafana(page)
+  await page.goto(origin + prefix + '#policy')
+  const box = page.locator('.partition-summary pre')
+  await expect(box).toContainText('PARTITION')
+  await expect(box).toContainText('MOST PER JOB')
+  await expect(box).toContainText('main (default)')
+  await expect(box).toContainText(/gpu1\s+interactive, main/)
+  await expect(box).toContainText('NVIDIA RTX A6000')
+  await page.setViewportSize({ width: 320, height: 720 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320)
+})
+
+test('the header and Machines page fit a 320px phone', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 })
+  await mockGrafana(page)
+  await page.goto(origin + prefix)
+  await expect(page.getByRole('button', { name: 'Change accent color' })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320)
+  await page.goto(origin + prefix + '#machines')
+  await expect(page.locator('.machine-list')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320)
+})
+
 test('without a logo the brand shows a generic mark and the cluster name', async ({ page }) => {
   await mockGrafana(page)
   await page.route(`**${prefix}site.json`, route => route.fulfill({ json: { ...site, logo: null } }))
@@ -294,7 +419,7 @@ test('monitor mode shows measured machines and login names without Slurm claims'
     mode: 'monitor', generated_at: new Date().toISOString(), refresh_seconds: 30, total_gpus: 2,
     nodes: [
       { name: 'host', role: 'Monitor', health: 'Healthy', health_details: [], gpu_usage: 'Not applicable', total_gpus: 0,
-        specs: { gpu_count: 0, gpus: [], disks: [] } },
+        specs: { gpu_count: 0, gpus: [], disks: [], speeds: { internet_download: 80 } } },
       { name: 'gpu1', role: 'Machine', health: 'Healthy', health_details: [], gpu_usage: 'Active', total_gpus: 2,
         specs: { gpu_count: 2, gpus: [{ index: '0', model: 'RTX', memory_bytes: 48 * gib }, { index: '1', model: 'RTX', memory_bytes: 48 * gib }], disks: [] } },
     ],
@@ -302,6 +427,7 @@ test('monitor mode shows measured machines and login names without Slurm claims'
   const seen = watch(page)
   await page.goto(`${origin}${prefix}`)
   await expect(page.locator('.brand-sub')).toHaveText('Machine monitor')
+  await expect(page.locator('.machine-list tbody tr').filter({ hasText: 'host' })).toContainText('80 MB/s')
   const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
   expect(await nav.getByRole('link').allInnerTexts()).toEqual(['Overview', 'Machines', 'Usage', 'Users'])
   await expect(page.getByRole('region', { name: 'Cluster summary' })).toContainText('2')
