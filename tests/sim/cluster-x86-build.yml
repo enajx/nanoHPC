@@ -1,0 +1,31 @@
+# Two machines keep the manual GitHub Actions x86 deploy within the runner's memory.
+cluster:
+  name: x86test
+  admins: [alice]
+  website:
+    hostname: cluster.example.org
+    https: own
+    certificate: made-by-sim-up
+    certificate_key: made-by-sim-up
+machines:
+  front:
+    address: 192.168.104.10
+    roles: [front, home]
+    home:
+      device: /dev/vdb
+  cpu1:
+    address: 192.168.104.11
+    roles: [compute]
+    cpu: {sockets: 1, cores_per_socket: 2, threads_per_core: 1}
+    memory_mb: 8192
+    partitions: [main]
+    scratch: {image_gb: 2}
+users:
+  - name: alice
+    uid: 2000
+    ssh_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithYourOwnPublicKey alice@laptop"]
+partitions:
+  main:
+    default: true
+    jobs: batch
+    max_time: "01:00:00"

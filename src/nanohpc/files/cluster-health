@@ -246,6 +246,19 @@ elif ! has backup; then
   check "/home answers within 10 seconds" timeout 10 stat -t /home/.
 fi
 
+if has shared; then
+  check "/shared is mounted" mountpoint -q /shared
+  if ! has home; then
+    check "service nfs-server" systemctl is-active --quiet nfs-server
+  fi
+  check "shared datasets directory exists" test -d "$root/shared/datasets"
+  disk /shared
+fi
+if test -f "$root/etc/nanohpc/shared-datasets"; then
+  check "/shared/datasets is the shared NFS mount" sh -c 'findmnt -n -o FSTYPE --mountpoint /shared/datasets | grep -qx nfs4'
+  check "/shared/datasets answers within 10 seconds" timeout 10 stat -t /shared/datasets/.
+fi
+
 if has front; then
   for service in mariadb slurmdbd slurmctld nanohpc-prometheus nanohpc-history nanohpc-alertmanager nanohpc-grafana; do
     check "service $service" systemctl is-active --quiet "$service"

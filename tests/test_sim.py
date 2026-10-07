@@ -25,7 +25,7 @@ from typing import Any
 import yaml
 from textual.widgets import DataTable
 
-from nanohpc import fixuid, probe, wizard
+from nanohpc import fixuid, maintenance_lock, probe, ssh_update, wizard
 from nanohpc.config import check_config, load_config
 from nanohpc.probe import probe_machine
 from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config
@@ -62,7 +62,7 @@ class SimPlanTest(unittest.TestCase):
     """Reading a sim file and planning the VMs, without starting any."""
 
     def test_shipped_sim_files_are_valid(self) -> None:
-        for name, machines in [("everyday", 6), ("home-on-storage", 6), ("large", 21)]:
+        for name, machines in [("everyday", 6), ("home-on-storage", 6), ("large", 21), ("x86-build", 2), ("shared", 4)]:
             with self.subTest(name):
                 plan, errors = load_sim(SIM / f"{name}.yml")
                 self.assertEqual(errors, [])
@@ -80,6 +80,11 @@ class SimPlanTest(unittest.TestCase):
         self.assertEqual(vms["gpu4"].disks, ["nanohpc-everyday-gpu4-vdb"])
         self.assertEqual(vms["gpu2"].disks, [])
         self.assertEqual(plan.fake_gpus, ["gpu4", "gpu2", "gpu4i"])
+
+    def test_shared_dataset_server_has_its_own_disk(self) -> None:
+        plan = plan_of(SIM / "shared.yml")
+        vms = {vm.machine: vm for vm in plan.vms}
+        self.assertEqual(vms["store"].disks, ["nanohpc-shared-store-vdb"])
 
     def test_invalid_sim_files(self) -> None:
         cases: list[tuple[dict[str, Any], str]] = [
@@ -491,6 +496,17 @@ class SimUsersBase(unittest.TestCase):
         self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
         started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", instance)
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.refresh_vm_port(machine, instance)
+        for _ in range(24):
+            after = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
+            if after.returncode == 0:
+                break
+            time.sleep(5)
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertNotEqual(after.stdout.strip(), before.stdout.strip(), machine)
+
+    def refresh_vm_port(self, machine: str, instance: str) -> None:
+        """Update the test SSH config after Lima assigns a new forwarded port."""
         # Lima assigns a new forwarded SSH port when a VM starts again.
         listing = self.run_command("limactl", "list", "--format", "{{.Name}} {{.SSHLocalPort}}")
         self.assertEqual(listing.returncode, 0, listing.stdout + listing.stderr)
@@ -507,13 +523,6 @@ class SimUsersBase(unittest.TestCase):
                 replaced = True
         self.assertTrue(replaced, f"{machine} is missing from {config}")
         config.write_text("\n".join(lines) + "\n")
-        for _ in range(24):
-            after = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
-            if after.returncode == 0:
-                break
-            time.sleep(5)
-        self.assertEqual(after.returncode, 0, after.stderr)
-        self.assertNotEqual(after.stdout.strip(), before.stdout.strip(), machine)
 
     def wait_for_vm(self, machine: str, command: str) -> str:
         """Wait for a boot service or mount to become usable, then return its output."""
@@ -754,6 +763,26 @@ class SimReleaseTest(SimUsersBase):
         self.assert_no_changes(result, len(config["machines"]))
         result = self.deploy(self.ssh_config_for("alice"), agent=True)
         self.assertEqual(result.returncode, 0, self.failure(result))
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimSmallSlurmDeployTest(SimUsersBase):
+    """Deploy two fresh VMs and run a Slurm job, sized for the manual Linux x86 runner."""
+
+    sim = SIM / "x86-build.yml"
+    state = ROOT / ".nanohpc-sim" / "x86-build"
+
+    def test_slurm_build_and_job(self) -> None:
+        self.up_with_test_key()
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        self.assertIn("Dry run passed: applying the changes.", result.stdout)
+        self.assertEqual(self.on_front("sinfo --version").strip(), "slurm 26.05.4")
+        self.assertEqual(self.ssh("cpu1", "slurmd --version").stdout.strip(), "slurm 26.05.4")
+        job = self.on_front(
+            "cd /tmp && sudo -u alice sbatch --parsable --wait -o /dev/null -p main -w cpu1 --wrap hostname"
+        ).strip()
+        self.assertEqual(self.finished_job(job), ("COMPLETED", "cpu1"))
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
@@ -1815,6 +1844,9 @@ class SimSetupTest(SimUsersBase):
         with self.subTest("fix-uid: a read-only plan, then the renumbering after --apply"):
             self.assertEqual(self.ssh("gpu4", "sudo useradd -u 3005 -U -m alice").returncode, 0)
             self.assertEqual(self.ssh("gpu4", "sudo -u alice touch /tmp/alice-file").returncode, 0)
+            paths = [f"/tmp/alice-file-{index}" for index in range(6)]
+            created = self.ssh("gpu4", "sudo -u alice sh -c 'for i in 0 1 2 3 4 5; do touch /tmp/alice-file-$i; done'")
+            self.assertEqual(created.returncode, 0, created.stdout + created.stderr)
             command = [
                 "uv",
                 "run",
@@ -1829,9 +1861,14 @@ class SimSetupTest(SimUsersBase):
             dry = self.run_command(*command)
             self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
             self.assertIn("nothing was changed", dry.stdout)
+            for path in paths:
+                self.assertIn(f'    "{path}"\n', dry.stdout)
             self.assertIn("alice:x:3005:3005:", self.ssh("gpu4", "getent passwd alice").stdout)
             applied = self.run_command(*command, "--apply")
             self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+            preview = applied.stdout.split("ran as root on gpu4:", 1)[0]
+            for path in paths:
+                self.assertIn(f'    "{path}"\n', preview)
             self.assertIn("alice:x:2000:2000:", self.ssh("gpu4", "getent passwd alice").stdout)
             self.assertEqual(
                 self.ssh("gpu4", "stat -c %u:%g /tmp/alice-file /home/alice").stdout.split(), ["2000:2000", "2000:2000"]
@@ -1969,6 +2006,85 @@ class SimRebootTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimMissingHomeDiskTest(SimUsersBase):
+    """A missing local /home disk leaves root SSH available without exporting an empty directory."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "home-on-storage.yml"
+        self.state = ROOT / ".nanohpc-sim" / "home-on-storage"
+        super().setUp()
+
+    def test_missing_disk_boot_and_restored_export(self) -> None:
+        """Remove the storage VM's home disk for one boot, then restore it with its data."""
+        self.up_and_deploy()
+        store = next(vm for vm in plan_of(self.sim).vms if vm.machine == "store")
+        self.assertEqual(len(store.disks), 1)
+        self.assertEqual(store.home_device, "/dev/vdb")
+        marker = self.ssh("store", "sudo -u alice sh -c 'echo original-home > /home/alice/disk-check'")
+        self.assertEqual(marker.returncode, 0, marker.stdout + marker.stderr)
+
+        # Check the boot settings before removing the disk, so a broken test run never waits on a blocked boot.
+        fstab = self.ssh("store", "awk '$2 == \"/home\" {print $4}' /etc/fstab")
+        self.assertEqual(fstab.returncode, 0, fstab.stderr)
+        self.assertIn("nofail", fstab.stdout.strip().split(","))
+        requires = self.ssh("store", "systemctl show nfs-server.service --property=Requires --value")
+        self.assertEqual(requires.returncode, 0, requires.stderr)
+        self.assertIn("home.mount", requires.stdout.split())
+
+        stopped = self.run_command("limactl", "stop", store.instance)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        try:
+            detached = self.run_command(
+                "limactl", "edit", "--tty=false", "--set", ".additionalDisks = []", store.instance
+            )
+            self.assertEqual(detached.returncode, 0, detached.stdout + detached.stderr)
+            started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", store.instance)
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.refresh_vm_port("store", store.instance)
+            root = self.as_user("root", "store", "whoami", agent=False)
+            self.assertEqual((root.returncode, root.stdout.strip()), (0, "root"), root.stderr)
+            mount = self.as_user("root", "store", "findmnt -n --mountpoint /home", agent=False)
+            self.assertNotEqual(mount.returncode, 0, mount.stdout + mount.stderr)
+            nfs = self.as_user("root", "store", "systemctl is-active nfs-server.service", agent=False)
+            self.assertNotEqual(nfs.stdout.strip(), "active", nfs.stdout + nfs.stderr)
+            exports = self.as_user(
+                "root",
+                "store",
+                "if test -e /proc/fs/nfsd/exports; then cat /proc/fs/nfsd/exports; fi",
+                agent=False,
+            )
+            self.assertEqual(exports.returncode, 0, exports.stdout + exports.stderr)
+            self.assertNotIn("/home", exports.stdout)
+        finally:
+            stopped = self.run_command("limactl", "stop", store.instance)
+            self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+            attached = self.run_command(
+                "limactl",
+                "edit",
+                "--tty=false",
+                "--set",
+                f'.additionalDisks = [{{"name": "{store.disks[0]}", "format": false}}]',
+                store.instance,
+            )
+            self.assertEqual(attached.returncode, 0, attached.stdout + attached.stderr)
+            started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", store.instance)
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.refresh_vm_port("store", store.instance)
+
+        content = self.wait_for_vm("store", "sudo -u alice cat /home/alice/disk-check")
+        self.assertEqual(content.strip(), "original-home")
+        mounted = self.ssh("store", "findmnt -n -o SOURCE --mountpoint /home")
+        self.assertEqual((mounted.returncode, mounted.stdout.strip()), (0, "/dev/vdb"), mounted.stderr)
+        nfs = self.wait_for_vm("store", "systemctl is-active nfs-server.service")
+        self.assertEqual(nfs.strip(), "active")
+        exports = self.ssh("store", "sudo exportfs -v")
+        self.assertEqual(exports.returncode, 0, exports.stdout + exports.stderr)
+        self.assertIn("/home", exports.stdout)
+        client_file = self.wait_for_vm("front", "sudo -u alice timeout 10 cat /home/alice/disk-check")
+        self.assertEqual(client_file.strip(), "original-home")
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimXfsQuotaTest(SimUsersBase):
     """XFS home and scratch disks work, and the home quota stops writes over NFS."""
 
@@ -2098,6 +2214,335 @@ class SimUpdateReportTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimComputeUpdateTest(SimUsersBase):
+    """A confirmed update installs a real APT upgrade on an Ubuntu 24.04 compute VM."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_dry_run_and_apply_on_vm(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+        home = self.ssh("cpu1", "awk '$2 == \"/home\" {print $4}' /etc/fstab")
+        self.assertEqual(home.returncode, 0, home.stdout + home.stderr)
+        self.assertIn("nofail", home.stdout.strip().split(","))
+        reboot_setting = self.ssh("cpu1", "apt-config dump Unattended-Upgrade::Automatic-Reboot")
+        self.assertIn('Unattended-Upgrade::Automatic-Reboot "false";', reboot_setting.stdout)
+        # Lima writes Netplan after boot and its base /boot entry lacks nofail. The real saved-setting
+        # checks should pass on a safe baseline, while SimRestartCheckTest covers refusal of unsafe settings.
+        baseline = r"""
+import os, pathlib, time
+fstab = pathlib.Path('/etc/fstab')
+lines = []
+for line in fstab.read_text().splitlines():
+    fields = line.split()
+    if len(fields) >= 4 and fields[1] == '/boot' and 'nofail' not in fields[3].split(','):
+        fields[3] += ',nofail'
+        line = '\t'.join(fields)
+    lines.append(line)
+fstab.write_text('\n'.join(lines) + '\n')
+boot_time = time.time() - float(pathlib.Path('/proc/uptime').read_text().split()[0])
+for path in pathlib.Path('/etc/netplan').glob('*.yaml'):
+    os.utime(path, (boot_time - 10, boot_time - 10))
+"""
+        safe = self.ssh("cpu1", "sudo /usr/bin/python3 -c " + shlex.quote(baseline))
+        self.assertEqual(safe.returncode, 0, safe.stdout + safe.stderr)
+        setup = """
+set -eu
+sudo apt-get install -y dpkg-dev
+for name in nanohpc-update-fixture openssh-nanohpc-fixture; do
+  for version in 1 2; do
+    folder=/tmp/$name-$version
+    mkdir -p "$folder/DEBIAN"
+    printf 'Package: %s\\nVersion: %s\\nArchitecture: all\\nMaintainer: nanoHPC test <test@example.invalid>\\nDescription: disposable update test\\n' "$name" "$version" > "$folder/DEBIAN/control"
+    dpkg-deb --build "$folder" "/tmp/${name}_${version}_all.deb" >/dev/null
+  done
+  sudo dpkg -i "/tmp/${name}_1_all.deb"
+done
+printf 'Package: *\nPin: release o=Ubuntu\nPin-Priority: -1\n' | sudo tee /etc/apt/preferences.d/nanohpc-update-fixture >/dev/null
+mkdir -p /tmp/nanohpc-update-repo
+cp /tmp/nanohpc-update-fixture_2_all.deb /tmp/openssh-nanohpc-fixture_2_all.deb /tmp/nanohpc-update-repo/
+cd /tmp/nanohpc-update-repo
+dpkg-scanpackages . /dev/null > Packages
+gzip -kf Packages
+echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/sources.list.d/nanohpc-update-fixture.list >/dev/null
+"""
+        prepared = self.ssh("cpu1", "bash -se", stdin=setup)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        admin_config = self.ssh_config_for("alice")
+        environment = {
+            **os.environ,
+            "SSH_AUTH_SOCK": self.agent_socket,
+            "XDG_STATE_HOME": str(self.keys / "state"),
+        }
+        command = [
+            "uv",
+            "run",
+            "nanohpc",
+            "update",
+            str(cluster),
+            "cpu1",
+            "--include",
+            "extra",
+            "--ssh-config",
+            str(admin_config),
+        ]
+        with maintenance_lock.acquire("front", self.state / "ssh_config", None):
+            blocked = subprocess.run(
+                [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("maintenance", blocked.stderr)
+        preview = subprocess.run(
+            [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        self.assertIn("nanohpc-update-fixture=2", preview.stdout)
+        applied = subprocess.run(
+            [*command, "--confirm", "cpu1"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        version = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nanohpc-update-fixture")
+        self.assertEqual(version.stdout.strip(), "2", version.stdout + version.stderr)
+        self.assertNotIn("systemctl reboot", applied.stdout)
+        state = self.on_front("scontrol show node cpu1 -o")
+        self.assertNotIn("DRAIN", state, applied.stdout + applied.stderr)
+
+        ssh_command = command.copy()
+        ssh_command[ssh_command.index("extra")] = "ssh,extra"
+        ssh_preview = subprocess.run(
+            [*ssh_command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(ssh_preview.returncode, 0, ssh_preview.stdout + ssh_preview.stderr)
+        self.assertIn("openssh-nanohpc-fixture=2", ssh_preview.stdout)
+        ssh_applied = subprocess.run(
+            [*ssh_command, "--confirm", "cpu1"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(ssh_applied.returncode, 0, ssh_applied.stdout + ssh_applied.stderr)
+        ssh_version = self.ssh("cpu1", "dpkg-query -W -f='${Version}' openssh-nanohpc-fixture")
+        self.assertEqual(ssh_version.stdout.strip(), "2", ssh_version.stdout + ssh_version.stderr)
+        cleared = self.ssh("cpu1", "sudo test ! -e /root/nanohpc-ssh-update-undo")
+        self.assertEqual(cleared.returncode, 0, cleared.stdout + cleared.stderr)
+        for user in ("root", "alice"):
+            login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "cpu1", "true")
+            self.assertEqual(login.returncode, 0, f"{user}: {login.stdout}{login.stderr}")
+
+        unpin = self.ssh("cpu1", "sudo rm /etc/apt/preferences.d/nanohpc-update-fixture")
+        self.assertEqual(unpin.returncode, 0, unpin.stdout + unpin.stderr)
+        self.check_ssh_undo_on_vm(admin_config, environment, command)
+
+    def check_ssh_undo_on_vm(self, admin_config: Path, environment: dict[str, str], command: list[str]) -> None:
+        """Exercise the real timer, backup, restored logins, and a separate manual package repair."""
+        instance = "nanohpc-kernel-quota-cpu1"
+        holds: list[subprocess.Popen[str]] = []
+        self.addCleanup(ssh_update.close_holds, holds)
+        holds.append(ssh_update.hold_root("cpu1", admin_config))
+        holds.append(ssh_update.hold_root("cpu1", admin_config))
+        ssh_update.require_holds("cpu1", holds)
+
+        def on_vm(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return self.run_command("limactl", "shell", instance, "--", *arguments)
+
+        source = ssh_update.PREPARE_PROGRAM.replace("UNDO_SOURCE", repr(ssh_update.UNDO_PROGRAM))
+        prepared = on_vm("sudo", "/usr/bin/python3", "-c", source)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        before_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertEqual(before_binary.returncode, 0, before_binary.stderr)
+        timer = on_vm("sudo", "systemctl", "is-active", ssh_update.TIMER + ".timer")
+        self.assertEqual(timer.stdout.strip(), "active", timer.stdout + timer.stderr)
+        canceled = on_vm("sudo", "/usr/bin/python3", "-c", ssh_update.CANCEL_PROGRAM)
+        self.assertEqual(canceled.returncode, 0, canceled.stdout + canceled.stderr)
+        cleared = on_vm("sudo", "test", "!", "-e", ssh_update.BACKUP)
+        self.assertEqual(cleared.returncode, 0, cleared.stdout + cleared.stderr)
+        prepared = on_vm("sudo", "/usr/bin/python3", "-c", source)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        upgraded = on_vm(
+            "sudo",
+            "env",
+            "DEBIAN_FRONTEND=noninteractive",
+            "NEEDRESTART_MODE=l",
+            "apt-get",
+            "install",
+            "-y",
+            "--reinstall",
+            "--only-upgrade",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+            "openssh-server",
+            "openssh-client",
+            "openssh-sftp-server",
+        )
+        self.assertEqual(upgraded.returncode, 0, upgraded.stdout + upgraded.stderr)
+        upgraded_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertEqual(upgraded_binary.returncode, 0, upgraded_binary.stderr)
+        damage = """
+import os
+from pathlib import Path
+target = Path('/usr/sbin/sshd')
+replacement = Path('/usr/sbin/.sshd-nanohpc-test-broken')
+replacement.write_bytes(b'broken OpenSSH test binary\\n')
+replacement.chmod(0o755)
+os.replace(replacement, target)
+"""
+        damaged = on_vm("sudo", "/usr/bin/python3", "-c", damage)
+        self.assertEqual(damaged.returncode, 0, damaged.stdout + damaged.stderr)
+        damaged_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertNotEqual(damaged_binary.stdout, before_binary.stdout)
+        failed_start = on_vm("sudo", "systemctl", "restart", "ssh.service")
+        self.assertNotEqual(failed_start.returncode, 0, "damaged sshd unexpectedly started")
+        broken = on_vm(
+            "sudo",
+            "sh",
+            "-c",
+            "printf 'bad-key\\n' > /etc/ssh/authorized_keys/root; printf 'bad-key\\n' > /etc/ssh/authorized_keys/alice",
+        )
+        self.assertEqual(broken.returncode, 0, broken.stdout + broken.stderr)
+        denied = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", "root", "cpu1", "true")
+        self.assertNotEqual(denied.returncode, 0, "the recovery test did not break fresh root login")
+        ssh_update.require_holds("cpu1", holds)
+        restored = on_vm("sudo", "systemctl", "start", ssh_update.TIMER + ".service")
+        self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+        for _ in range(120):
+            service = on_vm("sudo", "systemctl", "show", "-p", "ActiveState", "--value", ssh_update.TIMER + ".service")
+            self.assertEqual(service.returncode, 0, service.stderr)
+            if service.stdout.strip() in ("inactive", "failed"):
+                break
+            time.sleep(1)
+        if service.stdout.strip() != "inactive":
+            journal = on_vm("sudo", "journalctl", "-u", ssh_update.TIMER + ".service", "-n", "80", "--no-pager")
+            self.fail(f"SSH undo service {service.stdout.strip()}: {journal.stdout}{journal.stderr}")
+        stopped = on_vm("sudo", "systemctl", "stop", ssh_update.TIMER + ".timer")
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        marker = on_vm("sudo", "test", "-f", ssh_update.BACKUP + "/needs-review")
+        self.assertEqual(marker.returncode, 0, marker.stdout + marker.stderr)
+        restored_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertEqual(restored_binary.stdout, before_binary.stdout)
+        valid = on_vm("sudo", "sshd", "-t")
+        self.assertEqual(valid.returncode, 0, valid.stdout + valid.stderr)
+        for user in ("root", "alice"):
+            login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "cpu1", "true")
+            self.assertEqual(login.returncode, 0, f"{user}: {login.stdout}{login.stderr}")
+        ssh_update.require_holds("cpu1", holds)
+        blocked = subprocess.run(
+            [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn("SSH undo backup", blocked.stderr)
+        repaired = on_vm(
+            "sudo",
+            "env",
+            "DEBIAN_FRONTEND=noninteractive",
+            "NEEDRESTART_MODE=l",
+            "apt-get",
+            "install",
+            "-y",
+            "--reinstall",
+            "--only-upgrade",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+            "openssh-server",
+            "openssh-client",
+            "openssh-sftp-server",
+        )
+        self.assertEqual(repaired.returncode, 0, repaired.stdout + repaired.stderr)
+        repaired_binary = on_vm("sudo", "sha256sum", "/usr/sbin/sshd")
+        self.assertEqual(repaired_binary.stdout, upgraded_binary.stdout)
+        for user in ("root", "alice"):
+            login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "cpu1", "true")
+            self.assertEqual(login.returncode, 0, f"after package repair, {user}: {login.stdout}{login.stderr}")
+        removed = on_vm("sudo", "rm", "-rf", ssh_update.BACKUP)
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimFrontUpdateTest(SimUsersBase):
+    """A confirmed care-group update on the Ubuntu 24.04 front node protects Slurm jobs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_front_update_on_vm(self) -> None:
+        cluster, config, _ = self.up_and_deploy()
+        baseline = r"""
+import os, pathlib, time
+fstab = pathlib.Path('/etc/fstab')
+lines = []
+for line in fstab.read_text().splitlines():
+    fields = line.split()
+    if len(fields) >= 4 and fields[1] == '/boot' and 'nofail' not in fields[3].split(','):
+        fields[3] += ',nofail'
+        line = '\t'.join(fields)
+    lines.append(line)
+fstab.write_text('\n'.join(lines) + '\n')
+boot_time = time.time() - float(pathlib.Path('/proc/uptime').read_text().split()[0])
+for path in pathlib.Path('/etc/netplan').glob('*.yaml'):
+    os.utime(path, (boot_time - 10, boot_time - 10))
+"""
+        safe = self.ssh("front", "sudo /usr/bin/python3 -c " + shlex.quote(baseline))
+        self.assertEqual(safe.returncode, 0, safe.stdout + safe.stderr)
+        setup = """
+set -eu
+sudo apt-get install -y dpkg-dev
+for version in 1 2; do
+  folder=/tmp/nanohpc-front-update-fixture-$version
+  mkdir -p "$folder/DEBIAN"
+  printf 'Package: nanohpc-front-update-fixture\nVersion: %s\nArchitecture: all\nMaintainer: nanoHPC test <test@example.invalid>\nDescription: disposable front update test\n' "$version" > "$folder/DEBIAN/control"
+  dpkg-deb --build "$folder" "/tmp/nanohpc-front-update-fixture_${version}_all.deb" >/dev/null
+done
+sudo dpkg -i /tmp/nanohpc-front-update-fixture_1_all.deb
+printf 'Package: *\nPin: release o=Ubuntu\nPin-Priority: -1\n' | sudo tee /etc/apt/preferences.d/nanohpc-front-update-fixture >/dev/null
+mkdir -p /tmp/nanohpc-front-update-repo
+cp /tmp/nanohpc-front-update-fixture_2_all.deb /tmp/nanohpc-front-update-repo/
+cd /tmp/nanohpc-front-update-repo
+dpkg-scanpackages . /dev/null > Packages
+gzip -kf Packages
+echo 'deb [trusted=yes] file:/tmp/nanohpc-front-update-repo ./' | sudo tee /etc/apt/sources.list.d/nanohpc-front-update-fixture.list >/dev/null
+"""
+        prepared = self.ssh("front", "bash -se", stdin=setup)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        admin_config = self.ssh_config_for("alice")
+        environment = {
+            **os.environ,
+            "SSH_AUTH_SOCK": self.agent_socket,
+            "XDG_STATE_HOME": str(self.keys / "state"),
+        }
+        command = [
+            "uv",
+            "run",
+            "nanohpc",
+            "update",
+            str(cluster),
+            "front",
+            "--include",
+            "extra",
+            "--ssh-config",
+            str(admin_config),
+        ]
+        preview = subprocess.run(
+            [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        self.assertIn("nanohpc-front-update-fixture=2", preview.stdout)
+        applied = subprocess.run(
+            [*command, "--confirm", "front"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        version = self.ssh("front", "dpkg-query -W -f='${Version}' nanohpc-front-update-fixture")
+        self.assertEqual(version.stdout.strip(), "2", version.stdout + version.stderr)
+        for name, machine in config["machines"].items():
+            if "compute" not in machine["roles"]:
+                continue
+            state = self.on_front(f"scontrol show node {name} -o")
+            self.assertNotIn("DRAIN", state, applied.stdout + applied.stderr)
+        for user in ("root", "alice"):
+            login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "front", "true")
+            self.assertEqual(login.returncode, 0, f"{user}: {login.stdout}{login.stderr}")
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimRestartCheckTest(SimUsersBase):
     """The read-only restart check reaches every Ubuntu 24.04 VM and reports a real fstab problem."""
 
@@ -2216,6 +2661,59 @@ class SimComputeRestartTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimSharedDatasetTest(SimUsersBase):
+    """Deploy a separate shared datasets server and stage one dataset on a compute VM."""
+
+    sim = SIM / "shared.yml"
+    state = ROOT / ".nanohpc-sim" / "shared"
+
+    def test_shared_dataset_from_server_to_local_scratch(self) -> None:
+        cluster, config, _ = self.up_with_test_key()
+        initial = yaml.safe_load(yaml.safe_dump(config))
+        initial["machines"].pop("cpu1")
+        cluster.write_text(yaml.safe_dump(initial))
+        deployed = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(deployed.returncode, 0, self.failure(deployed))
+        cluster.write_text(yaml.safe_dump(config))
+        added = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--only", "node", "cpu1")
+        self.assertEqual(added.returncode, 0, self.failure(added))
+        self.assertRegex(added.stdout, r"\nDry run: cpu1 would change \d+ things: ")
+        self.assertEqual(self.ssh("store", "findmnt -n -o SOURCE --mountpoint /shared").stdout.strip(), "/dev/vdb")
+        source = yaml.safe_load((self.state / "cluster.yml").read_text())["machines"]["store"]["address"]
+        for machine in ("gpu4", "cpu1"):
+            mount = self.ssh(machine, "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /shared/datasets")
+            self.assertEqual(mount.returncode, 0, mount.stderr)
+            mounted_source, filesystem, options = mount.stdout.split()
+            self.assertEqual(mounted_source, f"{source}:/shared/datasets")
+            self.assertEqual(filesystem, "nfs4")
+            self.assertTrue({"ro", "nosuid", "nodev"} <= set(options.split(",")))
+        created = self.ssh(
+            "store",
+            "sudo mkdir -p /shared/datasets/example && "
+            "printf 'v1\\n' | sudo tee /shared/datasets/example/.dataset-version >/dev/null && "
+            "printf 'dataset\\n' | sudo tee /shared/datasets/example/data.txt >/dev/null && "
+            "sudo chmod -R a+rX /shared/datasets/example",
+        )
+        self.assertEqual(created.returncode, 0, created.stdout + created.stderr)
+        refused = self.ssh("gpu4", "sudo -u alice touch /shared/datasets/example/forbidden")
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        staged = self.as_user("alice", "gpu4", "stage-dataset --shared example", agent=False)
+        self.assertEqual(staged.returncode, 0, staged.stdout + staged.stderr)
+        destination = staged.stdout.strip()
+        self.assertTrue(destination.startswith("/scratch/staged/shared/2000/example/v1"))
+        self.assertEqual(
+            self.ssh("gpu4", f"sudo -u alice cat {shlex.quote(destination)}/data.txt").stdout.strip(), "dataset"
+        )
+        again = self.as_user("alice", "gpu4", "stage-dataset --shared example", agent=False)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(again.stdout.strip(), destination)
+        self.assertNotEqual(self.ssh("gpu4", f"sudo -u bob ls {shlex.quote(destination)}").returncode, 0)
+        for machine in ("store", "gpu4", "cpu1"):
+            health = self.ssh(machine, "sudo cluster-health")
+            self.assertEqual(health.returncode, 0, f"{machine}: {health.stdout}{health.stderr}")
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimHomeOnStorageTest(SimUsersBase):
     """/home served by the storage machine instead of the front node. Real Lima VMs."""
 
@@ -2223,6 +2721,222 @@ class SimHomeOnStorageTest(SimUsersBase):
         self.sim = SIM / "home-on-storage.yml"
         self.state = ROOT / ".nanohpc-sim" / "home-on-storage"
         super().setUp()
+
+    def test_nfs_option_change_waits_for_compute_job(self) -> None:
+        """A compute node drains before /home switches and returns after its job ends."""
+        self.up_and_deploy()
+        machine = "gpu4"
+        admin_ssh = self.ssh_config_for("alice")
+        if "DRAIN" in self.on_front(f"sudo scontrol show node {machine} -o"):
+            self.on_front(f"sudo scontrol update nodename={machine} state=resume")
+        self.addCleanup(self.ssh, "front", f"sudo scontrol update nodename={machine} state=resume")
+        old = self.ssh(
+            machine,
+            "cd / && sudo sed -i 's/timeo=600/timeo=50/' /etc/fstab && sudo umount /home && sudo mount /home",
+        )
+        self.assertEqual(old.returncode, 0, old.stdout + old.stderr)
+        self.assertIn("timeo=50", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+
+        # This job keeps /home busy until Slurm marks its machine as drained.
+        script = (
+            "cd /home/alice; "
+            "while ! scontrol show node gpu4 -o | grep -Eq 'State=[^ ]*DRAIN'; do sleep 1; done; "
+            "sleep 5"
+        )
+        job = self.on_front(
+            "cd /tmp && sudo -u alice sbatch --parsable -p main -w gpu4 -t 20 -o /dev/null --wrap "
+            + shlex.quote(script)
+        ).strip()
+        self.addCleanup(self.ssh, "front", f"sudo scancel {job}")
+        for _ in range(30):
+            state = self.on_front(f"sudo squeue -h -j {job} -o '%T %N'").strip()
+            if state == "RUNNING gpu4":
+                break
+            time.sleep(2)
+        self.assertEqual(state, "RUNNING gpu4")
+
+        changed = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertEqual(changed.returncode, 0, self.failure(changed))
+        self.assertEqual(self.finished_job(job), ("COMPLETED", machine))
+        self.assertIn("timeo=600", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertNotIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
+
+    def test_nfs_option_change_uses_new_mount(self) -> None:
+        """A deploy applies an NFS-specific /home option without rebooting the client."""
+        self.up_and_deploy()
+        machine = "gpu4"
+        admin_ssh = self.ssh_config_for("alice")
+        self.addCleanup(self.ssh, "front", f"sudo scontrol update nodename={machine} state=resume")
+        self.on_front("sudo -u alice sh -c 'echo before > /home/alice/check'")
+        boot = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id").stdout.strip()
+        old = self.ssh(
+            machine,
+            "cd / && sudo sed -i 's/timeo=600/timeo=50/' /etc/fstab && sudo umount /home && sudo mount /home",
+        )
+        self.assertEqual(old.returncode, 0, old.stdout + old.stderr)
+        options = self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout.strip().split(",")
+        self.assertIn("timeo=50", options)
+        before = self.ssh(machine, "cat /etc/fstab; findmnt -n -o OPTIONS --mountpoint /home").stdout
+
+        dry = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--dry-run",
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertEqual(dry.returncode, 0, self.failure(dry))
+        self.assertEqual(self.ssh(machine, "cat /etc/fstab; findmnt -n -o OPTIONS --mountpoint /home").stdout, before)
+
+        result = self.deploy(admin_ssh, agent=True)
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        options = self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout.strip().split(",")
+        self.assertIn("timeo=600", options)
+        self.assertIn("nosuid", options)
+        self.assertIn("nodev", options)
+        self.assertEqual(self.ssh(machine, "cat /proc/sys/kernel/random/boot_id").stdout.strip(), boot)
+        self.assertEqual(self.ssh(machine, "sudo -u alice cat /home/alice/check").returncode, 0)
+
+        # A busy /home stays mounted with the old options. Once the user process exits,
+        # a later deploy must retry even if the previous run touched /etc/fstab.
+        old = self.ssh(
+            machine,
+            "cd / && sudo sed -i 's/timeo=600/timeo=50/' /etc/fstab && sudo umount /home && sudo mount /home",
+        )
+        self.assertEqual(old.returncode, 0, old.stdout + old.stderr)
+        held = self.ssh(
+            machine,
+            "sudo systemd-run --unit=nanohpc-home-busy --property=WorkingDirectory=/home/alice /bin/sleep 1800",
+        )
+        self.assertEqual(held.returncode, 0, held.stdout + held.stderr)
+        self.addCleanup(self.ssh, machine, "sudo systemctl stop nanohpc-home-busy.service")
+        for _ in range(20):
+            holder = self.ssh(
+                machine,
+                "sudo readlink /proc/$(systemctl show -p MainPID --value nanohpc-home-busy.service)/cwd",
+            )
+            if holder.stdout.strip() == "/home/alice":
+                break
+            time.sleep(0.5)
+        self.assertEqual(holder.stdout.strip(), "/home/alice", holder.stdout + holder.stderr)
+        busy = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertNotEqual(busy.returncode, 0, self.failure(busy))
+        self.assertIn("needs a fresh NFS mount", busy.stdout)
+        self.assertIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
+        self.assertIn("timeo=50", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertIn("timeo=50", self.ssh(machine, "awk '$2 == \"/home\" { print }' /etc/fstab").stdout)
+        self.assertEqual(self.ssh(machine, "sudo systemctl stop nanohpc-home-busy.service").returncode, 0)
+
+        retried = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertEqual(retried.returncode, 0, self.failure(retried))
+        self.assertIn("timeo=600", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
+
+        # Fail the new mount once. The rescue must restore the old fstab entry and mount.
+        old = self.ssh(
+            machine,
+            "cd / && sudo sed -i 's/timeo=600/timeo=50/' /etc/fstab && sudo umount /home && sudo mount /home",
+        )
+        self.assertEqual(old.returncode, 0, old.stdout + old.stderr)
+        wrapper = """#!/bin/sh
+if [ "$1" = /home ] && [ -e /tmp/nanohpc-fail-new-home-mount ] &&
+   grep -q ' /home nfs4 .*timeo=600' /etc/fstab; then
+    rm /tmp/nanohpc-fail-new-home-mount
+    echo 'injected new mount failure' >&2
+    exit 42
+fi
+exec /usr/bin/mount "$@"
+"""
+        installed = self.ssh(machine, "sudo tee /usr/local/bin/mount >/dev/null", stdin=wrapper)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.addCleanup(self.ssh, machine, "sudo rm -f /usr/local/bin/mount /tmp/nanohpc-fail-new-home-mount")
+        prepared = self.ssh(
+            machine, "sudo chmod 755 /usr/local/bin/mount && sudo touch /tmp/nanohpc-fail-new-home-mount"
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        self.assertEqual(self.ssh(machine, "sudo sh -c 'command -v mount'").stdout.strip(), "/usr/local/bin/mount")
+        failed_mount = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertNotEqual(failed_mount.returncode, 0, self.failure(failed_mount))
+        self.assertIn("injected new mount failure", failed_mount.stdout)
+        self.assertIn("timeo=50", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertIn("timeo=50", self.ssh(machine, "awk '$2 == \"/home\" { print }' /etc/fstab").stdout)
+        self.assertIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
+
+        self.assertEqual(self.ssh(machine, "sudo rm /usr/local/bin/mount").returncode, 0)
+        recovered = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertEqual(recovered.returncode, 0, self.failure(recovered))
+        self.assertIn("timeo=600", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
 
     def test_home_on_storage_machine(self) -> None:
         # A machine whose local /home holds data stops before the shared /home could hide it.

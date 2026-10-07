@@ -8,7 +8,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARDS = ROOT / "src" / "nanohpc" / "files" / "grafana"
-NAMES = ["history", "machines", "overview", "queue-history", "queue", "usage"]
+NAMES = ["history", "machines", "monitor-history", "overview", "queue-history", "queue", "usage"]
 
 
 def load(name: str) -> dict[str, Any]:
@@ -43,7 +43,7 @@ class DashboardTests(unittest.TestCase):
         for name in NAMES:
             with self.subTest(name):
                 dashboard = load(name)
-                self.assertEqual(dashboard["uid"], f"nanohpc-{name}")
+                self.assertEqual(dashboard["uid"], f"nanohpc-{'history' if name == 'monitor-history' else name}")
                 self.assertLessEqual(datasource_uids(dashboard), {"cluster-detail", "cluster-history"})
         self.assertEqual(datasource_uids(load("history")), {"cluster-history"})
 
@@ -84,11 +84,17 @@ class DashboardTests(unittest.TestCase):
         queue, history = load("queue"), load("queue-history")
         self.assertEqual([panel["type"] for panel in queue["panels"]], ["table"])
         self.assertEqual(
-            [panel["title"] for panel in history["panels"]], ["Allocated GPUs", "Running jobs", "Queue size"]
+            [panel["title"] for panel in history["panels"]],
+            ["Allocated GPUs", "Running jobs", "Queue size", "Waiting time"],
         )
         self.assertEqual(
             [panel["targets"][0]["expr"].split(" and ")[0] for panel in history["panels"]],
-            ["cluster_allocated_gpus", "cluster_running_jobs", "cluster_pending_jobs"],
+            ["cluster_allocated_gpus", "cluster_running_jobs", "cluster_pending_jobs", "cluster_mean_wait_seconds_24h"],
+        )
+        self.assertIn('cluster_job_info{state="PENDING"}', history["panels"][3]["targets"][1]["expr"])
+        self.assertEqual(
+            [(panel["gridPos"]["x"], panel["gridPos"]["y"]) for panel in history["panels"]],
+            [(0, 0), (12, 0), (0, 10), (12, 10)],
         )
 
     def test_queue_state_filter(self) -> None:

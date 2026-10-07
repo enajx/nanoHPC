@@ -276,3 +276,100 @@
   ansible.builtin.set_fact:
     scratch_fs: "{{ disk_fs }}"
   when: inventory_hostname in nanohpc.scratch.machines and nanohpc.scratch.machines[inventory_hostname].device is not none
+
+- name: Choose the shared datasets mount point on this machine
+  ansible.builtin.set_fact:
+    shared_mount_point: "{{ '/shared' if inventory_hostname == nanohpc.shared.server else '/shared/datasets' }}"
+  when: nanohpc.shared is not none and (inventory_hostname == nanohpc.shared.server or inventory_hostname in nanohpc.shared.clients)
+
+- name: Read where the shared datasets mount comes from now
+  ansible.builtin.command: "findmnt -n -o SOURCE,FSTYPE --mountpoint {{ shared_mount_point }}"
+  register: shared_mount
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when: nanohpc.shared is not none and (inventory_hostname == nanohpc.shared.server or inventory_hostname in nanohpc.shared.clients)
+
+- name: Refuse a different shared datasets mount on a compute machine
+  ansible.builtin.assert:
+    that: shared_mount.stdout == '' or shared_mount.stdout.split() == [nanohpc.shared.server_address ~ ':/shared/datasets', 'nfs4']
+    fail_msg: >-
+      {{ inventory_hostname }}: /shared/datasets is mounted from {{ shared_mount.stdout.split()[0] | default('?') }},
+      not the shared datasets server {{ nanohpc.shared.server }}. Nothing was changed on this machine.
+    quiet: true
+  when: nanohpc.shared is not none and inventory_hostname in nanohpc.shared.clients
+
+- name: Read any old broad shared datasets mount on a compute machine
+  ansible.builtin.command: findmnt -n -o SOURCE --mountpoint /shared
+  register: old_broad_shared_mount
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when: nanohpc.shared is not none and inventory_hostname in nanohpc.shared.clients
+
+- name: Read any old broad shared datasets fstab entry on a compute machine
+  ansible.builtin.command: findmnt -n -s -o SOURCE --mountpoint /shared
+  register: old_broad_shared_fstab
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when: nanohpc.shared is not none and inventory_hostname in nanohpc.shared.clients
+
+- name: Require removal of the old broad shared datasets mount
+  ansible.builtin.assert:
+    that:
+      - not (old_broad_shared_mount.stdout | trim).endswith(':/shared')
+      - not (old_broad_shared_fstab.stdout | trim).endswith(':/shared')
+    fail_msg: >-
+      {{ inventory_hostname }} still mounts the old broad /shared NFS export. Unmount /shared and remove its
+      /etc/fstab entry before deploying the /shared/datasets-only mount. Nothing was changed on this machine.
+    quiet: true
+  when: nanohpc.shared is not none and inventory_hostname in nanohpc.shared.clients
+
+- name: Check the shared datasets disk
+  ansible.builtin.include_tasks: check_disk.yml
+  vars:
+    disk: "{{ nanohpc.shared.device }}"
+    disk_use: /shared
+    mkfs_hint: mkfs.ext4
+  when: nanohpc.shared is not none and inventory_hostname == nanohpc.shared.server
+
+- name: Keep the shared datasets disk's details
+  ansible.builtin.set_fact:
+    shared_fs: "{{ disk_fs }}"
+  when: nanohpc.shared is not none and inventory_hostname == nanohpc.shared.server
+
+- name: Read the ID of the disk mounted at /shared
+  ansible.builtin.command: findmnt -n -o UUID --mountpoint /shared
+  register: shared_mounted_uuid
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when: nanohpc.shared is not none and inventory_hostname == nanohpc.shared.server and shared_mount.stdout != ''
+
+- name: Refuse a different /shared mount on the shared datasets server
+  ansible.builtin.assert:
+    that: shared_mount.stdout == '' or shared_mounted_uuid.stdout | trim == shared_fs.UUID
+    fail_msg: >-
+      {{ inventory_hostname }}: /shared is mounted from {{ shared_mount.stdout.split()[0] | default('?') }},
+      not {{ nanohpc.shared.device }}. Nothing was changed on this machine.
+    quiet: true
+  when: nanohpc.shared is not none and inventory_hostname == nanohpc.shared.server
+
+- name: List local files that a new shared datasets mount would hide
+  ansible.builtin.shell: test ! -d "$MOUNT_POINT" || find "$MOUNT_POINT" -mindepth 1 -maxdepth 1 -printf '%f\n'
+  environment:
+    MOUNT_POINT: "{{ shared_mount_point }}"
+  register: local_shared
+  changed_when: false
+  check_mode: false
+  when: nanohpc.shared is not none and (inventory_hostname == nanohpc.shared.server or inventory_hostname in nanohpc.shared.clients) and shared_mount.stdout == ''
+
+- name: Refuse to hide local files under the shared datasets mount
+  ansible.builtin.assert:
+    that: local_shared.stdout | trim == ''
+    fail_msg: >-
+      {{ inventory_hostname }}: mounting {{ shared_mount_point }} would hide {{ local_shared.stdout_lines | join(', ') }}.
+      Move those files away before deploying; nothing was changed on this machine.
+    quiet: true
+  when: nanohpc.shared is not none and (inventory_hostname == nanohpc.shared.server or inventory_hostname in nanohpc.shared.clients) and shared_mount.stdout == ''

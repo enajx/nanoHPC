@@ -19,6 +19,76 @@
     mode: "0755"
   loop: [cluster-machine-specs, cluster-gpu-metrics, cluster-fake-gpu-metrics]
 
+- name: Create the shared home speed-test folder
+  ansible.builtin.file:
+    path: /home/.nanohpc-speed-test
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: nanohpc.mode | default('slurm') != 'monitor' and inventory_hostname == nanohpc.home.server
+
+- name: Install the nightly speed-test command
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-speed-test"
+    dest: /usr/local/bin/cluster-speed-test
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the nightly speed-test service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nanohpc-speed-test.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Measure this machine's home and Internet speed (nanoHPC)
+      {% if inventory_hostname in (groups['role_compute'] | default([])) and nanohpc.mode | default('slurm') != 'monitor' %}RequiresMountsFor=/home/.nanohpc-speed-test{% endif %}
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/cluster-speed-test {{ '--folder /home/.nanohpc-speed-test --large-mb 256 --small-files 500' if inventory_hostname in (groups['role_compute'] | default([])) and nanohpc.mode | default('slurm') != 'monitor' else '--internet-only' }} --output /var/lib/nanohpc/metrics-textfile/speed.prom --url https://files.pythonhosted.org/packages/fd/df/23c69e9b9fd19fe6563422f1bc59f89601bda47234a89a1cf432cfde3aee/torch-2.14.1-cp314-cp314-manylinux_2_28_x86_64.whl --internet-seconds 15
+      TimeoutStartSec=10min
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      PrivateTmp=true
+      ProtectKernelTunables=true
+      ProtectKernelModules=true
+      ProtectControlGroups=true
+      ReadWritePaths=/var/lib/nanohpc/metrics-textfile{{ ' /home/.nanohpc-speed-test' if inventory_hostname in (groups['role_compute'] | default([])) and nanohpc.mode | default('slurm') != 'monitor' else '' }}
+      MemoryMax=256M
+  register: speed_service
+
+- name: Install the nightly speed-test timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nanohpc-speed-test.timer
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Measure home and Internet speed each night (nanoHPC)
+
+      [Timer]
+      OnCalendar=*-*-* {{ '%02d' | format((4 + (3 * groups['all'].index(inventory_hostname)) // 60) % 24) }}:{{ '%02d' | format((3 * groups['all'].index(inventory_hostname)) % 60) }}:00
+      AccuracySec=1s
+      Unit=nanohpc-speed-test.service
+
+      [Install]
+      WantedBy=timers.target
+  register: speed_timer
+
+# A speed run fills the shared home link for several seconds. Start with the nightly timer, not during deploy.
+- name: Schedule the nightly speed test
+  ansible.builtin.systemd_service:
+    name: nanohpc-speed-test.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not (ansible_check_mode and (speed_service.changed or speed_timer.changed))
+
 - name: Name this machine's GPU collector
   ansible.builtin.set_fact:
     gpu: "{{ nanohpc.metrics.gpus[inventory_hostname] | default(none) }}"

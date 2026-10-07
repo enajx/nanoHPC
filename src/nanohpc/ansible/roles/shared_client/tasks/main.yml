@@ -1,0 +1,75 @@
+# Compute machines mount the server's datasets read-only. Preflight checks that the mount
+# will not hide local data. The marker lets cluster-health require /shared/datasets on these machines.
+
+- name: Require the shared datasets server
+  ansible.builtin.assert:
+    that: hostvars[nanohpc.shared.server].shared_server_ready | default(false)
+    fail_msg: >-
+      The shared datasets server {{ nanohpc.shared.server }} did not finish setting up /shared/datasets
+      (see its errors above), so {{ inventory_hostname }} cannot mount it.
+    quiet: true
+
+- name: Install the NFS client
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+    install_recommends: false
+
+- name: Read the current /shared/datasets mount
+  ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /shared/datasets
+  register: shared_mount_before
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Create the /shared/datasets mount point
+  ansible.builtin.file:
+    path: /shared/datasets
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: shared_mount_before.stdout | trim == ''
+
+- name: Mount shared datasets at boot
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\S+\s+/shared/datasets\s'
+    line: "{{ nanohpc.shared.server_address }}:/shared/datasets /shared/datasets nfs4 ro,nosuid,nodev,_netdev,nofail,hard,timeo=600,retrans=2 0 0"
+    backup: true
+    validate: findmnt --verify --tab-file %s
+  register: shared_fstab
+
+- name: Mount shared datasets now
+  ansible.builtin.command: mount /shared/datasets
+  when: not ansible_check_mode and shared_mount_before.stdout | trim == ''
+  changed_when: true
+
+- name: Apply changed shared datasets mount options now
+  ansible.builtin.command: mount -o remount /shared/datasets
+  when: not ansible_check_mode and shared_fstab.changed and shared_mount_before.stdout | trim != ''
+  changed_when: true
+
+- name: Check that /shared/datasets comes from the shared datasets server
+  ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /shared/datasets
+  register: shared_mount_now
+  changed_when: false
+  check_mode: false
+  failed_when: shared_mount_now.stdout.split() != [nanohpc.shared.server_address ~ ':/shared/datasets', 'nfs4']
+  when: not (ansible_check_mode and shared_mount_before.stdout | trim == '')
+
+- name: Check the shared datasets mount options
+  ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /shared/datasets
+  register: shared_options_now
+  changed_when: false
+  check_mode: false
+  failed_when: "['ro', 'nosuid', 'nodev'] | difference(shared_options_now.stdout.split(',')) | length > 0"
+  when: not (ansible_check_mode and (shared_fstab.changed or shared_mount_before.stdout | trim == ''))
+
+- name: Mark compute machines that must have the shared datasets mount
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/shared-datasets
+    content: "{{ nanohpc.shared.server_address }}:/shared/datasets\n"
+    owner: root
+    group: root
+    mode: "0644"

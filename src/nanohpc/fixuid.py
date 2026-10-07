@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nanohpc.config import load_config
-from nanohpc.probe import PROBE_TIMEOUT, getent, remote, run_remote, ssh_failure, uid_owner, user_ids
+from nanohpc.probe import PROBE_TIMEOUT, getent, remote, run_remote, run_remote_input, ssh_failure, uid_owner, user_ids
 
 # Filesystems searched for the user's files: local filesystems that keep a file owner. Everything else is left
 # out: network filesystems (nfs, nfs4, cifs, autofs, fuse.*), memory and kernel filesystems (tmpfs, proc, sysfs),
@@ -30,16 +30,23 @@ FIND_TIMEOUT = 15 * 60  # seconds, for counting the user's files
 APPLY_TIMEOUT = 30 * 60  # seconds, for each command of a plan
 # The root-only record of a change in progress, one file per user (<user>.json).
 RECORD_FOLDER = "/var/lib/nanohpc/fix-uid"
-SUDO = "sudo -S -p ''"  # as deploy: an empty stdin, so a forwarded key unlocks sudo and a password prompt fails
+SUDO = "sudo -S -p ''"  # as deploy: a forwarded key unlocks sudo; a password prompt fails without a typed password
 
-# Runs on the machine as root (read-only): counts the files owned by UID argv[1] or GID argv[2] on each local
-# filesystem argv[3:], keeps a few example paths, and prints JSON. Paths are read NUL-separated, so any name works.
+# Runs on the machine as root (read-only): lists files matching the UID argv[1] or GID argv[2] that will change.
+# A dash disables that ID's search. Paths are read NUL-separated, so any name works.
 FIND_PROGRAM = r"""
 import json, subprocess, sys, threading
 uid, gid = sys.argv[1], sys.argv[2]
-result = {"count": 0, "examples": [], "errors": []}
+result = {"count": 0, "paths": [], "errors": []}
+matches = []
+if uid != "-":
+    matches.extend(["-uid", uid])
+if gid != "-":
+    if matches:
+        matches.append("-o")
+    matches.extend(["-gid", gid])
 for mount in sys.argv[3:]:
-    command = ["find", mount, "-xdev", "(", "-uid", uid, "-o", "-gid", gid, ")", "-print0"]
+    command = ["find", mount, "-xdev", "(", *matches, ")", "-print0"]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     errors = []
     reader = threading.Thread(target=lambda: errors.append(process.stderr.read()))
@@ -49,14 +56,28 @@ for mount in sys.argv[3:]:
         paths = (rest + chunk).split(b"\0")
         rest = paths.pop()
         result["count"] += len(paths)
-        for path in paths[: max(0, 5 - len(result["examples"]))]:
-            result["examples"].append(path.decode(errors="replace"))
+        result["paths"].extend(path.decode(errors="surrogateescape") for path in paths)
     reader.join()
     if process.wait() != 0:
         text = errors[0].decode(errors="replace").strip().splitlines()
         result["errors"].append(f"find {mount}: " + (text[0] if text else f"exit code {process.returncode}"))
 print(json.dumps(result))
 """
+
+# Receives the reviewed path list on stdin. It changes only those paths, and only the IDs that still match the
+# old IDs. A file created after the last check is not included. The ownership change does not follow symbolic links.
+APPLY_FILES_PROGRAM = r"""
+# nanoHPC ownership list
+import json, os, sys
+plan = json.load(sys.stdin)
+for path in plan["paths"]:
+    status = os.lstat(path)
+    owner = plan["new_id"] if plan["old_uid"] != plan["new_id"] and status.st_uid == plan["old_uid"] else -1
+    group = plan["new_id"] if plan["old_gid"] != plan["new_id"] and status.st_gid == plan["old_gid"] else -1
+    if owner != -1 or group != -1:
+        os.chown(path, owner, group, follow_symlinks=False)
+"""
+APPLY_FILES_COMMAND = ["python3", "-c", APPLY_FILES_PROGRAM]
 
 
 @dataclass(frozen=True)
@@ -73,8 +94,8 @@ class FixPlan:
     reasons: list[str]  # why it cannot proceed (empty when ok)
     notes: list[str]  # what the administrator should know (a network home, finishing a run that stopped halfway)
     filesystems: list[str]  # local filesystems searched and changed
-    file_count: int  # paths on them owned by the old UID or GID (the home folder included when local)
-    examples: list[str]  # a few of those paths
+    file_count: int  # paths on them that the ownership commands would change
+    paths: list[str]  # every matching path on the local filesystems
     home_network: bool  # /home or the user's home folder is on a network mount on this machine
     commands: list[list[str]]  # run as root, in this order
 
@@ -196,10 +217,13 @@ def plan_fix(target: str, ssh_config: Path | None, user: str, uid: int) -> FixPl
         taken = getent(target, ssh_config, "group", [str(uid)], False)
         if taken and taken[0][0] != group:
             reasons.append(f"GID {uid} is taken by the group {taken[0][0]} on {target}")
-    processes = remote(target, ssh_config, f"pgrep -l -u {current_uid}", False, PROBE_TIMEOUT)
-    if processes.returncode not in (0, 1):
-        raise RuntimeError(f"pgrep on {target} failed: {processes.stderr.strip() or 'no output'}")
-    running = processes.stdout.strip().splitlines()
+    running: list[str] = []
+    for process_uid in {current_uid, old_uid}:
+        for id_kind in ("-u", "-U"):
+            processes = remote(target, ssh_config, f"pgrep -l {id_kind} {process_uid}", False, PROBE_TIMEOUT)
+            if processes.returncode not in (0, 1):
+                raise RuntimeError(f"pgrep on {target} failed: {processes.stderr.strip() or 'no output'}")
+            running += [line for line in processes.stdout.strip().splitlines() if line not in running]
     if running:
         more = f", and {len(running) - EXAMPLES} more" if len(running) > EXAMPLES else ""
         reasons.append(
@@ -233,16 +257,18 @@ def plan_fix(target: str, ssh_config: Path | None, user: str, uid: int) -> FixPl
     if folder_mounts and is_network(folder_mounts[-1][1]):
         unmount = next(mount[0] for mount in folder_mounts if is_network(mount[1]))
     count = 0
-    examples: list[str] = []
+    paths: list[str] = []
     if sudo_ok and filesystems:
-        program = shlex.join(["python3", "-c", FIND_PROGRAM, str(old_uid), str(old_gid), *filesystems])
+        owner = str(old_uid) if old_uid != uid else "-"
+        group_id = str(old_gid) if old_gid != uid else "-"
+        program = shlex.join(["python3", "-c", FIND_PROGRAM, owner, group_id, *filesystems])
         result = run_remote(target, ssh_config, f"{SUDO} {program} </dev/null", True, FIND_TIMEOUT)
         if result.returncode != 0:
             failure = ssh_failure(target, result) or result.stderr.strip() or "no output"
             reasons.append(f"searching the files on {target} failed: {failure}")
         else:
             files = json.loads(result.stdout)
-            count, examples = files["count"], files["examples"]
+            count, paths = files["count"], files["paths"]
             reasons += [f"{error} (on {target})" for error in files["errors"]]
     commands: list[list[str]] = []
     if record is None:
@@ -261,16 +287,8 @@ def plan_fix(target: str, ssh_config: Path | None, user: str, uid: int) -> FixPl
             inner = f"umount --lazy {shlex.quote(unmount)} && {shlex.join(usermod)}"
             usermod = ["unshare", "--mount", "--propagation", "private", "sh", "-c", inner]
         commands.append(usermod)
-    if old_uid != uid:
-        commands += [
-            ["find", path, "-xdev", "-uid", str(old_uid), "-exec", "chown", "-h", str(uid), "{}", "+"]
-            for path in filesystems
-        ]
-    if old_gid != uid:
-        commands += [
-            ["find", path, "-xdev", "-gid", str(old_gid), "-exec", "chgrp", "-h", str(uid), "{}", "+"]
-            for path in filesystems
-        ]
+    if paths:
+        commands.append(APPLY_FILES_COMMAND)
     return FixPlan(
         target,
         user,
@@ -283,7 +301,7 @@ def plan_fix(target: str, ssh_config: Path | None, user: str, uid: int) -> FixPl
         notes,
         filesystems,
         count,
-        examples,
+        paths,
         bool(network),
         commands,
     )
@@ -297,15 +315,12 @@ def format_plan(plan: FixPlan) -> str:
             f"  old: UID {plan.old_uid}, primary group {plan.group} (GID {plan.old_gid}); cluster.yml: UID {plan.new_id}"
         )
     if plan.filesystems:
-        lines.append(
-            f"  files owned by UID {plan.old_uid} or GID {plan.old_gid} on local filesystems "
-            f"({', '.join(plan.filesystems)}): {plan.file_count}"
-        )
-        lines += [f"    {path}" for path in plan.examples]
+        lines.append(f"  files to re-own on local filesystems ({', '.join(plan.filesystems)}): {plan.file_count}")
+        lines += [f"    {json.dumps(path, ensure_ascii=True)}" for path in plan.paths]
     lines += [f"  note: {note}" for note in plan.notes]
     if plan.ok:
         lines.append("  commands to run as root, in order:")
-        lines += [f"    {shlex.join(command)}" for command in plan.commands]
+        lines += [f"    {format_command(command)}" for command in plan.commands]
     else:
         lines.append("  cannot proceed:")
         lines += [f"    - {reason}" for reason in plan.reasons]
@@ -317,6 +332,11 @@ def applied_message(plan: FixPlan) -> str:
     return f"{plan.user} on {plan.target} now has UID {plan.new_id} and GID {plan.new_id}"
 
 
+def format_command(command: list[str]) -> str:
+    """Show the file helper plainly without printing its full Python source in the plan."""
+    return "re-own only the files listed above" if command == APPLY_FILES_COMMAND else shlex.join(command)
+
+
 def apply_fix(target: str, ssh_config: Path | None, plan: FixPlan) -> list[str]:
     """Run a plan that passed (`plan.ok`) as root with sudo, then read the account again to confirm it and remove
     the record. Return the messages for the administrator: the commands run, then the first failure and the
@@ -326,17 +346,31 @@ def apply_fix(target: str, ssh_config: Path | None, plan: FixPlan) -> list[str]:
         raise ValueError(f"the plan is for {plan.target}, not {target}")
     if not plan.ok:
         return [f"Nothing was changed: the plan for {plan.user} on {target} cannot proceed."]
+    current = plan_fix(target, ssh_config, plan.user, plan.new_id)
+    if not current.ok:
+        return [f"Nothing was changed: the check for {plan.user} on {target} no longer passes.", *current.reasons]
+    if current != plan:
+        return [
+            f"Nothing was changed: the account, mounts, or files on {target} changed since the preview. "
+            + "Run nanohpc fix-uid again to review a new plan."
+        ]
     messages: list[str] = []
     for index, command in enumerate(plan.commands):
-        result = run_remote(target, ssh_config, f"{SUDO} {shlex.join(command)} </dev/null", True, APPLY_TIMEOUT)
-        messages.append(f"ran as root on {target}: {shlex.join(command)}")
+        if command == APPLY_FILES_COMMAND:
+            payload = json.dumps(
+                {"paths": plan.paths, "old_uid": plan.old_uid, "old_gid": plan.old_gid, "new_id": plan.new_id}
+            )
+            result = run_remote_input(target, ssh_config, f"{SUDO} {shlex.join(command)}", True, APPLY_TIMEOUT, payload)
+        else:
+            result = run_remote(target, ssh_config, f"{SUDO} {shlex.join(command)} </dev/null", True, APPLY_TIMEOUT)
+        messages.append(f"ran as root on {target}: {format_command(command)}")
         if result.returncode != 0:
             failure = ssh_failure(target, result) or result.stderr.strip() or "no output"
             messages.append(f"failed (exit code {result.returncode}): {failure}")
             messages.append(
                 "The commands before it were applied. Not run yet (run nanohpc fix-uid again to plan them):"
             )
-            messages += [f"  {shlex.join(rest)}" for rest in plan.commands[index + 1 :]]
+            messages += [f"  {format_command(rest)}" for rest in plan.commands[index + 1 :]]
             return messages
     ids = user_ids(target, ssh_config, [plan.user])[plan.user]
     if ids != (plan.new_id, plan.new_id):

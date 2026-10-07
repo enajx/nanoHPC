@@ -13,10 +13,10 @@ from typing import Any
 
 import yaml
 
-ROLES = ("front", "home", "backup", "compute")
+ROLES = ("front", "home", "backup", "compute", "shared")
 JOB_TYPES = ("batch", "interactive", "any")  # batch: sbatch only; interactive: only the documented shell
 COMPUTE_FIELDS = ("cpu", "memory_mb", "gpu", "partitions", "scratch")
-MACHINE_FIELDS = ("address", "aliases", "roles", "home", "backup", *COMPUTE_FIELDS)
+MACHINE_FIELDS = ("address", "aliases", "roles", "home", "backup", "shared", *COMPUTE_FIELDS)
 TOP_FIELDS = (
     "cluster",
     "machines",
@@ -572,9 +572,13 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
                 checker.fail(f"{path}.roles:", f"unknown role {role} (known: {', '.join(ROLES)})")
         if len(set(map(str, roles))) != len(roles):
             checker.fail(f"{path}.roles", "has duplicates")
-        for role in ("front", "home", "backup"):
+        for role in ("front", "home", "backup", "shared"):
             if role in roles and "compute" in roles:
                 checker.fail(f"{path}:", f"the {role} role cannot be combined with compute")
+        if "front" in roles and "shared" in roles:
+            checker.fail(f"{path}:", "the shared role must be on a storage machine, not the front node")
+        if "home" in roles and "shared" in roles:
+            checker.fail(f"{path}:", "the shared datasets server must differ from the home server")
         if "home" in roles and "backup" in roles:
             checker.fail(f"{path}:", "the backup role cannot be on the home machine")
         if "compute" in roles:
@@ -600,6 +604,12 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
                     checker.fail(f"{path}.backup.path", "must be an absolute path to a directory, not / and without ..")
         elif "backup" in machine:
             checker.fail(f"{path}.backup", "is only for a machine with the backup role")
+        if "shared" in roles:
+            shared = checker.mapping(machine.get("shared"), f"{path}.shared", ("device",), ())
+            if shared is not None and "device" in shared:
+                checker.matches(shared["device"], DEVICE, f"{path}.shared.device", "a device path under /dev/")
+        elif "shared" in machine:
+            checker.fail(f"{path}.shared", "is only for a machine with the shared role")
         machine["roles"] = roles
         machines[name] = machine
     for role in ("front", "home"):
@@ -608,6 +618,8 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
             checker.fail("machines:", f"exactly one machine must have the {role} role, found {count}")
     if sum("backup" in machine["roles"] for machine in machines.values()) > 1:
         checker.fail("machines:", "at most one machine can have the backup role")
+    if sum("shared" in machine["roles"] for machine in machines.values()) > 1:
+        checker.fail("machines:", "at most one machine can have the shared role")
     if not any("compute" in machine["roles"] for machine in machines.values()):
         checker.fail("machines:", "at least one machine must have the compute role")
     for partition in partitions:

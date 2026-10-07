@@ -134,6 +134,32 @@ class HeterogeneousClusterTest(unittest.TestCase):
         self.assertEqual(config["machines"]["store"]["home"], {"device": None})
         self.assertIsNone(config["backup"])
 
+    def test_shared_datasets_use_a_separate_storage_machine_and_disk(self) -> None:
+        raw = example()
+        raw["machines"]["store"]["roles"].append("shared")
+        raw["machines"]["store"]["shared"] = {"device": "/dev/vdc"}
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["machines"]["store"]["shared"]["device"], "/dev/vdc")
+
+        raw["machines"]["front"]["roles"].append("shared")
+        raw["machines"]["front"]["shared"] = {"device": "/dev/vdc"}
+        _, errors = check_config(raw)
+        self.assertTrue(any("front" in error and "shared" in error for error in errors))
+
+        raw["machines"]["front"]["roles"] = ["front"]
+        del raw["machines"]["front"]["shared"]
+        del raw["machines"]["front"]["home"]
+        raw["machines"]["store"]["roles"] = ["home", "shared"]
+        raw["machines"]["store"]["home"] = {"device": "/dev/vdc"}
+        raw["machines"]["store"]["shared"] = {"device": "/dev/vdd"}
+        del raw["machines"]["store"]["backup"]
+        del raw["backup"]
+        _, errors = check_config(raw)
+        self.assertTrue(
+            any("machines.store" in error and "must differ from the home server" in error for error in errors)
+        )
+
     def test_admin_defined_partitions(self) -> None:
         raw = example()
         raw["partitions"] = {"gpu": {"default": True, "max_time": "2-00:00:00"}, "debug": {"max_time": "00:30:00"}}

@@ -3,7 +3,8 @@ import { Activity, ChartNoAxesColumnIncreasing, Server, UsersRound } from 'lucid
 import { AccentButton } from './accent-button'
 import { FontButton } from './font-button'
 import { ClusterMap, MapToggle, storedMapShown } from './cluster-map'
-import { MachineCards, size, type Machine } from './machines'
+import { healthText, MachineCards, size, SpeedBoxes, type Machine } from './machines'
+import { MachineLabel } from './machine-dialog'
 import type { MonitorSiteSettings } from './site'
 
 type MonitorSnapshot = {
@@ -125,10 +126,10 @@ function ReadingTable({ nodes, readings, stale }: { nodes: Machine[]; readings: 
 /** Machine health and observed GPU activity, including the monitoring host. */
 function MachineTable({ nodes, stale }: { nodes: Machine[] | null; stale: boolean }) {
   return <section className="panel machine-list"><div className="panel-heading"><h2>Machines</h2></div>
-    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Role</th><th>Health</th><th>GPU activity</th><th>GPUs installed</th></tr></thead>
+    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Role</th><th>Health</th><th>GPU activity</th><th>GPUs installed</th><th>Internet speed</th></tr></thead>
       <tbody>{nodes?.map(node => <tr key={node.name}><th><a href={`#machines?machine=${encodeURIComponent(node.name)}`}>{node.name}</a></th>
-        <td>{node.role}</td><td><span className={`pill state-${(stale ? 'Unknown' : node.health ?? 'Unknown').toLowerCase()}`}>{stale ? 'Unknown' : node.health ?? 'Unknown'}</span></td>
-        <td>{stale ? 'Unknown' : node.gpu_usage ?? 'Unknown'}</td><td>{node.total_gpus ?? node.specs?.gpu_count ?? 'Unknown'}</td></tr>)}</tbody></table></div>
+        <td>{node.role}</td><td><MachineLabel node={node} topic="health" stale={stale} demo={false} className={`state-${(stale ? 'Unknown' : node.health ?? 'Unknown').toLowerCase()}`} label={healthText(stale ? 'Unknown' : node.health ?? 'Unknown')}>{healthText(stale ? 'Unknown' : node.health ?? 'Unknown')}</MachineLabel></td>
+        <td>{stale ? 'Unknown' : node.gpu_usage ?? 'Unknown'}</td><td>{node.total_gpus ?? node.specs?.gpu_count ?? 'Unknown'}</td><td><SpeedBoxes node={node} stale={stale} demo={false} named={false}/></td></tr>)}</tbody></table></div>
     {!nodes && <p role="status">Machine status unavailable.</p>}
   </section>
 }

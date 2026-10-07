@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage a folder from the user's home onto the compute machine's /scratch for reuse across jobs:
+# Stage a folder from the user's home or the shared datasets area onto local /scratch for reuse across jobs:
 # the copy is versioned by content, marked ready only after a complete copy, and private to the user.
 # Unused copies are removed by the daily scratch cleanup. Space and inode reserves come from
 # /etc/nanohpc/scratch.conf.
@@ -11,7 +11,7 @@ if test -f "$config_file"; then
 fi
 
 usage() {
-  echo "usage: stage-dataset --private PATH_IN_HOME" >&2
+  echo "usage: stage-dataset --private PATH_IN_HOME | --shared NAME" >&2
   exit 64
 }
 
@@ -19,6 +19,7 @@ scratch_root=${STAGE_SCRATCH_ROOT:-/scratch/staged}
 lock_root=${STAGE_LOCK_ROOT:-/scratch/locks}
 rsync_bin=${STAGE_RSYNC_BIN:-rsync}
 home_root=${STAGE_HOME_ROOT:-$HOME}
+shared_root=${STAGE_SHARED_ROOT:-/shared/datasets}
 mode=${1:-}
 value=${2:-}
 
@@ -27,6 +28,24 @@ if test "$scratch_root" = /scratch/staged; then
   mountpoint -q /scratch || { echo "scratch filesystem is not mounted" >&2; exit 69; }
 fi
 case "$mode" in
+  --shared)
+    case "$value" in ''|*/*|.*|*'..'*|*[!A-Za-z0-9._-]*) usage ;; esac
+    if test "$shared_root" = /shared/datasets; then
+      mountpoint -q /shared/datasets || { echo "shared datasets filesystem is not mounted" >&2; exit 69; }
+    fi
+    source_dir="$shared_root/$value"
+    test -d "$source_dir" || { echo "shared dataset does not exist" >&2; exit 66; }
+    source_real=$(cd "$source_dir" && pwd -P)
+    shared_real=$(cd "$shared_root" && pwd -P)
+    case "$source_real" in "$shared_real"/*) ;; *) echo "shared dataset is outside shared root" >&2; exit 66 ;; esac
+    test -f "$source_real/.dataset-version" || { echo "shared dataset must have .dataset-version" >&2; exit 65; }
+    version=$(cat "$source_real/.dataset-version")
+    case "$version" in ''|.*|*'..'*|*[!A-Za-z0-9._-]*) echo "unsafe dataset version" >&2; exit 65 ;; esac
+    destination="$scratch_root/shared/$(id -u)/$value/$version"
+    permission=700
+    mkdir -p "$scratch_root/shared/$(id -u)"
+    chmod 0700 "$scratch_root/shared/$(id -u)"
+    ;;
   --private)
     case "$value" in ''|/*|*'..'*) usage ;; esac
     source_dir="$home_root/$value"

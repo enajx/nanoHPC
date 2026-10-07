@@ -1,22 +1,55 @@
 """The monitor-only deploy prepares only monitoring inputs for Ansible."""
 
+import contextlib
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 
 from nanohpc import deploy
+from nanohpc.maintenance_lock import MaintenanceLockBusy
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class MonitorDeployTest(unittest.TestCase):
     """Check the public command and the files passed to the monitoring playbook."""
+
+    def test_busy_coordinator_lock_stops_monitor_deploy_before_prepare(self) -> None:
+        config = {"cluster": {"monitor_host": "front", "name": "lab"}, "machines": {"front": {}}}
+        found = deploy.Probe({"front": "front"}, [], [], {"front": ["monitor"]})
+        with (
+            patch.object(deploy, "probe", return_value=found),
+            patch.object(deploy, "probe_monitor_gpus", return_value=({"front": {}}, [])),
+            patch.object(deploy, "read_monitor_baseline", return_value=({"front": {}}, None)),
+            patch.object(deploy, "prepare_monitor") as prepare,
+            patch("nanohpc.maintenance_lock.acquire", side_effect=MaintenanceLockBusy("busy")),
+        ):
+            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, True, None, None), 1)
+            prepare.assert_not_called()
+
+    def test_changed_gpu_inventory_after_lock_stops_monitor_deploy(self) -> None:
+        config = {"cluster": {"monitor_host": "front", "name": "lab"}, "machines": {"front": {}}}
+        found = deploy.Probe({"front": "front"}, [], [], {"front": ["monitor"]})
+        holder = MagicMock()
+        with (
+            patch.object(deploy, "probe", return_value=found),
+            patch.object(
+                deploy, "probe_monitor_gpus", side_effect=[({"front": {"count": 1}}, []), ({"front": {"count": 2}}, [])]
+            ),
+            patch.object(deploy, "read_monitor_baseline", return_value=({"front": {"count": 1}}, None)),
+            patch.object(deploy, "prepare_monitor") as prepare,
+            patch("nanohpc.maintenance_lock.acquire", return_value=holder),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, True, None, None), 1)
+            prepare.assert_not_called()
 
     def test_command_is_available(self) -> None:
         result = subprocess.run(

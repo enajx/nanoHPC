@@ -59,6 +59,17 @@ with open(os.path.join(root, "sudo.log"), "a") as log:
 os.execvp(args[3], args[3:])
 """
 
+FAKE_PYTHON = f"""#!{sys.executable}
+# The ownership helper runs with a reviewed list of paths. Record that list without changing test-machine files.
+import json, os, sys
+if len(sys.argv) > 2 and "# nanoHPC ownership list" in sys.argv[2]:
+    plan = json.load(sys.stdin)
+    with open(os.path.join(os.environ["FAKE_ROOT"], "applied_paths"), "w") as output:
+        json.dump(plan["paths"], output)
+    sys.exit(0)
+os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+"""
+
 FAKE_GETENT = """#!/bin/sh
 # Fake getent (test only): looks up names or numbers in the fake machine's passwd or group file, and then in
 # passwd.ldap or group.ldap (accounts from a directory) unless called with -s files.
@@ -103,15 +114,27 @@ COMMANDS = {
     "df": 'cat "$FAKE_ROOT/df"\n',
     "ip": 'cat "$FAKE_ROOT/ip"\n',
     "lsblk": 'cat "$FAKE_ROOT/lsblk.json"\n',
-    # pgrep -l -u UID: lines "uid pid name" of the fake process list; exit 1 when none match.
-    "pgrep": 'awk -v u="$3" \'$1 == u { print $2, $3; found = 1 } END { exit !found }\' "$FAKE_ROOT/processes"\n',
+    # pgrep -l -u/-U UID: lines "effective_uid real_uid pid name" (or "uid pid name") of fake processes.
+    "pgrep": (
+        'awk -v kind="$2" -v u="$3" \'{ e = $1; r = NF == 3 ? $1 : $2; '
+        "p = NF == 3 ? $2 : $3; n = NF == 3 ? $3 : $4; "
+        'if ((kind == "-u" && e == u) || (kind == "-U" && r == u)) { print p, n; found = 1 } '
+        "}"
+        ' END { exit !found }\' "$FAKE_ROOT/processes"\n'
+    ),
     "who": 'cat "$FAKE_ROOT/who"\n',
     "findmnt": 'cat "$FAKE_ROOT/mounts"\n',
-    # find MOUNT ... -print0 lists the fake owned files under MOUNT (lines "mount<TAB>path"); with -exec it only
+    # find MOUNT ... -print0 lists fake files under MOUNT (mount, path, optional UID, optional GID); with -exec it only
     # succeeds (the fake sudo has logged the command).
     "find": (
         'case " $* " in *" -print0 "*)\n'
-        "  awk -F '\\t' -v m=\"$1\" '$1 == m { print $2 }' \"$FAKE_ROOT/owned\" | tr '\\n' '\\000' ;;\n"
+        '  uid=; gid=; previous=; for arg in "$@"; do\n'
+        '    case "$previous" in -uid) uid=$arg ;; -gid) gid=$arg ;; esac; previous=$arg\n'
+        "  done\n"
+        '  awk -F \'\\t\' -v m="$1" -v u="$uid" -v g="$gid" '
+        '\'$1 == m && ((u != "" && (NF < 3 ? "1001" : $3) == u) || '
+        '(g != "" && (NF < 4 ? "1001" : $4) == g)) { printf "%s%c", $2, 0 }\' '
+        '"$FAKE_ROOT/owned" ;;\n'
         "esac\n"
     ),
     "unshare": 'echo "unshare $*" >> "$FAKE_ROOT/log"\nwhile [ "$1" != sh ]; do shift; done\nexec "$@"\n',
@@ -191,7 +214,7 @@ def fake_machine(folder: Path, gpus: list[str], os_release: str) -> dict[str, st
     write_command(bin_folder, "groupmod", FAKE_IDMOD)
     for name, text in COMMANDS.items():
         write_command(bin_folder, name, text)
-    (bin_folder / "python3").symlink_to(sys.executable)
+    write_command(bin_folder, "python3", FAKE_PYTHON)
     if gpus:
         (root / "gpus").write_text("".join(f"{gpu}\n" for gpu in gpus))
         write_command(bin_folder, "nvidia-smi", 'cat "$FAKE_ROOT/gpus"\n')

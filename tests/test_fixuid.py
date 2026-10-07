@@ -18,15 +18,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from nanohpc.fixuid import applied_message, apply_fix, plan_fix
+from nanohpc.fixuid import APPLY_FILES_COMMAND, applied_message, apply_fix, format_command, plan_fix
 from tests.test_probe import FAKE_IDMOD, UBUNTU, fake_machine, write_command  # pyrefly: ignore[missing-import]
 
 ROOT = Path(__file__).resolve().parents[1]
-
-CHOWN_ROOT = ["find", "/", "-xdev", "-uid", "1001", "-exec", "chown", "-h", "2000", "{}", "+"]
-CHOWN_SCRATCH = ["find", "/scratch", "-xdev", "-uid", "1001", "-exec", "chown", "-h", "2000", "{}", "+"]
-CHGRP_ROOT = ["find", "/", "-xdev", "-gid", "1001", "-exec", "chgrp", "-h", "2000", "{}", "+"]
-CHGRP_SCRATCH = ["find", "/scratch", "-xdev", "-gid", "1001", "-exec", "chgrp", "-h", "2000", "{}", "+"]
 
 
 class FixUidTest(unittest.TestCase):
@@ -53,7 +48,12 @@ class FixUidTest(unittest.TestCase):
         """Return the commands the fake sudo ran, without the plan's read-only ones (reading the record, find)."""
         path = self.root / "sudo.log"
         lines = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
-        return [line for line in lines if not line.startswith(("python3 ", "sh -c 'if [ -e "))]
+        return [
+            line
+            for line in lines
+            if not line.startswith("sh -c 'if [ -e ")
+            and (not line.startswith("python3 ") or "# nanoHPC ownership list" in line)
+        ]
 
     def expected(self, commands: list[list[str]]) -> list[str]:
         """Return planned commands as the fake sudo logs them (with /var/lib/nanohpc in the fake machine folder)."""
@@ -67,7 +67,7 @@ class FixUidTest(unittest.TestCase):
         self.assertEqual((plan.old_uid, plan.old_gid, plan.group), (1001, 1001, "alice"))
         self.assertEqual(plan.filesystems, ["/", "/scratch"])
         self.assertEqual(plan.file_count, 4)
-        self.assertEqual(plan.examples[:2], ["/home/alice", "/home/alice/notes.txt"])
+        self.assertEqual(plan.paths[:2], ["/home/alice", "/home/alice/notes.txt"])
         self.assertFalse(plan.home_network)
         self.assertEqual(plan.notes, [])
         # First, a record of the old IDs, so a run that stops halfway can be finished.
@@ -78,10 +78,7 @@ class FixUidTest(unittest.TestCase):
             [
                 ["groupmod", "-g", "2000", "alice"],
                 ["usermod", "-u", "2000", "alice"],
-                CHOWN_ROOT,
-                CHOWN_SCRATCH,
-                CHGRP_ROOT,
-                CHGRP_SCRATCH,
+                APPLY_FILES_COMMAND,
             ],
         )
         # The plan changed nothing.
@@ -111,6 +108,28 @@ class FixUidTest(unittest.TestCase):
                 "alice is logged in on node7: log out first",
             ],
         )
+
+    def test_running_process_with_real_uid_is_refused(self) -> None:
+        with (self.root / "processes").open("a") as processes:
+            processes.write("0 1001 4242 privileged-command\n")
+        plan = plan_fix("node7", None, "alice", 2000)
+        self.assertFalse(plan.ok)
+        self.assertIn("4242 privileged-command", plan.reasons[0])
+
+    def test_recovery_refuses_process_with_old_uid(self) -> None:
+        self.record.parent.mkdir(parents=True)
+        self.record.write_text(
+            json.dumps({"user": "alice", "old_uid": 1001, "old_gid": 1001, "group": "alice", "new_id": 2000})
+        )
+        passwd = (self.root / "etc/passwd").read_text().replace("alice:x:1001:1001:", "alice:x:2000:2000:")
+        (self.root / "etc/passwd").write_text(passwd)
+        group = (self.root / "etc/group").read_text().replace("alice:x:1001:", "alice:x:2000:")
+        (self.root / "etc/group").write_text(group)
+        with (self.root / "processes").open("a") as processes:
+            processes.write("1001 4242 old-job\n")
+        plan = plan_fix("node7", None, "alice", 2000)
+        self.assertFalse(plan.ok)
+        self.assertIn("4242 old-job", plan.reasons[0])
 
     def test_missing_account_and_nothing_to_do(self) -> None:
         missing = plan_fix("node7", None, "bob", 2001)
@@ -201,6 +220,46 @@ class FixUidTest(unittest.TestCase):
         self.assertEqual(messages, ["Nothing was changed: the plan for alice on node7 cannot proceed."])
         self.assertEqual(self.root_commands(), [])
 
+    def test_apply_refuses_a_process_started_after_preview(self) -> None:
+        plan = plan_fix("node7", None, "alice", 2000)
+        with (self.root / "processes").open("a") as processes:
+            processes.write("1001 4242 python\n")
+        messages = apply_fix("node7", None, plan)
+        self.assertIn("running processes", " ".join(messages))
+        self.assertEqual(self.root_commands(), [])
+
+    def test_apply_refuses_a_file_added_after_preview(self) -> None:
+        plan = plan_fix("node7", None, "alice", 2000)
+        with (self.root / "owned").open("a") as owned:
+            owned.write("/scratch\t/scratch/alice/new-file\n")
+        messages = apply_fix("node7", None, plan)
+        self.assertIn("changed since the preview", " ".join(messages))
+        self.assertEqual(self.root_commands(), [])
+
+    def test_apply_uses_reviewed_paths_when_a_file_appears_during_user_change(self) -> None:
+        plan = plan_fix("node7", None, "alice", 2000)
+        write_command(
+            self.folder / "bin",
+            "usermod",
+            FAKE_IDMOD
+            + 'with open(os.path.join(root, "owned"), "a") as owned:\n'
+            + '    owned.write("/scratch\\t/scratch/alice/late-file\\n")\n',
+        )
+        messages = apply_fix("node7", None, plan)
+        self.assertEqual(messages[-1], applied_message(plan), messages)
+        applied_paths = json.loads((self.root / "applied_paths").read_text())
+        self.assertEqual(applied_paths, plan.paths)
+        self.assertNotIn("/scratch/alice/late-file", applied_paths)
+
+    def test_gid_only_plan_lists_only_files_to_change(self) -> None:
+        passwd = (self.root / "etc/passwd").read_text().replace("alice:x:1001:1001:", "alice:x:2000:1001:")
+        (self.root / "etc/passwd").write_text(passwd)
+        (self.root / "owned").write_text("/\t/home/alice\t2000\t2000\n/\t/home/alice/notes.txt\t2000\t1001\n")
+        plan = plan_fix("node7", None, "alice", 2000)
+        self.assertTrue(plan.ok, plan.reasons)
+        self.assertEqual(plan.paths, ["/home/alice/notes.txt"])
+        self.assertEqual(plan.file_count, 1)
+
     def test_halfway_failure_then_rerun_finishes(self) -> None:
         plan = plan_fix("node7", None, "alice", 2000)
         write_command(self.folder / "bin", "usermod", "echo 'usermod: user alice is currently used' >&2\nexit 8\n")
@@ -208,7 +267,7 @@ class FixUidTest(unittest.TestCase):
         self.assertNotEqual(messages[-1], applied_message(plan))
         self.assertEqual(self.root_commands(), self.expected(plan.commands[:3]))
         self.assertIn("failed (exit code 8): usermod: user alice is currently used", messages)
-        self.assertIn(f"  {shlex.join(CHGRP_SCRATCH)}", messages)
+        self.assertIn(f"  {format_command(APPLY_FILES_COMMAND)}", messages)
         # The record keeps the old IDs; groupmod has already run.
         self.assertEqual(
             json.loads(self.record.read_text()),
@@ -222,7 +281,7 @@ class FixUidTest(unittest.TestCase):
         self.assertEqual((rerun.old_uid, rerun.old_gid, rerun.group), (1001, 1001, "alice"))
         self.assertEqual(
             rerun.commands,
-            [["usermod", "-u", "2000", "alice"], CHOWN_ROOT, CHOWN_SCRATCH, CHGRP_ROOT, CHGRP_SCRATCH],
+            [["usermod", "-u", "2000", "alice"], APPLY_FILES_COMMAND],
         )
         self.assertIn("stopped halfway", rerun.notes[0])
         messages = apply_fix("node7", None, rerun)
@@ -253,6 +312,32 @@ class FixUidTest(unittest.TestCase):
         self.assertIn("ran as root on gpu2: groupmod -g 2000 alice", applied.stdout)
         self.assertIn("alice on gpu2 now has UID 2000 and GID 2000", applied.stdout)
         self.assertEqual(self.root_commands()[1:3], ["groupmod -g 2000 alice", "usermod -u 2000 alice"])
+
+    def test_command_lists_every_file_before_applying(self) -> None:
+        with (self.root / "owned").open("a") as owned:
+            for index in range(6):
+                owned.write(f"/scratch\t/scratch/alice/file-{index}\n")
+        cluster = self.folder / "cluster.yml"
+        shutil.copy(ROOT / "examples" / "cluster.yml", cluster)
+        command = [
+            sys.executable,
+            "-c",
+            "from nanohpc.cli import main; main()",
+            "fix-uid",
+            str(cluster),
+            "alice",
+            "gpu2",
+        ]
+        dry = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertEqual(self.root_commands(), [])
+        for index in range(6):
+            self.assertIn(f'    "/scratch/alice/file-{index}"\n', dry.stdout)
+        applied = subprocess.run([*command, "--apply"], capture_output=True, text=True, check=False)
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        preview = applied.stdout.split("ran as root on gpu2:", 1)[0]
+        for index in range(6):
+            self.assertIn(f'    "/scratch/alice/file-{index}"\n', preview)
 
     def test_command_unknown_user_or_machine(self) -> None:
         cluster = self.folder / "cluster.yml"

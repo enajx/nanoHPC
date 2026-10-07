@@ -18,7 +18,7 @@
     owner: "{{ item.0.name }}"
     group: "{{ item.0.name }}"
     mode: "0700"
-  loop: "{{ nanohpc.users | product(['/scratch/staged/private', '/scratch/locks']) | list }}"
+  loop: "{{ nanohpc.users | product(['/scratch/staged/private', '/scratch/staged/shared', '/scratch/locks']) | list }}"
   loop_control:
     label: "{{ item.1 }}/{{ item.0.uid }}"
 
@@ -52,6 +52,7 @@
       status=0
       {% for user in nanohpc.users %}
       runuser -u {{ user.name }} -- env SCRATCH_ROOT=/scratch/staged/private/{{ user.uid }} /usr/local/bin/scratch-cleanup || status=1
+      runuser -u {{ user.name }} -- env SCRATCH_ROOT=/scratch/staged/shared/{{ user.uid }} /usr/local/bin/scratch-cleanup || status=1
       runuser -u {{ user.name }} -- env SCRATCH_JOB_ROOT=/scratch/{{ user.name }}/cluster-jobs SCRATCH_JOB_RETENTION_DAYS={{ nanohpc.scratch.job_retention_days }} /usr/local/bin/scratch-job-cleanup || status=1
       {% endfor %}
       exit $status

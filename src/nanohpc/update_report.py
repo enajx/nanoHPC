@@ -14,7 +14,14 @@ from nanohpc.probe import run_remote, ssh_failure
 
 TIMEOUT = 120
 CARE_GROUPS: dict[str, tuple[str, ...]] = {
-    "kernel": ("linux-generic", "linux-image-", "linux-headers-", "linux-modules-"),
+    "kernel": (
+        "linux-generic",
+        "linux-image-",
+        "linux-headers-",
+        "linux-modules-",
+        "linux-tools-",
+        "linux-cloud-tools-",
+    ),
     "grub": ("grub", "shim"),
     "nvidia": (
         "nvidia-",

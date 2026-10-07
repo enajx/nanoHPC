@@ -53,7 +53,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from cluster_machine_status import machine_status, measurements, monitor_machine_status, query
+from cluster_machine_status import (
+    apply_maintenance,
+    machine_status,
+    maintenance_reason,
+    measurements,
+    monitor_machine_status,
+    query,
+)
 
 UTC = timezone.utc  # noqa: UP017 (datetime.UTC needs Python 3.11; Ubuntu 22.04 has 3.10)
 QUOTA_QUERY = '{__name__=~"cluster_home_quota_(used_bytes|soft_bytes|hard_bytes|collected_timestamp_seconds)"}'
@@ -258,8 +265,7 @@ def read_monitor_machines(path: Path, controller: str) -> dict[str, dict[str, An
             and isinstance(machine["role"], str)
             and machine["role"] in MONITOR_ROLE_NAMES
             and all(
-                isinstance(machine[key], list)
-                and all(isinstance(item, str) and bool(item) for item in machine[key])
+                isinstance(machine[key], list) and all(isinstance(item, str) and bool(item) for item in machine[key])
                 for key in ("units", "mounts")
             )
         )
@@ -310,9 +316,9 @@ def rolling_gpu_hours(records: str, now: datetime) -> dict[str, dict[str, float]
     return result
 
 
-def average_wait_seconds(records: str, now: datetime) -> float | None:
-    """Average submit-to-start seconds for jobs that started in the last 30 days."""
-    first_start = int((now - timedelta(days=30)).timestamp())
+def average_wait_seconds(records: str, now: datetime, days: int) -> float | None:
+    """Average submit-to-start seconds for jobs that started in the chosen period."""
+    first_start = int((now - timedelta(days=days)).timestamp())
     last_start = int(now.timestamp())
     waits: list[int] = []
     for line in records.splitlines():
@@ -520,10 +526,19 @@ def collect(
         ]
     )
     partitions = [fields(line) for line in read(["scontrol", "show", "partition", "--oneliner"]).splitlines()]
+    down = {partition["PartitionName"] for partition in partitions if partition.get("State", "UP") != "UP"}
+    queue_paused = bool(partitions) and len(down) == len(partitions)
     qos = [
         line.split("|")
         for line in read(
-            ["sacctmgr", "--noheader", "--parsable2", "show", "qos", "format=Name,MaxWall,MaxSubmitJobsPU,MaxTRESPU"]
+            [
+                "sacctmgr",
+                "--noheader",
+                "--parsable2",
+                "show",
+                "qos",
+                "format=Name,MaxWall,MaxSubmitJobsPU,MaxTRESPU,MaxTRESPJ",
+            ]
         ).splitlines()
     ]
     config = {
@@ -567,11 +582,13 @@ def collect(
                 {"name": f"{name}: usage billing", "value": partition.get("TRESBillingWeights", "Not set")},
             ]
         )
-    for name, wall, limit, tres in (row[:4] for row in qos):
+    for name, wall, limit, tres, per_job in (row[:5] for row in qos):
         if limit:
             policies.append({"name": f"{name}: running + pending jobs per user", "value": limit})
         if tres:
             policies.append({"name": f"{name}: simultaneous resources per user", "value": tres})
+        if per_job:
+            policies.append({"name": f"{name}: GPUs per job (most)", "value": per_job})
     for key in ("PriorityWeightFairShare", "PriorityWeightAge", "PriorityDecayHalfLife", "PriorityMaxAge"):
         # Slurm uses a capital S; the comparison tolerates version-specific capitalization.
         value = next((value for name, value in config.items() if name.lower() == key.lower()), "Unavailable")
@@ -616,6 +633,9 @@ def collect(
         compute["total_gpus"] = total
         compute["available_gpus"] = slurm_available_gpus(node)
         compute["partitions"] = [part for part in node.get("Partitions", "").split(",") if part]
+        reason = maintenance_reason(node["State"], node.get("Reason", ""), compute["partitions"], down)
+        if reason:
+            apply_maintenance(compute, reason)
         compute_nodes.append(compute)
     storage_nodes = [status(name, "", 0) for name, machine in machines.items() if machine["role"] == "storage"]
     result = {
@@ -624,9 +644,12 @@ def collect(
         "accounting_start": accounting_start,
         "running_jobs": sum(row[2] == "RUNNING" for row in jobs),
         "pending_jobs": sum(row[2] == "PENDING" for row in jobs),
-        "average_wait_seconds_30d": average_wait_seconds(waiting_records, now),
+        "average_wait_seconds_1d": average_wait_seconds(waiting_records, now, 1),
+        "average_wait_seconds_7d": average_wait_seconds(waiting_records, now, 7),
+        "average_wait_seconds_30d": average_wait_seconds(waiting_records, now, 30),
         "total_gpus": sum(gpu_count(node.get("CfgTRES", "")) for node in nodes),
         "allocated_gpus": sum(gpu_count(node.get("AllocTRES", "")) for node in nodes),
+        "queue_paused": queue_paused,
         "jobs": overview_jobs(queue["jobs"], int(now.timestamp())),
         "nodes": [status(controller, "", 0)] + compute_nodes + storage_nodes,
         "ranking": ranking,
@@ -652,6 +675,13 @@ def collect(
     ]
     for key in ("running_jobs", "pending_jobs", "total_gpus", "allocated_gpus"):
         metrics.extend([f"# TYPE cluster_{key} gauge", f"cluster_{key} {result[key]}"])
+    if result["average_wait_seconds_1d"] is not None:
+        metrics.extend(
+            [
+                "# TYPE cluster_mean_wait_seconds_24h gauge",
+                f"cluster_mean_wait_seconds_24h {result['average_wait_seconds_1d']}",
+            ]
+        )
     for node in nodes:
         name = node["NodeName"]
         free = slurm_available_gpus(node)
@@ -716,7 +746,7 @@ def collect_monitor(
         "# TYPE cluster_monitor_machine_health gauge",
     ]
     metrics.extend(
-        f'cluster_monitor_machine_health{{machine={label(node["name"])},health={label(node["health"])}}} 1'
+        f"cluster_monitor_machine_health{{machine={label(node['name'])},health={label(node['health'])}}} 1"
         for node in nodes
     )
     return result, "\n".join(metrics) + "\n"

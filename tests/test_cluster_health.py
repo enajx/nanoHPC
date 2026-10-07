@@ -4,8 +4,8 @@ These tests use fakes: systemctl, df, mountpoint, and openssl are small scripts 
 its nanoHPC files (roles, backup state) under NANOHPC_HEALTH_TEST_ROOT, an override used only by tests.
 """
 
-import os
 import json
+import os
 import stat
 import subprocess
 import tempfile
@@ -168,6 +168,17 @@ class ClusterHealthMetricsTests(unittest.TestCase):
             written = [path.name for path in (folder / "root/var/lib/nanohpc/metrics-textfile").iterdir()]
             self.assertEqual(written, ["backup.prom"])
 
+    def test_shared_dataset_server_checks_its_disk_and_nfs_service(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cluster-health-") as directory:
+            folder = Path(directory)
+            environment = make_machine(folder, "shared", "nfs-server")
+            (folder / "root/shared/datasets").mkdir(parents=True)
+            result = run([], environment)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("ok    /shared is mounted", result.stdout)
+            self.assertIn("FAIL  service nfs-server", result.stdout)
+            self.assertIn("disk /shared", result.stdout)
+
     def test_backup_checks(self) -> None:
         """A recent good backup is ok; before the first night there is no age check; no backup configured: no check."""
         cases = [
@@ -246,7 +257,9 @@ class ClusterHealthMetricsTests(unittest.TestCase):
             environment = make_machine(folder, "machine", "")
             root = folder / "root"
             (root / "etc/nanohpc/mode").write_text("monitor\n")
-            (root / "etc/nanohpc/monitor-gpus.json").write_text(json.dumps({"count": 1, "models": ["A6000"], "fake": False}))
+            (root / "etc/nanohpc/monitor-gpus.json").write_text(
+                json.dumps({"count": 1, "models": ["A6000"], "fake": False})
+            )
             specs = root / "var/lib/nanohpc/metrics-textfile/specs.prom"
             stamp = int(time.time())
             specs.write_text(
@@ -266,7 +279,11 @@ class ClusterHealthMetricsTests(unittest.TestCase):
             self.assertEqual(changed.returncode, 1)
             self.assertIn("FAIL  GPU inventory matches accepted hardware", changed.stdout)
             self.assertIn("cluster_monitor_gpu_inventory_mismatch 1", metrics.read_text())
-            specs.write_text(specs.read_text().replace(f"cluster_machine_specs_timestamp_seconds {stamp}", "cluster_machine_specs_timestamp_seconds 1"))
+            specs.write_text(
+                specs.read_text().replace(
+                    f"cluster_machine_specs_timestamp_seconds {stamp}", "cluster_machine_specs_timestamp_seconds 1"
+                )
+            )
             stale = run(["--metrics", str(metrics)], environment)
             self.assertEqual(stale.returncode, 0)
             self.assertIn("WARN  GPU inventory reading is fresh", stale.stdout)
@@ -289,7 +306,7 @@ class ClusterHealthMetricsTests(unittest.TestCase):
             snapshot = root / "var/lib/nanohpc/monitor"
             snapshot.mkdir(parents=True)
             (snapshot / "status.json").write_text("{}")
-            write_command(folder / "bin", "curl", "echo '{\"status\":\"success\",\"data\":{\"result\":[]}}'\n")
+            write_command(folder / "bin", "curl", 'echo \'{"status":"success","data":{"result":[]}}\'\n')
             result = run([], environment)
             self.assertEqual(result.returncode, 1)
             self.assertIn("FAIL  service nanohpc-grafana", result.stdout)

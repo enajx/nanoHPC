@@ -168,7 +168,8 @@ def plan_vm(checker: Checker, sim: str, machine: str, values: dict[str, Any], si
     instance = f"nanohpc-{sim}-{machine.lower()}"
     home = values.get("home") or {}
     scratch = values.get("scratch") or {}
-    devices = sorted(device for device in (home.get("device"), scratch.get("device")) if device)
+    shared = values.get("shared") or {}
+    devices = sorted(device for device in (home.get("device"), scratch.get("device"), shared.get("device")) if device)
     expected = [f"/dev/vd{chr(ord('b') + index)}" for index in range(len(devices))]
     if devices != expected:
         found = ", ".join(device for device in devices if device not in expected)

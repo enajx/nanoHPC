@@ -10,7 +10,7 @@
       "id": 1,
       "title": "Allocated GPUs",
       "type": "timeseries",
-      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 10},
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 10},
       "datasource": {"type": "prometheus", "uid": "cluster-detail"},
       "fieldConfig": {"defaults": {"min": 0, "decimals": 0}, "overrides": []},
       "targets": [{"refId": "A", "expr": "cluster_allocated_gpus and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "Allocated GPUs"}]
@@ -19,7 +19,7 @@
       "id": 2,
       "title": "Running jobs",
       "type": "timeseries",
-      "gridPos": {"x": 8, "y": 0, "w": 8, "h": 10},
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 10},
       "datasource": {"type": "prometheus", "uid": "cluster-detail"},
       "fieldConfig": {"defaults": {"min": 0, "decimals": 0}, "overrides": []},
       "targets": [{"refId": "A", "expr": "cluster_running_jobs and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "Running jobs"}]
@@ -28,10 +28,22 @@
       "id": 3,
       "title": "Queue size",
       "type": "timeseries",
-      "gridPos": {"x": 16, "y": 0, "w": 8, "h": 10},
+      "gridPos": {"x": 0, "y": 10, "w": 12, "h": 10},
       "datasource": {"type": "prometheus", "uid": "cluster-detail"},
       "fieldConfig": {"defaults": {"min": 0, "decimals": 0}, "overrides": []},
       "targets": [{"refId": "A", "expr": "cluster_pending_jobs and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "Pending jobs"}]
+    },
+    {
+      "id": 4,
+      "title": "Waiting time",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 10, "w": 12, "h": 10},
+      "datasource": {"type": "prometheus", "uid": "cluster-detail"},
+      "fieldConfig": {"defaults": {"min": 0, "unit": "s"}, "overrides": []},
+      "targets": [
+        {"refId": "A", "expr": "cluster_mean_wait_seconds_24h and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "Mean wait, jobs started in the last 24 h"},
+        {"refId": "B", "expr": "(max(cluster_job_waiting_seconds * on(job_id) group_left() cluster_job_info{state=\"PENDING\"}) or vector(0)) and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "Longest wait of a pending job"}
+      ]
     }
   ]
 }

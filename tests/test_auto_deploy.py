@@ -40,6 +40,10 @@ record = {{
     "automatic": os.environ.get("NANOHPC_AUTOMATIC"),
     "stdin_is_dev_null": (stdin.st_dev, stdin.st_ino) == (null.st_dev, null.st_ino),
     "cluster_yml": Path("cluster.yml").read_text(),
+    "maintenance_fd_valid": (
+        (fd := os.environ.get("NANOHPC_MAINTENANCE_FD")) is not None
+        and os.fstat(int(fd)).st_ino == (root / "maintenance.lock").stat().st_ino
+    ),
 }}
 with open(root / "deploy-calls", "a") as calls:
     calls.write(json.dumps(record) + "\\n")
@@ -76,6 +80,9 @@ class Cluster:
         self.metrics = root / "metrics" / "auto-deploy.prom"
         self.nanohpc = root / "fake-nanohpc"
         self.installer = root / "fake-installer"
+        self.maintenance_lock = root / "maintenance.lock"
+        self.runner = root / "nanohpc-auto-deploy"
+        self.runner.write_text(RUNNER.read_text().replace("/run/nanohpc/maintenance.lock", str(self.maintenance_lock)))
         (root / "gitconfig").write_text("")
         self.environment = dict(os.environ)
         self.environment.update(
@@ -120,7 +127,7 @@ class Cluster:
         return subprocess.run(
             [
                 sys.executable,
-                str(RUNNER),
+                str(self.runner),
                 "--checkout",
                 str(self.checkout),
                 "--branch",
@@ -192,9 +199,24 @@ class AutoDeployTests(unittest.TestCase):
         self.assertEqual(call["args"], ["deploy", "cluster.yml", "--ssh-config", "/etc/nanohpc/ssh_config"])
         self.assertEqual(Path(str(call["cwd"])).resolve(), self.cluster.checkout.resolve())
         self.assertEqual(call["cluster_yml"], "nanohpc_version: 1.0.0\nname: second\n")
+        self.assertTrue(call["maintenance_fd_valid"])
         self.assertEqual(self.cluster.state_file("deployed"), commit)
         self.assertIsNone(self.cluster.state_file("failed"))
         self.assertEqual(self.cluster.installs(), [])
+
+    def test_cluster_maintenance_retries_after_another_operation_releases_its_lock(self) -> None:
+        """A busy shared lock leaves the commit unmarked, so the next timer run can deploy it."""
+        commit = self.cluster.commit("nanohpc_version: 1.0.0\nname: second\n")
+        with self.cluster.maintenance_lock.open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            busy = self.cluster.run(self.url)
+            self.assertEqual(busy.returncode, 0, busy.stdout + busy.stderr)
+            self.assertIn("maintenance", busy.stdout.lower())
+            self.assertEqual(self.cluster.deploys(), [])
+            self.assertIsNone(self.cluster.state_file("deployed"))
+            self.assertIsNone(self.cluster.state_file("failed"))
+        self.assert_run(0)
+        self.assertEqual(self.cluster.state_file("deployed"), commit)
 
     def test_first_fetch_into_an_empty_checkout(self) -> None:
         """A checkout made without network access (git init, origin added, no commit yet) gets the branch checked out."""

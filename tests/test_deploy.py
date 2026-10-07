@@ -13,23 +13,29 @@ from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import yaml
 
+from nanohpc import deploy
 from nanohpc.config import load_config
 from nanohpc.deploy import (
     DRY_RUN_FAILED,
     NANOHPC_REPOSITORY,
     REAL_RUN_FAILED,
     SLURM,
+    Only,
     ansible_cfg,
     check_then_apply,
     install_source,
     monitor_machines,
     nanohpc_wheel,
+    needed_machines,
+    only_machines,
     prepare,
     refusal,
 )
+from nanohpc.maintenance_lock import MaintenanceLockBusy, MaintenanceLockError
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -96,6 +102,37 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(scratch["job_retention_days"], 7)
         self.assertIn("/home 192.168.104.11(rw", (self.work / "files" / "exports").read_text())
         self.assertIn("node-store", (self.work / "files" / "prometheus.yml").read_text())
+
+    def test_shared_dataset_server_and_clients(self) -> None:
+        self.config["machines"]["store"]["roles"].append("shared")
+        self.config["machines"]["store"]["shared"] = {"device": "/dev/vdb"}
+        prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
+        groups = yaml.safe_load((self.work / "inventory.yml").read_text())["all"]["children"]
+        self.assertEqual(list(groups["role_shared"]["hosts"]), ["store"])
+        variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
+        self.assertEqual(
+            variables["shared"],
+            {
+                "server": "store",
+                "server_address": "192.168.104.20",
+                "device": "/dev/vdb",
+                "clients": ["gpu4", "gpu2", "cpu1", "gpu4i"],
+            },
+        )
+        machines = monitor_machines(self.config)
+        self.assertIn("/shared", machines["store"]["mounts"])
+        self.assertIn("/shared/datasets", machines["gpu4"]["mounts"])
+
+    def test_partial_node_includes_the_shared_datasets_server(self) -> None:
+        """A new compute node needs the shared server's updated export before mounting it."""
+        self.config["machines"]["datasets"] = {
+            "address": "192.168.104.30",
+            "roles": ["shared"],
+            "shared": {"device": "/dev/vdb"},
+        }
+        selected = only_machines(self.config, Only("node", "gpu4"))
+        self.assertIn("datasets", selected)
+        self.assertEqual(needed_machines(self.config, selected, "gpu4")["datasets"], "the shared datasets server")
 
     def test_metrics_variables(self) -> None:
         prepare(self.config, self.hostnames, None, True, ["gpu2"], False, None, self.work)
@@ -557,6 +594,55 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 2, "no real run")
         self.assertIn("Dry run: local failed: Stop here: the check failed", output.getvalue())
         self.assertFalse(target.exists())
+
+
+class DeployMaintenanceTest(unittest.TestCase):
+    """A deploy needs the coordinator lock before it prepares or applies changes."""
+
+    def test_manual_deploy_refuses_busy_lock_before_prepare(self) -> None:
+        config = {"cluster": {"name": "lab"}, "machines": {"front": {}}, "auto_deploy": {"enabled": False}}
+        found = deploy.Probe({"front": "front"}, [], [], {"front": None})
+        with (
+            patch.object(deploy, "refusal", return_value=None),
+            patch.object(deploy, "probe", return_value=found),
+            patch.object(deploy, "front_machine", return_value=("front", {})),
+            patch.object(deploy, "prepare") as prepare_mock,
+            patch("nanohpc.maintenance_lock.acquire", side_effect=MaintenanceLockBusy("busy")),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = deploy.deploy(config, None, False, [], False, True, None)
+        self.assertEqual(result, 1)
+        prepare_mock.assert_not_called()
+
+    def test_automatic_deploy_requires_inherited_lock_before_probe(self) -> None:
+        config = {"cluster": {"name": "lab"}, "machines": {"front": {}}, "auto_deploy": {"enabled": True}}
+        with (
+            patch.object(deploy, "refusal", return_value=None),
+            patch.object(deploy, "probe") as probe_mock,
+            patch("nanohpc.maintenance_lock.validate_inherited", side_effect=MaintenanceLockError("invalid")),
+            patch.dict(os.environ, {"NANOHPC_MAINTENANCE_FD": "5"}),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = deploy.deploy(config, None, False, [], True, True, None)
+        self.assertEqual(result, 1)
+        probe_mock.assert_not_called()
+
+    def test_manual_deploy_rejects_facts_changed_while_waiting_for_lock(self) -> None:
+        config = {"cluster": {"name": "lab"}, "machines": {"front": {}}, "auto_deploy": {"enabled": False}}
+        before = deploy.Probe({"front": "front"}, [], [], {"front": None})
+        after = deploy.Probe({"front": "front"}, [], [], {"front": ["front"]})
+        holder = MagicMock()
+        with (
+            patch.object(deploy, "refusal", return_value=None),
+            patch.object(deploy, "probe", side_effect=[before, after]),
+            patch.object(deploy, "front_machine", return_value=("front", {})),
+            patch.object(deploy, "prepare") as prepare_mock,
+            patch("nanohpc.maintenance_lock.acquire", return_value=holder),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = deploy.deploy(config, None, False, [], False, True, None)
+        self.assertEqual(result, 1)
+        prepare_mock.assert_not_called()
 
 
 if __name__ == "__main__":

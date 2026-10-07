@@ -1,0 +1,111 @@
+#!/usr/bin/python3
+"""Measure this machine's /home and internet speed in MB/s and publish them for the monitoring.
+
+With --internet-only (front, storage, and monitor machines), only the download is measured.
+
+Runs as root at night; nanoHPC exports /home with no_root_squash, so the test folder is root-owned.
+One large file is written (forced to disk) and read back past this machine's cache, many small
+files are written and read back the same way, and one public file is downloaded to nowhere."""
+
+import argparse
+import mmap
+import os
+import shutil
+import socket
+import time
+import urllib.request
+from pathlib import Path
+
+# Reads go past this machine's cache with O_DIRECT (Linux); macOS has none, which only matters in local tests.
+DIRECT = getattr(os, "O_DIRECT", 0)
+BLOCK = 4 * 1024 * 1024
+SMALL = 32 * 1024
+
+
+def read_direct(path: Path, buffer: mmap.mmap) -> int:
+    """Read a whole file into an aligned buffer without this machine's cache; return the bytes read."""
+    total = 0
+    with open(path, "rb", buffering=0, opener=lambda name, flags: os.open(name, flags | DIRECT)) as stream:
+        while count := stream.readinto(buffer):
+            total += count
+    return total
+
+
+def download(url: str, internet_seconds: int) -> float:
+    """Download speed in MB/s; the download stops after internet_seconds, and what arrived by then counts."""
+    start = time.monotonic()
+    total = 0
+    with urllib.request.urlopen(url, timeout=30) as response:
+        while (chunk := response.read(BLOCK)) and time.monotonic() - start < internet_seconds:
+            total += len(chunk)
+    return total / 1e6 / (time.monotonic() - start)
+
+
+def measure(folder: Path, large_mb: int, small_files: int, url: str, internet_seconds: int) -> dict[str, float]:
+    """Return the five speeds in MB/s (1 MB = 1,000,000 bytes)."""
+    data = os.urandom(BLOCK)
+    buffer = mmap.mmap(-1, BLOCK)
+    speeds: dict[str, float] = {}
+
+    large = folder / "large.bin"
+    start = time.monotonic()
+    with open(large, "wb") as stream:
+        stream.writelines(data for _ in range(large_mb * 1024 * 1024 // BLOCK))
+        stream.flush()
+        os.fsync(stream.fileno())
+    speeds["home_large_write"] = large.stat().st_size / 1e6 / (time.monotonic() - start)
+    start = time.monotonic()
+    total = read_direct(large, buffer)
+    speeds["home_large_read"] = total / 1e6 / (time.monotonic() - start)
+
+    small = folder / "small"
+    small.mkdir()
+    start = time.monotonic()
+    for index in range(small_files):
+        with open(small / f"f{index:04d}", "wb") as stream:
+            stream.write(data[index : index + SMALL])
+    speeds["home_small_write"] = small_files * SMALL / 1e6 / (time.monotonic() - start)
+    start = time.monotonic()
+    total = sum(read_direct(small / f"f{index:04d}", buffer) for index in range(small_files))
+    speeds["home_small_read"] = total / 1e6 / (time.monotonic() - start)
+
+    speeds["internet_download"] = download(url, internet_seconds)
+    return speeds
+
+
+def main() -> None:
+    """Measure, then replace the exporter file only after every part succeeded; always remove the test files."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    where = parser.add_mutually_exclusive_group(required=True)
+    where.add_argument("--folder", type=Path, help="a folder on /home the test may write to")
+    where.add_argument("--internet-only", action="store_true", help="the front node: measure only the download")
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--url", required=True, help="a large public file to download")
+    parser.add_argument("--large-mb", type=int, help="required with --folder")
+    parser.add_argument("--small-files", type=int, help="required with --folder")
+    parser.add_argument("--internet-seconds", type=int, required=True)
+    args = parser.parse_args()
+    if args.internet_only:
+        speeds = {"internet_download": download(args.url, args.internet_seconds)}
+    else:
+        if args.large_mb is None or args.small_files is None:
+            parser.error("--folder needs --large-mb and --small-files")
+        folder = args.folder / socket.gethostname()
+        shutil.rmtree(folder, ignore_errors=True)
+        folder.mkdir()
+        try:
+            speeds = measure(folder, args.large_mb, args.small_files, args.url, args.internet_seconds)
+        finally:
+            shutil.rmtree(folder)
+    lines = [
+        f'cluster_machine_speed_mb_per_second{{test="{name}"}} {speed:.1f}' for name, speed in sorted(speeds.items())
+    ]
+    lines.append(f"cluster_machine_speed_timestamp_seconds {time.time():.0f}")
+    temporary = args.output.with_name("." + args.output.name + ".tmp")
+    temporary.write_text("\n".join(lines) + "\n")
+    temporary.chmod(0o644)
+    temporary.replace(args.output)
+
+
+if __name__ == "__main__":
+    main()

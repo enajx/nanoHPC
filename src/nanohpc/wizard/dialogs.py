@@ -198,7 +198,8 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
                         yield Checkbox(role, role in roles, id=f"role-{role}")
                 yield Static(
                     "front: login, Slurm controller, monitoring, website (one machine). compute: runs jobs. "
-                    "home: serves /home (the front node, or a storage machine). backup: receives the nightly backup.",
+                    "home: serves /home (the front node, or a storage machine). backup: receives the nightly backup. "
+                    "shared: serves read-only datasets from /shared to compute machines; choose its disk in Storage.",
                     classes="hint",
                 )
                 with Vertical(id="compute-fields"):

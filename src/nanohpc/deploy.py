@@ -27,6 +27,7 @@ from typing import Any
 
 import yaml
 
+from nanohpc import maintenance_lock
 from nanohpc.render import compute_machines, front_machine, home_clients, home_server, render, render_prometheus
 
 SLURM: dict[str, Any] = {
@@ -169,7 +170,7 @@ class Part:
 
 # Each `--only` part. policy and partitions run the same plays: both live in slurm.conf, job_submit.lua, and the
 # QoS. `node NAME` runs everything on NAME, and only the shared parts on the other machines.
-EVERY_ROLE = ("front", "home", "backup", "compute")
+EVERY_ROLE = ("front", "home", "backup", "compute", "shared")
 ONLY: dict[str, Part] = {
     "users": Part(
         "users",
@@ -193,7 +194,7 @@ ONLY: dict[str, Part] = {
         "node",
         EVERY_ROLE,
         "everything on the machine, and the shared parts on the others: /etc/hosts, slurm.conf and Slurm's"
-        " restart, the /home exports, the Prometheus targets, and the machine lists of the status collector and of"
+        " restart, the /home and /shared exports, the Prometheus targets, and the machine lists of the status collector and of"
         " automatic deploys",
     ),
 }
@@ -271,7 +272,7 @@ def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
             "hosts": {name: None for name, machine in config["machines"].items() if role in machine["roles"]},
             "vars": machine_vars,
         }
-        for role in ("front", "home", "backup", "compute")
+        for role in ("front", "home", "backup", "compute", "shared")
     }
     groups["role_slurm"] = {"children": {"role_front": None, "role_compute": None}}
     groups["only_node"] = {"hosts": {} if node is None else {node: None}}
@@ -317,6 +318,20 @@ def home_variables(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def shared_variables(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the optional shared datasets server and its compute clients."""
+    servers = [(name, machine) for name, machine in config["machines"].items() if "shared" in machine["roles"]]
+    if not servers:
+        return None
+    name, machine = servers[0]
+    return {
+        "server": name,
+        "server_address": machine["address"],
+        "device": machine["shared"]["device"],
+        "clients": list(compute_machines(config)),
+    }
+
+
 def variables(
     config: dict[str, Any],
     work: Path,
@@ -345,6 +360,7 @@ def variables(
             "max_submit_jobs_per_user": config["policy"]["max_submit_jobs_per_user"],
             "max_gpus_per_user": -1 if policy_limit == "unlimited" else policy_limit,
             "home": home_variables(config),
+            "shared": shared_variables(config),
             "scratch": {
                 "machines": {name: machine["scratch"] for name, machine in compute_machines(config).items()},
                 "cleanup_days": config["scratch"]["cleanup_days"],
@@ -565,20 +581,27 @@ def monitor_machines(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
             for name in config["machines"]
         }
     server = home_server(config)
+    shared = shared_variables(config)
     clients = home_clients(config)
     result: dict[str, dict[str, Any]] = {}
     for name, machine in config["machines"].items():
         roles = machine["roles"]
-        nfs = ["nfs-server.service"] if name == server else []
+        nfs = ["nfs-server.service"] if name == server or (shared is not None and name == shared["server"]) else []
         home = ["/home"] if name == server or name in clients else []
+        shared_mount = []
+        if shared is not None:
+            if name == shared["server"]:
+                shared_mount = ["/shared"]
+            elif name in shared["clients"]:
+                shared_mount = ["/shared/datasets"]
         if "front" in roles:
             units = ["slurmctld.service", "slurmdbd.service", "munge.service", "mariadb.service", *nfs]
-            result[name] = {"role": "front", "units": units, "mounts": ["/", *home]}
+            result[name] = {"role": "front", "units": units, "mounts": ["/", *home, *shared_mount]}
         elif "compute" in roles:
             units = ["slurmd.service", "munge.service"]
-            result[name] = {"role": "compute", "units": units, "mounts": ["/", *home, "/scratch"]}
+            result[name] = {"role": "compute", "units": units, "mounts": ["/", *home, "/scratch", *shared_mount]}
         else:
-            result[name] = {"role": "storage", "units": nfs, "mounts": ["/", *home]}
+            result[name] = {"role": "storage", "units": nfs, "mounts": ["/", *home, *shared_mount]}
     return result
 
 
@@ -827,6 +850,53 @@ def deploy_monitor(
             file=sys.stderr,
         )
         return 1
+    password = (
+        getpass.getpass(f"sudo password on {', '.join(found.needs_password)}: ") if found.needs_password else None
+    )
+    try:
+        holder = maintenance_lock.acquire(host, ssh_config, password if host in found.needs_password else None)
+    except maintenance_lock.MaintenanceLockError as failure:
+        print(f"Nothing was changed: {failure}", file=sys.stderr)
+        return 1
+    try:
+        with holder, maintenance_lock.active(holder):
+            locked = probe(selected, ssh_config)
+            locked_gpus, locked_errors = probe_monitor_gpus(selected, ssh_config, fake_gpus)
+            locked_baseline, locked_error = read_monitor_baseline(host, ssh_config)
+            if (
+                locked.errors
+                or locked_errors
+                or locked_error is not None
+                or locked != found
+                or locked_gpus != observed
+                or locked_baseline != recorded
+            ):
+                print(
+                    "Nothing was changed: monitor facts changed while waiting for maintenance; retry deploy.",
+                    file=sys.stderr,
+                )
+                return 1
+            return _deploy_monitor_prepared(
+                config, ssh_config, simulated, baseline, node, names, host, found, dry_run_only, password
+            )
+    except maintenance_lock.MaintenanceLockError as failure:
+        print(f"Monitor deploy stopped: {failure}", file=sys.stderr)
+        return 1
+
+
+def _deploy_monitor_prepared(
+    config: dict[str, Any],
+    ssh_config: Path | None,
+    simulated: bool,
+    baseline: dict[str, dict[str, Any]],
+    node: str | None,
+    names: list[str],
+    host: str,
+    found: Probe,
+    dry_run_only: bool,
+    password: str | None,
+) -> int:
+    """Prepare and apply monitoring while holding the monitor host's maintenance lock."""
     work = CACHE / "clusters" / config["cluster"]["name"] / "monitor"
     work.mkdir(parents=True, exist_ok=True)
     prepare_monitor(config, ssh_config, simulated, baseline, work, node)
@@ -849,29 +919,39 @@ def deploy_monitor(
             "ANSIBLE_CONFIG": str(work / "ansible.cfg"),
             "ANSIBLE_SSH_CONTROL_PATH_DIR": private,
         }
-        if found.needs_password:
+        if password is not None:
             password_file = Path(private) / "sudo"
             password_file.touch(mode=0o600)
-            password_file.write_text(getpass.getpass(f"sudo password on {', '.join(found.needs_password)}: "))
+            password_file.write_text(password)
             command += ["--become-password-file", str(password_file)]
 
         def run(arguments: list[str], record: Path) -> int:
             run_environment = {**environment, "NANOHPC_RECORD": str(record)}
-            return subprocess.run(
-                [*command, *arguments], env=run_environment, stdin=subprocess.DEVNULL, check=False
+            return maintenance_lock.guarded_run(
+                [*command, *arguments],
+                input="",
+                capture_output=False,
+                text=True,
+                timeout=None,
+                check=False,
+                env=run_environment,
+                cwd=None,
             ).returncode
 
         needed = {host: "the monitoring host"}
         if node is not None:
             needed[node] = "the machine of --only node"
-        code = check_then_apply(run, machines, needed, Path(private), dry_run_only)
-        (work / "secrets.json").unlink()
-        for socket in Path(private).iterdir():
-            if socket.is_socket():
-                subprocess.run(
-                    ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", "nanohpc"], capture_output=True, check=False
-                )
-        return code
+        try:
+            return check_then_apply(run, machines, needed, Path(private), dry_run_only)
+        finally:
+            (work / "secrets.json").unlink(missing_ok=True)
+            for socket in Path(private).iterdir():
+                if socket.is_socket():
+                    subprocess.run(
+                        ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", "nanohpc"],
+                        capture_output=True,
+                        check=False,
+                    )
 
 
 def only_words(only: Only) -> str:
@@ -896,8 +976,8 @@ Options:
 
 def needed_machines(config: dict[str, Any], machines: list[str], node: str | None) -> dict[str, str]:
     """Return the machines the rest of a deploy depends on, among `machines` (the machines of this run), each with
-    what it is: the front node and the home machine (the same machine when /home is on the front node), and the
-    machine of `--only node` (`node`), whose shared parts the other machines get."""
+    what it is: the front node, the home machine, the optional shared datasets server, and the machine of
+    `--only node` (`node`), whose shared parts the other machines get."""
     front, _ = front_machine(config)
     home = home_server(config)
     needed = (
@@ -905,6 +985,12 @@ def needed_machines(config: dict[str, Any], machines: list[str], node: str | Non
         if front == home
         else {front: "the front node", home: "the home machine"}
     )
+    shared = shared_variables(config)
+    if shared is not None:
+        server = shared["server"]
+        needed[server] = (
+            f"{needed[server]} and the shared datasets server" if server in needed else "the shared datasets server"
+        )
     if node is not None:
         needed[node] = "the machine of --only node"
     return {machine: what for machine, what in needed.items() if machine in machines}
@@ -1054,6 +1140,13 @@ def deploy(
     if refused is not None:
         print(f"Nothing was changed: {refused}", file=sys.stderr)
         return 1
+    if automatic:
+        inherited = os.environ.get("NANOHPC_MAINTENANCE_FD", "")
+        try:
+            maintenance_lock.validate_inherited(int(inherited), maintenance_lock.LOCK_PATH)
+        except (ValueError, maintenance_lock.MaintenanceLockError) as failure:
+            print(f"Nothing was changed: automatic deploy has no valid maintenance lock: {failure}", file=sys.stderr)
+            return 1
     found = probe(list(config["machines"]), ssh_config)
     if found.errors:
         print("Nothing was changed: some machines cannot be used.", file=sys.stderr)
@@ -1070,6 +1163,52 @@ def deploy(
         arguments = " ".join(sys.argv[1:])
         print(NO_TERMINAL.format(machines=", ".join(found.needs_password), arguments=arguments), file=sys.stderr)
         return 1
+    password: str | None = None
+    if found.needs_password:
+        prompt = (
+            f"sudo password on {', '.join(found.needs_password)}, asked once for this run "
+            "(administrators from cluster.yml can load their SSH key with ssh-add instead): "
+        )
+        password = getpass.getpass(prompt)
+    if automatic:
+        return _deploy_prepared(
+            config, ssh_config, simulated, fake_gpus, automatic, dry_run_only, only, found, password
+        )
+    front = front_machine(config)[0]
+    try:
+        holder = maintenance_lock.acquire(front, ssh_config, password if front in found.needs_password else None)
+    except maintenance_lock.MaintenanceLockError as failure:
+        print(f"Nothing was changed: {failure}", file=sys.stderr)
+        return 1
+    try:
+        with holder, maintenance_lock.active(holder):
+            locked = probe(list(config["machines"]), ssh_config)
+            if locked.errors or locked != found:
+                print(
+                    "Nothing was changed: machine facts changed while waiting for maintenance; retry deploy.",
+                    file=sys.stderr,
+                )
+                return 1
+            return _deploy_prepared(
+                config, ssh_config, simulated, fake_gpus, automatic, dry_run_only, only, locked, password
+            )
+    except maintenance_lock.MaintenanceLockError as failure:
+        print(f"Deploy stopped: {failure}", file=sys.stderr)
+        return 1
+
+
+def _deploy_prepared(
+    config: dict[str, Any],
+    ssh_config: Path | None,
+    simulated: bool,
+    fake_gpus: list[str],
+    automatic: bool,
+    dry_run_only: bool,
+    only: Only | None,
+    found: Probe,
+    password: str | None,
+) -> int:
+    """Prepare inputs and run Ansible while the coordinator maintenance lock is held."""
     work = CACHE / "clusters" / config["cluster"]["name"]
     work.mkdir(parents=True, exist_ok=True)
     # The front node's nanoHPC for automatic deploys is installed by a full deploy only.
@@ -1107,36 +1246,40 @@ def deploy(
             "ANSIBLE_CONFIG": str(work / "ansible.cfg"),
             "ANSIBLE_SSH_CONTROL_PATH_DIR": private,
         }
-        if found.needs_password:
-            prompt = (
-                f"sudo password on {', '.join(found.needs_password)}, asked once for this run "
-                "(administrators from cluster.yml can load their SSH key with ssh-add instead): "
-            )
+        if password is not None:
             # Ansible reads it from a file that only this user can read, deleted when the run ends.
             password_file = Path(private) / "sudo"
             password_file.touch(mode=0o600)
-            password_file.write_text(getpass.getpass(prompt))
+            password_file.write_text(password)
             command += ["--become-password-file", str(password_file)]
 
         def run(arguments: list[str], record: Path) -> int:
             # Ansible refuses non-blocking terminal handles, so it gets a plain stdin.
             run_environment = {**environment, "NANOHPC_RECORD": str(record)}
-            return subprocess.run(
-                [*command, *arguments], env=run_environment, stdin=subprocess.DEVNULL, check=False
+            return maintenance_lock.guarded_run(
+                [*command, *arguments],
+                input="",
+                capture_output=False,
+                text=True,
+                timeout=None,
+                check=False,
+                env=run_environment,
+                cwd=None,
             ).returncode
 
-        code = check_then_apply(
-            run,
-            machines,
-            needed_machines(config, machines, None if only is None else only.node),
-            Path(private),
-            dry_run_only,
-        )
-        # No copy of the secrets stays in the work folder (the real run put them on the front node).
-        (work / "secrets.json").unlink()
-        # Close the shared SSH connections now, so none keeps the forwarded agent open after the run.
-        for socket in Path(private).iterdir():
-            if socket.is_socket():
-                close = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", "nanohpc"]
-                subprocess.run(close, capture_output=True, check=False)
-        return code
+        try:
+            return check_then_apply(
+                run,
+                machines,
+                needed_machines(config, machines, None if only is None else only.node),
+                Path(private),
+                dry_run_only,
+            )
+        finally:
+            # No copy of the secrets stays in the work folder (the real run put them on the front node).
+            (work / "secrets.json").unlink(missing_ok=True)
+            # Close shared SSH connections so none keeps the forwarded agent open after this run.
+            for socket in Path(private).iterdir():
+                if socket.is_socket():
+                    close = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", "nanohpc"]
+                    subprocess.run(close, capture_output=True, check=False)
