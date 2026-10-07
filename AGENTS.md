@@ -23,7 +23,7 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 
 ## Agent guidelines
 
-- CRITICAL: Write in simple English. In plain words. Say the thing directly. No metaphors, no figures of speech, no idiomatic expressions, no technobabble, no words chosen to sound clever. If a plainer word exists, use it. Use commas, colons, or full stops; no em dashes. Write as a peer answering a peer; no LLM verbal tics ("claudisms" or "codexisms"): no "one caveat" or "one thing to note" tacked on at the end, no "the key insight", "load-bearing", "genuinely", "honestly", "the short version", "not X, but Y" contrasts, or value judgements. 
+- CRITICAL: Write in simple English. In plain words. Say the thing directly. No metaphors, no figures of speech, no idiomatic expressions, no technobabble, no words chosen to sound clever. If a plainer word exists, use it. Use commas, colons, or full stops; no em dashes. Write as a peer answering a peer; no LLM verbal tics ("claudisms" or "codexisms"): no "one caveat" or "one thing to note", "things to know", etc. tacked on at the end, no "the key insight", "load-bearing", "genuinely", "honestly", "the short version", "not X, but Y" contrasts, or value judgements. 
 - **Design features with the user first.** When asked to implement a feature, start by interviewing the user to reach a shared understanding of a plan and specs *together*: present the available options and their trade-offs, then build from the chosen one. 
    - Scale planning effort to the feature size: the larger the feature, the more comprehensive the plan and specs; the more open-ended it is, the more the user should be involved in defining the features and specs. 
    - Ask **abundantly** the user to establish an aligned and fully defined plan. 
@@ -83,6 +83,7 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 - **Tracked content moves only local checkout → GitHub over SSH → execution machine.** GitHub is the sole source of truth: never use HTTPS or a machine-local/bare Git remote, and never edit, commit, or push tracked files on an execution machine. Verify the URL, not the remote's name; anything else → **STOP and ask the user**.
 - Commit messages are ONLY a one-liner with a high-level summary of the commit followed by bullet-point list of the changes made, nothing else. 
   - If the commit addresses an existing issue or PR, reference it in the message with `#<number>`.
+  - When merging a PR, end the one-liner with the PR number in parentheses, e.g. `Bound pending inbound line length (#165018)`. The bullet list stays the same.
 - Split orthogonal changes into separate commits where possible.
 - Substantially large features go on their own branch and are PR'd into `main`. If unsure whether something needs its own branch or can go straight to `main`, ask.
 - When multiple features are developed concurrently and may modify shared files, propose a separate branch and Git worktree for each feature. Obtain user confirmation before creating them, and separate confirmation before merging each completed, tested feature into `main`.
@@ -91,7 +92,3 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 ## Secrets
 
 - **Keep secrets (API keys, tokens) in `.env`, and keep `.env` in `.gitignore`.** For projects with CI/CD, store the keys as repository secrets.
-
-## Setting up a cluster with nanoHPC
-
-- To set up or change a cluster with nanoHPC (rather than develop nanoHPC), follow [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md): the same steps as the setup wizard, `nanohpc init`.

@@ -160,3 +160,4 @@ flowchart LR
   - Moving the production cluster from SLURM-REAL to nanoHPC: maybe later, not planned.
 - **Out of scope, in any form**: anything related to the forum software that shared the source deployment's front node. That was an accident of that site. The website runs on its own web server. Slurm-web (a job browser in the source deployment) is not carried over.
 - **Decisions**: the design decisions for the port are recorded in [plan-port.md](md/plan-port.md). Their outcome is reflected in the sections above.
+- **Setting up a cluster with nanoHPC** (rather than developing nanoHPC): follow [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md), the same steps as the setup wizard, `nanohpc init`.
