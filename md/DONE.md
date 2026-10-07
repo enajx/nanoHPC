@@ -2,6 +2,13 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-07: front-node updates and shared maintenance lock
+
+- `nanohpc update` now accepts the configured front node with a matching dry run and confirmation. Ordinary updates can run while jobs are active. For named care groups it requires an empty queue, drains available compute nodes so new submissions wait, and stops if a job starts during the drain. After installation it checks fresh root and administrator logins, saved restart settings, Slurm, `/home`, the website, and front-node services. It restores scheduling only after the checks pass. A needed front-node restart is reported as a separate task. A failed update keeps or restores the affected drains and reports nodes needing review.
+- Manual and automatic deploys, including the timer and webhook, updates, and compute restarts hold the same front-node maintenance lock. A second operation stops while it is held. Lost locks stop child work; recovery changes Slurm only after obtaining the lock again. Automatic deploy keeps its lock through checkout and installation, then passes it to the deploy process.
+- Focused front update, compute update, lock, restart, deploy, monitor deploy, and automatic deploy command tests passed. `SimRedeployTest`, `SimAutoDeployTest`, and `SimFrontUpdateTest` passed on Ubuntu 24.04 VMs, one at a time. A separate agent reviewed the front update failure paths and its findings were fixed.
+- Files: `src/nanohpc/{update,maintenance_lock,restart,deploy,probe,cli}.py`, `src/nanohpc/files/nanohpc-auto-deploy`, `tests/test_{front_update,compute_update,maintenance_lock,restart,deploy,monitor_deploy,auto_deploy,sim}.py`, `md/testing.md`.
+
 ## 2026-10-07: missing `/home` disk recovery
 
 - A separate local `/home` disk has `nofail` and a 30-second device wait at boot, so the home server reaches root SSH if the disk is absent. NFS requires the `/home` mount before it starts, so it does not export the empty mount point. Restoring the disk and rebooting restores the original files and NFS client access.

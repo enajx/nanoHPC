@@ -25,7 +25,7 @@ from typing import Any
 import yaml
 from textual.widgets import DataTable
 
-from nanohpc import fixuid, probe, ssh_update, wizard
+from nanohpc import fixuid, maintenance_lock, probe, ssh_update, wizard
 from nanohpc.config import check_config, load_config
 from nanohpc.probe import probe_machine
 from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config
@@ -2288,6 +2288,12 @@ echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/so
             "--ssh-config",
             str(admin_config),
         ]
+        with maintenance_lock.acquire("front", self.state / "ssh_config", None):
+            blocked = subprocess.run(
+                [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("maintenance", blocked.stderr)
         preview = subprocess.run(
             [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
         )
@@ -2447,6 +2453,93 @@ os.replace(replacement, target)
             self.assertEqual(login.returncode, 0, f"after package repair, {user}: {login.stdout}{login.stderr}")
         removed = on_vm("sudo", "rm", "-rf", ssh_update.BACKUP)
         self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimFrontUpdateTest(SimUsersBase):
+    """A confirmed care-group update on the Ubuntu 24.04 front node protects Slurm jobs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_front_update_on_vm(self) -> None:
+        cluster, config, _ = self.up_and_deploy()
+        baseline = r"""
+import os, pathlib, time
+fstab = pathlib.Path('/etc/fstab')
+lines = []
+for line in fstab.read_text().splitlines():
+    fields = line.split()
+    if len(fields) >= 4 and fields[1] == '/boot' and 'nofail' not in fields[3].split(','):
+        fields[3] += ',nofail'
+        line = '\t'.join(fields)
+    lines.append(line)
+fstab.write_text('\n'.join(lines) + '\n')
+boot_time = time.time() - float(pathlib.Path('/proc/uptime').read_text().split()[0])
+for path in pathlib.Path('/etc/netplan').glob('*.yaml'):
+    os.utime(path, (boot_time - 10, boot_time - 10))
+"""
+        safe = self.ssh("front", "sudo /usr/bin/python3 -c " + shlex.quote(baseline))
+        self.assertEqual(safe.returncode, 0, safe.stdout + safe.stderr)
+        setup = """
+set -eu
+sudo apt-get install -y dpkg-dev
+for version in 1 2; do
+  folder=/tmp/nanohpc-front-update-fixture-$version
+  mkdir -p "$folder/DEBIAN"
+  printf 'Package: nanohpc-front-update-fixture\nVersion: %s\nArchitecture: all\nMaintainer: nanoHPC test <test@example.invalid>\nDescription: disposable front update test\n' "$version" > "$folder/DEBIAN/control"
+  dpkg-deb --build "$folder" "/tmp/nanohpc-front-update-fixture_${version}_all.deb" >/dev/null
+done
+sudo dpkg -i /tmp/nanohpc-front-update-fixture_1_all.deb
+printf 'Package: *\nPin: release o=Ubuntu\nPin-Priority: -1\n' | sudo tee /etc/apt/preferences.d/nanohpc-front-update-fixture >/dev/null
+mkdir -p /tmp/nanohpc-front-update-repo
+cp /tmp/nanohpc-front-update-fixture_2_all.deb /tmp/nanohpc-front-update-repo/
+cd /tmp/nanohpc-front-update-repo
+dpkg-scanpackages . /dev/null > Packages
+gzip -kf Packages
+echo 'deb [trusted=yes] file:/tmp/nanohpc-front-update-repo ./' | sudo tee /etc/apt/sources.list.d/nanohpc-front-update-fixture.list >/dev/null
+"""
+        prepared = self.ssh("front", "bash -se", stdin=setup)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        admin_config = self.ssh_config_for("alice")
+        environment = {
+            **os.environ,
+            "SSH_AUTH_SOCK": self.agent_socket,
+            "XDG_STATE_HOME": str(self.keys / "state"),
+        }
+        command = [
+            "uv",
+            "run",
+            "nanohpc",
+            "update",
+            str(cluster),
+            "front",
+            "--include",
+            "extra",
+            "--ssh-config",
+            str(admin_config),
+        ]
+        preview = subprocess.run(
+            [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        self.assertIn("nanohpc-front-update-fixture=2", preview.stdout)
+        applied = subprocess.run(
+            [*command, "--confirm", "front"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        version = self.ssh("front", "dpkg-query -W -f='${Version}' nanohpc-front-update-fixture")
+        self.assertEqual(version.stdout.strip(), "2", version.stdout + version.stderr)
+        for name, machine in config["machines"].items():
+            if "compute" not in machine["roles"]:
+                continue
+            state = self.on_front(f"scontrol show node {name} -o")
+            self.assertNotIn("DRAIN", state, applied.stdout + applied.stderr)
+        for user in ("root", "alice"):
+            login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "front", "true")
+            self.assertEqual(login.returncode, 0, f"{user}: {login.stdout}{login.stderr}")
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

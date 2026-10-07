@@ -70,9 +70,20 @@ elif 'apt-get -s' in command:
     if 'linux-generic=2' in command:
         print('Inst linux-image-2 (2 Ubuntu:24.04/noble-updates [arm64])')
         print('Inst linux-generic [1] (2 Ubuntu:24.04/noble-updates [arm64])')
-elif 'mkdir /run/nanohpc-restart.lock' in command or 'rmdir /run/nanohpc-restart.lock' in command:
-    if 'rmdir /run/nanohpc-restart.lock' in command and os.environ.get('UPDATE_FAKE_UNLOCK_FAIL'):
-        sys.exit(1)
+elif '/run/nanohpc/maintenance.lock' in command:
+    if os.environ.get('UPDATE_FAKE_LOCK_BUSY') or (
+        os.environ.get('UPDATE_FAKE_LOCK_BUSY_AFTER_INSTALL') and state.get('installed')
+    ):
+        print('BUSY', flush=True)
+        sys.exit(2)
+    print('READY', flush=True)
+    if os.environ.get('UPDATE_FAKE_LOCK_LOSS_ON_INSTALL'):
+        while not json.load(open(state_path)).get('installed'):
+            time.sleep(0.01)
+    else:
+        sys.stdin.buffer.read()
+    with open(os.environ['UPDATE_SSH_LOG'], 'a') as log:
+        log.write(json.dumps([target, 'maintenance lock released']) + '\\n')
 elif 'scontrol show node' in command:
     print('NodeName=cpu1 State=' + state.get('node_state', 'IDLE'))
 elif 'state=drain' in command:
@@ -89,6 +100,8 @@ elif 'systemctl' in command and ('--failed' in command or '--state=failed' in co
 elif 'apt-get install' in command:
     state['installed'] = True
     save()
+    if os.environ.get('UPDATE_FAKE_LOCK_LOSS_ON_INSTALL'):
+        time.sleep(0.2)
 elif 'sshd -t' in command or 'systemctl is-active slurmd' in command:
     if 'slurmd' in command:
         print('active')
@@ -140,10 +153,10 @@ class ComputeUpdateCommandTest(unittest.TestCase):
             check=False,
         )
 
-    def test_front_node_is_refused_before_ssh(self) -> None:
-        result = self.update("front", "--dry-run")
+    def test_storage_only_machine_is_refused_before_ssh(self) -> None:
+        result = self.update("store", "--dry-run")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("compute", result.stderr.lower())
+        self.assertIn("compute or front", result.stderr.lower())
         self.assertFalse(self.log.exists())
 
     def test_real_run_requires_matching_machine_confirmation(self) -> None:
@@ -155,6 +168,40 @@ class ComputeUpdateCommandTest(unittest.TestCase):
 
 class ComputeUpdateDryRunTest(unittest.TestCase):
     """The dry run refreshes lists, previews only the allowed updates, and does not drain."""
+
+    def test_busy_coordinator_blocks_apt_refresh(self) -> None:
+        """A competing maintenance operation prevents the dry run from changing APT lists."""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            bin_folder = folder / "bin"
+            bin_folder.mkdir()
+            write_command(bin_folder, "ssh", FAKE_PREVIEW_SSH)
+            log = folder / "ssh.log"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from nanohpc.cli import main; main()",
+                    "update",
+                    str(ROOT / "examples/cluster.yml"),
+                    "cpu1",
+                    "--dry-run",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "PATH": f"{bin_folder}:{os.environ['PATH']}",
+                    "UPDATE_SSH_LOG": str(log),
+                    "UPDATE_FAKE_LOCK_BUSY": "1",
+                    "XDG_STATE_HOME": str(folder / "state"),
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("maintenance operation", result.stderr)
+            calls = [json.loads(line)[1] for line in log.read_text().splitlines()]
+            self.assertFalse(any("apt-get update" in call for call in calls))
 
     def test_dry_run_records_the_exact_plan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -188,6 +235,11 @@ class ComputeUpdateDryRunTest(unittest.TestCase):
             self.assertNotIn("openssh-server", result.stdout)
             self.assertNotIn("vendor-tool", result.stdout)
             calls = [json.loads(line)[1] for line in log.read_text().splitlines()]
+            locked = next(index for index, call in enumerate(calls) if "/run/nanohpc/maintenance.lock" in call)
+            refreshed = next(index for index, call in enumerate(calls) if "apt-get update" in call)
+            released = next(index for index, call in enumerate(calls) if call == "maintenance lock released")
+            self.assertLess(locked, refreshed)
+            self.assertLess(refreshed, released)
             self.assertTrue(any("apt-get update" in call for call in calls))
             self.assertTrue(any("apt-get -s" in call for call in calls))
             self.assertFalse(any("state=drain" in call for call in calls))
@@ -369,12 +421,12 @@ class ComputeUpdateApplyTest(unittest.TestCase):
                 drained = next(index for index, call in enumerate(calls) if "state=drain" in call)
                 installed = next(index for index, call in enumerate(calls) if "apt-get install" in call)
                 self.assertLess(drained, installed)
+                released = next(index for index, call in enumerate(calls) if call == "maintenance lock released")
                 if not restart_needed:
-                    unlocked = next(
-                        index for index, call in enumerate(calls) if "rmdir /run/nanohpc-restart.lock" in call
-                    )
                     resumed = next(index for index, call in enumerate(calls) if "state=resume" in call)
-                    self.assertLess(unlocked, resumed)
+                    self.assertLess(resumed, released)
+                else:
+                    self.assertLess(installed, released)
                 self.assertFalse(any("systemctl reboot" in call for call in calls))
 
     def test_new_failed_systemd_unit_keeps_node_drained(self) -> None:
@@ -416,8 +468,8 @@ class ComputeUpdateApplyTest(unittest.TestCase):
             self.assertIn("broken.service", result.stderr)
             self.assertEqual(json.loads(state.read_text())["node_state"], "DRAIN")
 
-    def test_lock_cleanup_failure_keeps_node_drained(self) -> None:
-        """The CLI must not report a failed update while leaving the node resumed."""
+    def test_lost_lock_keeps_node_drained(self) -> None:
+        """A lost coordinator lock stops the update and leaves the node drained."""
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             bin_folder = folder / "bin"
@@ -433,7 +485,7 @@ class ComputeUpdateApplyTest(unittest.TestCase):
                 "UPDATE_SSH_LOG": str(folder / "ssh.log"),
                 "UPDATE_FAKE_STATE": str(state),
                 "UPDATE_FAKE_FACTS": str(machine_facts),
-                "UPDATE_FAKE_UNLOCK_FAIL": "1",
+                "UPDATE_FAKE_LOCK_LOSS_ON_INSTALL": "1",
                 "XDG_STATE_HOME": str(folder / "state"),
             }
             command = [

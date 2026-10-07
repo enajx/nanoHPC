@@ -13,9 +13,11 @@ from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import yaml
 
+from nanohpc import deploy
 from nanohpc.config import load_config
 from nanohpc.deploy import (
     DRY_RUN_FAILED,
@@ -33,6 +35,7 @@ from nanohpc.deploy import (
     prepare,
     refusal,
 )
+from nanohpc.maintenance_lock import MaintenanceLockBusy, MaintenanceLockError
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -591,6 +594,55 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 2, "no real run")
         self.assertIn("Dry run: local failed: Stop here: the check failed", output.getvalue())
         self.assertFalse(target.exists())
+
+
+class DeployMaintenanceTest(unittest.TestCase):
+    """A deploy needs the coordinator lock before it prepares or applies changes."""
+
+    def test_manual_deploy_refuses_busy_lock_before_prepare(self) -> None:
+        config = {"cluster": {"name": "lab"}, "machines": {"front": {}}, "auto_deploy": {"enabled": False}}
+        found = deploy.Probe({"front": "front"}, [], [], {"front": None})
+        with (
+            patch.object(deploy, "refusal", return_value=None),
+            patch.object(deploy, "probe", return_value=found),
+            patch.object(deploy, "front_machine", return_value=("front", {})),
+            patch.object(deploy, "prepare") as prepare_mock,
+            patch("nanohpc.maintenance_lock.acquire", side_effect=MaintenanceLockBusy("busy")),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = deploy.deploy(config, None, False, [], False, True, None)
+        self.assertEqual(result, 1)
+        prepare_mock.assert_not_called()
+
+    def test_automatic_deploy_requires_inherited_lock_before_probe(self) -> None:
+        config = {"cluster": {"name": "lab"}, "machines": {"front": {}}, "auto_deploy": {"enabled": True}}
+        with (
+            patch.object(deploy, "refusal", return_value=None),
+            patch.object(deploy, "probe") as probe_mock,
+            patch("nanohpc.maintenance_lock.validate_inherited", side_effect=MaintenanceLockError("invalid")),
+            patch.dict(os.environ, {"NANOHPC_MAINTENANCE_FD": "5"}),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = deploy.deploy(config, None, False, [], True, True, None)
+        self.assertEqual(result, 1)
+        probe_mock.assert_not_called()
+
+    def test_manual_deploy_rejects_facts_changed_while_waiting_for_lock(self) -> None:
+        config = {"cluster": {"name": "lab"}, "machines": {"front": {}}, "auto_deploy": {"enabled": False}}
+        before = deploy.Probe({"front": "front"}, [], [], {"front": None})
+        after = deploy.Probe({"front": "front"}, [], [], {"front": ["front"]})
+        holder = MagicMock()
+        with (
+            patch.object(deploy, "refusal", return_value=None),
+            patch.object(deploy, "probe", side_effect=[before, after]),
+            patch.object(deploy, "front_machine", return_value=("front", {})),
+            patch.object(deploy, "prepare") as prepare_mock,
+            patch("nanohpc.maintenance_lock.acquire", return_value=holder),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = deploy.deploy(config, None, False, [], False, True, None)
+        self.assertEqual(result, 1)
+        prepare_mock.assert_not_called()
 
 
 if __name__ == "__main__":

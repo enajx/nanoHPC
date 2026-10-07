@@ -3,7 +3,8 @@
 
 Runs as root on the front node, from a systemd timer (every few minutes) and from the deploy webhook listener. One
 run, in order:
-  1. Takes an exclusive lock on STATE/lock. If another run holds it, prints "another deploy is running" and exits 0.
+  1. Takes STATE/lock and the coordinator's shared maintenance lock. If another deploy or maintenance run holds
+     either lock, prints a retry message and exits 0 without marking a commit.
   2. Refuses (exit 1) when the checkout's `origin` URL is not exactly --remote, or the checkout has local changes
      (`git status --porcelain` prints anything; files listed in .git/info/exclude, such as .env, do not count).
   3. Fetches the branch from origin. When that fails, prints git's error and a hint, writes the metrics, and exits
@@ -17,8 +18,9 @@ run, in order:
      by a force-push does not block later commits.
   6. Reads the pinned nanoHPC version from cluster.yml and, when `NANOHPC --version` prints another one, runs
      `INSTALLER VERSION` and checks the version again. A missing version or a failed install marks the commit failed.
-  7. Runs `NANOHPC deploy cluster.yml --ssh-config SSH_CONFIG` in the checkout, with stdin on /dev/null and
-     NANOHPC_AUTOMATIC=1 in its environment; its output goes to this program's stdout and stderr (the journal).
+  7. Runs `NANOHPC deploy cluster.yml --ssh-config SSH_CONFIG` in the checkout, with stdin on /dev/null,
+     NANOHPC_AUTOMATIC=1 and the inherited maintenance lock descriptor in its environment; its output goes to
+     this program's stdout and stderr (the journal).
      Exit code 0 writes the commit to STATE/deployed and removes STATE/failed; any other code writes STATE/failed.
      Exit code 3 means the deploy's dry run failed on some machines (left out, unchanged), 4 that its real run
      failed (machines may be partly changed); the journal says which.
@@ -58,6 +60,7 @@ import argparse
 import fcntl
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -75,6 +78,7 @@ RUN = "cluster_auto_deploy_last_run_timestamp_seconds"
 SUCCESS = "cluster_auto_deploy_last_success_timestamp_seconds"
 CHECK = "cluster_auto_deploy_last_check_timestamp_seconds"
 INFO = "cluster_auto_deploy_info"
+MAINTENANCE_LOCK = Path("/run/nanohpc/maintenance.lock")
 # What `nanohpc deploy`'s exit codes mean, for the journal.
 DEPLOY_FAILURES = {
     3: " (its dry run failed on some machines, which were left out, unchanged)",
@@ -212,6 +216,27 @@ def take_lock(state: Path) -> bool:
     return True
 
 
+def take_maintenance_lock() -> int | None:
+    """Hold the cluster lock across fetch, install, and deploy; return None while another operation holds it."""
+    folder = MAINTENANCE_LOCK.parent
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    details = folder.lstat()
+    if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid() or details.st_mode & 0o077:
+        raise RuntimeError(f"{folder}: unsafe maintenance lock directory")
+    descriptor = os.open(MAINTENANCE_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    details = os.fstat(descriptor)
+    if not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid():
+        os.close(descriptor)
+        raise RuntimeError(f"{MAINTENANCE_LOCK}: unsafe maintenance lock file")
+    os.fchmod(descriptor, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
 def move_to(arguments: argparse.Namespace, started: str, commit: str) -> None:
     """Check out the fetched commit as the branch, if it contains the deployed commit (any commit before a success).
 
@@ -285,6 +310,10 @@ def main() -> None:
     if not take_lock(arguments.state):
         say("another deploy is running")
         sys.exit(0)
+    maintenance_fd = take_maintenance_lock()
+    if maintenance_fd is None:
+        say("another cluster maintenance operation is running; this commit will be checked again")
+        sys.exit(0)
     started = str(time.time())
     checkout = arguments.checkout
 
@@ -319,10 +348,13 @@ def main() -> None:
     move_to(arguments, started, commit)
     install(arguments, started, commit)
     say(f"deploying commit {commit} of {arguments.branch}")
-    environment = dict(os.environ, NANOHPC_AUTOMATIC="1")
+    environment = dict(os.environ, NANOHPC_AUTOMATIC="1", NANOHPC_MAINTENANCE_FD=str(maintenance_fd))
     command = [arguments.nanohpc, "deploy", "cluster.yml", "--ssh-config", arguments.ssh_config]
     code = exit_code(
-        subprocess.run(command, cwd=checkout, stdin=subprocess.DEVNULL, env=environment, check=False).returncode
+        subprocess.run(
+            command, cwd=checkout, stdin=subprocess.DEVNULL, env=environment,
+            pass_fds=(maintenance_fd,), check=False,
+        ).returncode
     )
     if code != 0:
         warn(f"deploy of commit {commit} failed with exit code {code}{DEPLOY_FAILURES.get(code, '')}; waiting for a newer commit")
