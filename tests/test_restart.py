@@ -14,7 +14,7 @@ from tests.test_restart_check import facts  # pyrefly: ignore[missing-import]
 ROOT = Path(__file__).resolve().parents[1]
 
 FAKE_SSH = f"""#!{sys.executable}
-import json, os, sys
+import json, os, signal, sys
 args = sys.argv[1:]
 index = 0
 login = ""
@@ -27,16 +27,28 @@ path = os.environ["RESTART_STATE"]
 with open(path) as file:
     state = json.load(file)
 state["calls"].append([target, command])
+if "/run/nanohpc/maintenance.lock" in command and "python3 -u -c" in command:
+    if state["lock"]:
+        with open(path, "w") as file:
+            json.dump(state, file)
+        print("BUSY", flush=True)
+        sys.exit(2)
+    state["lock"] = True
+    state["lock_pid"] = os.getpid()
+    with open(path, "w") as file:
+        json.dump(state, file)
+    print("READY", flush=True)
+    sys.stdin.buffer.read()
+    with open(path) as file:
+        state = json.load(file)
+    state["lock"] = False
+    state["calls"].append([target, "maintenance holder released"])
+    with open(path, "w") as file:
+        json.dump(state, file)
+    sys.exit(0)
 code = 0
 output = ""
-if "mkdir /run/nanohpc-restart.lock" in command:
-    if state["lock"]:
-        code = 1
-    else:
-        state["lock"] = True
-elif "rmdir /run/nanohpc-restart.lock" in command:
-    state["lock"] = False
-elif "create reservation" in command:
+if "create reservation" in command:
     state["reservation"] = True
 elif "delete ReservationName=" in command:
     state["reservation"] = False
@@ -58,9 +70,13 @@ elif "state=drain" in command:
         code = 1
     else:
         state["node_state"] = "DRAIN"
+        if state.get("drop_lock_on") == "drain":
+            os.kill(state["lock_pid"], signal.SIGKILL)
 elif "state=resume" in command:
     state["node_state"] = "IDLE"
     state["resumed"] = True
+    if state.get("drop_lock_on") == "resume":
+        os.kill(state["lock_pid"], signal.SIGKILL)
 elif "squeue" in command:
     output = "\\n".join(state["running_jobs"]) + ("\\n" if state["running_jobs"] else "")
     state["running_jobs"] = []
@@ -262,7 +278,7 @@ class RestartFlowTest(unittest.TestCase):
         resumed = next(i for i, command in enumerate(calls) if "state=resume" in command)
         smoked = next(i for i, command in enumerate(calls) if "sbatch" in command)
         released = next(i for i, command in enumerate(calls) if "delete ReservationName=" in command)
-        unlocked = next(i for i, command in enumerate(calls) if "rmdir /run/nanohpc-restart.lock" in command)
+        unlocked = next(i for i, command in enumerate(calls) if "maintenance holder released" in command)
         self.assertLess(created, resumed)
         self.assertLess(resumed, smoked)
         self.assertLess(smoked, released)
@@ -270,6 +286,44 @@ class RestartFlowTest(unittest.TestCase):
         self.assertIn("--reservation=nanohpc_restart_gpu4", calls[smoked])
         self.assertFalse(state["reservation"])
         self.assertFalse(state["lock"])
+        self.assertFalse(any("/run/nanohpc-restart.lock" in command for command in calls))
+
+    def test_lost_maintenance_lock_stops_before_reboot_or_resume(self) -> None:
+        self.state["drop_lock_on"] = "drain"
+        self.state_path.write_text(json.dumps(self.state))
+        result = self.restart("gpu4")
+        state = json.loads(self.state_path.read_text())
+        calls = [command for _, command in state["calls"]]
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("maintenance lock holder closed", result.stderr)
+        self.assertEqual(state["node_state"], "DRAIN")
+        self.assertFalse(any("systemctl reboot" in command for command in calls))
+        self.assertFalse(any("state=resume" in command for command in calls))
+
+    def test_lost_lock_after_temporary_resume_redrains_without_removing_reservation(self) -> None:
+        self.state["drop_lock_on"] = "resume"
+        self.state_path.write_text(json.dumps(self.state))
+        result = self.restart("gpu4")
+        state = json.loads(self.state_path.read_text())
+        calls = [command for _, command in state["calls"]]
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("maintenance lock holder closed", result.stderr)
+        self.assertEqual(state["node_state"], "DRAIN")
+        self.assertTrue(state["reservation"])
+        self.assertFalse(any("delete ReservationName=" in command for command in calls))
+
+    def test_failed_emergency_redrain_keeps_reservation(self) -> None:
+        self.state["drop_lock_on"] = "resume"
+        self.state["fail_redrain"] = True
+        self.state_path.write_text(json.dumps(self.state))
+        result = self.restart("gpu4")
+        state = json.loads(self.state_path.read_text())
+        calls = [command for _, command in state["calls"]]
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("emergency redrain failed", result.stderr)
+        self.assertEqual(state["node_state"], "IDLE")
+        self.assertTrue(state["reservation"])
+        self.assertFalse(any("delete ReservationName=" in command for command in calls))
 
     def test_cpu_only_node_runs_a_cpu_slurm_job(self) -> None:
         self.state["machine"] = "cpu1"

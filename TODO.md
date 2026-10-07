@@ -100,9 +100,10 @@ flowchart LR
 - [x] A confirmed `nanohpc restart` of one compute machine drains, waits for jobs, checks, reboots, and releases it only after a Slurm test job passes; failures leave it drained. See [DONE.md](md/DONE.md).
 - [x] `nanohpc update-report CLUSTER_YML` reports waiting updates on every machine from saved APT lists, including the lists' age, with each package in one built-in care, security, extra-source, or rest group. It changes nothing and fails clearly when any machine cannot be checked. See [DONE.md](md/DONE.md).
 - [x] A confirmed `nanohpc update` of one compute machine uses a matching dry run, named care groups, SSH undo protection, and checks before resuming or awaiting `nanohpc restart`. See [DONE.md](md/DONE.md).
-- [ ] A separate front-node update procedure allows ordinary updates while jobs run, and named care-group updates only with an empty queue; agree its remaining safety and recovery behavior before building it.
+- [x] `nanohpc update` accepts the confirmed front node, checks it after installation, and pauses new job starts during named care-group updates. See [DONE.md](md/DONE.md).
+- [x] Manual and automatic deploys, the timer and webhook, updates, and compute restarts share a cluster maintenance lock. See [DONE.md](md/DONE.md).
 - [ ] The default configuration enables automatic security updates on every machine after any backlog is installed through the update procedure. Automatic updates never restart a machine or install NVIDIA/CUDA packages; driver changes need the administrator's confirmation.
-- [ ] A machine that serves `/home` from a local disk does not export an empty `/home` if that disk fails to mount at boot, while administrators still have a recovery path over SSH. Agree on the exact behavior with the user alongside the front-node update procedure.
+- [x] A home server with a missing local `/home` disk boots to root SSH without exporting an empty `/home`; the original data and NFS access return when the disk is restored. See [DONE.md](md/DONE.md).
 - [x] Admins have direct key-only root login on every machine for recovery, with their keys from `cluster.yml` on local disk; a dry run stops before replacing other root keys that would lose access. See [DONE.md](md/DONE.md).
 
 ### Monitoring and website
@@ -133,7 +134,7 @@ flowchart LR
 - [ ] Above the soft limit (`home.quota_soft_gb` in `cluster.yml`, e.g. 300 GB) users only get a notice; writing never stops (today the soft limit becomes a hard stop after `quota_grace`).
 - [ ] No hard limit for writing to `/home`; the hard limit (`home.quota_hard_gb`) applies to running jobs instead: a user above it cannot start jobs until they clean up, which is more flexible (today the filesystem stops writes at the hard limit).
 - [ ] Machines boot normally when the machine serving `/home` is down: `/home` is mounted with `hard,nofail,x-systemd.automount,x-systemd.mount-timeout=90` (plus `nosuid,nodev`), so the boot never waits on it, SSH comes up, and `/home` connects by itself on first use once the server answers (as in the source deployment, commit 7b76d31, roles/nfs_client). Checked on the simulated cluster by rebooting a compute node with the home server down. Agreed for later (2026-10-02); no live remount handling needed before v0.1, since no real cluster runs nanoHPC yet.
-- [ ] A push to the configuration repository during a manual deploy's real run cannot start an automatic deploy through the GitHub webhook at the same time (today the webhook listener starts the automatic deploy service directly; the manual deploy only pauses the timer).
+- [x] A push to the configuration repository during a manual deploy's real run cannot start an overlapping automatic deploy through the GitHub webhook. See [DONE.md](md/DONE.md).
 - [ ] Website follow-ups: the printed forwarding rules are tried with real nginx, Apache, and Caddy (with `forwarded_by`); switching between certificate types, hostnames, paths, and build modes is checked on the simulated cluster; nginx starts on machines with IPv6 turned off.
 
 ### Backup, alerts, and auto-deploy

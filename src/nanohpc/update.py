@@ -1,4 +1,4 @@
-"""Safely install the approved updates on one confirmed compute machine."""
+"""Safely install approved updates on one confirmed compute or front machine."""
 
 import hashlib
 import json
@@ -10,10 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from nanohpc import restart, restart_check, ssh_update
+from nanohpc import maintenance_lock, restart, restart_check, ssh_update
 from nanohpc.config import load_config
 from nanohpc.probe import run_remote, ssh_failure
-from nanohpc.render import front_machine, gpu_count
+from nanohpc.render import front_machine, gpu_count, home_server
 from nanohpc.update_report import CARE_GROUPS, group_of
 
 SNAPSHOT_PROGRAM = r"""
@@ -48,6 +48,9 @@ print(json.dumps({'lists_hash': digest.hexdigest(),
 
 class UpdateError(RuntimeError):
     """An update cannot continue safely."""
+
+
+FRONT_DRAIN_REASON = "nanohpc-front-update"
 
 
 def state_path(path: Path, machine: str) -> Path:
@@ -159,6 +162,18 @@ def save_preview(path: Path, preview: dict[str, Any]) -> None:
 
 def preview(config: dict[str, Any], path: Path, machine: str, include: list[str], ssh_config: Path | None) -> int:
     """Refresh APT lists, simulate exact upgrades, then save the reviewed plan."""
+    front = front_machine(config)[0]
+    restart.verify_address(config, front, ssh_config)
+    with maintenance_lock.acquire(front, ssh_config, None) as lock, maintenance_lock.active(lock):
+        result = _preview_locked(config, path, machine, include, ssh_config)
+        lock.check()
+        return result
+
+
+def _preview_locked(
+    config: dict[str, Any], path: Path, machine: str, include: list[str], ssh_config: Path | None
+) -> int:
+    """Run the preview while the coordinator lock prevents another operation."""
     restart.verify_address(config, machine, ssh_config)
     restart.invoking_admin(config, machine, ssh_config)
     ssh_update.require_clear(machine, ssh_config)
@@ -303,7 +318,46 @@ def post_checks(
 
 
 def apply(config: dict[str, Any], path: Path, machine: str, include: list[str], ssh_config: Path | None) -> int:
-    """Drain, wait, install the matching approved plan, check it, then resume or keep drained for restart."""
+    """Apply the matching preview under the shared coordinator lock."""
+    front = front_machine(config)[0]
+    restart.verify_address(config, front, ssh_config)
+    progress = {"drained": False}
+    front_drained: list[str] = []
+    try:
+        with maintenance_lock.acquire(front, ssh_config, None) as lock, maintenance_lock.active(lock):
+            if machine == front:
+                result = _apply_front_locked(config, path, machine, include, ssh_config, lock, front_drained)
+            else:
+                result = _apply_locked(config, path, machine, include, ssh_config, front, lock, progress)
+            lock.check()
+            return result
+    except maintenance_lock.MaintenanceLockLost as failure:
+        error = str(failure)
+        if progress["drained"] or front_drained:
+            try:
+                with maintenance_lock.acquire(front, ssh_config, None) as recovery, maintenance_lock.active(recovery):
+                    if progress["drained"]:
+                        restart.drain(front, machine, ssh_config, "update by nanohpc failed; check by hand")
+                    for problem in settle_front_failure(front, ssh_config, front_drained):
+                        error += f"; {problem}"
+            except (maintenance_lock.MaintenanceLockError, restart.RestartError) as recovery_failure:
+                affected = ", ".join(front_drained) if front_drained else machine
+                error += f"; could not restore drains on {affected}; review Slurm state manually: {recovery_failure}"
+        print(f"{machine}: {error}", file=sys.stderr)
+        return 1
+
+
+def _apply_locked(
+    config: dict[str, Any],
+    path: Path,
+    machine: str,
+    include: list[str],
+    ssh_config: Path | None,
+    front: str,
+    lock: maintenance_lock.MaintenanceLock,
+    progress: dict[str, bool],
+) -> int:
+    """Apply the approved plan and settle Slurm state before releasing the lock."""
     record = approved_preview(config, path, machine, include, ssh_config)
     packages = record["resolved"]
     if not packages:
@@ -311,14 +365,10 @@ def apply(config: dict[str, Any], path: Path, machine: str, include: list[str], 
         print(f"{machine}: no approved packages to install")
         return 0
     print(f"{machine}: approved updates: " + " ".join(f"{name}={version}" for name, version in packages), flush=True)
-    front = front_machine(config)[0]
-    restart.verify_address(config, front, ssh_config)
     admin = restart.invoking_admin(config, machine, ssh_config)
     ssh_guard = "ssh" in include and any(
         any(re.match(pattern, name) for pattern in CARE_GROUPS["ssh"]) for name, _ in packages
     )
-    restart.lock(front, ssh_config)
-    locked = True
     drained = False
     success = False
     error: str | None = None
@@ -331,6 +381,7 @@ def apply(config: dict[str, Any], path: Path, machine: str, include: list[str], 
             raise UpdateError(f"{machine}: Slurm state is {state}; resolve that state before an update")
         restart.drain(front, machine, ssh_config, "update by nanohpc")
         drained = True
+        progress["drained"] = True
         restart.wait_for_jobs(front, machine, ssh_config)
         approved_preview(config, path, machine, include, ssh_config)
         before = failed_units(machine, ssh_config)
@@ -352,22 +403,20 @@ def apply(config: dict[str, Any], path: Path, machine: str, include: list[str], 
             ssh_update.close_holds(holds)
         if needs_restart:
             restart.drain(front, machine, ssh_config, restart.UPDATE_RESTART_REASON)
+        else:
+            lock.check()
+            restart.resume(front, machine, ssh_config)
+            lock.check()
         success = True
     except (UpdateError, restart.RestartError, subprocess.TimeoutExpired) as failure:
         error = str(failure)
     finally:
         if holds and not ssh_canceled:
             print(f"{machine}: SSH undo remains armed; held root connections will close after 4 hours", file=sys.stderr)
-        if locked:
-            try:
-                restart.unlock(front, ssh_config)
-            except restart.RestartError as failure:
-                success = False
-                error = f"{error or 'update stopped'}; could not remove update lock: {failure}"
         if drained and not success:
             try:
                 restart.drain(front, machine, ssh_config, "update by nanohpc failed; check by hand")
-            except restart.RestartError as failure:
+            except (restart.RestartError, maintenance_lock.MaintenanceLockLost) as failure:
                 error = f"{error or 'update stopped'}; could not leave {machine} drained: {failure}"
     if error:
         print(f"{machine}: {error}", file=sys.stderr)
@@ -377,29 +426,240 @@ def apply(config: dict[str, Any], path: Path, machine: str, include: list[str], 
             f"{machine}: update passed; restart required. Node stays drained; run `nanohpc restart {path} {machine} --confirm {machine}`"
         )
         return 0
-    try:
-        restart.resume(front, machine, ssh_config)
-    except restart.RestartError as failure:
-        error = str(failure)
-        try:
-            restart.drain(front, machine, ssh_config, "update by nanohpc failed; check by hand")
-        except restart.RestartError as drain_failure:
-            error += f"; could not leave {machine} drained: {drain_failure}"
-        print(f"{machine}: {error}", file=sys.stderr)
-        return 1
     print(f"{machine}: update passed; node resumed")
     return 0
 
 
+def front_queue(front: str, ssh_config: Path | None) -> str:
+    """Read all submitted jobs, including jobs waiting for resources."""
+    return restart.root(front, ssh_config, ["squeue", "-h", "-o", "%i %T"], 30)
+
+
+def require_front_drains(front: str, ssh_config: Path | None, drained: list[str]) -> None:
+    """Require each node we paused still to carry our Slurm drain reason."""
+    for node in drained:
+        state, reason = restart.node_status(front, node, ssh_config)
+        if "DRAIN" not in state.upper() or reason != FRONT_DRAIN_REASON:
+            raise UpdateError(f"{node}: Slurm state changed during the front update: {state} {reason}")
+
+
+def settle_front_failure(front: str, ssh_config: Path | None, drained: list[str]) -> list[str]:
+    """Keep our drains, redrain schedulable nodes, and preserve unrelated state changes."""
+    problems: list[str] = []
+    for node in drained:
+        try:
+            state, reason = restart.node_status(front, node, ssh_config)
+            if "DRAIN" in state.upper() and reason == FRONT_DRAIN_REASON:
+                continue
+            if state.upper() in {"IDLE", "ALLOCATED", "MIXED", "COMPLETING"}:
+                restart.drain(front, node, ssh_config, "nanohpc-front-update-failed")
+            else:
+                problems.append(f"{node}: Slurm state changed to {state} {reason}; left unchanged")
+        except (restart.RestartError, maintenance_lock.MaintenanceLockLost) as failure:
+            problems.append(f"could not check or leave {node} drained: {failure}")
+    return problems
+
+
+def pause_front_jobs(config: dict[str, Any], front: str, ssh_config: Path | None, drained: list[str]) -> None:
+    """Block new job starts on available compute nodes after an empty-queue check."""
+    if jobs := front_queue(front, ssh_config):
+        raise UpdateError(f"{front}: care-group update needs an empty Slurm queue; found {jobs}")
+    for node, values in config["machines"].items():
+        if "compute" not in values["roles"]:
+            continue
+        state = restart.node_state(front, node, ssh_config).upper()
+        if any(flag in state for flag in ("DRAIN", "DOWN", "FAIL", "MAINT")):
+            continue
+        if state != "IDLE":
+            raise UpdateError(f"{node}: Slurm state is {state}; resolve it before a front-node care-group update")
+        drained.append(node)
+        restart.drain(front, node, ssh_config, FRONT_DRAIN_REASON)
+    # A job can begin between the first queue read and the last drain. New
+    # submissions may remain pending, but no job may be running or starting.
+    jobs = front_queue(front, ssh_config)
+    active = [line for line in jobs.splitlines() if line.split() and line.split()[-1] != "PENDING"]
+    if active:
+        raise UpdateError(f"{front}: a job started while draining compute nodes: {'; '.join(active)}")
+
+
+def front_post_checks(
+    config: dict[str, Any], front: str, admin: str, ssh_config: Path | None, before: set[str], ssh_guard: bool
+) -> bool:
+    """Require fresh access, saved restart checks, Slurm, home and front services."""
+    restart.verify_address(config, front, ssh_config)
+    restart.root(front, ssh_config, ["sshd", "-t"], 30)
+    restart.fresh_login(front, "root", ssh_config)
+    restart.fresh_login(front, admin, ssh_config)
+    if ssh_guard:
+        ssh_update.cancel(front, ssh_config)
+    facts, error = restart_check.read_machine(front, ssh_config)
+    if error or facts is None:
+        raise UpdateError(f"{front}: saved restart checks could not run: {error or 'no facts returned'}")
+    findings = restart_check.evaluate(facts, False)
+    problems = [f"{label}: {reason}" for label, reasons in findings.items() for reason in reasons]
+    if problems:
+        raise UpdateError(f"{front}: saved restart checks failed: " + "; ".join(problems))
+    services = [
+        "munge",
+        "mariadb",
+        "slurmdbd",
+        "slurmctld",
+        "nginx",
+        "nanohpc-prometheus",
+        "nanohpc-history",
+        "nanohpc-alertmanager",
+        "nanohpc-grafana",
+        "nanohpc-node-exporter",
+    ]
+    if home_server(config) == front:
+        services.append("nfs-server")
+    for service in services:
+        try:
+            state = restart.read(front, ssh_config, f"systemctl is-active {service}", 30)
+        except restart.RestartError as failure:
+            raise UpdateError(f"{front}: {service} check failed: {failure}") from failure
+        if state != "active":
+            raise UpdateError(f"{front}: {service} is not active")
+    controller = restart.read(front, ssh_config, "scontrol ping", 30)
+    if not re.search(r"\bUP\b", controller):
+        raise UpdateError(f"{front}: Slurm controller did not report UP: {controller}")
+    clusters = restart.read(front, ssh_config, "sacctmgr -n -P list cluster", 30)
+    if config["cluster"]["name"] not in [line.split("|")[0].strip() for line in clusters.splitlines()]:
+        raise UpdateError(f"{front}: Slurm accounting does not list {config['cluster']['name']}")
+    mount = restart.read(front, ssh_config, "findmnt -n -o SOURCE --mountpoint /home", 30)
+    server = home_server(config)
+    if server != front and mount != f"{config['machines'][server]['address']}:/home":
+        raise UpdateError(f"{front}: /home is {mount}, expected {config['machines'][server]['address']}:/home")
+    if server == front:
+        device = config["machines"][front].get("home", {}).get("device")
+        expected_uuid = (
+            restart.root(front, ssh_config, ["blkid", "-s", "UUID", "-o", "value", device], 30)
+            if device is not None
+            else restart.read(front, ssh_config, "findmnt -n -o UUID --target /", 30)
+        )
+        mounted_uuid = restart.read(front, ssh_config, "findmnt -n -o UUID --mountpoint /home", 30)
+        if not expected_uuid or mounted_uuid != expected_uuid:
+            raise UpdateError(f"{front}: /home has UUID {mounted_uuid or 'none'}, expected {expected_uuid or 'none'}")
+    exports = restart.root(front, ssh_config, ["exportfs", "-v"], 30) if server == front else ""
+    if server == front and not any(line.split() and line.split()[0] == "/home" for line in exports.splitlines()):
+        raise UpdateError(f"{front}: /home is not exported")
+    website = config["cluster"]["website"]
+    hostname = website["hostname"]
+    path = website["path"]
+    url = f"https://{hostname}{path}site.json"
+    restart.read(
+        front,
+        ssh_config,
+        shlex.join(
+            [
+                "curl",
+                "--silent",
+                "--fail",
+                "--insecure",
+                "--resolve",
+                f"{hostname}:443:127.0.0.1",
+                url,
+            ]
+        ),
+        30,
+    )
+    new_failed = failed_units(front, ssh_config) - before
+    if new_failed:
+        raise UpdateError(f"{front}: new failed systemd units: {', '.join(sorted(new_failed))}")
+    restart_status = restart.read(
+        front,
+        ssh_config,
+        "if test -e /run/reboot-required; then echo required; cat /run/reboot-required.pkgs 2>/dev/null || true; else echo none; fi",
+        30,
+    )
+    return restart_status.splitlines()[0] == "required"
+
+
+def _apply_front_locked(
+    config: dict[str, Any],
+    path: Path,
+    front: str,
+    include: list[str],
+    ssh_config: Path | None,
+    lock: maintenance_lock.MaintenanceLock,
+    drained: list[str],
+) -> int:
+    """Update the front node, pausing job starts only for named care groups."""
+    record = approved_preview(config, path, front, include, ssh_config)
+    packages = record["resolved"]
+    if not packages:
+        state_path(path, front).unlink()
+        print(f"{front}: no approved packages to install")
+        return 0
+    admin = restart.invoking_admin(config, front, ssh_config)
+    ssh_guard = "ssh" in include and any(
+        any(re.match(pattern, name) for pattern in CARE_GROUPS["ssh"]) for name, _ in packages
+    )
+    holds: list[subprocess.Popen[str]] = []
+    ssh_canceled = False
+    success = False
+    error: str | None = None
+    needs_restart = False
+    try:
+        if include:
+            pause_front_jobs(config, front, ssh_config, drained)
+            require_front_drains(front, ssh_config, drained)
+        approved_preview(config, path, front, include, ssh_config)
+        if include:
+            require_front_drains(front, ssh_config, drained)
+        before = failed_units(front, ssh_config)
+        if ssh_guard:
+            holds.append(ssh_update.hold_root(front, ssh_config))
+            holds.append(ssh_update.hold_root(front, ssh_config))
+            ssh_update.require_holds(front, holds)
+            ssh_update.prepare(front, ssh_config)
+            ssh_update.require_holds(front, holds)
+        state_path(path, front).unlink()
+        if include:
+            require_front_drains(front, ssh_config, drained)
+        install(front, ssh_config, packages, include)
+        if ssh_guard:
+            ssh_update.require_holds(front, holds)
+            restart.root(front, ssh_config, ["systemctl", "restart", "ssh.service"], 30)
+            ssh_update.listener(front, ssh_config)
+        needs_restart = front_post_checks(config, front, admin, ssh_config, before, ssh_guard)
+        if ssh_guard:
+            ssh_canceled = True
+            ssh_update.close_holds(holds)
+        require_front_drains(front, ssh_config, drained)
+        lock.check()
+        for node in drained:
+            restart.resume(front, node, ssh_config)
+            lock.check()
+        success = True
+    except (UpdateError, restart.RestartError, subprocess.TimeoutExpired) as failure:
+        error = str(failure)
+    finally:
+        if holds and not ssh_canceled:
+            print(f"{front}: SSH undo remains armed; held root connections will close after 4 hours", file=sys.stderr)
+        if drained and not success:
+            for problem in settle_front_failure(front, ssh_config, drained):
+                error = f"{error or 'update stopped'}; {problem}"
+            error = f"{error or 'update stopped'}; check drained state of {', '.join(drained)} before resuming jobs"
+    if error:
+        print(f"{front}: {error}", file=sys.stderr)
+        return 1
+    if needs_restart:
+        print(f"{front}: update passed; restart required. Scheduling restored; plan a separate front-node restart")
+    else:
+        print(f"{front}: update passed; scheduling restored")
+    return 0
+
+
 def valid_target(config: dict[str, Any], machine: str, confirm: str | None, dry_run: bool) -> str | None:
-    """Return why a request cannot update this one compute machine."""
+    """Return why a request cannot update this compute or front machine."""
     if config["cluster"].get("mode") == "monitor":
         return "update needs a Slurm cluster, not monitor mode"
     selected = config["machines"].get(machine)
     if selected is None:
         return f"{machine} is not in cluster.yml"
-    if "front" in selected["roles"] or "compute" not in selected["roles"]:
-        return f"{machine} is not one compute machine; the front node needs its own update procedure"
+    if "front" not in selected["roles"] and "compute" not in selected["roles"]:
+        return f"{machine} is not a compute or front machine"
     if not dry_run and confirm != machine:
         return f"--confirm must equal the one machine name {machine}"
     return None
@@ -418,7 +678,7 @@ def parse_include(value: str) -> tuple[list[str], str | None]:
 
 
 def run(path: Path, machine: str, confirm: str | None, dry_run: bool, include: str, ssh_config: Path | None) -> int:
-    """Validate the request before preparing or installing updates on a compute machine."""
+    """Validate the request before preparing or installing updates on one machine."""
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
         return 1
@@ -440,6 +700,6 @@ def run(path: Path, machine: str, confirm: str | None, dry_run: bool, include: s
         if dry_run:
             return preview(config, path, machine, groups, ssh_config)
         return apply(config, path, machine, groups, ssh_config)
-    except (UpdateError, restart.RestartError) as failure:
+    except (UpdateError, restart.RestartError, maintenance_lock.MaintenanceLockError) as failure:
         print(f"{machine}: {failure}", file=sys.stderr)
         return 1

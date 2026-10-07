@@ -9,12 +9,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from nanohpc import restart_check
+from nanohpc import maintenance_lock, restart_check
 from nanohpc.config import load_config
 from nanohpc.probe import run_remote, ssh_args, ssh_failure
 from nanohpc.render import front_machine, gpu_count, home_server
 
-LOCK = "/run/nanohpc-restart.lock"
 UPDATE_RESTART_REASON = "nanohpc-update-restart-required"
 WAIT_JOBS_SECONDS = 24 * 60 * 60
 WAIT_BOOT_SECONDS = 60 * 60
@@ -75,16 +74,6 @@ def invoking_admin(config: dict[str, Any], machine: str, ssh_config: Path | None
     if user not in config["cluster"]["admins"]:
         raise RestartError(f"{machine}: SSH user {user} is not an administrator in cluster.yml")
     return user
-
-
-def lock(front: str, ssh_config: Path | None) -> None:
-    """Allow one compute restart at a time across administrator machines."""
-    root(front, ssh_config, ["mkdir", LOCK], 30)
-
-
-def unlock(front: str, ssh_config: Path | None) -> None:
-    """Release the cluster-wide restart lock."""
-    root(front, ssh_config, ["rmdir", LOCK], 30)
 
 
 def node_status(front: str, machine: str, ssh_config: Path | None) -> tuple[str, str]:
@@ -210,7 +199,9 @@ def fresh_login(machine: str, user: str, ssh_config: Path | None) -> None:
     """Open a new SSH connection as root or the configured administrator."""
     arguments = ssh_args(ssh_config, machine, "true", False)
     command = [*arguments[:-2], "-o", "ControlPath=none", "-l", user, *arguments[-2:]]
-    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    result = maintenance_lock.guarded_run(
+        command, input=None, capture_output=True, text=True, timeout=30, check=False, env=None, cwd=None
+    )
     if result.returncode:
         raise RestartError(f"{machine}: fresh {user} login failed: {result.stderr.strip() or 'no output'}")
 
@@ -296,7 +287,9 @@ def interactive_smoke(
     ssh = ssh_args(ssh_config, front, command, True)
     ssh = [*ssh[:-2], "-tt", *ssh[-2:]]
     script = "hostname -s\n" + ("nvidia-smi -L\n" if gpus else "") + "exit\n"
-    result = subprocess.run(ssh, input=script, capture_output=True, text=True, check=False, timeout=30 * 60)
+    result = maintenance_lock.guarded_run(
+        ssh, input=script, capture_output=True, text=True, timeout=30 * 60, check=False, env=None, cwd=None
+    )
     lines = [line.strip() for line in result.stdout.splitlines()]
     hostname = read(machine, ssh_config, "hostname -s", 30)
     if result.returncode or hostname not in lines:
@@ -358,57 +351,60 @@ def execute(config: dict[str, Any], machine: str, ssh_config: Path | None) -> in
     verify_address(config, front, ssh_config)
     verify_address(config, machine, ssh_config)
     admin = invoking_admin(config, machine, ssh_config)
-    lock(front, ssh_config)
-    locked = True
     drained = False
     reserved: str | None = None
     success = False
     error: str | None = None
-    try:
-        state, reason = node_status(front, machine, ssh_config)
-        state = state.upper()
-        update_drain = reason == UPDATE_RESTART_REASON and set(state.split("+")) <= {"IDLE", "DRAIN"}
-        if any(flag in state for flag in ("DRAIN", "DOWN", "FAIL", "MAINT")) and not update_drain:
-            raise RestartError(f"{machine}: Slurm state is {state}; resolve that state before a restart")
-        print(f"{machine}: draining in Slurm", flush=True)
-        drain(front, machine, ssh_config, "restart by nanohpc")
-        drained = True
-        wait_for_jobs(front, machine, ssh_config)
-        kernel = before_restart(machine, ssh_config, gpu_count(config["machines"][machine]) > 0)
-        old_id = boot_id(machine, ssh_config)
-        print(f"{machine}: restarting; GRUB selects {kernel}", flush=True)
-        reboot(machine, ssh_config, old_id)
-        verify_address(config, machine, ssh_config)
-        after_restart(config, machine, ssh_config, kernel, admin)
-        reserved = reserve(front, machine, admin, ssh_config)
-        resume(front, machine, ssh_config)
-        smoke_job(config, front, machine, reserved, admin, ssh_config)
-        unreserve(front, reserved, ssh_config)
-        reserved = None
-        unlock(front, ssh_config)
-        locked = False
-        success = True
-        print(f"{machine}: restart and Slurm test job passed; node resumed")
-    except (RestartError, subprocess.TimeoutExpired) as failure:
-        error = str(failure)
-    finally:
-        safe_to_unreserve = True
-        if drained and not success:
-            try:
-                drain(front, machine, ssh_config, "restart by nanohpc failed; check by hand")
-            except RestartError as failure:
-                safe_to_unreserve = False
-                error = f"{error or 'restart stopped'}; could not leave {machine} drained: {failure}"
-        if reserved is not None and safe_to_unreserve:
-            try:
-                unreserve(front, reserved, ssh_config)
-            except RestartError as failure:
-                error = f"{error or 'restart stopped'}; could not remove reservation {reserved}: {failure}"
-        if locked:
-            try:
-                unlock(front, ssh_config)
-            except RestartError as failure:
-                error = f"{error or 'restart stopped'}; could not remove restart lock: {failure}"
+    lock_lost = False
+    with maintenance_lock.acquire(front, ssh_config, None) as held, maintenance_lock.active(held):
+        try:
+            state, reason = node_status(front, machine, ssh_config)
+            state = state.upper()
+            update_drain = reason == UPDATE_RESTART_REASON and set(state.split("+")) <= {"IDLE", "DRAIN"}
+            if any(flag in state for flag in ("DRAIN", "DOWN", "FAIL", "MAINT")) and not update_drain:
+                raise RestartError(f"{machine}: Slurm state is {state}; resolve that state before a restart")
+            print(f"{machine}: draining in Slurm", flush=True)
+            drain(front, machine, ssh_config, "restart by nanohpc")
+            drained = True
+            wait_for_jobs(front, machine, ssh_config)
+            kernel = before_restart(machine, ssh_config, gpu_count(config["machines"][machine]) > 0)
+            old_id = boot_id(machine, ssh_config)
+            print(f"{machine}: restarting; GRUB selects {kernel}", flush=True)
+            reboot(machine, ssh_config, old_id)
+            verify_address(config, machine, ssh_config)
+            after_restart(config, machine, ssh_config, kernel, admin)
+            reserved = reserve(front, machine, admin, ssh_config)
+            resume(front, machine, ssh_config)
+            smoke_job(config, front, machine, reserved, admin, ssh_config)
+            unreserve(front, reserved, ssh_config)
+            reserved = None
+            held.check()
+            success = True
+            print(f"{machine}: restart and Slurm test job passed; node resumed")
+        except (RestartError, maintenance_lock.MaintenanceLockError, subprocess.TimeoutExpired) as failure:
+            error = str(failure)
+            lock_lost = isinstance(failure, maintenance_lock.MaintenanceLockLost)
+        finally:
+            safe_to_unreserve = True
+            if drained and not success:
+                try:
+                    drain(front, machine, ssh_config, "restart by nanohpc failed; check by hand")
+                except (RestartError, maintenance_lock.MaintenanceLockError) as failure:
+                    safe_to_unreserve = False
+                    lock_lost = lock_lost or isinstance(failure, maintenance_lock.MaintenanceLockLost)
+                    error = f"{error or 'restart stopped'}; could not leave {machine} drained: {failure}"
+            if reserved is not None and safe_to_unreserve:
+                try:
+                    unreserve(front, reserved, ssh_config)
+                except (RestartError, maintenance_lock.MaintenanceLockError) as failure:
+                    lock_lost = lock_lost or isinstance(failure, maintenance_lock.MaintenanceLockLost)
+                    error = f"{error or 'restart stopped'}; could not remove reservation {reserved}: {failure}"
+    # The holder is gone, so make one last SSH attempt to keep jobs off the node.
+    if lock_lost and drained and not success:
+        try:
+            drain(front, machine, ssh_config, "restart by nanohpc failed; check by hand")
+        except (RestartError, subprocess.TimeoutExpired) as failure:
+            error = f"{error or 'restart stopped'}; emergency redrain failed: {failure}"
     if error:
         print(f"{machine}: {error}", file=sys.stderr)
         return 1
@@ -446,6 +442,6 @@ def run(path: Path, machine: str, confirm: str, ssh_config: Path | None) -> int:
         return 1
     try:
         return execute(config, machine, ssh_config)
-    except RestartError as failure:
+    except (RestartError, maintenance_lock.MaintenanceLockError) as failure:
         print(f"{machine}: {failure}", file=sys.stderr)
         return 1

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nanohpc.config import GPU_TYPE
+from nanohpc.maintenance_lock import guarded_run
 
 PROBE_TIMEOUT = 60  # seconds, for the probe and for each quick lookup (getent, pgrep, ...)
 TIMED_OUT = 124  # the exit code run_remote gives a command that ran out of time (as timeout(1) does)
@@ -40,7 +41,9 @@ def run_remote(
     answer within `timeout` seconds (ssh is stopped)."""
     arguments = ssh_args(ssh_config, target, command, forward_agent)
     try:
-        return subprocess.run(arguments, capture_output=True, text=True, check=False, timeout=timeout)
+        return guarded_run(
+            arguments, input=None, capture_output=True, text=True, timeout=timeout, check=False, env=None, cwd=None
+        )
     except subprocess.TimeoutExpired:
         # A time limit is reported like a failed command, so callers report it instead of hanging.
         return subprocess.CompletedProcess(arguments, TIMED_OUT, "", f"no answer within {timeout} seconds")
@@ -52,7 +55,16 @@ def run_remote_input(
     """Run a remote command with text on stdin, with the same SSH and timeout behavior as run_remote."""
     arguments = ssh_args(ssh_config, target, command, forward_agent)
     try:
-        return subprocess.run(arguments, input=input_text, capture_output=True, text=True, check=False, timeout=timeout)
+        return guarded_run(
+            arguments,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=None,
+            cwd=None,
+        )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(arguments, TIMED_OUT, "", f"no answer within {timeout} seconds")
 

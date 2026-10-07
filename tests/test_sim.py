@@ -25,7 +25,7 @@ from typing import Any
 import yaml
 from textual.widgets import DataTable
 
-from nanohpc import fixuid, probe, ssh_update, wizard
+from nanohpc import fixuid, maintenance_lock, probe, ssh_update, wizard
 from nanohpc.config import check_config, load_config
 from nanohpc.probe import probe_machine
 from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config
@@ -496,6 +496,17 @@ class SimUsersBase(unittest.TestCase):
         self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
         started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", instance)
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.refresh_vm_port(machine, instance)
+        for _ in range(24):
+            after = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
+            if after.returncode == 0:
+                break
+            time.sleep(5)
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertNotEqual(after.stdout.strip(), before.stdout.strip(), machine)
+
+    def refresh_vm_port(self, machine: str, instance: str) -> None:
+        """Update the test SSH config after Lima assigns a new forwarded port."""
         # Lima assigns a new forwarded SSH port when a VM starts again.
         listing = self.run_command("limactl", "list", "--format", "{{.Name}} {{.SSHLocalPort}}")
         self.assertEqual(listing.returncode, 0, listing.stdout + listing.stderr)
@@ -512,13 +523,6 @@ class SimUsersBase(unittest.TestCase):
                 replaced = True
         self.assertTrue(replaced, f"{machine} is missing from {config}")
         config.write_text("\n".join(lines) + "\n")
-        for _ in range(24):
-            after = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
-            if after.returncode == 0:
-                break
-            time.sleep(5)
-        self.assertEqual(after.returncode, 0, after.stderr)
-        self.assertNotEqual(after.stdout.strip(), before.stdout.strip(), machine)
 
     def wait_for_vm(self, machine: str, command: str) -> str:
         """Wait for a boot service or mount to become usable, then return its output."""
@@ -2002,6 +2006,85 @@ class SimRebootTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimMissingHomeDiskTest(SimUsersBase):
+    """A missing local /home disk leaves root SSH available without exporting an empty directory."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "home-on-storage.yml"
+        self.state = ROOT / ".nanohpc-sim" / "home-on-storage"
+        super().setUp()
+
+    def test_missing_disk_boot_and_restored_export(self) -> None:
+        """Remove the storage VM's home disk for one boot, then restore it with its data."""
+        self.up_and_deploy()
+        store = next(vm for vm in plan_of(self.sim).vms if vm.machine == "store")
+        self.assertEqual(len(store.disks), 1)
+        self.assertEqual(store.home_device, "/dev/vdb")
+        marker = self.ssh("store", "sudo -u alice sh -c 'echo original-home > /home/alice/disk-check'")
+        self.assertEqual(marker.returncode, 0, marker.stdout + marker.stderr)
+
+        # Check the boot settings before removing the disk, so a broken test run never waits on a blocked boot.
+        fstab = self.ssh("store", "awk '$2 == \"/home\" {print $4}' /etc/fstab")
+        self.assertEqual(fstab.returncode, 0, fstab.stderr)
+        self.assertIn("nofail", fstab.stdout.strip().split(","))
+        requires = self.ssh("store", "systemctl show nfs-server.service --property=Requires --value")
+        self.assertEqual(requires.returncode, 0, requires.stderr)
+        self.assertIn("home.mount", requires.stdout.split())
+
+        stopped = self.run_command("limactl", "stop", store.instance)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        try:
+            detached = self.run_command(
+                "limactl", "edit", "--tty=false", "--set", ".additionalDisks = []", store.instance
+            )
+            self.assertEqual(detached.returncode, 0, detached.stdout + detached.stderr)
+            started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", store.instance)
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.refresh_vm_port("store", store.instance)
+            root = self.as_user("root", "store", "whoami", agent=False)
+            self.assertEqual((root.returncode, root.stdout.strip()), (0, "root"), root.stderr)
+            mount = self.as_user("root", "store", "findmnt -n --mountpoint /home", agent=False)
+            self.assertNotEqual(mount.returncode, 0, mount.stdout + mount.stderr)
+            nfs = self.as_user("root", "store", "systemctl is-active nfs-server.service", agent=False)
+            self.assertNotEqual(nfs.stdout.strip(), "active", nfs.stdout + nfs.stderr)
+            exports = self.as_user(
+                "root",
+                "store",
+                "if test -e /proc/fs/nfsd/exports; then cat /proc/fs/nfsd/exports; fi",
+                agent=False,
+            )
+            self.assertEqual(exports.returncode, 0, exports.stdout + exports.stderr)
+            self.assertNotIn("/home", exports.stdout)
+        finally:
+            stopped = self.run_command("limactl", "stop", store.instance)
+            self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+            attached = self.run_command(
+                "limactl",
+                "edit",
+                "--tty=false",
+                "--set",
+                f'.additionalDisks = [{{"name": "{store.disks[0]}", "format": false}}]',
+                store.instance,
+            )
+            self.assertEqual(attached.returncode, 0, attached.stdout + attached.stderr)
+            started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", store.instance)
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.refresh_vm_port("store", store.instance)
+
+        content = self.wait_for_vm("store", "sudo -u alice cat /home/alice/disk-check")
+        self.assertEqual(content.strip(), "original-home")
+        mounted = self.ssh("store", "findmnt -n -o SOURCE --mountpoint /home")
+        self.assertEqual((mounted.returncode, mounted.stdout.strip()), (0, "/dev/vdb"), mounted.stderr)
+        nfs = self.wait_for_vm("store", "systemctl is-active nfs-server.service")
+        self.assertEqual(nfs.strip(), "active")
+        exports = self.ssh("store", "sudo exportfs -v")
+        self.assertEqual(exports.returncode, 0, exports.stdout + exports.stderr)
+        self.assertIn("/home", exports.stdout)
+        client_file = self.wait_for_vm("front", "sudo -u alice timeout 10 cat /home/alice/disk-check")
+        self.assertEqual(client_file.strip(), "original-home")
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimXfsQuotaTest(SimUsersBase):
     """XFS home and scratch disks work, and the home quota stops writes over NFS."""
 
@@ -2205,6 +2288,12 @@ echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/so
             "--ssh-config",
             str(admin_config),
         ]
+        with maintenance_lock.acquire("front", self.state / "ssh_config", None):
+            blocked = subprocess.run(
+                [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("maintenance", blocked.stderr)
         preview = subprocess.run(
             [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
         )
@@ -2364,6 +2453,93 @@ os.replace(replacement, target)
             self.assertEqual(login.returncode, 0, f"after package repair, {user}: {login.stdout}{login.stderr}")
         removed = on_vm("sudo", "rm", "-rf", ssh_update.BACKUP)
         self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimFrontUpdateTest(SimUsersBase):
+    """A confirmed care-group update on the Ubuntu 24.04 front node protects Slurm jobs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_front_update_on_vm(self) -> None:
+        cluster, config, _ = self.up_and_deploy()
+        baseline = r"""
+import os, pathlib, time
+fstab = pathlib.Path('/etc/fstab')
+lines = []
+for line in fstab.read_text().splitlines():
+    fields = line.split()
+    if len(fields) >= 4 and fields[1] == '/boot' and 'nofail' not in fields[3].split(','):
+        fields[3] += ',nofail'
+        line = '\t'.join(fields)
+    lines.append(line)
+fstab.write_text('\n'.join(lines) + '\n')
+boot_time = time.time() - float(pathlib.Path('/proc/uptime').read_text().split()[0])
+for path in pathlib.Path('/etc/netplan').glob('*.yaml'):
+    os.utime(path, (boot_time - 10, boot_time - 10))
+"""
+        safe = self.ssh("front", "sudo /usr/bin/python3 -c " + shlex.quote(baseline))
+        self.assertEqual(safe.returncode, 0, safe.stdout + safe.stderr)
+        setup = """
+set -eu
+sudo apt-get install -y dpkg-dev
+for version in 1 2; do
+  folder=/tmp/nanohpc-front-update-fixture-$version
+  mkdir -p "$folder/DEBIAN"
+  printf 'Package: nanohpc-front-update-fixture\nVersion: %s\nArchitecture: all\nMaintainer: nanoHPC test <test@example.invalid>\nDescription: disposable front update test\n' "$version" > "$folder/DEBIAN/control"
+  dpkg-deb --build "$folder" "/tmp/nanohpc-front-update-fixture_${version}_all.deb" >/dev/null
+done
+sudo dpkg -i /tmp/nanohpc-front-update-fixture_1_all.deb
+printf 'Package: *\nPin: release o=Ubuntu\nPin-Priority: -1\n' | sudo tee /etc/apt/preferences.d/nanohpc-front-update-fixture >/dev/null
+mkdir -p /tmp/nanohpc-front-update-repo
+cp /tmp/nanohpc-front-update-fixture_2_all.deb /tmp/nanohpc-front-update-repo/
+cd /tmp/nanohpc-front-update-repo
+dpkg-scanpackages . /dev/null > Packages
+gzip -kf Packages
+echo 'deb [trusted=yes] file:/tmp/nanohpc-front-update-repo ./' | sudo tee /etc/apt/sources.list.d/nanohpc-front-update-fixture.list >/dev/null
+"""
+        prepared = self.ssh("front", "bash -se", stdin=setup)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        admin_config = self.ssh_config_for("alice")
+        environment = {
+            **os.environ,
+            "SSH_AUTH_SOCK": self.agent_socket,
+            "XDG_STATE_HOME": str(self.keys / "state"),
+        }
+        command = [
+            "uv",
+            "run",
+            "nanohpc",
+            "update",
+            str(cluster),
+            "front",
+            "--include",
+            "extra",
+            "--ssh-config",
+            str(admin_config),
+        ]
+        preview = subprocess.run(
+            [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        self.assertIn("nanohpc-front-update-fixture=2", preview.stdout)
+        applied = subprocess.run(
+            [*command, "--confirm", "front"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        version = self.ssh("front", "dpkg-query -W -f='${Version}' nanohpc-front-update-fixture")
+        self.assertEqual(version.stdout.strip(), "2", version.stdout + version.stderr)
+        for name, machine in config["machines"].items():
+            if "compute" not in machine["roles"]:
+                continue
+            state = self.on_front(f"scontrol show node {name} -o")
+            self.assertNotIn("DRAIN", state, applied.stdout + applied.stderr)
+        for user in ("root", "alice"):
+            login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "front", "true")
+            self.assertEqual(login.returncode, 0, f"{user}: {login.stdout}{login.stderr}")
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
