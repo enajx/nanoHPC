@@ -17,6 +17,146 @@
     state: present
     install_recommends: false
 
+- name: Read the previous shared /home fstab entry
+  ansible.builtin.shell: awk '$2 == "/home" { print; exit }' /etc/fstab
+  register: home_fstab_before
+  changed_when: false
+  check_mode: false
+
+- name: Read the current shared /home options
+  ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /home
+  register: home_options_before
+  changed_when: false
+  check_mode: false
+  when: (home_mount.stdout | default('') | trim) != ''
+
+- name: Decide whether shared /home needs a fresh NFS mount
+  ansible.builtin.set_fact:
+    home_needs_new_mount: >-
+      {{ (home_mount.stdout | default('') | trim) != ''
+         and ((home_fstab_before.stdout.split() | length >= 4
+               and (home_old_options | difference(home_generic_options) | sort)
+                   != (['hard', 'timeo=600', 'retrans=2'] | sort))
+              or (['hard', 'timeo=600', 'retrans=2']
+                  | difference(home_options_before.stdout.split(',')) | length > 0)) }}
+  vars:
+    home_old_options: "{{ home_fstab_before.stdout.split()[3].split(',') if home_fstab_before.stdout.split() | length >= 4 else [] }}"
+    home_generic_options:
+      - rw
+      - ro
+      - suid
+      - nosuid
+      - dev
+      - nodev
+      - exec
+      - noexec
+      - auto
+      - noauto
+      - defaults
+      - _netdev
+      - nofail
+
+- name: Require a previous fstab entry for safe NFS mount recovery
+  ansible.builtin.assert:
+    that: home_fstab_before.stdout != ''
+    fail_msg: >-
+      {{ inventory_hostname }}: /home has no previous /etc/fstab entry to restore if the new NFS mount fails.
+      Add an entry for the current working mount before deploying again.
+    quiet: true
+  when: home_needs_new_mount
+
+- name: Check root SSH before changing shared /home fstab options
+  ansible.builtin.command: id -u
+  become: false
+  vars:
+    ansible_user: root
+    ansible_remote_tmp: /root/.ansible/tmp
+  register: home_root_ssh
+  changed_when: false
+  check_mode: false
+  failed_when: home_root_ssh.stdout != '0'
+  when: home_needs_new_mount
+
+- name: Decide whether this shared /home change needs a Slurm drain
+  ansible.builtin.set_fact:
+    home_compute_mount_change: "{{ home_needs_new_mount and inventory_hostname in groups['role_compute'] and not ansible_check_mode }}"
+    home_drain_set_by_run: false
+
+- name: Read the compute node's Slurm state before changing shared /home
+  ansible.builtin.command:
+    argv: [scontrol, show, node, "{{ inventory_hostname }}", -o]
+  delegate_to: "{{ groups['role_front'][0] }}"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_remote_tmp: /root/.ansible/tmp
+  register: home_slurm_before
+  changed_when: false
+  when: home_compute_mount_change
+
+- name: Decide whether the compute node is already drained
+  ansible.builtin.set_fact:
+    home_slurm_state_before: "{{ (home_slurm_before.stdout | regex_findall('(?:^|\\s)State=([^\\s]+)') | first) | default('') }}"
+  when: home_compute_mount_change
+
+- name: Record whether the compute node was already drained
+  ansible.builtin.set_fact:
+    home_was_drained: "{{ 'DRAIN' in home_slurm_state_before }}"
+  when: home_compute_mount_change
+
+- name: Require a usable Slurm state before changing shared /home
+  ansible.builtin.assert:
+    that:
+      - home_slurm_state_before != ''
+      - "'DOWN' not in home_slurm_state_before"
+      - "'FAIL' not in home_slurm_state_before"
+      - "'MAINT' not in home_slurm_state_before"
+      - "'RESPOND' not in home_slurm_state_before"
+      - "'UNKNOWN' not in home_slurm_state_before"
+    fail_msg: "{{ inventory_hostname }}: Slurm state is {{ home_slurm_state_before }}; resolve it before changing /home."
+    quiet: true
+  when: home_compute_mount_change
+
+- name: Drain the compute node before changing shared /home
+  ansible.builtin.command:
+    argv: [scontrol, update, "nodename={{ inventory_hostname }}", state=drain, reason=nanohpc-home-remount]
+  delegate_to: "{{ groups['role_front'][0] }}"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_remote_tmp: /root/.ansible/tmp
+  when: home_compute_mount_change and not home_was_drained
+
+- name: Record that this deploy drained the compute node
+  ansible.builtin.set_fact:
+    home_drain_set_by_run: true
+  when: home_compute_mount_change and not home_was_drained
+
+- name: Wait for the compute node's running jobs before changing shared /home
+  ansible.builtin.shell: |
+    while :; do
+      node=$(scontrol show node {{ inventory_hostname | quote }} -o) || exit 1
+      state=${node#* State=}
+      state=${state%% *}
+      case "$state" in
+        *DRAIN*) ;;
+        *) echo "{{ inventory_hostname }} is no longer drained: $state" >&2; exit 1 ;;
+      esac
+      case "$state" in
+        *DOWN*|*FAIL*|*MAINT*|*RESPOND*|*UNKNOWN*) echo "{{ inventory_hostname }} entered Slurm state $state" >&2; exit 1 ;;
+      esac
+      jobs=$(squeue -h -w {{ inventory_hostname | quote }} -o %i) || exit 1
+      [ -z "$jobs" ] && exit 0
+      sleep 60
+    done
+  delegate_to: "{{ groups['role_front'][0] }}"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_remote_tmp: /root/.ansible/tmp
+  changed_when: false
+  when: home_compute_mount_change
+
 - name: Mount the shared /home at boot
   ansible.builtin.lineinfile:
     path: /etc/fstab
@@ -33,8 +173,96 @@
 
 - name: Apply changed shared /home mount options now
   ansible.builtin.command: mount -o remount /home
-  when: home_fstab.changed and (home_mount.stdout | default('') | trim) != ''
+  when: home_fstab.changed and (home_mount.stdout | default('') | trim) != '' and not home_needs_new_mount
   changed_when: true
+
+- name: Apply changed NFS-specific shared /home options now
+  when: home_needs_new_mount and not ansible_check_mode
+  become: false
+  vars:
+    # The administrator's SSH session can itself hold /home busy. Root's home and keys are local.
+    ansible_user: root
+    ansible_remote_tmp: /root/.ansible/tmp
+  block:
+    - name: Recheck the drained compute node before unmounting shared /home
+      ansible.builtin.command:
+        argv: [scontrol, show, node, "{{ inventory_hostname }}", -o]
+      delegate_to: "{{ groups['role_front'][0] }}"
+      register: home_slurm_before_unmount
+      changed_when: false
+      when: home_compute_mount_change
+
+    - name: Require the compute node to remain drained before unmounting shared /home
+      ansible.builtin.assert:
+        that:
+          - "'DRAIN' in home_slurm_state_before_unmount"
+          - "'DOWN' not in home_slurm_state_before_unmount"
+          - "'FAIL' not in home_slurm_state_before_unmount"
+          - "'MAINT' not in home_slurm_state_before_unmount"
+          - "'RESPOND' not in home_slurm_state_before_unmount"
+          - "'UNKNOWN' not in home_slurm_state_before_unmount"
+          - "not home_drain_set_by_run or home_slurm_reason_before_unmount == 'nanohpc-home-remount'"
+        fail_msg: "{{ inventory_hostname }}: Slurm state or drain reason changed; /home was not unmounted. The node stays drained."
+        quiet: true
+      vars:
+        home_slurm_state_before_unmount: "{{ (home_slurm_before_unmount.stdout | regex_findall('(?:^|\\s)State=([^\\s]+)') | first) | default('') }}"
+        home_slurm_reason_before_unmount: "{{ (home_slurm_before_unmount.stdout | regex_findall('(?:^|\\s)Reason=([^\\s]+)') | first) | default('') }}"
+      when: home_compute_mount_change
+
+    - name: Confirm no compute jobs started before unmounting shared /home
+      ansible.builtin.command:
+        argv: [squeue, -h, -w, "{{ inventory_hostname }}", -o, "%i"]
+      delegate_to: "{{ groups['role_front'][0] }}"
+      register: home_jobs_before_unmount
+      changed_when: false
+      failed_when: home_jobs_before_unmount.rc != 0 or (home_jobs_before_unmount.stdout | trim) != ''
+      when: home_compute_mount_change
+
+    - name: Unmount idle shared /home
+      ansible.builtin.command: umount /home
+      args:
+        chdir: /
+      changed_when: true
+
+    - name: Mount shared /home with the new NFS options
+      ansible.builtin.command: mount /home
+      args:
+        chdir: /
+      changed_when: true
+  rescue:
+    - name: Restore the previous shared /home fstab entry
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '^\S+\s+/home\s'
+        line: "{{ home_fstab_before.stdout }}"
+      when: home_fstab_before.stdout != ''
+
+    - name: Remove the new shared /home fstab entry when there was none before
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '^\S+\s+/home\s'
+        state: absent
+      when: home_fstab_before.stdout == ''
+
+    - name: Check whether the previous shared /home is still mounted
+      ansible.builtin.command: findmnt -n -o SOURCE --mountpoint /home
+      register: home_after_failed_mount
+      changed_when: false
+      failed_when: false
+
+    - name: Restore the previous shared /home mount when needed
+      ansible.builtin.command: mount /home
+      args:
+        chdir: /
+      when: home_after_failed_mount.stdout == '' and home_fstab_before.stdout != ''
+      changed_when: true
+
+    - name: Explain why shared /home kept its previous NFS options
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }}: /home needs a fresh NFS mount to apply its changed options.
+          {{ ansible_failed_result.stderr | default(ansible_failed_result.msg) }}
+          The previous fstab entry was restored. Stop jobs and logins using /home, then deploy again.
 
 - name: Check that /home is the shared one
   ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /home
@@ -42,12 +270,57 @@
   changed_when: false
   check_mode: false
   failed_when: home_now.stdout.split() != [nanohpc.home.server_address ~ ':/home', 'nfs4']
-  when: not (ansible_check_mode and (home_fstab is changed or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'))  # dry run: not mounted yet
+  when: not (ansible_check_mode and (home_fstab is changed or home_needs_new_mount or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'))  # dry run: not mounted yet
 
 - name: Check that shared /home has the required mount options
   ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /home
   register: home_options_now
   changed_when: false
   check_mode: false
-  failed_when: "'nodev' not in home_options_now.stdout.split(',') or 'nosuid' not in home_options_now.stdout.split(',')"
-  when: not (ansible_check_mode and (home_fstab is changed or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'))
+  failed_when: "(['nodev', 'nosuid', 'hard', 'timeo=600', 'retrans=2'] | difference(home_options_now.stdout.split(',')) | length) > 0"
+  when: not (ansible_check_mode and (home_fstab is changed or home_needs_new_mount or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'))
+
+- name: Check that shared /home is accessible after its NFS option change
+  ansible.builtin.command:
+    argv: [timeout, "30", stat, /home]
+  changed_when: false
+  when: home_needs_new_mount and not ansible_check_mode
+
+- name: Recheck the compute node's drain before returning it to Slurm
+  ansible.builtin.command:
+    argv: [scontrol, show, node, "{{ inventory_hostname }}", -o]
+  delegate_to: "{{ groups['role_front'][0] }}"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_remote_tmp: /root/.ansible/tmp
+  register: home_slurm_before_resume
+  changed_when: false
+  when: home_drain_set_by_run
+
+- name: Require this deploy's Slurm drain before resuming the compute node
+  ansible.builtin.assert:
+    that:
+      - "'DRAIN' in home_slurm_state_before_resume"
+      - "'DOWN' not in home_slurm_state_before_resume"
+      - "'FAIL' not in home_slurm_state_before_resume"
+      - "'MAINT' not in home_slurm_state_before_resume"
+      - "'RESPOND' not in home_slurm_state_before_resume"
+      - "'UNKNOWN' not in home_slurm_state_before_resume"
+      - home_slurm_reason_before_resume == 'nanohpc-home-remount'
+    fail_msg: "{{ inventory_hostname }}: Slurm state or drain reason changed; the node stays drained."
+    quiet: true
+  vars:
+    home_slurm_state_before_resume: "{{ (home_slurm_before_resume.stdout | regex_findall('(?:^|\\s)State=([^\\s]+)') | first) | default('') }}"
+    home_slurm_reason_before_resume: "{{ (home_slurm_before_resume.stdout | regex_findall('(?:^|\\s)Reason=([^\\s]+)') | first) | default('') }}"
+  when: home_drain_set_by_run
+
+- name: Resume the compute node after the shared /home checks pass
+  ansible.builtin.command:
+    argv: [scontrol, update, "nodename={{ inventory_hostname }}", state=resume]
+  delegate_to: "{{ groups['role_front'][0] }}"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_remote_tmp: /root/.ansible/tmp
+  when: home_drain_set_by_run

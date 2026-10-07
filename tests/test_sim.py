@@ -2546,6 +2546,222 @@ class SimHomeOnStorageTest(SimUsersBase):
         self.state = ROOT / ".nanohpc-sim" / "home-on-storage"
         super().setUp()
 
+    def test_nfs_option_change_waits_for_compute_job(self) -> None:
+        """A compute node drains before /home switches and returns after its job ends."""
+        self.up_and_deploy()
+        machine = "gpu4"
+        admin_ssh = self.ssh_config_for("alice")
+        if "DRAIN" in self.on_front(f"sudo scontrol show node {machine} -o"):
+            self.on_front(f"sudo scontrol update nodename={machine} state=resume")
+        self.addCleanup(self.ssh, "front", f"sudo scontrol update nodename={machine} state=resume")
+        old = self.ssh(
+            machine,
+            "cd / && sudo sed -i 's/timeo=600/timeo=50/' /etc/fstab && sudo umount /home && sudo mount /home",
+        )
+        self.assertEqual(old.returncode, 0, old.stdout + old.stderr)
+        self.assertIn("timeo=50", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+
+        # This job keeps /home busy until Slurm marks its machine as drained.
+        script = (
+            "cd /home/alice; "
+            "while ! scontrol show node gpu4 -o | grep -Eq 'State=[^ ]*DRAIN'; do sleep 1; done; "
+            "sleep 5"
+        )
+        job = self.on_front(
+            "cd /tmp && sudo -u alice sbatch --parsable -p main -w gpu4 -t 20 -o /dev/null --wrap "
+            + shlex.quote(script)
+        ).strip()
+        self.addCleanup(self.ssh, "front", f"sudo scancel {job}")
+        for _ in range(30):
+            state = self.on_front(f"sudo squeue -h -j {job} -o '%T %N'").strip()
+            if state == "RUNNING gpu4":
+                break
+            time.sleep(2)
+        self.assertEqual(state, "RUNNING gpu4")
+
+        changed = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertEqual(changed.returncode, 0, self.failure(changed))
+        self.assertEqual(self.finished_job(job), ("COMPLETED", machine))
+        self.assertIn("timeo=600", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertNotIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
+
+    def test_nfs_option_change_uses_new_mount(self) -> None:
+        """A deploy applies an NFS-specific /home option without rebooting the client."""
+        self.up_and_deploy()
+        machine = "gpu4"
+        admin_ssh = self.ssh_config_for("alice")
+        self.addCleanup(self.ssh, "front", f"sudo scontrol update nodename={machine} state=resume")
+        self.on_front("sudo -u alice sh -c 'echo before > /home/alice/check'")
+        boot = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id").stdout.strip()
+        old = self.ssh(
+            machine,
+            "cd / && sudo sed -i 's/timeo=600/timeo=50/' /etc/fstab && sudo umount /home && sudo mount /home",
+        )
+        self.assertEqual(old.returncode, 0, old.stdout + old.stderr)
+        options = self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout.strip().split(",")
+        self.assertIn("timeo=50", options)
+        before = self.ssh(machine, "cat /etc/fstab; findmnt -n -o OPTIONS --mountpoint /home").stdout
+
+        dry = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--dry-run",
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertEqual(dry.returncode, 0, self.failure(dry))
+        self.assertEqual(self.ssh(machine, "cat /etc/fstab; findmnt -n -o OPTIONS --mountpoint /home").stdout, before)
+
+        result = self.deploy(admin_ssh, agent=True)
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        options = self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout.strip().split(",")
+        self.assertIn("timeo=600", options)
+        self.assertIn("nosuid", options)
+        self.assertIn("nodev", options)
+        self.assertEqual(self.ssh(machine, "cat /proc/sys/kernel/random/boot_id").stdout.strip(), boot)
+        self.assertEqual(self.ssh(machine, "sudo -u alice cat /home/alice/check").returncode, 0)
+
+        # A busy /home stays mounted with the old options. Once the user process exits,
+        # a later deploy must retry even if the previous run touched /etc/fstab.
+        old = self.ssh(
+            machine,
+            "cd / && sudo sed -i 's/timeo=600/timeo=50/' /etc/fstab && sudo umount /home && sudo mount /home",
+        )
+        self.assertEqual(old.returncode, 0, old.stdout + old.stderr)
+        held = self.ssh(
+            machine,
+            "sudo systemd-run --unit=nanohpc-home-busy --property=WorkingDirectory=/home/alice /bin/sleep 1800",
+        )
+        self.assertEqual(held.returncode, 0, held.stdout + held.stderr)
+        self.addCleanup(self.ssh, machine, "sudo systemctl stop nanohpc-home-busy.service")
+        for _ in range(20):
+            holder = self.ssh(
+                machine,
+                "sudo readlink /proc/$(systemctl show -p MainPID --value nanohpc-home-busy.service)/cwd",
+            )
+            if holder.stdout.strip() == "/home/alice":
+                break
+            time.sleep(0.5)
+        self.assertEqual(holder.stdout.strip(), "/home/alice", holder.stdout + holder.stderr)
+        busy = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertNotEqual(busy.returncode, 0, self.failure(busy))
+        self.assertIn("needs a fresh NFS mount", busy.stdout)
+        self.assertIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
+        self.assertIn("timeo=50", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertIn("timeo=50", self.ssh(machine, "awk '$2 == \"/home\" { print }' /etc/fstab").stdout)
+        self.assertEqual(self.ssh(machine, "sudo systemctl stop nanohpc-home-busy.service").returncode, 0)
+
+        retried = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertEqual(retried.returncode, 0, self.failure(retried))
+        self.assertIn("timeo=600", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
+
+        # Fail the new mount once. The rescue must restore the old fstab entry and mount.
+        old = self.ssh(
+            machine,
+            "cd / && sudo sed -i 's/timeo=600/timeo=50/' /etc/fstab && sudo umount /home && sudo mount /home",
+        )
+        self.assertEqual(old.returncode, 0, old.stdout + old.stderr)
+        wrapper = """#!/bin/sh
+if [ "$1" = /home ] && [ -e /tmp/nanohpc-fail-new-home-mount ] &&
+   grep -q ' /home nfs4 .*timeo=600' /etc/fstab; then
+    rm /tmp/nanohpc-fail-new-home-mount
+    echo 'injected new mount failure' >&2
+    exit 42
+fi
+exec /usr/bin/mount "$@"
+"""
+        installed = self.ssh(machine, "sudo tee /usr/local/bin/mount >/dev/null", stdin=wrapper)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.addCleanup(self.ssh, machine, "sudo rm -f /usr/local/bin/mount /tmp/nanohpc-fail-new-home-mount")
+        prepared = self.ssh(
+            machine, "sudo chmod 755 /usr/local/bin/mount && sudo touch /tmp/nanohpc-fail-new-home-mount"
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        self.assertEqual(self.ssh(machine, "sudo sh -c 'command -v mount'").stdout.strip(), "/usr/local/bin/mount")
+        failed_mount = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertNotEqual(failed_mount.returncode, 0, self.failure(failed_mount))
+        self.assertIn("injected new mount failure", failed_mount.stdout)
+        self.assertIn("timeo=50", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertIn("timeo=50", self.ssh(machine, "awk '$2 == \"/home\" { print }' /etc/fstab").stdout)
+        self.assertIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
+
+        self.assertEqual(self.ssh(machine, "sudo rm /usr/local/bin/mount").returncode, 0)
+        recovered = self.run_command(
+            "uv",
+            "run",
+            "nanohpc",
+            "sim",
+            "deploy",
+            str(self.sim),
+            "--only",
+            "node",
+            machine,
+            "--ssh-config",
+            str(admin_ssh),
+            agent=True,
+        )
+        self.assertEqual(recovered.returncode, 0, self.failure(recovered))
+        self.assertIn("timeo=600", self.ssh(machine, "findmnt -n -o OPTIONS --mountpoint /home").stdout)
+        self.assertIn("DRAIN", self.on_front(f"sudo scontrol show node {machine} -o"))
+
     def test_home_on_storage_machine(self) -> None:
         # A machine whose local /home holds data stops before the shared /home could hide it.
         self.remove_at_end()
