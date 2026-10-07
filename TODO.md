@@ -100,9 +100,10 @@ flowchart LR
 - [x] A confirmed `nanohpc restart` of one compute machine drains, waits for jobs, checks, reboots, and releases it only after a Slurm test job passes; failures leave it drained. See [DONE.md](md/DONE.md).
 - [x] `nanohpc update-report CLUSTER_YML` reports waiting updates on every machine from saved APT lists, including the lists' age, with each package in one built-in care, security, extra-source, or rest group. It changes nothing and fails clearly when any machine cannot be checked. See [DONE.md](md/DONE.md).
 - [x] A confirmed `nanohpc update` of one compute machine uses a matching dry run, named care groups, SSH undo protection, and checks before resuming or awaiting `nanohpc restart`. See [DONE.md](md/DONE.md).
-- [ ] A separate front-node update procedure allows ordinary updates while jobs run, and named care-group updates only with an empty queue; agree its remaining safety and recovery behavior before building it.
+- [ ] `nanohpc update` accepts the confirmed front node with a matching dry run. Ordinary updates can run while jobs run; named care groups start with an empty queue and pause new job starts while submissions wait. It checks access, Slurm, `/home`, and front-node services afterwards, restores scheduling only after success, and reports when a separate restart is needed. See [temporary plan](md/plan-front-update-safety.md).
+- [ ] Manual and automatic deploys, the timer and webhook, updates, and compute restarts cannot overlap on the same cluster; a stopped operation releases its lock so a later run can proceed.
 - [ ] The default configuration enables automatic security updates on every machine after any backlog is installed through the update procedure. Automatic updates never restart a machine or install NVIDIA/CUDA packages; driver changes need the administrator's confirmation.
-- [ ] A machine that serves `/home` from a local disk does not export an empty `/home` if that disk fails to mount at boot, while administrators still have a recovery path over SSH. Agree on the exact behavior with the user alongside the front-node update procedure.
+- [x] A home server with a missing local `/home` disk boots to root SSH without exporting an empty `/home`; the original data and NFS access return when the disk is restored. See [DONE.md](md/DONE.md).
 - [x] Admins have direct key-only root login on every machine for recovery, with their keys from `cluster.yml` on local disk; a dry run stops before replacing other root keys that would lose access. See [DONE.md](md/DONE.md).
 
 ### Monitoring and website

@@ -92,7 +92,7 @@
     ansible_remote_tmp: /root/.ansible/tmp
   register: home_slurm_before
   changed_when: false
-  when: home_compute_mount_change
+  when: home_compute_mount_change and not ansible_check_mode
 
 - name: Decide whether the compute node is already drained
   ansible.builtin.set_fact:
@@ -155,7 +155,7 @@
     ansible_user: root
     ansible_remote_tmp: /root/.ansible/tmp
   changed_when: false
-  when: home_compute_mount_change
+  when: home_compute_mount_change and not ansible_check_mode
 
 - name: Mount the shared /home at boot
   ansible.builtin.lineinfile:
@@ -296,7 +296,7 @@
     ansible_remote_tmp: /root/.ansible/tmp
   register: home_slurm_before_resume
   changed_when: false
-  when: home_drain_set_by_run
+  when: home_drain_set_by_run and not ansible_check_mode
 
 - name: Require this deploy's Slurm drain before resuming the compute node
   ansible.builtin.assert:

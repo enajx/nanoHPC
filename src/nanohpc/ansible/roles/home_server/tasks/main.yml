@@ -106,7 +106,7 @@
       ansible.builtin.lineinfile:
         path: /etc/fstab
         regexp: '^\S+\s+/home\s'
-        line: "UUID={{ home_fs.UUID }} /home {{ home_fs.TYPE }} defaults,nosuid,nodev,{{ 'usrquota' if home_fs.TYPE == 'ext4' else 'uquota' }} 0 2"
+        line: "UUID={{ home_fs.UUID }} /home {{ home_fs.TYPE }} defaults,nofail,x-systemd.device-timeout=30s,nosuid,nodev,{{ 'usrquota' if home_fs.TYPE == 'ext4' else 'uquota' }} 0 2"
         backup: true
       register: home_fstab
 
@@ -270,6 +270,38 @@
 
 - name: The users' home folders and quotas
   ansible.builtin.import_tasks: users.yml
+
+# A missing /home disk must not prevent root SSH at boot or let NFS export
+# the empty mount-point directory. The NFS service must require the mount.
+- name: Create the NFS unit override folder
+  ansible.builtin.file:
+    path: /etc/systemd/system/nfs-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Require the home mount before NFS starts
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nfs-server.service.d/nanohpc-home.conf
+    content: "[Unit]\nRequiresMountsFor=/home\n"
+    owner: root
+    group: root
+    mode: "0644"
+  register: home_nfs_unit
+
+- name: Reload the NFS unit after changing its home mount requirement
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: home_nfs_unit.changed and not ansible_check_mode
+
+- name: Check that NFS requires the home mount
+  ansible.builtin.command: systemctl show nfs-server.service --property=Requires --value
+  register: home_nfs_requires
+  changed_when: false
+  check_mode: false
+  failed_when: "'home.mount' not in home_nfs_requires.stdout.split()"
+  when: not ansible_check_mode
 
 - name: Run the NFS server
   ansible.builtin.service:

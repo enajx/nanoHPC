@@ -496,6 +496,17 @@ class SimUsersBase(unittest.TestCase):
         self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
         started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", instance)
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.refresh_vm_port(machine, instance)
+        for _ in range(24):
+            after = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
+            if after.returncode == 0:
+                break
+            time.sleep(5)
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertNotEqual(after.stdout.strip(), before.stdout.strip(), machine)
+
+    def refresh_vm_port(self, machine: str, instance: str) -> None:
+        """Update the test SSH config after Lima assigns a new forwarded port."""
         # Lima assigns a new forwarded SSH port when a VM starts again.
         listing = self.run_command("limactl", "list", "--format", "{{.Name}} {{.SSHLocalPort}}")
         self.assertEqual(listing.returncode, 0, listing.stdout + listing.stderr)
@@ -512,13 +523,6 @@ class SimUsersBase(unittest.TestCase):
                 replaced = True
         self.assertTrue(replaced, f"{machine} is missing from {config}")
         config.write_text("\n".join(lines) + "\n")
-        for _ in range(24):
-            after = self.ssh(machine, "cat /proc/sys/kernel/random/boot_id")
-            if after.returncode == 0:
-                break
-            time.sleep(5)
-        self.assertEqual(after.returncode, 0, after.stderr)
-        self.assertNotEqual(after.stdout.strip(), before.stdout.strip(), machine)
 
     def wait_for_vm(self, machine: str, command: str) -> str:
         """Wait for a boot service or mount to become usable, then return its output."""
@@ -1999,6 +2003,85 @@ class SimRebootTest(SimUsersBase):
                         "&& echo after > /scratch/alice/nanohpc-reboot-check "
                         '&& test "$(cat /scratch/alice/nanohpc-reboot-check)" = after\'',
                     )
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimMissingHomeDiskTest(SimUsersBase):
+    """A missing local /home disk leaves root SSH available without exporting an empty directory."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "home-on-storage.yml"
+        self.state = ROOT / ".nanohpc-sim" / "home-on-storage"
+        super().setUp()
+
+    def test_missing_disk_boot_and_restored_export(self) -> None:
+        """Remove the storage VM's home disk for one boot, then restore it with its data."""
+        self.up_and_deploy()
+        store = next(vm for vm in plan_of(self.sim).vms if vm.machine == "store")
+        self.assertEqual(len(store.disks), 1)
+        self.assertEqual(store.home_device, "/dev/vdb")
+        marker = self.ssh("store", "sudo -u alice sh -c 'echo original-home > /home/alice/disk-check'")
+        self.assertEqual(marker.returncode, 0, marker.stdout + marker.stderr)
+
+        # Check the boot settings before removing the disk, so a broken test run never waits on a blocked boot.
+        fstab = self.ssh("store", "awk '$2 == \"/home\" {print $4}' /etc/fstab")
+        self.assertEqual(fstab.returncode, 0, fstab.stderr)
+        self.assertIn("nofail", fstab.stdout.strip().split(","))
+        requires = self.ssh("store", "systemctl show nfs-server.service --property=Requires --value")
+        self.assertEqual(requires.returncode, 0, requires.stderr)
+        self.assertIn("home.mount", requires.stdout.split())
+
+        stopped = self.run_command("limactl", "stop", store.instance)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        try:
+            detached = self.run_command(
+                "limactl", "edit", "--tty=false", "--set", ".additionalDisks = []", store.instance
+            )
+            self.assertEqual(detached.returncode, 0, detached.stdout + detached.stderr)
+            started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", store.instance)
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.refresh_vm_port("store", store.instance)
+            root = self.as_user("root", "store", "whoami", agent=False)
+            self.assertEqual((root.returncode, root.stdout.strip()), (0, "root"), root.stderr)
+            mount = self.as_user("root", "store", "findmnt -n --mountpoint /home", agent=False)
+            self.assertNotEqual(mount.returncode, 0, mount.stdout + mount.stderr)
+            nfs = self.as_user("root", "store", "systemctl is-active nfs-server.service", agent=False)
+            self.assertNotEqual(nfs.stdout.strip(), "active", nfs.stdout + nfs.stderr)
+            exports = self.as_user(
+                "root",
+                "store",
+                "if test -e /proc/fs/nfsd/exports; then cat /proc/fs/nfsd/exports; fi",
+                agent=False,
+            )
+            self.assertEqual(exports.returncode, 0, exports.stdout + exports.stderr)
+            self.assertNotIn("/home", exports.stdout)
+        finally:
+            stopped = self.run_command("limactl", "stop", store.instance)
+            self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+            attached = self.run_command(
+                "limactl",
+                "edit",
+                "--tty=false",
+                "--set",
+                f'.additionalDisks = [{{"name": "{store.disks[0]}", "format": false}}]',
+                store.instance,
+            )
+            self.assertEqual(attached.returncode, 0, attached.stdout + attached.stderr)
+            started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", store.instance)
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.refresh_vm_port("store", store.instance)
+
+        content = self.wait_for_vm("store", "sudo -u alice cat /home/alice/disk-check")
+        self.assertEqual(content.strip(), "original-home")
+        mounted = self.ssh("store", "findmnt -n -o SOURCE --mountpoint /home")
+        self.assertEqual((mounted.returncode, mounted.stdout.strip()), (0, "/dev/vdb"), mounted.stderr)
+        nfs = self.wait_for_vm("store", "systemctl is-active nfs-server.service")
+        self.assertEqual(nfs.strip(), "active")
+        exports = self.ssh("store", "sudo exportfs -v")
+        self.assertEqual(exports.returncode, 0, exports.stdout + exports.stderr)
+        self.assertIn("/home", exports.stdout)
+        client_file = self.wait_for_vm("front", "sudo -u alice timeout 10 cat /home/alice/disk-check")
+        self.assertEqual(client_file.strip(), "original-home")
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

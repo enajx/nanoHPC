@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-07: missing `/home` disk recovery
+
+- A separate local `/home` disk has `nofail` and a 30-second device wait at boot, so the home server reaches root SSH if the disk is absent. NFS requires the `/home` mount before it starts, so it does not export the empty mount point. Restoring the disk and rebooting restores the original files and NFS client access.
+- The Ubuntu 24.04 `SimMissingHomeDiskTest` failed before the change and passed after it, including a client read after restoration. `SimRebootTest` passed for the normal storage, front, and compute reboots. The check-mode test passed after making the existing home-client dry-run skip conditions explicit. The VMs were removed after testing. A separate agent reviewed the change and found no remaining issue.
+- Files: `src/nanohpc/ansible/roles/{home_server,home_client}/tasks/main.yml`, `tests/test_sim.py`, `md/testing.md`.
+
 ## 2026-10-06: full fix-uid file preview
 
 - `nanohpc fix-uid` lists every local file it would re-own, escapes unusual names, and rechecks the plan before applying. The ownership step receives only the reviewed paths. The process check covers both real and effective UID.
