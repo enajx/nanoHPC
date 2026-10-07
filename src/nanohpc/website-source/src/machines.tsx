@@ -26,7 +26,7 @@ export type Machine = { name: string; role: string; building?: string | null; pa
 export function SpeedBoxes({ node, stale, demo, named }: { node: Machine; stale: boolean; demo: boolean; named: boolean }) {
   const speeds = stale ? null : node.specs?.speeds
   if (demo) {
-    const bits = node.role === 'Compute' && speeds?.home_small_write != null ? `${Math.round(speeds.home_small_write * 8 / 1_000_000_000)} Gb/s` : '—'
+    const bits = speeds?.home_small_write != null ? `${Math.round(speeds.home_small_write * 8 / 1_000_000_000)} Gb/s` : '—'
     return <MachineLabel node={node} topic="speed" stale={stale} demo={true} className={bits === '—' ? 'state-unknown' : 'speed-good'} label="Link speed">{bits}</MachineLabel>
   }
   const show = (value: number | null | undefined) => value == null ? 'Unknown' : `${Math.round(value)} MB/s`

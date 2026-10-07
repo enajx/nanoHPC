@@ -297,3 +297,8 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - Deploy drains each affected compute node separately, waits without a fixed limit for its running Slurm jobs, and checks that the node stays drained and healthy before unmounting. It resumes only a node this deploy drained, after the new `/home` source, options, and access checks pass. An earlier drain is preserved. After a drain succeeds, Slurm errors, an unsafe node state, or a mount failure leave the node drained. Other processes or logins that keep `/home` busy make deploy fail without forcing an unmount.
 - If the new mount fails after unmounting, deploy restores the previous fstab entry and attempts the previous mount again. Ubuntu 24.04 VM tests covered a running Slurm job, a busy mount, an injected new-mount failure and successful retry, the old mount's restoration, the existing storage remount checks from fresh VMs, and the root-disk `/home` bind-mount regression. A separate agent reviewed the Slurm and recovery paths.
 - Files: `src/nanohpc/ansible/roles/home_client/tasks/main.yml`, `tests/test_sim.py`, `md/testing.md`.
+
+## 2026-10-07: front-node link speed in the public demo
+
+- The public demo's Machines table shows `1 Gb/s` Link Speed for the front node as well as the five compute machines. The fictional speed is kept in the demo data; deployed clusters continue to show measured speeds.
+- The built demo passed its focused Playwright browser test. Files: `src/nanohpc/website-source/{scripts/build-demo.mjs,src/machines.tsx,tests/demo.spec.ts}`, `src/nanohpc/website/`.

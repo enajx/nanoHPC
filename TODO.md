@@ -26,7 +26,7 @@ flowchart LR
   S --> N[Add node + redeploy]:::queued
   W --> DEMO[Public demo build]:::done
   DEMO --> DP[Publish demo]:::done
-  DP --> WF[Website follow-ups]:::done
+  DP --> WF[Selected website follow-ups]:::done
   WF --> R[Release v0.1]:::queued
   BK --> R
   WZ --> R
@@ -118,6 +118,9 @@ flowchart LR
 - [x] The status collector writes the website snapshot every 30 seconds.
 - [x] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
 - [ ] Reduce the size of things on the website's Overview page so they fit without scrolling.
+- [ ] The Overview Machines card shows the Cluster Map by default and has a button to switch between that map and the current machine table inside the card.
+- [ ] The Machines tab's Machines card has a `Node type` column showing each machine's configured role, including front, compute, and storage nodes.
+- [x] In the public demo, the front node shows `1 Gb/s` Link Speed in the Machines tab's machine table, matching the compute nodes. See [DONE.md](md/DONE.md).
 - [x] Cluster name, logo, login address, and the user guide on the website come from the configuration.
 - [x] The website is served by its own nginx over HTTPS, with a Let's Encrypt certificate or the administrator's own certificate.
 - [x] The website is served under a configurable path (default `/cluster/`), with Grafana under it.

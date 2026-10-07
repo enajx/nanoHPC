@@ -47,7 +47,7 @@ test('the four demo dashboards embed fixed Grafana snapshots', async ({ page }) 
   }
 })
 
-test('Machines table shows compute states, home speeds, and GPU availability', async ({ page }) => {
+test('Machines table shows machine states, demo link speeds, and GPU availability', async ({ page }) => {
   await page.goto(`${origin}${prefix}`)
   await expect(page.locator('.machine-list table thead th').nth(3)).toHaveText('Link Speed')
   await expect(page.locator('.machine-list table tbody tr td:nth-child(4)')).toHaveText(Array(5).fill('1 Gb/s'))
@@ -58,7 +58,7 @@ test('Machines table shows compute states, home speeds, and GPU availability', a
   await expect(table.locator('tbody tr th a')).toHaveText(['front', 'H100', 'H200', 'B200', 'Threadripper', 'DGX'])
   await expect(table.getByRole('link', { name: 'front', exact: true })).toHaveCount(1)
   await expect(table.locator('tbody tr').filter({ hasText: 'Threadripper' })).toContainText('Idle')
-  await expect(table.locator('tbody tr td:nth-child(4)')).toHaveText(['—', ...Array(5).fill('1 Gb/s')])
+  await expect(table.locator('tbody tr td:nth-child(4)')).toHaveText(Array(6).fill('1 Gb/s'))
   await expect(table.getByRole('link', { name: 'B200', exact: true })).toHaveCount(1)
 })
 
