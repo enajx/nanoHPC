@@ -107,7 +107,7 @@ flowchart LR
 - [x] A confirmed `nanohpc update` of one compute machine uses a matching dry run, named care groups, SSH undo protection, and checks before resuming or awaiting `nanohpc restart`. See [DONE.md](md/DONE.md).
 - [x] `nanohpc update` accepts the confirmed front node, checks it after installation, and pauses new job starts during named care-group updates. See [DONE.md](md/DONE.md).
 - [x] Manual and automatic deploys, the timer and webhook, updates, and compute restarts share a cluster maintenance lock. See [DONE.md](md/DONE.md).
-- [ ] The default configuration enables automatic security updates on every machine after any backlog is installed through the update procedure. Automatic updates never restart a machine or install NVIDIA/CUDA packages; driver changes need the administrator's confirmation.
+- [x] The default configuration enables automatic security updates on every machine after the confirmed update procedure clears its backlog, without automatic restarts or NVIDIA/CUDA upgrades. See [DONE.md](md/DONE.md).
 - [x] A home server with a missing local `/home` disk boots to root SSH without exporting an empty `/home`; the original data and NFS access return when the disk is restored. See [DONE.md](md/DONE.md).
 - [x] Admins have direct key-only root login on every machine for recovery, with their keys from `cluster.yml` on local disk; a dry run stops before replacing other root keys that would lose access. See [DONE.md](md/DONE.md).
 

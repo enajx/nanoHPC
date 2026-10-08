@@ -34,6 +34,10 @@
     group: root
     mode: "0644"
 
+- name: Set up gated automatic security updates
+  ansible.builtin.import_role:
+    name: auto_updates
+
 # Also in the dry run, which needs the lists to know what the package tasks would install. The lists are
 # apt's copy of what the package sources offer: refreshing them changes no installed package or setting.
 - name: Refresh the package lists

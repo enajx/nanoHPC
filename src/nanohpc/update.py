@@ -1,4 +1,4 @@
-"""Safely install approved updates on one confirmed compute or front machine."""
+"""Safely install approved updates on one confirmed cluster machine."""
 
 import hashlib
 import json
@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from nanohpc import maintenance_lock, restart, restart_check, ssh_update
+from nanohpc import auto_updates, maintenance_lock, restart, restart_check, ssh_update
 from nanohpc.config import load_config
 from nanohpc.probe import run_remote, ssh_failure
 from nanohpc.render import front_machine, gpu_count, home_server
@@ -18,7 +18,7 @@ from nanohpc.update_report import CARE_GROUPS, group_of
 
 SNAPSHOT_PROGRAM = r"""
 # nanohpc-update-snapshot
-import apt, hashlib, json
+import apt, apt_pkg, hashlib, json
 from pathlib import Path
 
 root = Path('/var/lib/apt/lists')
@@ -32,7 +32,14 @@ for path in files:
         while block := source.read(1024 * 1024):
             digest.update(block)
 packages = []
+security_backlog = []
 for package in apt.Cache():
+    if package.installed and any(
+        apt_pkg.version_compare(version.version, package.installed.version) > 0
+        and any(origin.origin == 'Ubuntu' and origin.archive.endswith('-security') for origin in version.origins)
+        for version in package.versions
+    ):
+        security_backlog.append(package.name)
     if not package.is_upgradable:
         continue
     origins = package.candidate.origins
@@ -42,7 +49,7 @@ for package in apt.Cache():
                                      for origin in origins)})
 print(json.dumps({'lists_hash': digest.hexdigest(),
                   'dpkg_hash': hashlib.sha256(Path('/var/lib/dpkg/status').read_bytes()).hexdigest(),
-                  'packages': packages}))
+                  'packages': packages, 'security_backlog': security_backlog}))
 """
 
 
@@ -76,6 +83,10 @@ def read_snapshot(machine: str, ssh_config: Path | None) -> dict[str, Any]:
             raise TypeError("invalid state hashes")
         if not isinstance(snapshot["packages"], list):
             raise TypeError("invalid package list")
+        if not isinstance(snapshot["security_backlog"], list) or not all(
+            isinstance(name, str) for name in snapshot["security_backlog"]
+        ):
+            raise TypeError("invalid security backlog")
         for package in snapshot["packages"]:
             if (
                 not isinstance(package["name"], str)
@@ -254,6 +265,22 @@ def failed_units(machine: str, ssh_config: Path | None) -> set[str]:
     return units
 
 
+def enable_security_updates(machine: str, ssh_config: Path | None) -> None:
+    """Enable daily security installs only after this machine has no eligible security backlog."""
+    waiting = auto_updates.waiting_security(read_snapshot(machine, ssh_config)["security_backlog"])
+    if waiting:
+        print(
+            f"{machine}: automatic security updates were not enabled by this update; install waiting security packages with"
+            f" `nanohpc update` first: {', '.join(waiting)}"
+        )
+        return
+    try:
+        auto_updates.activate(machine, ssh_config)
+    except RuntimeError as failure:
+        raise UpdateError(str(failure)) from failure
+    print(f"{machine}: automatic security updates enabled")
+
+
 def install(machine: str, ssh_config: Path | None, packages: list[list[str]], include: list[str]) -> None:
     """Install only the exact approved versions, keeping existing settings files."""
     arguments = [
@@ -327,8 +354,10 @@ def apply(config: dict[str, Any], path: Path, machine: str, include: list[str], 
         with maintenance_lock.acquire(front, ssh_config, None) as lock, maintenance_lock.active(lock):
             if machine == front:
                 result = _apply_front_locked(config, path, machine, include, ssh_config, lock, front_drained)
-            else:
+            elif "compute" in config["machines"][machine]["roles"]:
                 result = _apply_locked(config, path, machine, include, ssh_config, front, lock, progress)
+            else:
+                result = _apply_other_locked(config, path, machine, include, ssh_config, front, lock, front_drained)
             lock.check()
             return result
     except maintenance_lock.MaintenanceLockLost as failure:
@@ -363,6 +392,7 @@ def _apply_locked(
     if not packages:
         state_path(path, machine).unlink()
         print(f"{machine}: no approved packages to install")
+        enable_security_updates(machine, ssh_config)
         return 0
     print(f"{machine}: approved updates: " + " ".join(f"{name}={version}" for name, version in packages), flush=True)
     admin = restart.invoking_admin(config, machine, ssh_config)
@@ -398,6 +428,7 @@ def _apply_locked(
             restart.root(machine, ssh_config, ["systemctl", "restart", "ssh.service"], 30)
             ssh_update.listener(machine, ssh_config)
         needs_restart = post_checks(config, machine, admin, ssh_config, before, ssh_guard)
+        enable_security_updates(machine, ssh_config)
         if ssh_guard:
             ssh_canceled = True
             ssh_update.close_holds(holds)
@@ -575,6 +606,111 @@ def front_post_checks(
     return restart_status.splitlines()[0] == "required"
 
 
+def other_post_checks(
+    config: dict[str, Any], machine: str, admin: str, ssh_config: Path | None, before: set[str], ssh_guard: bool
+) -> bool:
+    """Check access, saved boot settings, storage services, and failed units after a non-Slurm update."""
+    restart.verify_address(config, machine, ssh_config)
+    restart.root(machine, ssh_config, ["sshd", "-t"], 30)
+    restart.fresh_login(machine, "root", ssh_config)
+    restart.fresh_login(machine, admin, ssh_config)
+    if ssh_guard:
+        ssh_update.cancel(machine, ssh_config)
+    facts, error = restart_check.read_machine(machine, ssh_config)
+    if error or facts is None:
+        raise UpdateError(f"{machine}: saved restart checks could not run: {error or 'no facts returned'}")
+    findings = restart_check.evaluate(facts, False)
+    problems = [f"{label}: {reason}" for label, reasons in findings.items() for reason in reasons]
+    if problems:
+        raise UpdateError(f"{machine}: saved restart checks failed: " + "; ".join(problems))
+    roles = config["machines"][machine]["roles"]
+    if ("home" in roles or "shared" in roles) and restart.read(
+        machine, ssh_config, "systemctl is-active nfs-server", 30
+    ) != "active":
+        raise UpdateError(f"{machine}: nfs-server is not active")
+    if "home" in roles and not restart.read(machine, ssh_config, "findmnt -n -o SOURCE --mountpoint /home", 30):
+        raise UpdateError(f"{machine}: /home is not mounted")
+    new_failed = failed_units(machine, ssh_config) - before
+    if new_failed:
+        raise UpdateError(f"{machine}: new failed systemd units: {', '.join(sorted(new_failed))}")
+    status = restart.read(machine, ssh_config, "test -e /run/reboot-required && echo required || echo none", 30)
+    return status == "required"
+
+
+def _apply_other_locked(
+    config: dict[str, Any],
+    path: Path,
+    machine: str,
+    include: list[str],
+    ssh_config: Path | None,
+    front: str,
+    lock: maintenance_lock.MaintenanceLock,
+    drained: list[str],
+) -> int:
+    """Update a storage or backup machine only while new Slurm jobs are paused."""
+    record = approved_preview(config, path, machine, include, ssh_config)
+    packages = record["resolved"]
+    if not packages:
+        state_path(path, machine).unlink()
+        print(f"{machine}: no approved packages to install")
+        enable_security_updates(machine, ssh_config)
+        return 0
+    admin = restart.invoking_admin(config, machine, ssh_config)
+    ssh_guard = "ssh" in include and any(
+        any(re.match(pattern, name) for pattern in CARE_GROUPS["ssh"]) for name, _ in packages
+    )
+    holds: list[subprocess.Popen[str]] = []
+    ssh_canceled = False
+    success = False
+    error: str | None = None
+    needs_restart = False
+    try:
+        pause_front_jobs(config, front, ssh_config, drained)
+        require_front_drains(front, ssh_config, drained)
+        approved_preview(config, path, machine, include, ssh_config)
+        before = failed_units(machine, ssh_config)
+        if ssh_guard:
+            holds.append(ssh_update.hold_root(machine, ssh_config))
+            holds.append(ssh_update.hold_root(machine, ssh_config))
+            ssh_update.require_holds(machine, holds)
+            ssh_update.prepare(machine, ssh_config)
+            ssh_update.require_holds(machine, holds)
+        state_path(path, machine).unlink()
+        install(machine, ssh_config, packages, include)
+        if ssh_guard:
+            ssh_update.require_holds(machine, holds)
+            restart.root(machine, ssh_config, ["systemctl", "restart", "ssh.service"], 30)
+            ssh_update.listener(machine, ssh_config)
+        needs_restart = other_post_checks(config, machine, admin, ssh_config, before, ssh_guard)
+        enable_security_updates(machine, ssh_config)
+        if ssh_guard:
+            ssh_canceled = True
+            ssh_update.close_holds(holds)
+        require_front_drains(front, ssh_config, drained)
+        lock.check()
+        for node in drained:
+            restart.resume(front, node, ssh_config)
+            lock.check()
+        success = True
+    except (UpdateError, restart.RestartError, subprocess.TimeoutExpired) as failure:
+        error = str(failure)
+    finally:
+        if holds and not ssh_canceled:
+            print(f"{machine}: SSH undo remains armed; held root connections will close after 4 hours", file=sys.stderr)
+        if drained and not success:
+            for problem in settle_front_failure(front, ssh_config, drained):
+                error = f"{error or 'update stopped'}; {problem}"
+            error = f"{error or 'update stopped'}; check drained state of {', '.join(drained)} before resuming jobs"
+    if error:
+        print(f"{machine}: {error}", file=sys.stderr)
+        return 1
+    if needs_restart:
+        print(f"{machine}: update passed; restart required. Scheduling restored; plan a separate restart")
+    else:
+        print(f"{machine}: update passed; scheduling restored")
+    return 0
+
+
 def _apply_front_locked(
     config: dict[str, Any],
     path: Path,
@@ -590,6 +726,7 @@ def _apply_front_locked(
     if not packages:
         state_path(path, front).unlink()
         print(f"{front}: no approved packages to install")
+        enable_security_updates(front, ssh_config)
         return 0
     admin = restart.invoking_admin(config, front, ssh_config)
     ssh_guard = "ssh" in include and any(
@@ -623,6 +760,7 @@ def _apply_front_locked(
             restart.root(front, ssh_config, ["systemctl", "restart", "ssh.service"], 30)
             ssh_update.listener(front, ssh_config)
         needs_restart = front_post_checks(config, front, admin, ssh_config, before, ssh_guard)
+        enable_security_updates(front, ssh_config)
         if ssh_guard:
             ssh_canceled = True
             ssh_update.close_holds(holds)
@@ -652,14 +790,12 @@ def _apply_front_locked(
 
 
 def valid_target(config: dict[str, Any], machine: str, confirm: str | None, dry_run: bool) -> str | None:
-    """Return why a request cannot update this compute or front machine."""
+    """Return why a request cannot update this configured Slurm cluster machine."""
     if config["cluster"].get("mode") == "monitor":
         return "update needs a Slurm cluster, not monitor mode"
     selected = config["machines"].get(machine)
     if selected is None:
         return f"{machine} is not in cluster.yml"
-    if "front" not in selected["roles"] and "compute" not in selected["roles"]:
-        return f"{machine} is not a compute or front machine"
     if not dry_run and confirm != machine:
         return f"--confirm must equal the one machine name {machine}"
     return None
