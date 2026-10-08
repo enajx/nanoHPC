@@ -12,7 +12,8 @@
 # - users: accounts, SSH keys, sudo keys, and AllowUsers on every machine; home folders and quotas on the home
 #   machine; scratch folders and caches on the compute machines; Slurm accounting users on the front node;
 #   the user lists of the status collector (front node) and the quota reader (home machine); the website's
-#   site.json and the user guide and policy pages filled from it (front node).
+#   site.json and the user guide and policy pages filled from it (front node); Slack user mentions and
+#   private-message recipients (front node).
 # - policy, partitions: slurm.conf (and gres.conf) on every Slurm machine, job_submit.lua and Slurm's QoS on the
 #   front node, Slurm restarted where its configuration changed (as a full deploy does), then a fresh status
 #   snapshot for the website.
@@ -59,6 +60,12 @@
   tags: [users]
   roles: [accounts]
 
+- name: Refresh user-process rules after changing users or administrators
+  hosts: all
+  become: true
+  tags: [users]
+  roles: [user_check]
+
 - name: The users' home folders and quotas on the home machine
   hosts: role_home
   become: true
@@ -98,6 +105,12 @@
   become: true
   tags: [users]
   roles: [monitoring]
+
+- name: Refresh Slack user mentions and private message recipients
+  hosts: role_front
+  become: true
+  tags: [users]
+  roles: [alerts]
 
 # The website shows the home quotas and the scratch cleanup days, from site.json and the pages filled from it.
 - name: The website's site data and the pages filled from it on the front node
@@ -227,6 +240,12 @@
   become: true
   tags: [node]
   roles: [node_metrics, machine_metrics]
+
+- name: User-process check on the new machine
+  hosts: only_node
+  become: true
+  tags: [node]
+  roles: [user_check]
 
 - name: Prometheus collects the new machine's metrics
   hosts: role_front

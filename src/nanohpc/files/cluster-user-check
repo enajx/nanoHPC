@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""Find what users may not do on the cluster, stop tunnels, and publish the findings for Prometheus.
+
+Agreed 2026-10-05. Two kinds of findings:
+- Tunnels (Tailscale, cloudflared, ngrok, a VS Code tunnel, ssh -R or -w, and the like) give a way into
+  a job or a login that does not pass the cluster's SSH. A normal user's tunnel is stopped (only that
+  program: the job keeps running); an admin's is only reported. --allow USER:PROGRAM permits one. A
+  stopped tunnel stays published for --keep-minutes.
+- Lasting findings are only reported, and stay published while they last: processes outside a Slurm
+  job on a compute machine (not the user manager that root starts there for a moment), ports opened
+  by users, crontabs, at jobs, lingering, and user unit files, a VS Code server on the front node,
+  and a system disk at or above --disk-percent (with the largest users
+  of /tmp and /var/tmp). Admins are left out, except for a VS Code server on the front node.
+Programs of root and system accounts (UID below 1000, no login shell, or systemd's temporary DynamicUser
+accounts, UID 61184 to 65519) are never touched or reported. The front node's notifier posts each
+finding when Slack is enabled. Runs as root every minute on every machine.
+"""
+
+import argparse
+import json
+import os
+import re
+import signal
+from contextlib import suppress
+from datetime import datetime, timezone
+from pathlib import Path
+
+TUNNELS = {"tailscale", "tailscaled", "cloudflared", "ngrok", "frpc", "zrok", "bore", "chisel", "sshuttle", "autossh"}
+# ssh options that take a value, as in ssh(1).
+SSH_VALUE_OPTIONS = set("BbcDEeFIiJLlmOoPpQRSWw")
+GB = 1024**3
+USER_UNIT_SUFFIXES = {".service", ".timer", ".socket", ".target", ".path", ".mount"}
+
+
+def ssh_tunnel(arguments: list[str]) -> str | None:
+    """'ssh -R' or 'ssh -w' when ssh's own options open a way back in; arguments after the host are its command."""
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--" or not argument.startswith("-") or argument == "-":
+            return None
+        letters = argument[1:]
+        for position, letter in enumerate(letters):
+            if letter not in SSH_VALUE_OPTIONS:
+                continue
+            value = letters[position + 1 :]
+            if not value and index + 1 < len(arguments):
+                index += 1
+                value = arguments[index]
+            option = re.split(r"[=\s]", value.strip(), maxsplit=1)
+            if letter == "R" or (letter == "o" and option[0].lower() == "remoteforward"):
+                return "ssh -R"
+            if letter == "w" or (letter == "o" and option[0].lower() == "tunnel" and option[-1].lower() != "no"):
+                return "ssh -w"
+            break
+        index += 1
+    return None
+
+
+def tunnel(exe: str, argv: list[str]) -> str | None:
+    """The tunnel program this process is, or None."""
+    names = [Path(exe).name] + [Path(argument).name for argument in argv[:1]]
+    # A Python program such as sshuttle runs as python3 with its script as the first argument.
+    if names[0].startswith("python") and len(argv) > 1:
+        names.append(Path(argv[1]).name)
+    for name in names:
+        if name in TUNNELS:
+            return name
+    if "code" in names[:2] and len(argv) > 1 and argv[1] == "tunnel":
+        return "code tunnel"
+    if names[0] == "ssh":
+        return ssh_tunnel(argv[1:])
+    return None
+
+
+def safe_name(value: str) -> str:
+    """A short program or unit name without arguments, paths, or Slack mention syntax."""
+    return re.sub(r"[^A-Za-z0-9._+-]", "_", Path(value).name)[:40] or "unknown"
+
+
+def start_time(entry: Path) -> str:
+    """The process start time in clock ticks (field 22 of stat), which tells a reused PID apart."""
+    return entry.joinpath("stat").read_text().rsplit(")", 1)[1].split()[19]
+
+
+def listening_ports(root: Path) -> dict[str, int]:
+    """Socket inode to port, for every listening TCP socket."""
+    ports: dict[str, int] = {}
+    for table in ("tcp", "tcp6"):
+        path = root / "proc/net" / table
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines()[1:]:
+            fields = line.split()
+            if fields[3] == "0A":
+                ports[fields[9]] = int(fields[1].rsplit(":", 1)[1], 16)
+    return ports
+
+
+def accounts(root: Path) -> tuple[dict[int, str], set[int]]:
+    """Names by UID, and the UIDs of service accounts: no login shell (slurm and munge have UIDs above 1000)."""
+    names: dict[int, str] = {}
+    services: set[int] = set()
+    for fields in (line.split(":") for line in (root / "etc/passwd").read_text().splitlines() if line.count(":") >= 6):
+        names[int(fields[2])] = fields[0]
+        if fields[6].endswith(("/nologin", "/false")):
+            services.add(int(fields[2]))
+    return names, services
+
+
+def processes(root: Path) -> list[dict]:
+    """Every process of a user account: UID 1000 or more, not nobody, not a service account, not a DynamicUser."""
+    users, services = accounts(root)
+    sockets = listening_ports(root)
+    found: list[dict] = []
+    for entry in sorted((root / "proc").iterdir(), key=lambda path: path.name):
+        if not entry.name.isdigit():
+            continue
+        # A process can end while it is read; it is then simply not there.
+        with suppress(FileNotFoundError, ProcessLookupError):
+            uid = int(re.search(r"^Uid:\s+(\d+)", entry.joinpath("status").read_text(), re.MULTILINE).group(1))
+            # systemd gives DynamicUser services a temporary UID from 61184 to 65519, not in /etc/passwd: the
+            # nightly route test's listener ran as 61389 (2026-10-08).
+            if uid < 1000 or uid == 65534 or uid not in users or uid in services or 61184 <= uid <= 65519:
+                continue
+            argv = [
+                argument.decode(errors="replace")
+                for argument in entry.joinpath("cmdline").read_bytes().split(b"\0")[:-1]
+            ]
+            cgroup = entry.joinpath("cgroup").read_text()
+            job = re.search(r"/job_(\d+)/", cgroup)
+            ports = sorted(
+                {
+                    sockets[link[8:-1]]
+                    for link in (
+                        os.readlink(entry / "fd" / fd)
+                        for fd in (os.listdir(entry / "fd") if (entry / "fd").exists() else [])
+                    )
+                    if link.startswith("socket:[") and link[8:-1] in sockets
+                }
+            )
+            exe = os.readlink(entry / "exe").removesuffix(" (deleted)")
+            manager_cgroup = re.search(r"/user@\d+\.service/", cgroup) is not None
+            transient_manager = manager_cgroup and (
+                (
+                    "/init.scope" in cgroup
+                    and Path(exe).name == "systemd"
+                    and ("--user" in argv or (bool(argv) and argv[0] == "(sd-pam)"))
+                )
+                or ("/app.slice/dbus.service" in cgroup and Path(exe).name == "dbus-daemon" and "--session" in argv)
+            )
+            found.append(
+                {
+                    "pid": int(entry.name),
+                    "started": start_time(entry),
+                    "user": users.get(uid, str(uid)),
+                    "exe": exe,
+                    "argv": argv,
+                    "job": job.group(1) if job else "",
+                    "ports": ports,
+                    "manager": transient_manager,
+                }
+            )
+    return found
+
+
+def stop(root: Path, process: dict) -> bool:
+    """Kill the tunnel only if its PID is unchanged; say whether the signal was sent."""
+    with suppress(FileNotFoundError, ProcessLookupError):
+        if start_time(root / "proc" / str(process["pid"])) == process["started"]:
+            os.kill(process["pid"], signal.SIGKILL)
+            return True
+    return False
+
+
+def schedules(root: Path, admins: list[str]) -> dict[str, list[str]]:
+    """Per non-admin user: cron, at, lingering, and user unit files on this machine."""
+    names, services = accounts(root)
+    regular = {
+        uid: name
+        for uid, name in names.items()
+        if uid >= 1000 and uid != 65534 and uid not in services and not 61184 <= uid <= 65519
+    }
+    regular_names = set(regular.values()) - set(admins)
+    found: dict[str, list[str]] = {}
+    for folder, word in (("var/spool/cron/crontabs", "crontab"), ("var/lib/systemd/linger", "lingering")):
+        if (root / folder).is_dir():
+            for user in sorted(os.listdir(root / folder)):
+                found.setdefault(user, []).append(word)
+    atjobs = root / "var/spool/cron/atjobs"
+    if atjobs.is_dir():
+        for job in atjobs.iterdir():
+            with suppress(FileNotFoundError):
+                if job.is_file() and not job.is_symlink():
+                    uid = os.lstat(job).st_uid
+                    user = regular.get(uid)
+                    if user is not None and "at job" not in found.get(user, []):
+                        found.setdefault(user, []).append("at job")
+    for user in sorted(regular_names):
+        unit_dir = root / "home" / user / ".config/systemd/user"
+        if not unit_dir.is_dir():
+            continue
+        units: set[str] = set()
+        for entry in unit_dir.iterdir():
+            with suppress(FileNotFoundError):
+                if entry.is_file() and entry.suffix in USER_UNIT_SUFFIXES:
+                    units.add(safe_name(entry.name))
+                elif entry.is_dir() and entry.name.endswith((".wants", ".requires", ".upholds")):
+                    units.update(safe_name(unit.name) for unit in entry.iterdir())
+        if units:
+            found.setdefault(user, []).append("user units: " + ", ".join(sorted(units)))
+    return {user: words for user, words in found.items() if user in regular_names}
+
+
+def disk(root: Path, path: Path, percent: int) -> str | None:
+    """The system disk's use and the largest owners in /tmp and /var/tmp, when at or above the threshold."""
+    usage = os.statvfs(path)
+    used = usage.f_blocks - usage.f_bfree
+    full = round(100 * used / (used + usage.f_bavail))
+    if full < percent:
+        return None
+    users = {
+        int(fields[2]): fields[0]
+        for fields in (
+            line.split(":") for line in (root / "etc/passwd").read_text().splitlines() if line.count(":") >= 6
+        )
+    }
+    sizes: dict[str, int] = {}
+    for folder in (root / "tmp", root / "var/tmp"):
+        device = folder.stat().st_dev if folder.is_dir() else None
+        for directory, folders, files in os.walk(folder):
+            # Stay on the folder's own disk.
+            folders[:] = [name for name in folders if os.lstat(os.path.join(directory, name)).st_dev == device]
+            for name in files:
+                with suppress(FileNotFoundError):
+                    info = os.lstat(os.path.join(directory, name))
+                    owner = users.get(info.st_uid, str(info.st_uid))
+                    sizes[owner] = sizes.get(owner, 0) + info.st_blocks * 512
+    largest = ", ".join(
+        f"{owner} {size / GB:.1f} GB" for owner, size in sorted(sizes.items(), key=lambda item: -item[1])[:3]
+    )
+    return f"{path} is {full}% full; largest in /tmp and /var/tmp: {largest or 'nothing'}"
+
+
+def label(value: str) -> str:
+    """A Prometheus label value with its special characters escaped."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def write_metrics(output: Path, findings: dict[str, dict]) -> None:
+    """Replace the textfile at once, so node_exporter never reads half of it."""
+    lines = [
+        "# HELP cluster_user_check_finding Something users may not do, found by cluster-user-check; the value is when it was first found (Unix time).",
+        "# TYPE cluster_user_check_finding gauge",
+    ]
+    for identity, item in sorted(findings.items()):
+        # job and machine are Prometheus's own labels, so they are published as slurm_job and host.
+        names = {"job": "slurm_job", "machine": "host"}
+        labels = ",".join(
+            f'{names.get(key, key)}="{label(item[key])}"'
+            for key in ("kind", "user", "program", "job", "machine", "action", "detail")
+        )
+        lines.append(f'cluster_user_check_finding{{id="{label(identity)}",{labels}}} {item["found"]}')
+    temporary = output.with_name(output.name + ".tmp")
+    temporary.write_text("\n".join(lines) + "\n")
+    os.replace(temporary, output)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--root", type=Path, required=True, help="the machine's root: / when deployed")
+    parser.add_argument("--machine", required=True, help="this machine's name in the inventory")
+    parser.add_argument(
+        "--role", choices=["front", "compute", "other"], required=True, help="front: users work here outside jobs"
+    )
+    parser.add_argument("--admin", action="append", required=True, help="an admin, whose tunnels are only reported")
+    parser.add_argument("--allow", action="append", help="USER:PROGRAM allowed by the admins")
+    parser.add_argument("--disk", type=Path, required=True, help="the system disk to watch: / when deployed")
+    parser.add_argument("--disk-percent", type=int, required=True, help="report the disk at or above this use")
+    parser.add_argument("--output", type=Path, required=True, help="the .prom file for node_exporter")
+    parser.add_argument("--state", type=Path, required=True, help="findings already published")
+    parser.add_argument("--now", required=True, help="the current time, ISO 8601 ('now' for the clock)")
+    parser.add_argument("--keep-minutes", type=int, required=True, help="how long a stopped tunnel stays published")
+    args = parser.parse_args()
+    now = int((datetime.now(timezone.utc) if args.now == "now" else datetime.fromisoformat(args.now)).timestamp())  # noqa: UP017 (Python 3.10)
+    allowed = {tuple(entry.split(":", 1)) for entry in args.allow or []}
+    findings: dict[str, dict] = json.loads(args.state.read_text()) if args.state.is_file() else {}
+    # The first version (2026-10-05) saved findings without a detail.
+    for item in findings.values():
+        item.setdefault("detail", "")
+    current: dict[str, dict] = {}
+
+    def found(identity: str, kind: str, user: str, program: str, job: str, action: str, detail: str) -> None:
+        current[identity] = {
+            "kind": kind,
+            "user": user,
+            "program": program,
+            "job": job,
+            "machine": args.machine,
+            "action": action,
+            "detail": detail,
+        }
+
+    outside: dict[str, list[str]] = {}
+    ports: dict[str, set[int]] = {}
+    vscode: set[str] = set()
+    for process in processes(args.root):
+        user, admin = process["user"], process["user"] in args.admin
+        program = tunnel(process["exe"], process["argv"])
+        if program is not None and (user, program) not in allowed:
+            action = "reported" if admin else "stopped"
+            if action == "stopped" and not stop(args.root, process):
+                continue
+            found(
+                f"{args.machine}-{process['pid']}-{process['started']}",
+                "tunnel",
+                user,
+                program,
+                process["job"],
+                action,
+                "",
+            )
+            continue
+        if args.role == "front" and (
+            any("/.vscode-server/" in part for part in [process["exe"], *process["argv"][:1]])
+            or (Path(process["exe"]).name == "code" and process["argv"][1:2] == ["serve-web"])
+        ):
+            vscode.add(user)
+        if admin:
+            continue
+        # On a compute machine only root starts a user manager: Slurm's `su - <user>` for --export=ALL,VAR=value
+        # or --get-user-env (2026-10-07), or an admin. It stops about 10 s later; lingering is reported on its own.
+        if args.role == "compute" and process["manager"]:
+            continue
+        if process["ports"]:
+            ports.setdefault(user, set()).update(process["ports"])
+        if args.role == "compute" and not process["job"]:
+            outside.setdefault(user, []).append(safe_name(process["exe"]))
+    for user, commands in outside.items():
+        detail = f"{len(commands)} {'process' if len(commands) == 1 else 'processes'}: " + "; ".join(
+            sorted(set(commands))[:3]
+        )
+        found(f"{args.machine}-outside-job-{user}", "outside-job", user, "", "", "lasting", detail)
+    for user, numbers in ports.items():
+        found(
+            f"{args.machine}-port-{user}",
+            "port",
+            user,
+            "",
+            "",
+            "lasting",
+            ("port " if len(numbers) == 1 else "ports ") + ", ".join(map(str, sorted(numbers))),
+        )
+    for user in vscode:
+        found(f"{args.machine}-vscode-server-{user}", "vscode-server", user, "", "", "lasting", "")
+    for user, words in schedules(args.root, args.admin).items():
+        found(f"{args.machine}-schedule-{user}", "schedule", user, "", "", "lasting", ", ".join(words))
+    full = disk(args.root, args.disk, args.disk_percent)
+    if full is not None:
+        found(f"{args.machine}-disk", "disk", "", "", "", "lasting", full)
+
+    # A finding keeps the time it was first found; a stopped tunnel stays published for --keep-minutes.
+    for identity, item in current.items():
+        item["found"] = findings.get(identity, {}).get("found", now)
+    kept = {
+        identity: item
+        for identity, item in findings.items()
+        if identity not in current and item["action"] != "lasting" and now - item["found"] < args.keep_minutes * 60
+    }
+    findings = {**kept, **current}
+    state_temporary = args.state.with_name(args.state.name + ".tmp")
+    state_temporary.write_text(json.dumps(findings, indent=1))
+    os.replace(state_temporary, args.state)
+    write_metrics(args.output, findings)
+
+
+if __name__ == "__main__":
+    main()

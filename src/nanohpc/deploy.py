@@ -349,7 +349,15 @@ def variables(
             "cluster_name": config["cluster"]["name"],
             # The nanoHPC version running this deploy, recorded on every machine (/etc/nanohpc/version).
             "version": metadata.version("nanohpc"),
-            "users": [{"name": u["name"], "uid": u["uid"], "ssh_keys": u["ssh_keys"]} for u in config["users"]],
+            "users": [
+                {
+                    "name": u["name"],
+                    "uid": u["uid"],
+                    "ssh_keys": u["ssh_keys"],
+                    "slack_id": u.get("slack_id", ""),
+                }
+                for u in config["users"]
+            ],
             "admins": config["cluster"]["admins"],
             "machines": {
                 name: {"address": m["address"], "roles": m["roles"]} for name, m in config["machines"].items()
@@ -376,6 +384,7 @@ def variables(
             # Run by the front node's automatic deploy (it keeps the install settings a manual deploy made).
             "automatic": automatic,
             "alerts": {"slack": config["alerts"]["slack"]},
+            "user_check": config["user_check"],
             "metrics": {
                 **METRICS,
                 "front_address": front_values["address"],

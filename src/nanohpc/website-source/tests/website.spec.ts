@@ -379,6 +379,30 @@ test('machine labels explain health, speed, and waiting updates', async ({ page 
   await expect(page.getByRole('dialog', { name: 'gpu1: Needs update' })).toContainText('package update')
 })
 
+test('/home speed box color follows the shown small-file write speed', async ({ page }) => {
+  await mockGrafana(page)
+  const data = snapshot() as { nodes: { name: string; specs?: object }[] }
+  let smallWrite = 0.9
+  let largeRead = 125
+  await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: {
+    ...data, nodes: data.nodes.map(node => node.name === 'gpu1' ? {
+      ...node, specs: { ...node.specs, speeds: {
+        home_large_read: largeRead, home_small_write: smallWrite, internet_download: 95,
+      } },
+    } : node),
+  } }))
+  for (const [index, [write, read, color]] of ([[0.9, 125, 'state-problem'], [1, 125, 'state-warning'], [10, 0, 'state-healthy']] as const).entries()) {
+    smallWrite = write
+    largeRead = read
+    if (index === 0) await page.goto(`${origin}${prefix}#machines`)
+    else await page.reload()
+    const row = page.locator('.machine-list tbody tr').filter({ hasText: 'gpu1' })
+    const box = row.getByRole('button', { name: '/home speed' })
+    await expect(box).toContainText(`${Math.round(write)} MB/s`)
+    await expect(box).toHaveClass(new RegExp(`\\b${color}\\b`))
+  }
+})
+
 test('the guide covers supported containers and interactive notebooks without claiming unsupported queue rules', async ({ page }) => {
   await mockGrafana(page)
   await page.goto(`${origin}${prefix}#docs`)

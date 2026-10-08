@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import yaml
+from jinja2 import Template
 
 from nanohpc import deploy
 from nanohpc.config import load_config
@@ -81,6 +82,13 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(variables["files"], str(self.work / "files"))
         # The base role records it in /etc/nanohpc/version, read by nanohpc check.
         self.assertEqual(variables["version"], metadata.version("nanohpc"))
+
+    def test_user_check_allow_entries_reach_ansible(self) -> None:
+        """Validated cluster rules reach the per-machine service template."""
+        self.config["user_check"]["allowed_tunnels"] = [{"user": "bob", "program": "cloudflared", "machines": ["gpu2"]}]
+        prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
+        variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
+        self.assertEqual(variables["user_check"], self.config["user_check"])
 
     def test_home_and_scratch_variables(self) -> None:
         prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
@@ -226,6 +234,24 @@ class PrepareTest(unittest.TestCase):
             {"nanohpc_secrets": {"slack_webhook": "https://hooks.slack.com/services/T/B/x"}},
         )
         self.assertEqual(oct(secrets.stat().st_mode & 0o777), oct(0o600))
+
+    def test_slack_recipients_reach_notifier_service(self) -> None:
+        self.config["users"][0]["slack_id"] = "U123ABC"
+        self.config["secrets"]["slack_bot_token"] = "xoxb-test"
+        prepare(self.config, self.hostnames, None, False, [], False, None, self.work)
+        variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
+        secrets = json.loads((self.work / "secrets.json").read_text())["nanohpc_secrets"]
+        tasks = yaml.safe_load((ROOT / "src/nanohpc/ansible/roles/alerts/tasks/main.yml").read_text())
+        task = next(
+            task for task in tasks if task["name"] == "Install the user check channel notifier service and timer"
+        )
+        unit = Template(task["ansible.builtin.copy"]["content"]).render(
+            item="service", nanohpc=variables, nanohpc_secrets=secrets
+        )
+        self.assertIn("--user alice:U123ABC", unit)
+        self.assertIn("--user bob:", unit)
+        self.assertIn("--bot-token-file /etc/nanohpc/alertmanager/slack-bot-token", unit)
+        self.assertNotIn("xoxb-test", (self.work / "vars.json").read_text())
 
     def test_backup_to_an_outside_server(self) -> None:
         self.config["backup"]["to"] = "lab@backup.example.org:/srv/cluster"

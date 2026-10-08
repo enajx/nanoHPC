@@ -111,6 +111,64 @@ class ValidateCommandTest(unittest.TestCase):
         self.assertIn("machines.gpu2.memory_mb must be a positive integer", result.stderr)
 
 
+class UserCheckConfigTest(unittest.TestCase):
+    """Tunnel exceptions name an existing account, a known program, and configured machines."""
+
+    def test_default_and_valid_allow_entries(self) -> None:
+        config, errors = check_config(example())
+        self.assertEqual(errors, [])
+        self.assertEqual(config["user_check"], {"allowed_tunnels": []})
+
+        raw = example()
+        entries = [
+            {"user": "bob", "program": "cloudflared", "machines": ["front", "gpu4"]},
+            {"user": "alice", "program": "code tunnel", "machines": ["gpu2"]},
+            {"user": "bob", "program": "ssh -R", "machines": ["cpu1"]},
+        ]
+        raw["user_check"] = {"allowed_tunnels": entries}
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["user_check"]["allowed_tunnels"], entries)
+
+    def test_bad_allow_entries_report_their_fields(self) -> None:
+        raw = example()
+        raw["user_check"] = {
+            "allowed_tunnels": [
+                {"user": "missing", "program": "cloudflared", "machines": ["front"]},
+                {"user": "bob", "program": "unrecognized", "machines": ["front"]},
+                {"user": "bob", "program": "ngrok", "machines": []},
+                {"user": "bob", "program": "ngrok", "machines": ["nowhere"]},
+                {"user": "bob", "program": "ngrok", "machines": ["front", "front"]},
+            ]
+        }
+        _, errors = check_config(raw)
+        for field in (
+            "user_check.allowed_tunnels[0].user",
+            "user_check.allowed_tunnels[1].program",
+            "user_check.allowed_tunnels[2].machines",
+            "user_check.allowed_tunnels[3].machines[0]",
+            "user_check.allowed_tunnels[4].machines",
+        ):
+            self.assertTrue(any(error.startswith(field) for error in errors), (field, errors))
+
+    def test_bad_section_and_entry_types_are_rejected(self) -> None:
+        for value, field in (
+            ({"allowed_tunnels": "bob:ngrok"}, "user_check.allowed_tunnels"),
+            ({"allowed_tunnels": ["bob:ngrok"]}, "user_check.allowed_tunnels[0]"),
+            ({"allowed_tunnels": [{"user": "bob", "program": "ngrok"}]}, "user_check.allowed_tunnels[0].machines"),
+            (
+                {"allowed_tunnels": [{"user": "bob", "program": "ngrok", "machines": "front"}]},
+                "user_check.allowed_tunnels[0].machines",
+            ),
+            ({"not_a_setting": []}, "user_check.not_a_setting"),
+        ):
+            with self.subTest(value=value):
+                raw = example()
+                raw["user_check"] = value
+                _, errors = check_config(raw)
+                self.assertTrue(any(error.startswith(field) for error in errors), errors)
+
+
 class HeterogeneousClusterTest(unittest.TestCase):
     """Valid heterogeneous setups: CPU-only nodes, admin-defined partitions, separate storage machines."""
 
@@ -406,7 +464,12 @@ class SecretsTest(unittest.TestCase):
             config, errors = load_config(self.write(folder, True, env), True, False)
             self.assertEqual(errors, [])
             self.assertEqual(
-                config["secrets"], {"slack_webhook": "https://hooks.slack.com/services/T/B/x", "deploy_webhook": None}
+                config["secrets"],
+                {
+                    "slack_webhook": "https://hooks.slack.com/services/T/B/x",
+                    "slack_bot_token": None,
+                    "deploy_webhook": None,
+                },
             )
 
     def test_missing_webhook_is_reported(self) -> None:
@@ -423,19 +486,57 @@ class SecretsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             secret = "s" * 40
-            env = f"NANOHPC_SLACK_WEBHOOK=https://hooks.slack.com/services/T/B/x\nNANOHPC_DEPLOY_WEBHOOK_SECRET={secret}\n"
+            env = f"NANOHPC_SLACK_WEBHOOK=https://hooks.slack.com/services/T/B/x\nNANOHPC_SLACK_BOT_TOKEN=xoxb-test\nNANOHPC_DEPLOY_WEBHOOK_SECRET={secret}\n"
             config, errors = load_config(self.write(folder, False, env), True, False)
             self.assertEqual(errors, [])
             self.assertEqual(
                 config["secrets"],
-                {"slack_webhook": "https://hooks.slack.com/services/T/B/x", "deploy_webhook": secret},
+                {
+                    "slack_webhook": "https://hooks.slack.com/services/T/B/x",
+                    "slack_bot_token": "xoxb-test",
+                    "deploy_webhook": secret,
+                },
             )
 
     def test_no_secrets_needed_without_slack(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config, errors = load_config(self.write(Path(directory), False, None), True, False)
             self.assertEqual(errors, [])
-            self.assertEqual(config["secrets"], {"slack_webhook": None, "deploy_webhook": None})
+            self.assertEqual(
+                config["secrets"], {"slack_webhook": None, "slack_bot_token": None, "deploy_webhook": None}
+            )
+
+    def test_slack_member_id_is_optional_and_validated(self) -> None:
+        raw = example()
+        raw["users"][0]["slack_id"] = "U123ABC"
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["users"][0]["slack_id"], "U123ABC")
+        raw["users"][0]["slack_id"] = "not a Slack ID; --bad"
+        _, errors = check_config(raw)
+        self.assertTrue(any("users[0].slack_id" in error for error in errors))
+
+    def test_bad_bot_token_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            path = self.write(folder, False, "NANOHPC_SLACK_BOT_TOKEN=invalid\n")
+            _, errors = load_config(path, True, False)
+            self.assertIn("NANOHPC_SLACK_BOT_TOKEN in .env must be a Slack bot token starting xoxb-", errors)
+
+    def test_slack_member_id_requires_bot_token_when_alerts_are_on(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            raw = example()
+            raw["alerts"]["slack"] = True
+            raw["users"][0]["slack_id"] = "U123ABC"
+            path = folder / "cluster.yml"
+            path.write_text(yaml.safe_dump(raw))
+            (folder / ".env").write_text("NANOHPC_SLACK_WEBHOOK=https://hooks.slack.com/services/T/B/x\n")
+            _, errors = load_config(path, True, False)
+            self.assertIn(
+                f"users with slack_id need NANOHPC_SLACK_BOT_TOKEN in {folder.resolve() / '.env'} when alerts.slack is true",
+                errors,
+            )
 
 
 class TestAccountConfigTest(unittest.TestCase):
