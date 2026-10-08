@@ -19,7 +19,7 @@ flowchart LR
   SIM --> S[Slurm + accounts + storage]:::done
   S --> M[Monitoring]:::done
   M --> W[Website from config]:::done
-  S --> BK[Backup + alerts + auto-deploy]:::done
+  S --> BK[Backup + health alerts + auto-deploy]:::done
   C --> WZ[Wizard]:::done
   M --> MO[Monitor without Slurm]:::done
   W --> MO
@@ -30,6 +30,8 @@ flowchart LR
   WF --> NW[REAL website updates]:::done
   NW --> R[Release v0.1]:::queued
   BK --> R
+  BK --> UC[User-process alerts]:::queued
+  UC --> R
   WZ --> R
   N --> R
   S --> F[Setup follow-ups]:::queued
@@ -147,6 +149,7 @@ flowchart LR
 
 - [x] `/home` is copied every night with rsync to the backup machine in the cluster or to an outside SSH server, as one mirror of `/home` (files deleted from `/home` are deleted from the copy). A failed backup is reported.
 - [x] Every machine runs its health checks every few minutes; the front node sends Slack alerts (off by default) when a check starts failing or warning and when it recovers, not on every run, plus failed backups and failed automatic deploys. The Slack webhook is in a `.env` file next to `cluster.yml` (never committed), copied to the front node by the deploy.
+- [ ] User-process checks never report or stop systemd temporary `DynamicUser` accounts (UID 61184–65519); a UID 61389 listener on port 5201 produces no finding. See [rogue-users-checks.md](md/rogue-users-checks.md).
 - [x] The front node can redeploy the whole cluster automatically from the administrator's configuration repository (off by default): it checks a branch every 10 minutes (set in `cluster.yml`; `main` by default, a stable or release branch suggested), pulls it with a read-only key, and deploys every machine itself with no one logging in and no password. A GitHub webhook can trigger it right after a push instead of waiting. The front node gets root SSH access to every machine for this (agreed 2026-10-02). The configuration repository pins the nanoHPC version the front node uses. `nanohpc deploy` from the administrator's machine stays. Each one runs the dry run first and applies only where it passed (machines whose dry run failed are left out; nothing is applied when the front node or the home machine fails), and alerts on any failure.
 
 ### Commands

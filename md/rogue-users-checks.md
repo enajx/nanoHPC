@@ -87,8 +87,10 @@ Detection is by program name and command line: `tailscale`, `tailscaled`, `cloud
 and `-D` do not. Administrators' tunnels are only reported, not stopped, so their work is never
 broken; programs of root and system accounts (UID below 1000) are never touched, so a Tailscale the
 administrators install as a system service stays (decided 2026-10-05). The check stops the program
-with `SIGKILL` after checking that its PID still belongs to the same process (start time). In the
-source deployment it runs as root every minute on every machine and publishes findings through
+with `SIGKILL` after checking that its PID still belongs to the same process (start time). Systemd
+temporary `DynamicUser` service accounts (UID 61184 to 65519) are also excluded, so a route test
+listener running as UID 61389 on port 5201 is neither stopped nor reported. In the source deployment
+it runs as root every minute on every machine and publishes findings through
 node_exporter's textfile folder; the front node reads them from Prometheus and posts each once, so
 the Slack secret stays on the front node. A renamed program gets past it; the aim is users without bad intent.
 VS Code's normal Remote-SSH server (`~/.vscode-server`) goes through the cluster's own SSH and is
