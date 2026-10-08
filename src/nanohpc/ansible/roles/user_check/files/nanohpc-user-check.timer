@@ -1,0 +1,10 @@
+[Unit]
+Description=Check user processes each minute (nanoHPC)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

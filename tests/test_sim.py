@@ -786,6 +786,87 @@ class SimSmallSlurmDeployTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimUserCheckTest(SimUsersBase):
+    """The deployed minute check and channel notifier work on Ubuntu 24.04 VMs."""
+
+    sim = SIM / "x86-build.yml"
+    state = ROOT / ".nanohpc-sim" / "x86-build"
+
+    def test_deployed_user_check_and_channel_notification(self) -> None:
+        """Deploy the real services, stop a user tunnel, and post its finding from the front node."""
+        cluster, config, public_key = self.up_with_test_key()
+        config["users"].append({"name": "bob", "uid": 2001, "ssh_keys": [public_key]})
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        for machine in ("front", "cpu1"):
+            self.assertEqual(self.ssh(machine, "systemctl is-active nanohpc-user-check.timer").stdout.strip(), "active")
+            self.assertEqual(self.ssh(machine, "sudo systemctl start nanohpc-user-check.service").returncode, 0)
+        self.on_front("sudo pkill -x cloudflared || true")
+        self.on_front("sudo cp /usr/bin/sleep /tmp/cloudflared; sudo chmod 755 /tmp/cloudflared")
+        self.on_front("sudo rm -f /tmp/cloudflared-bob.log /tmp/cloudflared.pid")
+        self.on_front(
+            "sudo -u bob sh -c 'nohup /tmp/cloudflared 120 >/tmp/cloudflared-bob.log 2>&1 & echo $!' > /tmp/cloudflared.pid"
+        )
+        before = self.on_front("ps -p $(cat /tmp/cloudflared.pid) -o user=,stat= || true").strip()
+        self.assertTrue(before.startswith("bob ") and "S" in before, f"bob's test tunnel did not start: {before}")
+        self.assertEqual(self.ssh("front", "sudo systemctl restart nanohpc-user-check.service").returncode, 0)
+        state = self.on_front("ps -p $(cat /tmp/cloudflared.pid) -o stat= || true").strip()
+        metrics = self.on_front("cat /var/lib/nanohpc/metrics-textfile/user-check.prom")
+        self.assertTrue(not state or state.startswith("Z"), f"cloudflared is still running: {state}\n{metrics}")
+        self.assertIn('kind="tunnel"', metrics)
+        self.assertIn('user="bob"', metrics)
+        self.assertIn('program="cloudflared"', metrics)
+        self.assertIn('action="stopped"', metrics)
+
+        receiver = textwrap.dedent("""
+            import http.server
+            class Hook(http.server.BaseHTTPRequestHandler):
+                def do_POST(self):
+                    body = self.rfile.read(int(self.headers["Content-Length"]))
+                    with open("/tmp/user-check-webhook.log", "ab") as log:
+                        log.write(body + b"\\n")
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+            http.server.HTTPServer(("127.0.0.1", 18081), Hook).serve_forever()
+        """)
+        self.assertEqual(self.ssh("front", "cat > /tmp/user-check-webhook.py", stdin=receiver).returncode, 0)
+        self.on_front("rm -f /tmp/user-check-webhook.log")
+        self.on_front("(nohup python3 /tmp/user-check-webhook.py >/dev/null 2>&1 &)")
+        self.addCleanup(self.ssh, "front", "pkill -f /tmp/user-check-webhook.py")
+        config["alerts"] = {"slack": True}
+        cluster.write_text(yaml.safe_dump(config))
+        (cluster.parent / ".env").write_text("NANOHPC_SLACK_WEBHOOK=http://127.0.0.1:18081/slack\n")
+        result = self.deploy(self.state / "ssh_config", agent=False)
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        self.assertEqual(self.on_front("systemctl is-active nanohpc-user-check-notify.timer").strip(), "active")
+        posted = self.on_front("cat /tmp/user-check-webhook.log")
+        for word in ("bob", "cloudflared", "front", "stopped"):
+            self.assertIn(word, posted)
+
+        config["user_check"] = {"allowed_tunnels": [{"user": "bob", "program": "cloudflared", "machines": ["front"]}]}
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.deploy(self.state / "ssh_config", agent=False)
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        self.on_front("sudo rm -f /tmp/cloudflared-bob-allowed.log /tmp/cloudflared-allowed.pid")
+        self.on_front(
+            "sudo -u bob sh -c 'nohup /tmp/cloudflared 120 >/tmp/cloudflared-bob-allowed.log 2>&1 & echo $!' > /tmp/cloudflared-allowed.pid"
+        )
+        allowed_pid = self.on_front("cat /tmp/cloudflared-allowed.pid").strip()
+        self.assertEqual(self.ssh("front", "sudo systemctl restart nanohpc-user-check.service").returncode, 0)
+        allowed_state = self.on_front(f"ps -p {allowed_pid} -o user=,stat= || true").strip()
+        self.assertTrue(
+            allowed_state.startswith("bob ") and "S" in allowed_state,
+            f"allowed cloudflared was stopped: {allowed_state}",
+        )
+        allowed_metrics = self.on_front("cat /var/lib/nanohpc/metrics-textfile/user-check.prom")
+        self.assertNotIn(f'id="front-{allowed_pid}-', allowed_metrics)
+        self.on_front(f"sudo kill {allowed_pid} || true")
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimDeployTest(SimUsersBase):
     """End to end: `nanohpc sim deploy` sets up Slurm, users, SSH access, sudo, and Munge on the everyday
     cluster. Real Lima VMs. The first run builds Slurm on the front VM (tens of minutes); later runs use the

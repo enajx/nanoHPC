@@ -1,0 +1,12 @@
+[Unit]
+Description=Check user processes and stop unapproved tunnels (nanoHPC)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cluster-user-check --root / --machine {{ inventory_hostname }} --role {{ 'front' if inventory_hostname in groups['role_front'] else 'compute' if inventory_hostname in groups['role_compute'] else 'other' }}{% for admin in nanohpc.admins %} --admin {{ admin }}{% endfor %}{% for entry in nanohpc.user_check.allowed_tunnels if inventory_hostname in entry.machines %} --allow "{{ entry.user }}:{{ entry.program }}"{% endfor %} --disk / --disk-percent 90 --output /var/lib/nanohpc/metrics-textfile/user-check.prom --state /var/lib/nanohpc-user-check/state.json --now now --keep-minutes 15
+StateDirectory=nanohpc-user-check
+TimeoutStartSec=1min
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nanohpc/metrics-textfile
+MemoryMax=128M

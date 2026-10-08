@@ -75,6 +75,7 @@ users:
   - name: bob
     uid: 2001
     ssh_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithYourOwnPublicKey bob@laptop"]
+    # slack_id: U123ABC          # optional private notices for lasting user-process findings
 
 partitions:
   main:
@@ -112,6 +113,12 @@ backup:
 
 alerts:
   slack: false                  # true: the webhook is NANOHPC_SLACK_WEBHOOK in .env next to this file
+                                # users with slack_id also need NANOHPC_SLACK_BOT_TOKEN in .env
+
+user_check:
+  allowed_tunnels: []           # exceptions: [{user: bob, program: cloudflared, machines: [gpu4]}]
+                                # known programs: tailscale, tailscaled, cloudflared, ngrok, frpc,
+                                # zrok, bore, chisel, sshuttle, autossh, code tunnel, ssh -R, ssh -w
 
 auto_deploy:
   enabled: false                # true: the front node deploys this file's repository by itself

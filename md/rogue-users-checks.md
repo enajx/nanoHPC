@@ -79,7 +79,11 @@ keeps running), and posts to the cluster's
 notification channel (Slack in the source deployment), naming the user, the machine, the program,
 and the job if there is one. The message ends with: "If this use is acceptable, ask the admins to
 allow it." An allow list in the configuration (user, program, machines) lets administrators
-permit a tunnel. The user is told the same thing directly when the channel supports it.
+permit a tunnel. The
+regular check, channel report, per-user, per-program, per-machine allow list, and optional private
+Slack notices for lasting findings are built in nanoHPC. A user needs `slack_id`, and `.env` needs
+`NANOHPC_SLACK_BOT_TOKEN` when Slack alerts are on. Each accepted channel and private delivery is
+recorded separately, so a failed private message can retry without repeating the channel post.
 
 Detection is by program name and command line: `tailscale`, `tailscaled`, `cloudflared`, `ngrok`,
 `frpc`, `zrok`, `bore`, `chisel`, `sshuttle`, `autossh`, `code tunnel` (not `code serve-web`), and
@@ -87,8 +91,10 @@ Detection is by program name and command line: `tailscale`, `tailscaled`, `cloud
 and `-D` do not. Administrators' tunnels are only reported, not stopped, so their work is never
 broken; programs of root and system accounts (UID below 1000) are never touched, so a Tailscale the
 administrators install as a system service stays (decided 2026-10-05). The check stops the program
-with `SIGKILL` after checking that its PID still belongs to the same process (start time). In the
-source deployment it runs as root every minute on every machine and publishes findings through
+with `SIGKILL` after checking that its PID still belongs to the same process (start time). Systemd
+temporary `DynamicUser` service accounts (UID 61184 to 65519) are also excluded, so a route test
+listener running as UID 61389 on port 5201 is neither stopped nor reported. In the source deployment
+it runs as root every minute on every machine and publishes findings through
 node_exporter's textfile folder; the front node reads them from Prometheus and posts each once, so
 the Slack secret stays on the front node. A renamed program gets past it; the aim is users without bad intent.
 VS Code's normal Remote-SSH server (`~/.vscode-server`) goes through the cluster's own SSH and is
@@ -197,8 +203,8 @@ the notification channel when it finds:
 - a system disk above its threshold, with the largest users of `/tmp` and `/var/tmp`.
 
 A tunnel is posted once in the channel. A lasting finding is posted when first seen and again daily
-while it lasts, in the channel and as a friendly private message to the user that says to check in
-with the administrators if in doubt (decided 2026-10-05). Administrators are reported only for
+while it lasts. For users with a Slack ID, nanoHPC also sends a friendly private message that says
+to check in with the administrators if in doubt (decided 2026-10-05). Administrators are reported only for
 what users may not do (a VS Code server on the front node, a tunnel), never for normal SSH sessions
 or administration. Prometheus leaves out a label whose value is empty: the poster must read a
 missing label as empty.

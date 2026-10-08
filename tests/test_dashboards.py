@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import jinja2
+
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARDS = ROOT / "src" / "nanohpc" / "files" / "grafana"
 NAMES = ["history", "machines", "monitor-history", "overview", "queue-history", "queue", "usage"]
@@ -68,6 +70,28 @@ class DashboardTests(unittest.TestCase):
             for expression in expressions(load(name)):
                 with self.subTest(name=name, expression=expression):
                     self.assertIn("and on() (time() - cluster_snapshot_timestamp_seconds < 90)", expression)
+
+    def test_test_accounts_are_hidden_from_current_and_historical_user_charts(self) -> None:
+        """Render each panel with the deploy template delimiters so old points are hidden too."""
+        environment = jinja2.Environment(variable_start_string="[%", variable_end_string="%]")
+        for users, matcher in (
+            ([{"name": "alice"}, {"name": "test-user_1", "test_account": True}], '{user!~"test-user_1"}'),
+            ([{"name": "alice"}], '{user!~"a^"}'),
+        ):
+            for name in ("usage", "history"):
+                with self.subTest(users=users, dashboard=name):
+                    rendered = environment.from_string((DASHBOARDS / f"{name}.json").read_text()).render(
+                        nanohpc={"users": users}
+                    )
+                    dashboard = json.loads(rendered)
+                    per_user = [
+                        target["expr"]
+                        for panel in dashboard["panels"]
+                        for target in panel.get("targets", [])
+                        if target.get("legendFormat") == "{{user}}"
+                    ]
+                    self.assertTrue(per_user)
+                    self.assertTrue(all(matcher in expression for expression in per_user))
 
     def test_overview_panels(self) -> None:
         panels = load("overview")["panels"]

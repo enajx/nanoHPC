@@ -36,7 +36,7 @@ test('the four demo dashboards embed fixed Grafana snapshots', async ({ page }) 
   const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
   for (const [section, titles] of [
     ['Jobs', ['Running Jobs and Queue', 'Queue history']],
-    ['Users', ['GPU usage history']],
+    ['Users', ['GPU usage history per user']],
     ['Cluster usage', ['Machine and GPU metrics']],
   ] as const) {
     await nav.getByRole('link', { name: section, exact: true }).click()
@@ -49,6 +49,7 @@ test('the four demo dashboards embed fixed Grafana snapshots', async ({ page }) 
 
 test('Machines table shows machine states, demo link speeds, and GPU availability', async ({ page }) => {
   await page.goto(`${origin}${prefix}`)
+  await page.getByRole('group', { name: 'Machines view' }).getByRole('button', { name: 'List view' }).click()
   await expect(page.locator('.machine-list table thead th').nth(3)).toHaveText('Link Speed')
   await expect(page.locator('.machine-list table tbody tr td:nth-child(4)')).toHaveText(Array(5).fill('1 Gb/s'))
   await page.goto(`${origin}${prefix}#machines`)
@@ -94,6 +95,13 @@ test('demo waiting time uses its selected period', async ({ page }) => {
   await expect(card).toContainText('12 min')
 })
 
+test('Overview map updates its sample measurements after demo data loads', async ({ page }) => {
+  await page.goto(`${origin}${prefix}`)
+  const map = page.locator('.overview-machines .cluster-map-canvas')
+  await expect(map).toHaveAttribute('aria-label', /H100: 3 of 4 GPUs allocated.*shared home \d+ requests per second/)
+  await expect(map).not.toHaveAttribute('aria-label', /GPU busy unknown/)
+})
+
 test('demo header and Machines page fit a 320px phone', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 })
   await page.goto(origin + prefix)
@@ -126,7 +134,7 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await page.clock.fastForward(30_000)
   await expect(page.locator('.freshness small')).not.toHaveText(firstUpdate ?? '')
   await expect(page.getByText('Data is stale')).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Overview' })).toHaveCSS('width', '1px')
   const guide = readFileSync(`${built}/docs.md`, 'utf8')
   expect(guide).toMatch(/^# nanoHPC documentation/m)
   expect(guide).toContain('Host nanoHPC')

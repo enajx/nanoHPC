@@ -32,8 +32,7 @@ export function SpeedBoxes({ node, stale, demo, named }: { node: Machine; stale:
   const show = (value: number | null | undefined) => value == null ? 'Unknown' : `${Math.round(value)} MB/s`
   const home = speeds?.home_small_write
   const internet = speeds?.internet_download
-  const largeRead = speeds?.home_large_read
-  const homeColor = home == null || largeRead == null ? 'state-unknown' : largeRead < 50 ? 'state-problem' : largeRead < 110 ? 'state-warning' : 'state-healthy'
+  const homeColor = home == null ? 'state-unknown' : home < 1 ? 'state-problem' : home < 10 ? 'state-warning' : 'state-healthy'
   const internetColor = internet == null ? 'state-unknown' : internet < 10 ? 'state-problem' : internet <= 50 ? 'state-warning' : 'state-healthy'
   return <span className="speed-boxes">
     {node.role === 'Compute' && <MachineLabel node={node} topic="speed" stale={stale} demo={false} className={homeColor} label="/home speed">{named ? '/home ' : ''}{show(home)}</MachineLabel>}

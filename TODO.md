@@ -19,7 +19,7 @@ flowchart LR
   SIM --> S[Slurm + accounts + storage]:::done
   S --> M[Monitoring]:::done
   M --> W[Website from config]:::done
-  S --> BK[Backup + alerts + auto-deploy]:::done
+  S --> BK[Backup + health alerts + auto-deploy]:::done
   C --> WZ[Wizard]:::done
   M --> MO[Monitor without Slurm]:::done
   W --> MO
@@ -27,8 +27,13 @@ flowchart LR
   W --> DEMO[Public demo build]:::done
   DEMO --> DP[Publish demo]:::done
   DP --> WF[Selected website follow-ups]:::done
-  WF --> R[Release v0.1]:::queued
+  WF --> NW[REAL website updates]:::done
+  NW --> R[Release v0.1]:::queued
   BK --> R
+  BK --> UC[User-process alerts]:::done
+  UC --> UA[Tunnel exceptions and private notices]:::done
+  UC --> R
+  UA --> R
   WZ --> R
   N --> R
   S --> F[Setup follow-ups]:::queued
@@ -109,6 +114,7 @@ flowchart LR
 ### Monitoring and website
 
 - [x] The chosen SLURM-REAL website improvements and demo updates work in the built site; live measurements, guide, Apptainer, and notebook helper are included. See [DONE.md](md/DONE.md).
+- [x] The real Machines page colors `/home` speed from its shown many-small-files write speed. See [DONE.md](md/DONE.md).
 - [x] Deploy only monitoring tools on machines without Slurm, with a monitor-mode `cluster.yml`, wizard, dry run, check, and node deploy (see [DONE.md](md/DONE.md)).
 - [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
 - [x] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
@@ -119,7 +125,12 @@ flowchart LR
 - [x] The status collector writes the website snapshot every 30 seconds.
 - [x] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
 - [ ] Reduce the size of things on the website's Overview page so they fit without scrolling.
-- [ ] The Overview Machines card shows the Cluster Map by default and has a button to switch between that map and the current machine table inside the card.
+- [x] Overview has a smaller header, cards, job lists, and footer update time. See [DONE.md](md/DONE.md).
+- [x] The Overview Machines card shows the Cluster Map by default and has buttons to switch between that map and the current machine table inside the card, remembering its choice separately from the Machines page. See [DONE.md](md/DONE.md).
+- [x] The Cluster Map uses smaller layout buttons and simple branching pipes in the Partitions view on the Overview and Machines pages. See [DONE.md](md/DONE.md).
+- [x] Overview job tables show each job's booked time limit, including partition defaults and jobs without a limit. See [DONE.md](md/DONE.md).
+- [x] The Users page places GPU usage history beside a compact user ranking on wide screens, with whole GPU-hours and two-decimal fair-share values. See [DONE.md](md/DONE.md).
+- [x] Accounts marked `test_account: true` stay in jobs and totals but are absent from user lists, per-user metrics, and historical per-user Grafana panels. See [DONE.md](md/DONE.md).
 - [ ] The Machines tab's Machines card has a `Node type` column showing each machine's configured role, including front, compute, and storage nodes.
 - [x] In the public demo, the front node shows `1 Gb/s` Link Speed in the Machines tab's machine table, matching the compute nodes. See [DONE.md](md/DONE.md).
 - [x] Cluster name, logo, login address, and the user guide on the website come from the configuration.
@@ -141,6 +152,11 @@ flowchart LR
 
 - [x] `/home` is copied every night with rsync to the backup machine in the cluster or to an outside SSH server, as one mirror of `/home` (files deleted from `/home` are deleted from the copy). A failed backup is reported.
 - [x] Every machine runs its health checks every few minutes; the front node sends Slack alerts (off by default) when a check starts failing or warning and when it recovers, not on every run, plus failed backups and failed automatic deploys. The Slack webhook is in a `.env` file next to `cluster.yml` (never committed), copied to the front node by the deploy.
+- [x] Every configured machine in Slurm mode runs the user-process check, reports the agreed findings, stops unallowed user tunnels, and leaves system processes alone. See [DONE.md](md/DONE.md).
+- [x] User-process checks exclude systemd temporary `DynamicUser` accounts (UID 61184–65519). See [DONE.md](md/DONE.md).
+- [x] Administrators can allow a tunnel for a named user, program, and machine in `cluster.yml`; other user tunnels are stopped without ending the Slurm job. See [DONE.md](md/DONE.md).
+- [x] The front node reports stopped tunnels once and lasting user-process findings when first seen and again daily, using the configured notification channel. See [DONE.md](md/DONE.md).
+- [x] Users with a Slack ID receive private notices for lasting findings when the bot token is configured. See [DONE.md](md/DONE.md).
 - [x] The front node can redeploy the whole cluster automatically from the administrator's configuration repository (off by default): it checks a branch every 10 minutes (set in `cluster.yml`; `main` by default, a stable or release branch suggested), pulls it with a read-only key, and deploys every machine itself with no one logging in and no password. A GitHub webhook can trigger it right after a push instead of waiting. The front node gets root SSH access to every machine for this (agreed 2026-10-02). The configuration repository pins the nanoHPC version the front node uses. `nanohpc deploy` from the administrator's machine stays. Each one runs the dry run first and applies only where it passed (machines whose dry run failed are left out; nothing is applied when the front node or the home machine fails), and alerts on any failure.
 
 ### Commands

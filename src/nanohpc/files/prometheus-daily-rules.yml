@@ -31,11 +31,11 @@ groups:
       - record: cluster_daily_gpu_power_watts
         expr: avg_over_time(cluster:gpu_power_watts_fresh[24h])
       - record: cluster_daily_allocated_gpu_hours_total
-        expr: last_over_time(cluster_allocated_gpu_hours[24h])
+        expr: last_over_time(cluster_allocated_gpu_hours{user!~"__NANOHPC_TEST_ACCOUNT_REGEX__"}[24h])
       - record: cluster_daily_decayed_gpu_hours
-        expr: last_over_time(cluster_decayed_gpu_hours[24h])
+        expr: last_over_time(cluster_decayed_gpu_hours{user!~"__NANOHPC_TEST_ACCOUNT_REGEX__"}[24h])
       - record: cluster_daily_fairshare_factor
-        expr: last_over_time(cluster_fairshare_factor[24h])
+        expr: last_over_time(cluster_fairshare_factor{user!~"__NANOHPC_TEST_ACCOUNT_REGEX__"}[24h])
       - record: cluster_daily_pending_jobs_max
         expr: max_over_time(cluster_pending_jobs[24h])
       - record: cluster_daily_running_jobs_max

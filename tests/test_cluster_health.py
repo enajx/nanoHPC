@@ -21,6 +21,8 @@ BROKEN_HOME_REPORT = [
     "ok    disk /: 12% space, 12% inodes used (warning from 90%)",
     "ok    service nanohpc-node-exporter (metrics)",
     "ok    metrics certificate valid for at least 30 more days",
+    "ok    user check timer",
+    "ok    the user check's last run worked",
     "ok    /home is mounted",
     "FAIL  service nfs-server",
     "ok    home quota reader timer",
@@ -35,6 +37,8 @@ BROKEN_HOME_STATES = {
     "disk /": "0",
     "service nanohpc-node-exporter": "0",
     "metrics certificate valid for at least 30 more days": "0",
+    "user check timer": "0",
+    "the user check's last run worked": "0",
     "/home is mounted": "0",
     "service nfs-server": "2",
     "home quota reader timer": "0",
@@ -209,6 +213,54 @@ class ClusterHealthMetricsTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 lines = [line for line in result.stdout.splitlines() if "backup" in line]
                 self.assertEqual(lines, expected)
+
+    def test_user_check_failed_timer_run_is_reported_on_slurm_machines(self) -> None:
+        """A failed scanner run is a health failure and has a failing metric on a non-front machine."""
+        for failed_unit, label in (
+            ("nanohpc-user-check.timer", "user check timer"),
+            ("nanohpc-user-check.service", "the user check's last run worked"),
+        ):
+            with (
+                self.subTest(failed_unit=failed_unit),
+                tempfile.TemporaryDirectory(prefix="cluster-health-") as directory,
+            ):
+                folder = Path(directory)
+                environment = make_machine(folder, "home", failed_unit)
+                metrics = folder / "health.prom"
+                result = run(["--metrics", str(metrics)], environment)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"FAIL  {label}", result.stdout)
+                states, _ = read_states(metrics)
+                self.assertEqual(states[label], "2")
+
+    def test_notifier_failure_is_checked_when_slack_is_enabled_on_slurm_front(self) -> None:
+        """The Slack sender is checked from intended alert settings, even if its webhook is missing."""
+        for failed_unit, label in (
+            ("nanohpc-user-check-notify.timer", "user check channel notifier timer"),
+            ("nanohpc-user-check-notify.service", "the user check channel notifier's last run worked"),
+        ):
+            with (
+                self.subTest(failed_unit=failed_unit),
+                tempfile.TemporaryDirectory(prefix="cluster-health-") as directory,
+            ):
+                folder = Path(directory)
+                environment = make_machine(folder, "front", failed_unit)
+                root = folder / "root"
+                units = root / "etc/systemd/system"
+                units.mkdir(parents=True)
+                (units / "nanohpc-user-check.timer").write_text("installed\n")
+                alerts = root / "etc/nanohpc/alertmanager"
+                alerts.mkdir()
+                (alerts / "alertmanager.yml").write_text("route:\n  receiver: slack\n")
+                result = run([], environment)
+                self.assertIn(f"FAIL  {label}", result.stdout)
+                (alerts / "alertmanager.yml").write_text("route:\n  receiver: none\n")
+                off = run([], environment)
+                self.assertNotIn("user check channel notifier", off.stdout)
+                (root / "etc/nanohpc/mode").write_text("monitor\n")
+                monitor = run([], environment)
+                self.assertNotIn("user check channel notifier", monitor.stdout)
+                self.assertNotIn("user check timer", monitor.stdout)
 
     def test_same_id_keeps_worst_state_and_values_are_escaped(self) -> None:
         """Checks that give the same id make one series with the worst state; quotes, backslashes, newlines escaped."""

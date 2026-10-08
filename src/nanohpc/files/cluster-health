@@ -217,6 +217,11 @@ if test "$mode" = monitor; then
   exit "$problems"
 fi
 
+# The user check runs on every Slurm machine. A failed last run can leave new
+# tunnels or lasting findings unseen, even while its timer is still active.
+check "user check timer" systemctl is-active --quiet nanohpc-user-check.timer
+check "the user check's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-user-check.service'
+
 
 if has front || has compute; then
   check "service munge" systemctl is-active --quiet munge
@@ -263,6 +268,14 @@ if has front; then
   for service in mariadb slurmdbd slurmctld nanohpc-prometheus nanohpc-history nanohpc-alertmanager nanohpc-grafana; do
     check "service $service" systemctl is-active --quiet "$service"
   done
+  # The Alertmanager route records whether Slack was enabled at deploy time.
+  # Do not hide a broken notifier merely because its webhook file is missing.
+  if test -f "$root/etc/systemd/system/nanohpc-user-check.timer" && \
+      grep -Eq '^[[:space:]]*receiver: slack$' "$root/etc/nanohpc/alertmanager/alertmanager.yml" 2>/dev/null; then
+    check "user check channel notifier timer" systemctl is-active --quiet nanohpc-user-check-notify.timer
+    check "the user check channel notifier's last run worked" sh -c \
+      '! systemctl is-failed --quiet nanohpc-user-check-notify.service'
+  fi
   check "the Slurm controller answers" scontrol ping
   if test -f /etc/systemd/system/nanohpc-auto-deploy.timer; then
     check "automatic deploy timer" systemctl is-active --quiet nanohpc-auto-deploy.timer

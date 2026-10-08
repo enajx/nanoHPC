@@ -75,7 +75,8 @@ Tech stack. Most of it comes from the source deployment; changes from it are not
 - **Python collector** (`cluster-monitor-snapshot`) that writes a `status.json` snapshot every 30 seconds for the website.
 - **React + TypeScript + Vite** website, shipped prebuilt in the package (or built on the machine serving it), served by its own **nginx** on the front node or monitor host over HTTPS (Let's Encrypt or the administrator's own certificate), under a configurable path. Monitor mode shows Overview, Machines, Usage, and Users without job or queue claims.
 - **Slack alerts** from health checks (optional), and **automatic redeploy** when the administrator's configuration repository changes (optional).
-- Fixed install paths on every cluster (`/etc/nanohpc`, `/var/lib/nanohpc`). The cluster name only appears in the website, dashboards, and Slurm.
+- **User-process check** every minute on Slurm-mode machines: findings go to Prometheus; user tunnels are stopped unless a named user, program, and machine are allowed in `cluster.yml`. The front node sends Slack channel reports when enabled, plus private notices for lasting findings when a user's Slack ID and a bot token are configured. See [rogue-users-checks.md](md/rogue-users-checks.md).
+- Fixed install paths on every cluster (`/etc/nanohpc`, `/var/lib/nanohpc`). Removing remaining hardcoded site names is still planned in [TODO.md](TODO.md).
 - **Python `unittest`** and **Playwright** browser tests. **Lima** VMs for the simulated test cluster ([testing setup](md/testing.md)).
 
 Main components:
@@ -87,6 +88,7 @@ Main components:
 - **Shared datasets machine** (optional): serves `/shared/datasets` read-only to compute nodes from an administrator-prepared disk.
 - **Backup machine** (optional): receives the nightly `/home` backup. The backup can also go to an outside SSH server.
 - **Compute nodes**: `slurmd`, node and GPU exporters, local scratch. GPU or CPU-only.
+- **User-process check**: a timer on each Slurm-mode machine publishes findings through node_exporter; the front node sends configured Slack notices.
 - **Monitor host and machines**: the host runs Prometheus, Grafana, alerts, the collector, and the website. Each directly used machine runs node and optional GPU exporters. The monitor host can also run work.
 - **Website**: reads live data only from `status.json` and the embedded Grafana dashboards, so new machines appear without code changes. Public views are read-only. Administration is over SSH only.
 
@@ -97,8 +99,10 @@ flowchart LR
   ANS --> SL[Slurm mode: front + compute machines]
   ANS --> MO[Monitor mode: monitor host + machines]
   SL --> EXP[Machine + GPU metrics]
+  SL --> UC[User-process check]
   MO --> EXP
   EXP --> PROM[Prometheus + alerts]
+  UC --> PROM
   PROM --> COL[Status collector]
   PROM --> GRAF[Grafana]
   COL --> WEB[HTTPS website]
@@ -122,7 +126,9 @@ flowchart LR
 - Built: monitor-only deployment without Slurm: a monitor-mode `cluster.yml`, example, wizard, `deploy-monitor`, mode-aware `check`, alerts, snapshots, Grafana, and website. It leaves accounts, SSH, storage, and Slurm alone. Checked on three Ubuntu 24.04 VMs, including a node-only deploy. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
 - Published: the [public demo](https://najarro.science/nanoHPC/) uses fictional cluster data and four fixed Grafana snapshots. GitHub Pages rebuilds it from `main`; the live pages and snapshots were checked in Chromium. See [DONE.md](md/DONE.md).
 - Built: the selected website follow-ups show waiting time ranges, live machine and policy details, maintenance without hiding faults, nightly speed results, and a clearer map. The demo shows fictional 1 Gb/s Link Speed values for its front and compute machines. Apptainer and both notebook helpers ran on a temporary Ubuntu 24.04 ARM VM; the built site passed 20 browser tests. See [DONE.md](md/DONE.md).
+- Built: the newer REAL website updates add a Cluster Map switch to the Overview Machines card, smaller map controls, simpler Partitions routes, booked job time limits, a compact Overview and Users page, and `test_account` filtering for user lists and metrics. The demo has no test-account user. The real Machines page colors `/home` speed from its displayed write speed. The built site and demo passed browser tests. See [DONE.md](md/DONE.md).
 - Built: nightly `/home` backup to the backup machine or an outside SSH server, and Slack alerts from the front node when a check starts failing or recovers (M6a).
+- Built: the minute user-process check on every Slurm-mode machine, configurable tunnel exceptions, channel reports, and optional private Slack notices for lasting findings. A two-machine Ubuntu 24.04 VM test stopped a tunnel, posted through a local webhook stand-in, and kept an allowed tunnel running. The full Python suite passed (495 tests run, 32 skipped). See [rogue-users-checks.md](md/rogue-users-checks.md), [testing.md](md/testing.md), and [DONE.md](md/DONE.md).
 - Built: automatic deploys (M6b): the front node deploys the whole cluster from a branch of the configuration repository by itself (every few minutes or on a GitHub webhook), with the pinned nanoHPC version, its root login key limited to the front node, and failed commits reported and not retried.
 - Built: the setup wizard (M7): `nanohpc init`, a full-screen terminal app that probes the machines and writes or edits `cluster.yml`; `nanohpc fix-uid`, which rechecks its preview and changes ownership only on the listed local files; [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md) for agents.
 - Built: a dry run before every deploy (M8a): every deploy, manual or automatic, previews the changes on every machine first; machines whose dry run fails are left out (nothing is deployed when the front node or the home machine fails).
@@ -142,15 +148,7 @@ flowchart LR
 - Checked: after an Ubuntu 24.04 kernel update and reboot, the home server still mounts `/home` with active quotas; a deploy works both before and after the update. See [testing.md](md/testing.md).
 - Next: v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
-- Known gaps to close before it can be reused (from a review of the source deployment):
-  - Site-specific parts are mixed into the main setup and must be removed.
-  - The cluster name is hardcoded in paths, dashboard IDs, and website code.
-  - The user guide on the website is written for one site and must come from configuration.
-  - Slurm installation needs packages built by hand.
-  - Accounts are only checked, not created: users must already exist with matching UIDs.
-  - Only GPU compute nodes and the fixed partitions `main` and `interactive` are allowed.
-  - There is no single command to set up a new cluster or add a node. The setup is a series of manual playbooks, and certificates and the Munge key are copied by hand.
-  - It has no simulated cluster: tests run only locally with mocks, or live on the production machines.
+- Remaining work before release is tracked in [TODO.md](TODO.md), including automatic security updates, remaining hardcoded site names, node additions and redeploy checks, and wider VM validation.
 
 ## Notes
 

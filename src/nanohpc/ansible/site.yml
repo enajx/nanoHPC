@@ -194,6 +194,11 @@
   become: true
   roles: [metrics_tls, node_metrics, machine_metrics]
 
+- name: User-process checks on every machine
+  hosts: all
+  become: true
+  roles: [user_check]
+
 - name: Prometheus, alerts, and Grafana on the front node
   hosts: role_front
   become: true
