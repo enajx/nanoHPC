@@ -2,6 +2,14 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-08: REAL website updates and test accounts
+
+- Overview opens with a Cluster Map inside the Machines card, with a separately remembered List view. Both maps have smaller layout buttons and simpler Partitions pipes. The header, cards, job lists, and footer are more compact; the footer shows data freshness.
+- Running jobs and Top of queue show each job's booked time limit. Users opens with GPU usage history beside a compact ranking on wide screens, and shows rounded GPU-hours and fair-share values.
+- Slurm accounts marked `test_account: true` stay in jobs and cluster totals but are excluded from user rankings, cards, current per-user metrics, daily per-user records, and past data in the per-user Grafana panels. The public demo has the new layout and sample job limits.
+- The built site passed 23 browser tests, including a regression for demo map measurements after the snapshot loads. Collector, config, Grafana, and Prometheus rule tests passed: 58 tests, with two skipped because `promtool` was unavailable. Separate agents reviewed the frontend and data changes; their findings were fixed.
+- Files: `src/nanohpc/website-source/{src/,scripts/build-demo.mjs,tests/}`, `src/nanohpc/website/`, `src/nanohpc/{config.py,files/cluster-monitor-snapshot,files/grafana/,files/prometheus-daily-rules.yml,ansible/roles/{monitoring,grafana,prometheus}/tasks/main.yml}`, `tests/test_{config,monitor_snapshot,dashboards,prometheus_rules}.py`.
+
 ## 2026-10-07: front-node updates and shared maintenance lock
 
 - `nanohpc update` now accepts the configured front node with a matching dry run and confirmation. Ordinary updates can run while jobs are active. For named care groups it requires an empty queue, drains available compute nodes so new submissions wait, and stops if a job starts during the drain. After installation it checks fresh root and administrator logins, saved restart settings, Slurm, `/home`, the website, and front-node services. It restores scheduling only after the checks pass. A needed front-node restart is reported as a separate task. A failed update keeps or restores the affected drains and reports nodes needing review.

@@ -27,7 +27,8 @@ flowchart LR
   W --> DEMO[Public demo build]:::done
   DEMO --> DP[Publish demo]:::done
   DP --> WF[Selected website follow-ups]:::done
-  WF --> R[Release v0.1]:::queued
+  WF --> NW[REAL website updates]:::done
+  NW --> R[Release v0.1]:::queued
   BK --> R
   WZ --> R
   N --> R
@@ -118,8 +119,13 @@ flowchart LR
 - [x] Grafana dashboards (queue, queue history, GPU usage, machines, long-term history) work for any number of nodes, GPU and CPU-only.
 - [x] The status collector writes the website snapshot every 30 seconds.
 - [x] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
-- [ ] Reduce the size of things on the website's Overview page so they fit without scrolling.
-- [ ] The Overview Machines card shows the Cluster Map by default and has a button to switch between that map and the current machine table inside the card.
+- [ ] Reduce the size of things on the website's Overview page so they fit without scrolling. The compact update still scrolls by 81 px at 1600 × 900 in the demo.
+- [x] Overview has a smaller header, cards, job lists, and footer update time. See [DONE.md](md/DONE.md).
+- [x] The Overview Machines card shows the Cluster Map by default and has buttons to switch between that map and the current machine table inside the card, remembering its choice separately from the Machines page. See [DONE.md](md/DONE.md).
+- [x] The Cluster Map uses smaller layout buttons and simple branching pipes in the Partitions view on the Overview and Machines pages. See [DONE.md](md/DONE.md).
+- [x] Overview job tables show each job's booked time limit, including partition defaults and jobs without a limit. See [DONE.md](md/DONE.md).
+- [x] The Users page places GPU usage history beside a compact user ranking on wide screens, with whole GPU-hours and two-decimal fair-share values. See [DONE.md](md/DONE.md).
+- [x] Accounts marked `test_account: true` stay in jobs and totals but are absent from user lists, per-user metrics, and historical per-user Grafana panels. See [DONE.md](md/DONE.md).
 - [ ] The Machines tab's Machines card has a `Node type` column showing each machine's configured role, including front, compute, and storage nodes.
 - [x] In the public demo, the front node shows `1 Gb/s` Link Speed in the Machines tab's machine table, matching the compute nodes. See [DONE.md](md/DONE.md).
 - [x] Cluster name, logo, login address, and the user guide on the website come from the configuration.

@@ -6,7 +6,8 @@ import { mapAreas } from './cluster-map/areas'
 
 const layouts: [LayoutName, string][] = [['default', 'Default'], ['partitions', 'Partitions'], ['geographic', 'Geographic']]
 const layoutStorageKey = 'cluster-map-layout'
-const shownStorageKey = 'cluster-map-shown'
+export const machinesMapKey = 'cluster-map-shown'
+export const overviewMapKey = 'overview-cluster-map-shown'
 
 /** Measurements from monitoring, per machine name; null until loaded or when the query fails. */
 type Measured = { nfs: Map<string, number>; writes: Map<string, number>; busy: Map<string, number[]> }
@@ -53,11 +54,20 @@ async function measure(signal: AbortSignal, mode: 'slurm' | 'monitor'): Promise<
 }
 
 /** Read whether the map is shown; on until the visitor hides it. */
-export function storedMapShown(): boolean {
+export function storedMapShown(storageKey: string): boolean {
   try {
-    return localStorage.getItem(shownStorageKey) !== 'false'
+    return localStorage.getItem(storageKey) !== 'false'
   } catch {
     return true
+  }
+}
+
+/** Remember each map's visibility independently. */
+export function rememberMapShown(storageKey: string, shown: boolean): void {
+  try {
+    localStorage.setItem(storageKey, String(shown))
+  } catch {
+    // Storage is blocked; the map opens again next time.
   }
 }
 
@@ -65,11 +75,7 @@ export function storedMapShown(): boolean {
 export function MapToggle({ shown, onChange }: { shown: boolean; onChange: (shown: boolean) => void }) {
   const toggle = () => {
     onChange(!shown)
-    try {
-      localStorage.setItem(shownStorageKey, String(!shown))
-    } catch {
-      // Storage is blocked; the map is shown next time.
-    }
+    rememberMapShown(machinesMapKey, !shown)
   }
   return <button type="button" className="markdown-link map-toggle" aria-label="Show cluster map" aria-pressed={shown} title={shown ? 'Hide the cluster map' : 'Show the cluster map'} onClick={toggle}>Cluster Map</button>
 }
@@ -126,12 +132,13 @@ function describe(machines: MapMachine[], layout: LayoutName): string {
 }
 
 /** Animated isometric map of the machines Slurm knows, with traffic from their running jobs. */
-export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, demo, mode }: { nodes: Machine[]; jobs: OverviewJob[]; pendingJobs: number; stale: boolean; refreshSeconds: number; demo?: boolean; mode?: 'slurm' | 'monitor' }) {
+export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, demo, mode, maxHeight }: { nodes: Machine[]; jobs: OverviewJob[]; pendingJobs: number; stale: boolean; refreshSeconds: number; demo?: boolean; mode?: 'slurm' | 'monitor'; maxHeight?: number | null }) {
   const box = useRef<HTMLDivElement>(null)
   const sketch = useRef<Sketch | null>(null)
   const [layout, setLayout] = useState<LayoutName>(storedLayout)
   const [measured, setMeasured] = useState<Measured | null>(null)
   const machines = mapMachines(nodes, jobs, pendingJobs, measured, mode ?? 'slurm')
+  const demoNodeKey = demo ? nodes.map(node => `${node.name}:${node.total_gpus ?? 0}`).join('|') : ''
 
   // Measurements refresh with the snapshot; a failed query means no traffic is shown, not zero.
   useEffect(() => {
@@ -148,7 +155,7 @@ export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, de
     load()
     const timer = window.setInterval(load, Math.max(5, refreshSeconds) * 1000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [refreshSeconds, demo, mode])
+  }, [refreshSeconds, demo, mode, demoNodeKey])
   const latest = useRef({ machines, stale })
   latest.current = { machines, stale }
 
@@ -161,7 +168,7 @@ export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, de
     if (!('regeneratorRuntime' in scope)) scope.regeneratorRuntime = undefined
     import('./cluster-map/sketch').then(({ createClusterMap }) => {
       if (cancelled || !box.current) return
-      sketch.current = createClusterMap(box.current, layout)
+      sketch.current = createClusterMap(box.current, layout, maxHeight ?? null)
       sketch.current.update(latest.current.machines, latest.current.stale)
     })
     return () => { cancelled = true; sketch.current?.remove(); sketch.current = null }

@@ -158,7 +158,7 @@
             {% if nanohpc.mode | default('slurm') != 'monitor' %}--accounting-start {{ (accounting_start.content | b64decode | trim) if accounting_start.content is defined else ansible_facts.date_time.date ~ 'T' ~ ansible_facts.date_time.time }} \
             {% endif %}
             --prometheus-url http://127.0.0.1:9090 \
-            --users {{ (nanohpc.users if nanohpc.mode | default('slurm') == 'monitor' else nanohpc.users | map(attribute='name') | list) | join(' ') }}
+            --users {{ (nanohpc.users if nanohpc.mode | default('slurm') == 'monitor' else nanohpc.users | map(attribute='name') | list) | join(' ') }}{{ (' --exclude-users ' ~ (nanohpc.users | selectattr('test_account', 'defined') | selectattr('test_account') | map(attribute='name') | join(' '))) if nanohpc.mode | default('slurm') != 'monitor' else '' }}
           TimeoutStartSec=90
           UMask=0022
           NoNewPrivileges=true

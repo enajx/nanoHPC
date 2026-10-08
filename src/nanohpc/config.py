@@ -396,7 +396,7 @@ def check_users(checker: Checker, value: Any) -> list[dict[str, Any]]:
     uids: dict[int, str] = {}
     for index, item in enumerate(value):
         path = f"users[{index}]"
-        user = checker.mapping(item, path, ("name", "uid", "ssh_keys"), ())
+        user = checker.mapping(item, path, ("name", "uid", "ssh_keys"), ("test_account",))
         if user is None:
             continue
         name = checker.matches(user.get("name"), USER_NAME, f"{path}.name", "a lowercase Linux user name")
@@ -419,6 +419,8 @@ def check_users(checker: Checker, value: Any) -> list[dict[str, Any]]:
             else:
                 uids[uid] = str(name)
         keys = user.get("ssh_keys")
+        if "test_account" in user:
+            checker.boolean(user["test_account"], f"{path}.test_account")
         if "ssh_keys" in user:
             if not isinstance(keys, list) or not keys:
                 checker.fail(f"{path}.ssh_keys", "must be a non-empty list of public keys")

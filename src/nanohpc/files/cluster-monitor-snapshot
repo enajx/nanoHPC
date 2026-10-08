@@ -41,6 +41,7 @@ Arguments (all set by the operator, never from the website):
                              from more than one machine are an error.
   --users NAME [NAME ...]    Slurm mode: required cluster users for rankings and cards. Monitor mode: optional
                              login names for the website.
+  --exclude-users NAME [...] Slurm mode: test accounts omitted from rankings, cards, and per-user metrics.
 """
 
 import argparse
@@ -361,6 +362,7 @@ def overview_jobs(jobs: list[dict], now: int) -> list[dict]:
                 "node": job.get("nodes") or "",
                 "priority": job["priority"]["number"],
                 "seconds": max(0, now - (start if state == "RUNNING" and start else submit)),
+                "time_limit_minutes": (None if job["time_limit"]["infinite"] else job["time_limit"]["number"]),
             }
         )
     return result
@@ -476,6 +478,7 @@ def collect(
     accounting_start: str,
     prometheus: str | None,
     users: list[str],
+    excluded_users: set[str],
 ) -> tuple[dict, str]:
     """Read current scheduler state and allocation accounting using fixed commands."""
     nodes = [fields(line) for line in read(["scontrol", "show", "nodes", "--oneliner"]).splitlines()]
@@ -559,7 +562,7 @@ def collect(
             "fairshare": float(share),
         }
         for user, raw, share in (row[:3] for row in shares)
-        if user.strip() in users and share.strip()
+        if user.strip() in users and user.strip() not in excluded_users and share.strip()
     ]
     ranking.sort(key=lambda row: (-row["fairshare"], row["user"]))
     policies = []
@@ -604,7 +607,7 @@ def collect(
             **{f"gpu_hours_{period}": windows[user][period] for period in ("7d", "30d", "365d")},
             "home": quotas.get(user),
         }
-        for user in sorted(set(users))
+        for user in sorted(set(users) - excluded_users)
     ]
     slurm_nodes = [node["NodeName"] for node in nodes]
     fronts = [name for name, machine in machines.items() if machine["role"] == "front"]
@@ -768,6 +771,7 @@ def main() -> None:
     parser.add_argument("--accounting-start")
     parser.add_argument("--prometheus-url")
     parser.add_argument("--users", nargs="*")
+    parser.add_argument("--exclude-users", nargs="*")
     args = parser.parse_args()
     if args.refresh_seconds < 5:
         parser.error("refresh interval must be at least five seconds")
@@ -794,6 +798,7 @@ def main() -> None:
             args.accounting_start,
             args.prometheus_url,
             args.users,
+            set(args.exclude_users or []),
         )
         machine_document = machines_markdown(result, args.cluster_name)
     atomic_write(args.metrics, metrics)

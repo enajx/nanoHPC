@@ -438,6 +438,22 @@ class SecretsTest(unittest.TestCase):
             self.assertEqual(config["secrets"], {"slack_webhook": None, "deploy_webhook": None})
 
 
+class TestAccountConfigTest(unittest.TestCase):
+    """Slurm users may be marked as test accounts without changing their login setup."""
+
+    def test_test_account_is_optional_and_boolean(self) -> None:
+        raw = example()
+        raw["users"][0]["test_account"] = True
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertTrue(config["users"][0]["test_account"])
+        self.assertNotIn("test_account", config["users"][1])
+
+        raw["users"][0]["test_account"] = "yes"
+        _, errors = check_config(raw)
+        self.assertIn("users[0].test_account must be true or false", errors)
+
+
 class InvalidConfigTest(unittest.TestCase):
     """Each wrong configuration is rejected with a message naming the field."""
 

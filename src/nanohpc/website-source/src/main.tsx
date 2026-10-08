@@ -9,10 +9,9 @@ import { OverviewJobs, type OverviewJob } from './overview-jobs'
 import { UserCards, type User } from './users'
 import { policyExplanation, siteValues } from './documentation'
 import { loadSiteSettings, type SiteSettings } from './site'
-import { PanelLink } from './panel-link'
 import { AccentButton, storedAccent } from './accent-button'
 import { FontButton, storedFont } from './font-button'
-import { ClusterMap, MapToggle, storedMapShown } from './cluster-map'
+import { ClusterMap, MapToggle, machinesMapKey, overviewMapKey, rememberMapShown, storedMapShown } from './cluster-map'
 import { DemoDashboard } from './demo-dashboard'
 import { AboutButton } from './about-button'
 import { SettingsButton } from './settings-button'
@@ -151,9 +150,8 @@ function Dashboard({ name, path }: { name: string; path: string }) {
 }
 
 /** Reuse the same observed machine states on Overview and Machines. */
-function MachineTable({ data, stale, link, demo }: { data: Snapshot | null; stale: boolean; link: string | null; demo: boolean }) {
-  return <section className="panel machine-list">
-    {link ? <PanelLink href={link} title="Machines"/> : <div className="panel-heading"><h2>Machines</h2></div>}
+function MachineTable({ data, stale, link, demo, embedded }: { data: Snapshot | null; stale: boolean; link: string | null; demo: boolean; embedded: boolean }) {
+  const content = <>
     <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>State</th><th>{demo ? 'Link Speed' : 'Speed /home | Internet'}</th><th>GPUs</th></tr></thead>
       <tbody>{data?.nodes.filter(node => !link || node.role === 'Compute').map((node) => {
         const health = stale ? 'Unknown' : node.health ?? 'Unknown'
@@ -162,6 +160,27 @@ function MachineTable({ data, stale, link, demo }: { data: Snapshot | null; stal
         return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a>{!link && <span className="pill state-neutral role-tag">{node.role}</span>}</th><td><MachineLabel node={node} topic="health" stale={stale} demo={demo} className={`state-${health.toLowerCase()}`} label={healthText(health)}>{healthText(health)}</MachineLabel></td><td><span className={`pill ${state.startsWith('FPGA') && !stale ? 'state-active' : `state-${state.toLowerCase()}`}`}>{state}</span></td><td><SpeedBoxes node={node} stale={stale} demo={demo} named={false}/></td><td><span className="pill state-neutral">{available}</span></td></tr>
       })}</tbody></table></div>
     {!data && <p role="status">Machine status unavailable.</p>}
+  </>
+  if (embedded) return content
+  return <section className="panel machine-list"><div className="panel-heading"><h2>Machines</h2></div>{content}</section>
+}
+
+/** Show the map by default and remember the Overview card's view separately from the Machines tab. */
+function OverviewMachines({ data, stale, refreshSeconds, demo }: { data: Snapshot | null; stale: boolean; refreshSeconds: number; demo: boolean }) {
+  const [mapShown, setMapShown] = useState(() => storedMapShown(overviewMapKey))
+  const show = (next: boolean): void => { setMapShown(next); rememberMapShown(overviewMapKey, next) }
+  return <section className="panel machine-list overview-machines">
+    <div className="panel-heading gpu-chart-heading">
+      <a className="panel-link gpu-chart-title" href="#machines"><h2>Machines</h2></a>
+      <div className="gpu-chart-ranges" role="group" aria-label="Machines view">
+        <button type="button" aria-pressed={!mapShown} onClick={() => show(false)}>List view</button>
+        <button type="button" aria-pressed={mapShown} onClick={() => show(true)}>Cluster Map</button>
+      </div>
+      <a className="panel-link panel-link-arrow" href="#machines" aria-hidden="true" tabIndex={-1}>→</a>
+    </div>
+    {mapShown
+      ? <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale} refreshSeconds={refreshSeconds} demo={demo} maxHeight={340}/>
+      : <MachineTable data={data} stale={stale} link="#machines" demo={demo} embedded={true}/>}
   </section>
 }
 
@@ -177,7 +196,7 @@ function GenericMark() {
 
 function App({ site }: { site: SiteSettings }) {
   const [page, setPage] = useState<Page>(currentPage)
-  const [mapShown, setMapShown] = useState(storedMapShown)
+  const [mapShown, setMapShown] = useState(() => storedMapShown(machinesMapKey))
   const [queueState, setQueueState] = useState(window.location.hash.split('?')[1] ?? '')
   const demo = site.demo === true
   const [demoUpdatedAt, setDemoUpdatedAt] = useState(Date.now())
@@ -214,6 +233,7 @@ function App({ site }: { site: SiteSettings }) {
   }, [page, requestedMachine, requestedUser, hasData])
   const isGuide = page === 'docs'
   const markdownPage = isGuide ? 'docs' : page === 'machines' ? 'machines' : page === 'policy' ? 'policy' : null
+  const freshness = <div className={`freshness ${failed || stale ? 'warning' : ''}`}><span className="status-dot"/>{demo ? 'Updates every 30s' : failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{(demo || data) && <small>Last update {new Date(demo ? demoUpdatedAt : data!.generated_at).toLocaleTimeString()}</small>}</div>
   return <>
     <a className="skip" href="#main" onClick={(event) => { event.preventDefault(); document.getElementById('main')?.focus() }}>Skip to content</a>
     <header className="topbar"><a href="#overview" className="brand">{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <GenericMark/>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">{demo ? 'lightweight Slurm cluster and monitoring tool' : 'Slurm cluster monitor'}</span></span></a>
@@ -223,23 +243,25 @@ function App({ site }: { site: SiteSettings }) {
       <nav aria-label="Cluster navigation">{pages.map(({ id, title, icon: Icon }) => <a key={id} href={`#${id}`} aria-current={page === id ? 'page' : undefined}><Icon size={19}/><span>{title}</span></a>)}</nav>
       <SettingsButton/>
     </aside>
-    <main id="main" tabIndex={-1}>
-      <div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}{markdownPage && <a className="markdown-link" href={`${markdownPage}.md`} aria-label={`Open ${selected.title} in Markdown`}>MD</a>}{!isGuide && <div className={`freshness ${failed || stale ? 'warning' : ''}`}><span className="status-dot"/>{demo ? 'Updates every 30s' : failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{(demo || data) && <small>Last update {new Date(demo ? demoUpdatedAt : data!.generated_at).toLocaleTimeString()}</small>}</div>}</div></div>
+    <main id="main" tabIndex={-1} className={page === 'overview' ? 'compact' : undefined}>
+      <div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}{markdownPage && <a className="markdown-link" href={`${markdownPage}.md`} aria-label={`Open ${selected.title} in Markdown`}>MD</a>}</div></div>
       {!isGuide && (failed || stale) && <div role="alert" className="notice">{data ? 'Showing stale data.' : 'Monitoring data unavailable.'}</div>}
       {page === 'overview' && <>
         <section aria-label="Cluster summary" className="stat-grid">
           {[['Running jobs', data?.running_jobs, '#queue?state=RUNNING'], ['Pending jobs', data?.pending_jobs, '#queue?state=PENDING'], ['GPUs allocated', data ? (data.queue_paused ? '0 / 0' : `${data.allocated_gpus} / ${data.total_gpus}`) : undefined, '#machines']].map(([label, value, href]) => <a key={label} className={`stat panel${label === 'GPUs allocated' && data?.queue_paused ? ' paused' : ''}`} href={String(href)}><span>{label}</span><strong>{value ?? '—'}</strong></a>)}
           <WaitingTimeCard data={data}/>
         </section>
-        <div className="overview-machine-charts"><MachineTable data={data} stale={stale || failed} link="#machines" demo={demo}/><GpuAllocationChart nodes={data?.nodes ?? null} refreshSeconds={refresh} failed={failed} demo={demo}/></div>
+        <div className="overview-machine-charts"><OverviewMachines data={data} stale={stale || failed} refreshSeconds={refresh} demo={demo}/><GpuAllocationChart nodes={data?.nodes ?? null} refreshSeconds={refresh} failed={failed} demo={demo}/></div>
         <OverviewJobs jobs={stale || failed ? null : data?.jobs ?? null}/>
       </>}
       {page === 'queue' && <div className="queue-dashboards">{dashboard('Running Jobs and Queue', 'queue', `${graph('nanohpc-queue', 'now-6h')}&var-state=${encodeURIComponent(queueFilter)}`)}{dashboard('Queue history', 'queue-history', graph('nanohpc-queue-history', 'now-7d'))}</div>}
-      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh} demo={demo}/>}<MachineTable data={data} stale={stale || failed} link={null} demo={demo}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed} roles={['Front node', 'Compute', 'Storage']} demo={demo}/></>}
+      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh} demo={demo}/>}<MachineTable data={data} stale={stale || failed} link={null} demo={demo} embedded={false}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed} roles={['Front node', 'Compute', 'Storage']} demo={demo}/></>}
       {page === 'users' && <>
-        <section className="panel table-panel"><h2>User ranking</h2><div className="table-scroll"><table><thead><tr><th>Rank</th><th>User</th><th>Allocated GPU-hours</th><th>Fair-share factor</th></tr></thead><tbody>{data && [...data.ranking].sort((left, right) => right.gpu_hours - left.gpu_hours || left.user.localeCompare(right.user)).map((row, index) => <tr key={row.user}><td>{index + 1}</td><th><a className="user-link" href={`#users?user=${encodeURIComponent(row.user)}`}>{row.user}</a></th><td>{row.gpu_hours.toFixed(3)}</td><td>{row.fairshare.toFixed(4)}</td></tr>)}</tbody></table></div></section>
+        <div className="users-top">
+          {dashboard('GPU usage history per user', 'usage', graph('nanohpc-usage', 'now-7d'))}
+          <section className="panel user-ranking"><div className="panel-heading"><h2>User ranking</h2></div><div className="table-scroll"><table><thead><tr><th>Rank</th><th>User</th><th title="Allocated GPU-hours">GPU-hours</th><th title="Fair-share factor">Fair-share</th></tr></thead><tbody>{data && [...data.ranking].sort((left, right) => right.gpu_hours - left.gpu_hours || left.user.localeCompare(right.user)).map((row, index) => <tr key={row.user}><td>{index + 1}</td><th><a className="user-link" href={`#users?user=${encodeURIComponent(row.user)}`}>{row.user}</a></th><td>{row.gpu_hours.toFixed(0)}</td><td>{row.fairshare.toFixed(2)}</td></tr>)}</tbody></table></div></section>
+        </div>
         <UserCards users={data?.users ?? []} stale={stale || failed}/>
-        {dashboard('GPU usage history', 'usage', graph('nanohpc-usage', 'now-7d'))}
       </>}
       {page === 'usage' && dashboard('Machine and GPU metrics', 'machines', `${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0`)}
       {isGuide && <HowToUse values={siteValues(site)} partitions={data?.partitions ?? null}/>}
@@ -250,7 +272,7 @@ function App({ site }: { site: SiteSettings }) {
           {data && <PartitionBox partitions={data.partitions ?? []} nodes={data.nodes} policies={data.policies}/>}
         </div>
       </>}
-      <footer><p>{demo ? 'This demo' : site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
+      <footer>{!isGuide && freshness}<p>{demo ? 'This demo' : site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
     </main></div>
   </>
 }

@@ -28,9 +28,9 @@ export function UserCards({ users, stale }: { users: User[]; stale: boolean }) {
         {rank && <span className={`rank-badge rank-${rank}`} title={`#${rank} by GPU-hours in the last 30 days`}><Medal aria-hidden="true" size={16}/>{`#${rank}`}</span>}
       </div></div>
       <dl className="compact-details">
-        <div><dt>GPU hours · 7 days</dt><dd>{stale ? 'Unknown' : row.gpu_hours_7d.toFixed(2)}</dd></div>
-        <div><dt>GPU hours · 30 days</dt><dd>{stale ? 'Unknown' : row.gpu_hours_30d.toFixed(2)}</dd></div>
-        <div><dt>GPU hours · 365 days</dt><dd>{stale ? 'Unknown' : row.gpu_hours_365d.toFixed(2)}</dd></div>
+        <div><dt>GPU hours · 7 days</dt><dd>{stale ? 'Unknown' : row.gpu_hours_7d.toFixed(0)}</dd></div>
+        <div><dt>GPU hours · 30 days</dt><dd>{stale ? 'Unknown' : row.gpu_hours_30d.toFixed(0)}</dd></div>
+        <div><dt>GPU hours · 365 days</dt><dd>{stale ? 'Unknown' : row.gpu_hours_365d.toFixed(0)}</dd></div>
         <div><dt>Home storage</dt><dd>{size(home?.used_bytes)} / {size(home?.hard_bytes)}</dd></div>
       </dl>
     </section>

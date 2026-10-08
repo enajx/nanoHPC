@@ -185,7 +185,20 @@
     owner: root
     group: root
     mode: "0644"
-  loop: "{{ ['machines.json', 'history.json'] if nanohpc.mode | default('slurm') == 'monitor' else ['overview.json', 'machines.json', 'usage.json', 'history.json', 'queue.json', 'queue-history.json'] }}"
+  loop: "{{ ['machines.json', 'history.json'] if nanohpc.mode | default('slurm') == 'monitor' else ['overview.json', 'machines.json', 'queue.json', 'queue-history.json'] }}"
+
+- name: Install per-user dashboards with the test accounts excluded
+  ansible.builtin.template:
+    src: "{{ nanohpc.package_files }}/grafana/{{ item }}.json"
+    dest: "/etc/nanohpc/grafana/dashboards/{{ item }}.json"
+    owner: root
+    group: root
+    mode: "0644"
+    variable_start_string: "[%"
+    variable_end_string: "%]"
+    validate: "/usr/bin/python3 -m json.tool %s"
+  loop: [usage, history]
+  when: nanohpc.mode | default('slurm') != 'monitor'
 
 - name: Install the Grafana service
   ansible.builtin.copy:

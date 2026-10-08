@@ -46,12 +46,20 @@
   ansible.builtin.set_fact:
     promtool_pending: "{{ ansible_check_mode and prometheus_download is changed }}"
 
+- name: Prepare daily rules with test accounts excluded from Slurm user summaries
+  vars:
+    # cluster.yml validates login names as letters, digits, underscore, or hyphen, all literal in this regex.
+    daily_rules_source: "{{ nanohpc.package_files }}/prometheus-{{ 'monitor-' if nanohpc.mode | default('slurm') == 'monitor' else '' }}daily-rules.yml"
+    test_account_regex: "{{ ((nanohpc.users | selectattr('test_account', 'defined') | selectattr('test_account') | map(attribute='name') | join('|')) or 'a^') if nanohpc.mode | default('slurm') != 'monitor' else 'a^' }}"
+  ansible.builtin.set_fact:
+    daily_rules_text: "{{ lookup('file', daily_rules_source, rstrip=False) | replace('__NANOHPC_TEST_ACCOUNT_REGEX__', test_account_regex) }}"
+
 - name: Check the daily summary rules with promtool (dry run)
   ansible.builtin.include_role:
     name: dry_run_check
   vars:
-    check_content: null
-    check_source: "{{ nanohpc.package_files }}/prometheus-{{ 'monitor-' if nanohpc.mode | default('slurm') == 'monitor' else '' }}daily-rules.yml"
+    check_content: "{{ daily_rules_text }}"
+    check_source: null
     check_command: "{{ prometheus_dir }}/promtool check rules %s"
   when: ansible_check_mode and not promtool_pending
 
@@ -75,7 +83,7 @@
 
 - name: Install the daily summary rules (checked with promtool first)
   ansible.builtin.copy:
-    src: "{{ nanohpc.package_files }}/prometheus-{{ 'monitor-' if nanohpc.mode | default('slurm') == 'monitor' else '' }}daily-rules.yml"
+    content: "{{ daily_rules_text }}"
     dest: /etc/nanohpc/prometheus/daily-rules.yml
     mode: "0644"
     validate: "{{ prometheus_dir }}/promtool check rules %s"
