@@ -140,7 +140,7 @@ flowchart LR
 - [x] Anyone can read the website by default (no login); `cluster.yml` can limit it to listed networks.
 - [x] The website ships prebuilt in the nanoHPC package; `cluster.yml` can choose to build it on the front node instead.
 - [x] Let's Encrypt certificates are requested and renewed on the simulated cluster, against Pebble (Let's Encrypt's test server).
-- [ ] The Machines page shows a minimal retro-style animated diagram of the cluster architecture, which users can turn on and off with a button.
+- [x] The Machines page shows the retro-style animated Cluster Map of the cluster architecture, with a button to show or hide it. See [DONE.md](md/DONE.md).
 - [x] The machines Grafana dashboard uses fresh real readings, with gaps for outages, stale GPU data, and CPU counter resets. See [DONE.md](md/DONE.md).
 - [x] Deployed Slurm and monitor sites have a multi-select Machine filter for every machine metric panel, with All by default and repeatable `?machine=` links. See [DONE.md](md/DONE.md).
 - [ ] The machines Grafana dashboard has a total power panel at the bottom: one line, the sum of the wall power (each machine's power supply draw, read from its management chip, IPMI) of the machines chosen in the Machine dropdown; with All chosen it is the cluster total. A machine with no fresh reading drops out of the sum; machines without a management chip are not in it (from SLURM-REAL, 2026-10-09). How SLURM-REAL built it: its TODO item of 2026-10-09 and the commits it names (github.com/enajx/SLURM-REAL).

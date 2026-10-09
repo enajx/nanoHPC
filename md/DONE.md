@@ -102,6 +102,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 - At this point the Machines table listed compute machines only, without Internet. The 2026-10-06 follow-up added all roles and real Internet measurements. GPU availability has a grey box. Status labels use green for healthy and active, yellow for attention, coral for problems, and blue for idle. Cluster usage has a titled Machine and GPU metrics panel and no long-term history panel.
 - The map opens by default and offers Default, Partitions, and Geographic views. The demo groups machines into fictional buildings. The machine list and sample jobs were later revised to five machines, as recorded above.
+- The animated p5 map shows machine stacks, connecting pipes, moving shared-home traffic, and GPU activity. The Machines page has a show/hide button. On 2026-10-10 the user accepted this map as the planned animated architecture diagram; the focused served-site browser test passed again.
 - Files: `src/nanohpc/website-source/{src,scripts,tests}`, `src/nanohpc/files/cluster-monitor-snapshot`, `tests/test_monitor_snapshot.py`, `src/nanohpc/website/`.
 
 ## 2026-10-05: Grafana snapshots and Machines table
