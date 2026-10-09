@@ -1,5 +1,5 @@
 {
-  "uid": "nanohpc-history", "title": "Daily machine history", "schemaVersion": 39,
+  "uid": "nanohpc-history", "title": "[% nanohpc.cluster_name %]: Daily machine history", "schemaVersion": 39,
   "editable": false, "refresh": "30s", "time": {"from": "now-1y", "to": "now"},
   "description": "Daily summaries of measured machine and GPU use. Missing samples are not zero use.",
   "panels": [

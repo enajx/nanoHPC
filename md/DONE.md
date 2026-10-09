@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-09: configured cluster name in Grafana
+
+- Grafana's folder and all dashboard titles now show the name from `cluster.yml` in both Slurm and monitor mode. Dashboard UIDs stay fixed so the website links keep working. The website and Slurm already used the configured name, and install paths remain fixed.
+- The focused test rendered all seven dashboard files with two names and checked the folder and unchanged UIDs. `SimMonitorDeployTest` passed on fresh Ubuntu 24.04 VMs, checking the live Grafana API; Ansible syntax and Ruff checks passed. A separate agent reviewed the change. Existing installations may retain an empty old `Cluster` folder after the first redeploy; that migration was not tested.
+- Files: `src/nanohpc/ansible/roles/grafana/tasks/main.yml`, `src/nanohpc/files/grafana/`, `tests/test_grafana_names.py`, `tests/test_sim.py`, `md/testing.md`.
+
 ## 2026-10-08: REAL website updates and test accounts
 
 - Overview opens with a Cluster Map inside the Machines card, with a separately remembered List view. Both maps have smaller layout buttons and simpler Partitions pipes. The header, cards, job lists, and footer are more compact; the footer shows data freshness.

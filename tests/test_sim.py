@@ -376,6 +376,14 @@ class SimMonitorDeployTest(unittest.TestCase):
         )
         self.assertEqual(website.returncode, 0, website.stdout + website.stderr)
         self.assertEqual(json.loads(website.stdout)["mode"], "monitor")
+        cluster_name = yaml.safe_load((self.state / "cluster.yml").read_text())["cluster"]["name"]
+        grafana = self.ssh("host", "curl -fsS http://127.0.0.1:3000/cluster/grafana/api/search?type=dash-db")
+        self.assertEqual(grafana.returncode, 0, grafana.stdout + grafana.stderr)
+        dashboards = json.loads(grafana.stdout)
+        self.assertEqual({item["uid"] for item in dashboards}, {"nanohpc-machines", "nanohpc-history"})
+        for dashboard in dashboards:
+            self.assertTrue(dashboard["title"].startswith(f"{cluster_name}: "), dashboard)
+            self.assertEqual(dashboard["folderTitle"], cluster_name)
 
 
 class SimUsersBase(unittest.TestCase):
@@ -1124,6 +1132,9 @@ class SimDeployTest(SimUsersBase):
                     f"nanohpc-{name}" for name in ["history", "machines", "overview", "queue-history", "queue", "usage"]
                 ),
             )
+            for dashboard in found:
+                self.assertTrue(dashboard["title"].startswith(f"{config['cluster']['name']}: "), dashboard)
+                self.assertEqual(dashboard["folderTitle"], config["cluster"]["name"])
             # Both data sources answer through Grafana for an anonymous viewer.
             for source in ("cluster-detail", "cluster-history"):
                 answer = self.on_front(f"curl -sf '{grafana}/api/datasources/proxy/uid/{source}/api/v1/query?query=1'")

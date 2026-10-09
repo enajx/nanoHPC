@@ -168,7 +168,8 @@
       providers:
         - name: cluster
           orgId: 1
-          folder: Cluster
+          folder: {{ nanohpc.cluster_name }}
+          folderUid: nanohpc-cluster
           type: file
           disableDeletion: true
           allowUiUpdates: false
@@ -179,12 +180,15 @@
 
 # Grafana reads the dashboard files again every 30 seconds, so a changed dashboard needs no restart.
 - name: Install the dashboards
-  ansible.builtin.copy:
+  ansible.builtin.template:
     src: "{{ nanohpc.package_files }}/grafana/{{ 'monitor-history.json' if nanohpc.mode | default('slurm') == 'monitor' and item == 'history.json' else item }}"
-    dest: /etc/nanohpc/grafana/dashboards/
+    dest: "/etc/nanohpc/grafana/dashboards/{{ item }}"
     owner: root
     group: root
     mode: "0644"
+    variable_start_string: "[%"
+    variable_end_string: "%]"
+    validate: "/usr/bin/python3 -m json.tool %s"
   loop: "{{ ['machines.json', 'history.json'] if nanohpc.mode | default('slurm') == 'monitor' else ['overview.json', 'machines.json', 'queue.json', 'queue-history.json'] }}"
 
 - name: Install per-user dashboards with the test accounts excluded
