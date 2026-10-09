@@ -385,6 +385,42 @@ class SimMonitorDeployTest(unittest.TestCase):
             self.assertTrue(dashboard["title"].startswith(f"{cluster_name}: "), dashboard)
             self.assertEqual(dashboard["folderTitle"], cluster_name)
 
+        # Recreate the old folder on this VM, then confirm redeploy removes it.
+        provider = "/etc/nanohpc/grafana/provisioning/dashboards/cluster.yml"
+        previous = self.ssh("host", f"cat {provider}")
+        self.assertIn(f"folder: {cluster_name}\n", previous.stdout)
+        self.assertIn("folderUid: nanohpc-cluster", previous.stdout)
+        old_provider = self.ssh(
+            "host",
+            f"sudo sed -i -e 's/^    folder: {cluster_name}$/    folder: Cluster/' "
+            f"-e '/^    folderUid: nanohpc-cluster$/d' {provider} && sudo systemctl restart nanohpc-grafana",
+        )
+        self.assertEqual(old_provider.returncode, 0, old_provider.stdout + old_provider.stderr)
+        folders_url = "http://127.0.0.1:3000/cluster/grafana/api/folders"
+        for _ in range(60):
+            before = self.ssh("host", f"curl -fsS '{folders_url}'")
+            if before.returncode == 0 and any(folder["title"] == "Cluster" for folder in json.loads(before.stdout)):
+                break
+            time.sleep(1)
+        else:
+            self.fail(f"Grafana did not create the old folder: {before.stdout} {before.stderr}")
+        upgraded = self.run_nanohpc("sim", "deploy", str(self.sim))
+        self.assertEqual(upgraded.returncode, 0, upgraded.stdout + upgraded.stderr)
+        after = self.ssh("host", f"curl -fsS '{folders_url}'")
+        self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
+        self.assertEqual(
+            [
+                (folder["uid"], folder["title"])
+                for folder in json.loads(after.stdout)
+                if folder["uid"] != "sharedwithme"
+            ],
+            [("nanohpc-cluster", cluster_name)],
+        )
+        moved = self.ssh("host", "curl -fsS http://127.0.0.1:3000/cluster/grafana/api/search?type=dash-db")
+        self.assertEqual(moved.returncode, 0, moved.stdout + moved.stderr)
+        self.assertEqual({item["uid"] for item in json.loads(moved.stdout)}, {"nanohpc-machines", "nanohpc-history"})
+        self.assertTrue(all(item["folderUid"] == "nanohpc-cluster" for item in json.loads(moved.stdout)))
+
 
 class SimUsersBase(unittest.TestCase):
     """Helpers for real-VM tests that log in as cluster users with a key generated for the test."""

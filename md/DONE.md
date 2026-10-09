@@ -5,8 +5,9 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 ## 2026-10-09: configured cluster name in Grafana
 
 - Grafana's folder and all dashboard titles now show the name from `cluster.yml` in both Slurm and monitor mode. Dashboard UIDs stay fixed so the website links keep working. The website and Slurm already used the configured name, and install paths remain fixed.
-- The focused test rendered all seven dashboard files with two names and checked the folder and unchanged UIDs. `SimMonitorDeployTest` passed on fresh Ubuntu 24.04 VMs, checking the live Grafana API; Ansible syntax and Ruff checks passed. A separate agent reviewed the change. Existing installations may retain an empty old `Cluster` folder after the first redeploy; that migration was not tested.
-- Files: `src/nanohpc/ansible/roles/grafana/tasks/main.yml`, `src/nanohpc/files/grafana/`, `tests/test_grafana_names.py`, `tests/test_sim.py`, `md/testing.md`.
+- After an upgrade, nanoHPC waits for every dashboard to move into the named folder, then removes the old file-provisioned `Cluster` folder in its dedicated Grafana instance only if it is empty. A folder containing dashboards blocks cleanup with a clear error. The dashboard UIDs and data stay intact.
+- Focused tests cover two cluster names, stable UIDs, empty-folder removal, and refusal to remove an occupied folder. The fresh and old-to-new monitor deployments ran on Ubuntu 24.04 VMs and were checked through Grafana's live API. Ansible syntax and Ruff checks passed. A separate agent reviewed the name change and cleanup.
+- Files: `src/nanohpc/ansible/roles/grafana/tasks/main.yml`, `src/nanohpc/files/grafana/`, `tests/test_{grafana_names,grafana_upgrade,sim}.py`, `md/testing.md`.
 
 ## 2026-10-08: REAL website updates and test accounts
 
