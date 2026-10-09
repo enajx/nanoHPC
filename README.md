@@ -35,60 +35,37 @@ See a [demo of nanoHPC](https://najarro.science/nanoHPC/).
 
 You need:
 
-- A set of machines with NVIDIA GPUs running Linux (nanoHPC has been tested on Ubuntu 22.04/24.04/26.04). CPU-only
-  machines are also supported. AMD ROCm support is coming soon.
+- A set of machines with NVIDIA GPUs running Linux (nanoHPC has been tested on Ubuntu 22.04/24.04/26.04).
 - SSH access to every machine as an administrator with sudo.
-- [uv](https://docs.astral.sh/uv/) on your own computer (macOS or Linux).
+- [uv](https://docs.astral.sh/uv/)
 
-Install nanoHPC on your computer:
+**1. Install nanoHPC locally**
 
 ```sh
 uv tool install git+https://github.com/enajx/nanoHPC
 ```
 
-Here is a short Slurm-mode `cluster.yml` excerpt. The [full example](examples/cluster.yml) includes the required
-machine details and SSH keys:
-
-```yaml
-cluster:
-  name: mylab
-  admins: [alice]
-  website: {hostname: cluster.mylab.org}
-
-machines:
-  front: {address: 10.0.0.10, roles: [front, home]}
-  H100:
-    roles: [compute]
-    gpu: {type: h100, count: 4}
-    partitions: [main]
-  H200:
-    roles: [compute]
-    gpu: {type: h200, count: 4}
-    partitions: [interactive]
-
-users:
-  - {name: alice, uid: 2000}
-  - {name: bob, uid: 2001}
-partitions:
-  main: {default: true, max_time: "24:00:00"}
-  interactive: {jobs: interactive, max_time: "08:00:00"}
-```
-
-Write your file with the wizard, or start from the full [example](examples/cluster.yml):
+**2. Describe your cluster with the setup wizard**
 
 ```sh
-nanohpc init
+nanohpc init cluster.yml
+```
+
+The wizard reads your machines over SSH without changing them, and walks you through the machines, storage, users,
+partitions, website, and alerts. It writes `cluster.yml` and tells you if anything on a machine is missing. You can
+also write the file yourself from the [example](examples/cluster.yml).
+
+**3. Deploy**
+
+```sh
 nanohpc validate cluster.yml
-```
-
-See what the deploy would change, then deploy:
-
-```sh
-nanohpc deploy cluster.yml --dry-run
+nanohpc deploy cluster.yml --dry-run    # shows what would change
 nanohpc deploy cluster.yml
 ```
 
-After changing `cluster.yml` later, deploy again, or only the part you changed:
+**4. Making changes after deployment**
+
+Edit `cluster.yml` (or run the wizard again), then deploy again, or only the part you changed:
 
 ```sh
 nanohpc deploy cluster.yml --only users      # also: policy, partitions, node NAME
@@ -102,8 +79,6 @@ If you prefer having your AI agents setting up the cluster, you can point them t
 
 Monitor mode shows machine health, GPU use, usage history, and existing login names on a website. It does not set up
 Slurm, user accounts, SSH access, or storage. Choose one machine as the monitor host; it can also run work.
-
-Create `cluster.yml` with the wizard or [monitor example](examples/monitor.yml), then validate and deploy:
 
 ```sh
 nanohpc init cluster.yml --mode monitor
