@@ -1,6 +1,6 @@
 {
   "uid": "nanohpc-machines",
-  "title": "Machine metrics",
+  "title": "[% nanohpc.cluster_name %]: Machine metrics",
   "schemaVersion": 39,
   "editable": false,
   "refresh": "30s",

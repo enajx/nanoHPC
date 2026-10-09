@@ -116,7 +116,7 @@ flowchart LR
 - [x] The chosen SLURM-REAL website improvements and demo updates work in the built site; live measurements, guide, Apptainer, and notebook helper are included. See [DONE.md](md/DONE.md).
 - [x] The real Machines page colors `/home` speed from its shown many-small-files write speed. See [DONE.md](md/DONE.md).
 - [x] Deploy only monitoring tools on machines without Slurm, with a monitor-mode `cluster.yml`, wizard, dry run, check, and node deploy (see [DONE.md](md/DONE.md)).
-- [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
+- [x] The configured cluster name appears in the website, Grafana folder and dashboards, and Slurm, with fixed install paths and stable dashboard links; an old empty Grafana folder is removed after upgrade. See [DONE.md](md/DONE.md).
 - [x] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
 - [x] Daily summaries are kept for 5 years (the history Prometheus).
 - [x] The daily summaries are shown in the long-term history in Grafana.

@@ -76,7 +76,7 @@ Tech stack. Most of it comes from the source deployment; changes from it are not
 - **React + TypeScript + Vite** website, shipped prebuilt in the package (or built on the machine serving it), served by its own **nginx** on the front node or monitor host over HTTPS (Let's Encrypt or the administrator's own certificate), under a configurable path. Monitor mode shows Overview, Machines, Usage, and Users without job or queue claims.
 - **Slack alerts** from health checks (optional), and **automatic redeploy** when the administrator's configuration repository changes (optional).
 - **User-process check** every minute on Slurm-mode machines: findings go to Prometheus; user tunnels are stopped unless a named user, program, and machine are allowed in `cluster.yml`. The front node sends Slack channel reports when enabled, plus private notices for lasting findings when a user's Slack ID and a bot token are configured. See [rogue-users-checks.md](md/rogue-users-checks.md).
-- Fixed install paths on every cluster (`/etc/nanohpc`, `/var/lib/nanohpc`). Removing remaining hardcoded site names is still planned in [TODO.md](TODO.md).
+- Fixed install paths on every cluster (`/etc/nanohpc`, `/var/lib/nanohpc`). The configured cluster name appears in the website, Grafana folder and dashboards, and Slurm; dashboard IDs remain fixed.
 - **Python `unittest`** and **Playwright** browser tests. **Lima** VMs for the simulated test cluster ([testing setup](md/testing.md)).
 
 Main components:
@@ -123,6 +123,7 @@ flowchart LR
 - Built: metrics (M4a): certificates issued and renewed by a private authority on the front node, node exporters over mutual TLS on every machine, machine-spec and GPU collectors, Prometheus with 90-day detail and 5-year daily history.
 - Built: the status collector and Grafana (M4b): a 30-second `status.json` snapshot for the website, machine health from each machine's required services and mounts, users' quotas from the home machine, and six read-only Grafana dashboards on the front node's localhost. With this, monitoring (M4) is done.
 - Built: the website (M5): content from `cluster.yml` and the status snapshot, served by nginx on the front node under a configurable path (default `/cluster/`) over HTTPS (Let's Encrypt or the administrator's own certificate), optionally limited to listed networks, with forwarding rules for a lab's own website. Checked with a real browser on the simulated cluster. See [testing.md](md/testing.md).
+- Built: the configured cluster name appears in Grafana's folder and dashboard titles in Slurm and monitor mode. A redeploy removes the old empty `Cluster` folder after the dashboards move; their IDs and website links stay fixed. Fresh and upgraded monitor deployments passed on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
 - Built: monitor-only deployment without Slurm: a monitor-mode `cluster.yml`, example, wizard, `deploy-monitor`, mode-aware `check`, alerts, snapshots, Grafana, and website. It leaves accounts, SSH, storage, and Slurm alone. Checked on three Ubuntu 24.04 VMs, including a node-only deploy. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
 - Published: the [public demo](https://najarro.science/nanoHPC/) uses fictional cluster data and four fixed Grafana snapshots. GitHub Pages rebuilds it from `main`; the live pages and snapshots were checked in Chromium. See [DONE.md](md/DONE.md).
 - Built: the selected website follow-ups show waiting time ranges, live machine and policy details, maintenance without hiding faults, nightly speed results, and a clearer map. The demo shows fictional 1 Gb/s Link Speed values for its front and compute machines. Apptainer and both notebook helpers ran on a temporary Ubuntu 24.04 ARM VM; the built site passed 20 browser tests. See [DONE.md](md/DONE.md).
@@ -149,7 +150,7 @@ flowchart LR
 - Checked: after an Ubuntu 24.04 kernel update and reboot, the home server still mounts `/home` with active quotas; a deploy works both before and after the update. See [testing.md](md/testing.md).
 - Next: v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
-- Remaining work before release is tracked in [TODO.md](TODO.md), including remaining hardcoded site names, node additions and redeploy checks, and wider VM validation.
+- Remaining work before release is tracked in [TODO.md](TODO.md), including node additions and redeploy checks, and wider VM validation.
 
 ## Notes
 
