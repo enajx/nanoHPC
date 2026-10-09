@@ -338,6 +338,22 @@ test('the site renders every tab from the fixture data under a non-root path', a
   expect(seen.errors).toEqual([])
 })
 
+test('Cluster usage links select one or several machines in the embedded dashboard', async ({ page }) => {
+  await mockGrafana(page)
+  for (const [hash, selected] of [
+    ['#usage', []],
+    ['#usage?machine=front', ['front']],
+    ['#usage?machine=gpu1&machine=cpu1', ['gpu1', 'cpu1']],
+  ] as const) {
+    await page.goto(`${origin}${prefix}${hash}`)
+    const frame = page.locator('iframe[title="Machine and GPU metrics"]')
+    await expect(frame).toBeVisible()
+    const source = new URL(await frame.getAttribute('src') ?? '', page.url())
+    expect(source.searchParams.getAll('var-machine')).toEqual(selected)
+    expect(source.searchParams.get('var-gpu_group')).toBe('0')
+  }
+})
+
 test('Overview waiting time switches between the three measured periods', async ({ page }) => {
   await mockGrafana(page)
   await page.goto(`${origin}${prefix}`)
@@ -542,6 +558,10 @@ test('monitor mode shows measured machines and login names without Slurm claims'
   await expect(page.getByRole('list', { name: 'Login names' })).toContainText('alice')
   await expect(page.getByRole('list', { name: 'Login names' })).toContainText('bob')
   await expect(page.locator('main')).not.toContainText(/allocated|fair.share|pending|queue|job|NFS/i)
+  await page.goto(`${origin}${prefix}#usage?machine=host&machine=gpu1`)
+  const metrics = page.locator('iframe[title="Machine and GPU metrics"]')
+  await expect(metrics).toBeVisible()
+  expect(new URL(await metrics.getAttribute('src') ?? '', page.url()).searchParams.getAll('var-machine')).toEqual(['host', 'gpu1'])
   expectInsidePrefix(seen.requests)
   expect(seen.errors).toEqual([])
 })

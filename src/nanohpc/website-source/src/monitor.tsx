@@ -142,12 +142,13 @@ function Dashboard({ name, path }: { name: string; path: string }) {
 /** Render the monitor-specific navigation and content without scheduler concepts. */
 export function MonitorApp({ site }: { site: MonitorSiteSettings }) {
   const [page, setPage] = useState<MonitorPage>(currentPage)
+  const [usageState, setUsageState] = useState(() => window.location.hash.split('?')[1] ?? '')
   const [mapShown, setMapShown] = useState(() => storedMapShown(machinesMapKey))
   const { data, failed, stale } = useMonitorSnapshot()
   const refresh = data?.refresh_seconds ?? 30
   const readings = useGpuMetrics(refresh)
   useEffect(() => {
-    const changed = () => setPage(currentPage())
+    const changed = () => { setPage(currentPage()); setUsageState(window.location.hash.split('?')[1] ?? '') }
     window.addEventListener('hashchange', changed)
     return () => window.removeEventListener('hashchange', changed)
   }, [])
@@ -156,6 +157,9 @@ export function MonitorApp({ site }: { site: MonitorSiteSettings }) {
   const nodes = data?.nodes ?? []
   const gpuCount = data ? data.total_gpus ?? 'Unknown' : '—'
   const graph = (uid: string, from: string) => `grafana/d/${uid}?orgId=1&kiosk&hideLogo=true&refresh=${refresh}s&from=${from}&to=now`
+  const metricsMachineParams = new URLSearchParams(usageState).getAll('machine')
+    .filter(machine => machine.length > 0)
+    .map(machine => `&var-machine=${encodeURIComponent(machine)}`).join('')
   const freshness = <div className={`freshness ${old ? 'warning' : ''}`}><span className="status-dot"/>{failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{data && <small>Last update {new Date(data.generated_at).toLocaleTimeString()}</small>}</div>
   return <>
     <a className="skip" href="#main" onClick={event => { event.preventDefault(); document.getElementById('main')?.focus() }}>Skip to content</a>
@@ -169,7 +173,7 @@ export function MonitorApp({ site }: { site: MonitorSiteSettings }) {
           <a className="stat panel" href="#machines"><span>GPUs installed</span><strong>{gpuCount}</strong></a>
         </section><MachineTable nodes={data?.nodes ?? null} stale={old}/></>}
         {page === 'machines' && <>{mapShown && <ClusterMap nodes={nodes} jobs={[]} pendingJobs={0} stale={old} refreshSeconds={refresh} mode="monitor"/>}<MachineTable nodes={data?.nodes ?? null} stale={old}/><ReadingTable nodes={nodes} readings={readings} stale={old}/><MachineCards nodes={nodes} stale={old} roles={['Monitor', 'Machine']}/></>}
-        {page === 'usage' && <><Dashboard name="Machine and GPU metrics" path={`${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0`}/><Dashboard name="Long-term history" path={graph('nanohpc-history', 'now-1y')}/></>}
+        {page === 'usage' && <><Dashboard name="Machine and GPU metrics" path={`${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0${metricsMachineParams}`}/><Dashboard name="Long-term history" path={graph('nanohpc-history', 'now-1y')}/></>}
         {page === 'users' && <section className="panel table-panel"><h2>Login names</h2>{site.users.length ? <ul aria-label="Login names" className="monitor-users">{site.users.map(user => <li key={user}>{user}</li>)}</ul> : <p>No login names configured.</p>}</section>}
         <footer>{freshness}<p>{site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
       </main></div>

@@ -384,6 +384,28 @@ class SimMonitorDeployTest(unittest.TestCase):
         for dashboard in dashboards:
             self.assertTrue(dashboard["title"].startswith(f"{cluster_name}: "), dashboard)
             self.assertEqual(dashboard["folderTitle"], cluster_name)
+        machines_dashboard = self.ssh(
+            "host", "curl -fsS http://127.0.0.1:3000/cluster/grafana/api/dashboards/uid/nanohpc-machines"
+        )
+        self.assertEqual(machines_dashboard.returncode, 0, machines_dashboard.stdout + machines_dashboard.stderr)
+        variables = json.loads(machines_dashboard.stdout)["dashboard"]["templating"]["list"]
+        self.assertEqual([variable["name"] for variable in variables], ["gpu_group", "machine"])
+        self.assertTrue(variables[1]["multi"])
+        self.assertTrue(variables[1]["includeAll"])
+        machine_label_route = (
+            "https://lab.example.org/cluster/grafana/api/datasources/uid/cluster-detail/"
+            "resources/api/v1/label/machine/values"
+        )
+        public_labels = self.ssh("host", f"curl -fsSk --resolve lab.example.org:443:127.0.0.1 '{machine_label_route}'")
+        self.assertEqual(public_labels.returncode, 0, public_labels.stdout + public_labels.stderr)
+        self.assertTrue({"host", "gpu1", "cpu1"}.issubset(set(json.loads(public_labels.stdout)["data"])))
+        denied = self.ssh(
+            "host",
+            "curl -sSk -o /dev/null -w '%{http_code}' --resolve lab.example.org:443:127.0.0.1 "
+            "'https://lab.example.org/cluster/grafana/api/datasources/uid/cluster-detail/"
+            "resources/api/v1/label/job/values'",
+        )
+        self.assertEqual(denied.stdout, "403")
 
         # Recreate the old folder on this VM, then confirm redeploy removes it.
         provider = "/etc/nanohpc/grafana/provisioning/dashboards/cluster.yml"
@@ -629,6 +651,18 @@ class SimUsersBase(unittest.TestCase):
         # Only the listed Grafana routes, read-only; nothing that changes the site.
         self.assertEqual(status("front", "127.0.0.1", f"{path}grafana/api/search", ""), "403")
         self.assertEqual(status("front", "127.0.0.1", f"{path}grafana/login", ""), "403")
+        machine_labels = f"{path}grafana/api/datasources/uid/cluster-detail/resources/api/v1/label/machine/values"
+        self.assertEqual(status("front", "127.0.0.1", machine_labels, ""), "200")
+        self.assertIn(status("front", "127.0.0.1", machine_labels, "-X POST"), {"403", "405"})
+        self.assertEqual(
+            status(
+                "front",
+                "127.0.0.1",
+                f"{path}grafana/api/datasources/uid/cluster-detail/resources/api/v1/label/job/values",
+                "",
+            ),
+            "403",
+        )
         self.assertIn(status("front", "127.0.0.1", f"{path}site.json", "-X POST"), {"403", "405"})
         # Plain HTTP only redirects to HTTPS.
         redirect = self.ssh(
