@@ -180,7 +180,7 @@ function OverviewMachines({ data, stale, refreshSeconds, demo }: { data: Snapsho
       <a className="panel-link panel-link-arrow" href="#machines" aria-hidden="true" tabIndex={-1}>→</a>
     </div>
     {mapShown
-      ? <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale} refreshSeconds={refreshSeconds} demo={demo} maxHeight={340}/>
+      ? <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale} refreshSeconds={refreshSeconds} demo={demo} maxHeight={310}/>
       : <MachineTable data={data} stale={stale} link="#machines" demo={demo} embedded={true}/>}
   </section>
 }

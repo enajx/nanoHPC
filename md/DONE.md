@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-09: Overview fits a desktop screen
+
+- The Overview fits at 1440 × 900 without page scrolling, including the footer. At desktop widths of 1360px and above, its Machines map and Cluster Usage chart sit side by side; card and job spacing is tighter. The map, chart, labels, and jobs remain visible.
+- The built demo and served cluster site passed focused 1440 × 900 browser tests. The existing compact Overview and 320px phone browser tests passed. The built demo was inspected in Chromium at the target size.
+- Files: `src/nanohpc/website-source/{src/main.tsx,src/style.css,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`.
+
 ## 2026-10-09: public demo logo
 
 - The public demo header uses the framed network mark and a drawn `nanoHPC` wordmark in the style of SLURM-REAL. It has no subtitle. Deployed Slurm and monitor sites keep their configured cluster name and logo.

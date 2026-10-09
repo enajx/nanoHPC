@@ -178,6 +178,18 @@ test('Overview map, compact layout, booked time, and Users ranking work in the s
   await expect(page.getByRole('region', { name: 'alice stats' })).toContainText('20')
 })
 
+test('served cluster Overview fits a 1440 by 900 desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.overview-machines .cluster-map-canvas canvas')).toBeVisible()
+  await expect(page.locator('.gpu-allocation-chart')).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Running jobs' })).toBeVisible()
+  await expect(page.locator('main footer')).toBeVisible()
+  const pageSize = await page.evaluate(() => ({ height: document.documentElement.scrollHeight, width: document.documentElement.scrollWidth }))
+  expect(pageSize.height).toBeLessThanOrEqual(900)
+  expect(pageSize.width).toBeLessThanOrEqual(1440)
+})
+
 test('Partitions map uses one trunk and one branch turn per machine', async ({ page }) => {
   await mockGrafana(page)
   await page.goto(`${origin}${prefix}#machines`)

@@ -102,6 +102,22 @@ test('Overview map updates its sample measurements after demo data loads', async
   await expect(map).not.toHaveAttribute('aria-label', /GPU busy unknown/)
 })
 
+test('Overview fits on a 1440 by 900 desktop with its content visible', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.overview-machines .cluster-map-canvas canvas')).toBeVisible()
+  await expect(page.locator('.gpu-allocation-chart .recharts-area').first()).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Running jobs' })).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Top of queue' })).toBeVisible()
+  await expect(page.locator('main footer')).toBeVisible()
+  const pageSize = await page.evaluate(() => ({ height: document.documentElement.scrollHeight, width: document.documentElement.scrollWidth }))
+  expect(pageSize.height).toBeLessThanOrEqual(900)
+  expect(pageSize.width).toBeLessThanOrEqual(1440)
+  await page.getByRole('group', { name: 'Machines view' }).getByRole('button', { name: 'List view' }).click()
+  await expect(page.locator('.overview-machines tbody tr')).toHaveCount(5)
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(900)
+})
+
 test('demo header and Machines page fit a 320px phone', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 })
   await page.goto(origin + prefix)

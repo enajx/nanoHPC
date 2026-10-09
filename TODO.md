@@ -124,7 +124,7 @@ flowchart LR
 - [x] Grafana dashboards (queue, queue history, GPU usage, machines, long-term history) work for any number of nodes, GPU and CPU-only.
 - [x] The status collector writes the website snapshot every 30 seconds.
 - [x] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
-- [ ] Reduce the size of things on the website's Overview page so they fit without scrolling.
+- [x] The website's Overview page fits a 1440 × 900 desktop without page scrolling, including the footer. See [DONE.md](md/DONE.md).
 - [x] Overview has a smaller header, cards, job lists, and footer update time. See [DONE.md](md/DONE.md).
 - [x] The Overview Machines card shows the Cluster Map by default and has buttons to switch between that map and the current machine table inside the card, remembering its choice separately from the Machines page. See [DONE.md](md/DONE.md).
 - [x] The Cluster Map uses smaller layout buttons and simple branching pipes in the Partitions view on the Overview and Machines pages. See [DONE.md](md/DONE.md).

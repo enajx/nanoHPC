@@ -307,4 +307,14 @@ main.compact .overview-job-groups h3 { padding: 6px 10px; }
 main.compact .overview-job-list th, main.compact .overview-job-list td { padding: 5px 10px; }
 main.compact .overview-job-list { max-height: 232px; }
 main.compact .gpu-chart-body { min-height: 0; }
+@media (min-width: 1360px) {
+  main.compact { padding-top: 16px; padding-bottom: 8px; }
+  main.compact .stat-grid { margin-bottom: 12px; }
+  main.compact .stat { padding-top: 9px; padding-bottom: 9px; }
+  main.compact .stat strong { margin-top: 4px; margin-bottom: 4px; }
+  main.compact .overview-machine-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 12px; }
+  main.compact .overview-job-groups { padding-top: 8px; padding-bottom: 8px; }
+  main.compact .overview-job-list th, main.compact .overview-job-list td { padding-top: 4px; padding-bottom: 4px; }
+  main.compact footer { margin-top: 12px; padding-top: 8px; }
+}
 @media (max-width: 720px) { .topbar { height: 60px; } main.compact { padding-top: 12px; } main.compact .stat-grid { gap: 10px; } footer .freshness { max-width: none; } }
