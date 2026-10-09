@@ -1,7 +1,7 @@
 """Evaluate the Machines dashboard's actual PromQL through promtool.
 
-The readings include a machine outage, a CPU-counter reset on restart, a stale
-GPU collector, and a gap when Prometheus itself receives no samples.
+The readings include a machine outage, a CPU-counter reset on restart, stale
+GPU and power collectors, and a gap when Prometheus itself receives no samples.
 """
 
 import json
@@ -24,6 +24,9 @@ PROMETHEUS_DOWN = range(1200, 1381, STEP)
 RESTART = 810
 SECOND_RESET = 1110
 GPU_STALE = 1020
+POWER_STALE = 1080
+POWER_ALL_STALE = 1110
+POWER_WATTS = {"front": 200, "gpu1": 400}
 GPU_PANELS = {
     "GPU utilization": ("utilization_percent", 40),
     "GPU memory used": ("memory_used_bytes", 10),
@@ -84,8 +87,18 @@ def gpu_timestamp(machine: str) -> Callable[[int], int]:
     return value_at
 
 
+def power_timestamp(machine: str) -> Callable[[int], int]:
+    """Make one power collector stale, then both stale before recovery."""
+
+    def value_at(at: int) -> int:
+        stale = (at == POWER_STALE and machine == "front") or at == POWER_ALL_STALE
+        return at - (80 if stale else 10)
+
+    return value_at
+
+
 def input_series() -> list[dict[str, str]]:
-    """Provide node and GPU readings from the front and one compute machine."""
+    """Provide node, GPU, and wall-power readings from two machines."""
     rows = []
     for machine in ("front", "gpu1"):
         job = "node" if machine == "front" else "node-gpu1"
@@ -120,6 +133,18 @@ def input_series() -> list[dict[str, str]]:
                 "values": reading(machine, gpu_timestamp(machine), False),
             }
         )
+        rows.append(
+            {
+                "series": f'cluster_wall_power_watts{{{labels},source="power_supplies"}}',
+                "values": reading(machine, constant(POWER_WATTS[machine]), False),
+            }
+        )
+        rows.append(
+            {
+                "series": f"cluster_power_collection_timestamp_seconds{{{labels}}}",
+                "values": reading(machine, power_timestamp(machine), False),
+            }
+        )
     return rows
 
 
@@ -137,6 +162,13 @@ def expected(panel: str, ref: str, machine: str) -> dict[str, str | int]:
     if ref == "A":
         return {"labels": f'cluster_gpu_{metric}{{{labels},gpu="0"}}', "value": value}
     return {"labels": f'{{machine="{machine}"}}', "value": value}
+
+
+def samples(panel: str, ref: str, machines: tuple[str, ...]) -> list[dict[str, str | int]]:
+    """Return a total power point only when at least one machine reports."""
+    if panel == "Total power":
+        return [{"labels": "{}", "value": sum(POWER_WATTS[machine] for machine in machines)}] if machines else []
+    return [expected(panel, ref, machine) for machine in machines]
 
 
 def queries(machine: str) -> list[tuple[str, str, str]]:
@@ -182,10 +214,17 @@ class MachineDashboardDataTest(unittest.TestCase):
                     {
                         "expr": expr,
                         "eval_time": "300s",
-                        "exp_samples": [expected(panel, ref, selected) for selected in kept],
+                        "exp_samples": samples(panel, ref, kept),
                     }
                 )
         self.run_promtool(checks)
+
+    def test_power_panel_layout(self) -> None:
+        """Total power shares the bottom row with available filesystem space."""
+        dashboard = json.loads(DASHBOARD.read_text())
+        panels = {panel["title"]: panel for panel in dashboard["panels"]}
+        self.assertEqual(panels["Available filesystem space"]["gridPos"], {"x": 0, "y": 24, "w": 12, "h": 8})
+        self.assertEqual(panels["Total power"]["gridPos"], {"x": 12, "y": 24, "w": 12, "h": 8})
 
     def run_promtool(self, checks: list[dict[str, object]]) -> None:
         """Evaluate dashboard queries against the fixture with the real Prometheus engine."""
@@ -223,10 +262,11 @@ class MachineDashboardDataTest(unittest.TestCase):
                 "CPU in use",
                 "Available memory",
                 "Available filesystem space",
+                "Total power",
                 *GPU_PANELS,
             },
         )
-        self.assertEqual(len(dashboard_queries), 11)
+        self.assertEqual(len(dashboard_queries), 12)
         for panel, ref, expr in dashboard_queries:
             for at, machines in (
                 (300, ("front", "gpu1")),
@@ -235,8 +275,11 @@ class MachineDashboardDataTest(unittest.TestCase):
                 (825, ("gpu1",) if panel == "CPU in use" else ("front", "gpu1")),
                 (900, ("front", "gpu1")),
                 (GPU_STALE, ("gpu1",) if panel in GPU_PANELS else ("front", "gpu1")),
-                (1080, ("front", "gpu1")),
-                (1110, ("gpu1",) if panel == "CPU in use" else ("front", "gpu1")),
+                (POWER_STALE, ("gpu1",) if panel == "Total power" else ("front", "gpu1")),
+                (
+                    POWER_ALL_STALE,
+                    () if panel == "Total power" else ("gpu1",) if panel == "CPU in use" else ("front", "gpu1"),
+                ),
                 (1140, ("gpu1",) if panel == "CPU in use" else ("front", "gpu1")),
                 (1170, ("front", "gpu1")),
                 (1230, ("gpu1",)),
@@ -248,7 +291,7 @@ class MachineDashboardDataTest(unittest.TestCase):
                     {
                         "expr": expr,
                         "eval_time": f"{at}s",
-                        "exp_samples": [expected(panel, ref, machine) for machine in machines],
+                        "exp_samples": samples(panel, ref, machines),
                     }
                 )
         self.run_promtool(checks)

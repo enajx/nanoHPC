@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-09: Total power in the Machines dashboard
+
+- On deployed Slurm and monitor sites, the Machines dashboard's Total power panel sums fresh wall-power readings from IPMI power-supply input sensors on the machines chosen in the Machine dropdown. All includes every machine with a readable sensor. An unsupported, offline, or stale machine drops out; no estimate replaces its reading. Collection runs every 30 seconds on supported machines. A failed sensor read during redeploy leaves an existing timer in place so it can recover. A dry run says that first sensor detection waits for the real deploy, after APT lists are available. The public demo keeps its fixed Grafana snapshot.
+- The collector and Prometheus query tests failed before implementation and passed after it. The query test covers selection, outages, stale readings, and an empty total. `SimMonitorDeployTest` passed twice on three Ubuntu 24.04 VMs: two had no IPMI reading, while one used an injected 500 W sensor. The test checked the live Grafana panel, node exporter, Prometheus, timer refresh, and automatic recovery after a failed read. The test does not verify a physical management chip. An independent agent reviewed the implementation and the recovery test.
+- Files: `src/nanohpc/files/{cluster-power-metrics,grafana/machines.json}`, `src/nanohpc/ansible/roles/machine_metrics/tasks/{main,power}.yml`, `tests/test_{power_metrics,machine_dashboard_data,sim}.py`, `md/testing.md`.
+
 ## 2026-10-09: Machine filter for live metrics
 
 - Deployed Slurm and monitor sites show a Machine dropdown beside GPU lines in the Machine and GPU metrics dashboard. Names come from Prometheus, All is the default, and multiple selections filter every panel. A `#usage?machine=NAME` link can name one or several machines. The front or monitor host remains selectable. The public demo keeps its fixed Grafana snapshot, which has no live filter.
