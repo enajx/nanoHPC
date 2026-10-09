@@ -131,7 +131,7 @@ flowchart LR
 - [x] Overview job tables show each job's booked time limit, including partition defaults and jobs without a limit. See [DONE.md](md/DONE.md).
 - [x] The Users page places GPU usage history beside a compact user ranking on wide screens, with whole GPU-hours and two-decimal fair-share values. See [DONE.md](md/DONE.md).
 - [x] Accounts marked `test_account: true` stay in jobs and totals but are absent from user lists, per-user metrics, and historical per-user Grafana panels. See [DONE.md](md/DONE.md).
-- [ ] The Machines tab's Machines card has a `Node type` column showing each machine's configured role, including front, compute, and storage nodes.
+- [x] The Machines tab's Machines card has a `Node type` column showing each machine's configured role, including front, compute, and storage nodes. See [DONE.md](md/DONE.md).
 - [x] In the public demo, the front node shows `1 Gb/s` Link Speed in the Machines tab's machine table, matching the compute nodes. See [DONE.md](md/DONE.md).
 - [x] Cluster name, logo, login address, and the user guide on the website come from the configuration.
 - [x] The website is served by its own nginx over HTTPS, with a Let's Encrypt certificate or the administrator's own certificate.

@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-09: Machines Node type column
+
+- The Slurm and demo Machines pages show `Node type` as its own column, using each machine's configured front, compute, or storage role. The role is no longer repeated beside the machine name. The monitor site's existing role column is named `Node type` and still shows Monitor or Machine. The compact Overview list keeps its current columns.
+- The focused built-site browser tests failed before the change and passed after it for Slurm, monitor, and demo. The desktop Machines page was checked in Chromium, and both site and demo phone tests passed.
+- Files: `src/nanohpc/website-source/{src/main.tsx,src/monitor.tsx,src/style.css,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`.
+
 ## 2026-10-09: Overview fits a desktop screen
 
 - The Overview fits at 1440 × 900 without page scrolling, including the footer. At desktop widths of 1360px and above, its Machines map and Cluster Usage chart sit side by side; card and job spacing is tighter. The map, chart, labels, and jobs remain visible.
