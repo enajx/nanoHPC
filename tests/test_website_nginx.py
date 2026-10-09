@@ -53,7 +53,7 @@ class WebsiteNginxTest(unittest.TestCase):
         self.assertIn("location = /cluster/policy.md {", text)
         self.assertIn("location ~ ^/cluster/grafana/api/(frontend/settings|", text)
         self.assertIn("nanohpc-queue-history", text)
-        self.assertEqual(text.count("allow all;"), 4)
+        self.assertEqual(text.count("allow all;"), 5)
         self.assertNotIn("set_real_ip_from", text)
         self.assertIn("ssl_certificate /c.pem;", text)
         self.assertIn("location = /cluster/index.html {", text)
@@ -71,12 +71,23 @@ class WebsiteNginxTest(unittest.TestCase):
         # Once for the whole site, and again inside each Grafana route (which otherwise denies everything);
         # the front node itself always, for its own checks.
         for network in ("10.0.0.0/8", "192.168.1.7", "127.0.0.1", "::1"):
-            self.assertEqual(text.count(f"allow {network};"), 5, network)
+            self.assertEqual(text.count(f"allow {network};"), 6, network)
         self.assertNotIn("allow all;", text)
         grafana_routes = re.findall(r"location (?:~|=) \^?/cluster/grafana/[^{]*\{(.*?)\n        \}", text, re.DOTALL)
-        self.assertEqual(len(grafana_routes), 4)
+        self.assertEqual(len(grafana_routes), 5)
         for route in grafana_routes:
             self.assertIn("deny all;", route.split("limit_except")[0])
+
+    def test_machine_labels_have_one_read_only_grafana_route(self) -> None:
+        """The dropdown may read machine names, without exposing other Prometheus labels."""
+        text = render(website_of({}), "/c.pem")
+        route = text.split(
+            "location = /cluster/grafana/api/datasources/uid/cluster-detail/resources/api/v1/label/machine/values {"
+        )[1].split("\n        }")[0]
+        self.assertIn("limit_except GET { deny all; }", route)
+        self.assertIn("limit_req zone=nanohpc_queries burst=20 nodelay;", route)
+        self.assertIn("proxy_pass http://127.0.0.1:3000;", route)
+        self.assertNotIn("/api/v1/label/instance/values", text)
 
     def test_deploy_hook_route(self) -> None:
         """With the webhook on, GitHub (from anywhere) may POST to <path>deploy-hook, and nothing else there."""

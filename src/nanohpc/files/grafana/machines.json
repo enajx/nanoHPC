@@ -21,6 +21,19 @@
         {"text": "Individual GPUs", "value": "1", "selected": false},
         {"text": "Per machine", "value": "0", "selected": true}
       ]
+    }, {
+      "name": "machine",
+      "label": "Machine",
+      "type": "query",
+      "datasource": {"type": "prometheus", "uid": "cluster-detail"},
+      "query": {"query": "label_values(up{job=~\"node|node-.+\"}, machine)", "refId": "machine"},
+      "definition": "label_values(up{job=~\"node|node-.+\"}, machine)",
+      "refresh": 2,
+      "sort": 1,
+      "multi": true,
+      "includeAll": true,
+      "allValue": ".+",
+      "current": {"text": ["All"], "value": ["$__all"]}
     }]
   },
   "panels": [
@@ -49,7 +62,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * (1 - avg by (machine) (irate(node_cpu_seconds_total{job=~\"node|node-.+\",mode=\"idle\"}[75s]) and resets(node_cpu_seconds_total{job=~\"node|node-.+\",mode=\"idle\"}[75s]) == 0)) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)",
+          "expr": "100 * (1 - avg by (machine) (irate(node_cpu_seconds_total{job=~\"node|node-.+\",machine=~\"$machine\",mode=\"idle\"}[75s]) and resets(node_cpu_seconds_total{job=~\"node|node-.+\",machine=~\"$machine\",mode=\"idle\"}[75s]) == 0)) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -77,7 +90,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "node_memory_MemAvailable_bytes{job=~\"node|node-.+\"} and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)",
+          "expr": "node_memory_MemAvailable_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -105,7 +118,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "node_filesystem_avail_bytes{job=~\"node|node-.+\",fstype!~\"tmpfs|overlay|squashfs|nfs.*\"} and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)",
+          "expr": "node_filesystem_avail_bytes{job=~\"node|node-.+\",machine=~\"$machine\",fstype!~\"tmpfs|overlay|squashfs|nfs.*\"} and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)",
           "legendFormat": "{{machine}} {{mountpoint}}"
         }
       ]
@@ -135,12 +148,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(cluster_gpu_utilization_percent{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
+          "expr": "(cluster_gpu_utilization_percent{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
           "legendFormat": "{{machine}} GPU {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "avg by (machine) (cluster_gpu_utilization_percent{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
+          "expr": "avg by (machine) (cluster_gpu_utilization_percent{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -168,12 +181,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(cluster_gpu_memory_used_bytes{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
+          "expr": "(cluster_gpu_memory_used_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
           "legendFormat": "{{machine}} GPU {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "sum by (machine) (cluster_gpu_memory_used_bytes{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
+          "expr": "sum by (machine) (cluster_gpu_memory_used_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -201,12 +214,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(cluster_gpu_temperature_celsius{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
+          "expr": "(cluster_gpu_temperature_celsius{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
           "legendFormat": "{{machine}} GPU {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "max by (machine) (cluster_gpu_temperature_celsius{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
+          "expr": "max by (machine) (cluster_gpu_temperature_celsius{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -234,12 +247,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(cluster_gpu_power_watts{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
+          "expr": "(cluster_gpu_power_watts{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
           "legendFormat": "{{machine}} GPU {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "sum by (machine) (cluster_gpu_power_watts{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
+          "expr": "sum by (machine) (cluster_gpu_power_watts{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
           "legendFormat": "{{machine}}"
         }
       ]

@@ -139,14 +139,16 @@ def expected(panel: str, ref: str, machine: str) -> dict[str, str | int]:
     return {"labels": f'{{machine="{machine}"}}', "value": value}
 
 
-def queries() -> list[tuple[str, str, str]]:
-    """Read every panel's query, with the GPU-lines choice filled as Grafana does."""
+def queries(machine: str) -> list[tuple[str, str, str]]:
+    """Read every panel's query, with Grafana's Machine and GPU choices filled in."""
     dashboard = json.loads(DASHBOARD.read_text())
     return [
         (
             panel["title"],
             target["refId"],
-            target["expr"].replace("${gpu_group:raw}", "1" if target["refId"] == "A" else "0"),
+            target["expr"]
+            .replace("${gpu_group:raw}", "1" if target["refId"] == "A" else "0")
+            .replace("$machine", machine),
         )
         for panel in dashboard["panels"]
         for target in panel["targets"]
@@ -157,10 +159,64 @@ def queries() -> list[tuple[str, str, str]]:
 class MachineDashboardDataTest(unittest.TestCase):
     """The dashboard draws only readings from a running, recently scraped machine."""
 
+    def test_machine_filter(self) -> None:
+        """One, several, and All keep only the selected machines in every panel."""
+        dashboard = json.loads(DASHBOARD.read_text())
+        machine = dashboard["templating"]["list"][1]
+        self.assertEqual(machine["name"], "machine")
+        self.assertEqual(machine["type"], "query")
+        self.assertTrue(machine["multi"])
+        self.assertTrue(machine["includeAll"])
+        self.assertEqual(machine["allValue"], ".+")
+        self.assertEqual(machine["current"]["value"], ["$__all"])
+        self.assertIn('label_values(up{job=~"node|node-.+"}, machine)', machine["definition"])
+        checks = []
+        for choice, kept in (
+            ("front", ("front",)),
+            ("gpu1", ("gpu1",)),
+            ("(front|gpu1)", ("front", "gpu1")),
+            (".+", ("front", "gpu1")),
+        ):
+            for panel, ref, expr in queries(choice):
+                checks.append(
+                    {
+                        "expr": expr,
+                        "eval_time": "300s",
+                        "exp_samples": [expected(panel, ref, selected) for selected in kept],
+                    }
+                )
+        self.run_promtool(checks)
+
+    def run_promtool(self, checks: list[dict[str, object]]) -> None:
+        """Evaluate dashboard queries against the fixture with the real Prometheus engine."""
+        config = {
+            "rule_files": [],
+            "evaluation_interval": "30s",
+            "tests": [
+                {
+                    "interval": f"{STEP}s",
+                    "input_series": input_series(),
+                    "promql_expr_test": checks,
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "machines_test.yml"
+            path.write_text(yaml.safe_dump(config, sort_keys=False))
+            promtool = os.environ.get("PROMTOOL") or shutil.which("promtool")
+            assert promtool is not None
+            result = subprocess.run(
+                [promtool, "test", "rules", str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_no_invented_points(self) -> None:
         """A failed scrape, restart, stale GPU file, or Prometheus gap breaks its lines."""
         checks = []
-        dashboard_queries = queries()
+        dashboard_queries = queries(".+")
         self.assertEqual(
             {panel for panel, _, _ in dashboard_queries},
             {
@@ -195,29 +251,7 @@ class MachineDashboardDataTest(unittest.TestCase):
                         "exp_samples": [expected(panel, ref, machine) for machine in machines],
                     }
                 )
-        config = {
-            "rule_files": [],
-            "evaluation_interval": "30s",
-            "tests": [
-                {
-                    "interval": f"{STEP}s",
-                    "input_series": input_series(),
-                    "promql_expr_test": checks,
-                }
-            ],
-        }
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "machines_test.yml"
-            path.write_text(yaml.safe_dump(config, sort_keys=False))
-            promtool = os.environ.get("PROMTOOL") or shutil.which("promtool")
-            assert promtool is not None
-            result = subprocess.run(
-                [promtool, "test", "rules", str(path)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.run_promtool(checks)
 
 
 if __name__ == "__main__":

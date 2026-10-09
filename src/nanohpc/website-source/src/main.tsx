@@ -226,6 +226,9 @@ function App({ site }: { site: SiteSettings }) {
   const requestedState = new URLSearchParams(queueState).get('state')
   const queueFilter = requestedState === 'RUNNING' || requestedState === 'PENDING' ? requestedState : 'RUNNING|PENDING'
   const requestedMachine = new URLSearchParams(queueState).get('machine')
+  const metricsMachineParams = new URLSearchParams(queueState).getAll('machine')
+    .filter(machine => machine.length > 0)
+    .map(machine => `&var-machine=${encodeURIComponent(machine)}`).join('')
   const requestedUser = new URLSearchParams(queueState).get('user')
   const hasData = data !== null
   useEffect(() => {
@@ -266,7 +269,7 @@ function App({ site }: { site: SiteSettings }) {
         </div>
         <UserCards users={data?.users ?? []} stale={stale || failed}/>
       </>}
-      {page === 'usage' && dashboard('Machine and GPU metrics', 'machines', `${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0`)}
+      {page === 'usage' && dashboard('Machine and GPU metrics', 'machines', `${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0${metricsMachineParams}`)}
       {isGuide && <HowToUse values={siteValues(site)} partitions={data?.partitions ?? null}/>}
       {page === 'policy' && <>
         <h2 className="section-heading">Partition policy</h2>

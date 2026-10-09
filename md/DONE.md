@@ -2,6 +2,13 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-09: Machine filter for live metrics
+
+- Deployed Slurm and monitor sites show a Machine dropdown beside GPU lines in the Machine and GPU metrics dashboard. Names come from Prometheus, All is the default, and multiple selections filter every panel. A `#usage?machine=NAME` link can name one or several machines. The front or monitor host remains selectable. The public demo keeps its fixed Grafana snapshot, which has no live filter.
+- The website allows only the GET request for Grafana's Prometheus machine-name list, with the same access and rate limits as metric queries. Other label lists and writes stay blocked.
+- The filter's PromQL test failed before the change and passed after it for one, two, and all machines. Eighteen focused Python tests and 18 built-site browser tests passed. A local nginx probe checked the allowed and blocked routes. `SimMonitorDeployTest` passed on three Ubuntu 24.04 VMs, including the live Grafana variable, machine-list response, and rejected label request. A separate agent reviewed the change.
+- Files: `src/nanohpc/files/grafana/machines.json`, `src/nanohpc/ansible/roles/website/templates/website.conf.j2`, `src/nanohpc/website-source/{src/,tests/}`, `src/nanohpc/website/`, `tests/test_{machine_dashboard_data,website_nginx,sim}.py`.
+
 ## 2026-10-09: honest Machines dashboard readings
 
 - Every Machines dashboard query requires a successful machine scrape in the last 45 seconds. GPU panels also require a collector reading less than 75 seconds old. CPU in use uses the last two idle-counter readings and omits a point when the counter resets. These limits follow the 30-second scrape and GPU collection intervals.
