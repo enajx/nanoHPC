@@ -25,7 +25,7 @@ from typing import Any
 import yaml
 from textual.widgets import DataTable
 
-from nanohpc import fixuid, maintenance_lock, probe, ssh_update, wizard
+from nanohpc import fixuid, maintenance_lock, probe, ssh_update, update, wizard
 from nanohpc.config import check_config, load_config
 from nanohpc.probe import probe_machine
 from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config
@@ -2310,6 +2310,11 @@ class SimComputeUpdateTest(SimUsersBase):
         self.assertIn("nofail", home.stdout.strip().split(","))
         reboot_setting = self.ssh("cpu1", "apt-config dump Unattended-Upgrade::Automatic-Reboot")
         self.assertIn('Unattended-Upgrade::Automatic-Reboot "false";', reboot_setting.stdout)
+        for machine in ("front", "gpu4", "cpu1"):
+            waiting = self.ssh(machine, "apt-config shell enabled APT::Periodic::Unattended-Upgrade")
+            self.assertEqual(waiting.stdout.strip(), "enabled='0'", waiting.stdout + waiting.stderr)
+            policy = self.ssh(machine, "sudo /usr/local/sbin/nanohpc-auto-updates-check")
+            self.assertEqual(policy.returncode, 0, f"{machine}: {policy.stdout}{policy.stderr}")
         # Lima writes Netplan after boot and its base /boot entry lacks nofail. The real saved-setting
         # checks should pass on a safe baseline, while SimRestartCheckTest covers refusal of unsafe settings.
         baseline = r"""
@@ -2332,8 +2337,9 @@ for path in pathlib.Path('/etc/netplan').glob('*.yaml'):
         setup = """
 set -eu
 sudo apt-get install -y dpkg-dev
-for name in nanohpc-update-fixture openssh-nanohpc-fixture; do
-  for version in 1 2; do
+for name in nanohpc-update-fixture openssh-nanohpc-fixture nanohpc-security-fixture; do
+  for version in 1 2 3; do
+    if [ "$version" = 3 ] && [ "$name" != nanohpc-security-fixture ]; then continue; fi
     folder=/tmp/$name-$version
     mkdir -p "$folder/DEBIAN"
     printf 'Package: %s\\nVersion: %s\\nArchitecture: all\\nMaintainer: nanoHPC test <test@example.invalid>\\nDescription: disposable update test\\n' "$name" "$version" > "$folder/DEBIAN/control"
@@ -2341,13 +2347,31 @@ for name in nanohpc-update-fixture openssh-nanohpc-fixture; do
   done
   sudo dpkg -i "/tmp/${name}_1_all.deb"
 done
-printf 'Package: *\nPin: release o=Ubuntu\nPin-Priority: -1\n' | sudo tee /etc/apt/preferences.d/nanohpc-update-fixture >/dev/null
+mkdir -p /tmp/nanohpc-original-sources
+sudo cp -a /etc/apt/sources.list.d/. /tmp/nanohpc-original-sources/
+sudo rm -f /etc/apt/sources.list.d/*
+sudo find /var/lib/apt/lists -maxdepth 1 -type f ! -name lock -delete
+if [ -f /etc/apt/sources.list ]; then
+  sudo cp /etc/apt/sources.list /tmp/nanohpc-original-sources-list
+  sudo rm /etc/apt/sources.list
+fi
 mkdir -p /tmp/nanohpc-update-repo
 cp /tmp/nanohpc-update-fixture_2_all.deb /tmp/openssh-nanohpc-fixture_2_all.deb /tmp/nanohpc-update-repo/
 cd /tmp/nanohpc-update-repo
 dpkg-scanpackages . /dev/null > Packages
 gzip -kf Packages
 echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/sources.list.d/nanohpc-update-fixture.list >/dev/null
+for pocket in security updates; do
+  mkdir -p /tmp/nanohpc-$pocket-repo
+  version=2
+  if [ "$pocket" = updates ]; then version=3; fi
+  cp "/tmp/nanohpc-security-fixture_${version}_all.deb" "/tmp/nanohpc-$pocket-repo/"
+  cd "/tmp/nanohpc-$pocket-repo"
+  dpkg-scanpackages . /dev/null > Packages
+  gzip -kf Packages
+  printf 'Origin: Ubuntu\nLabel: Ubuntu\nSuite: noble-%s\nCodename: noble-%s\nArchitectures: %s\nComponents: main\n' "$pocket" "$pocket" "$(dpkg --print-architecture)" > Release
+  echo "deb [trusted=yes] file:/tmp/nanohpc-$pocket-repo ./" | sudo tee "/etc/apt/sources.list.d/nanohpc-$pocket-fixture.list" >/dev/null
+done
 """
         prepared = self.ssh("cpu1", "bash -se", stdin=setup)
         self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
@@ -2380,12 +2404,25 @@ echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/so
         )
         self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
         self.assertIn("nanohpc-update-fixture=2", preview.stdout)
+        self.assertIn("nanohpc-security-fixture=3", preview.stdout)
+        snapshot = update.read_snapshot("cpu1", admin_config)
+        self.assertIn("nanohpc-security-fixture", snapshot["security_backlog"])
+        security_candidate = next(pkg for pkg in snapshot["packages"] if pkg["name"] == "nanohpc-security-fixture")
+        self.assertFalse(security_candidate["security"])
         applied = subprocess.run(
             [*command, "--confirm", "cpu1"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
         )
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        active = self.ssh("cpu1", "apt-config shell enabled APT::Periodic::Unattended-Upgrade")
+        self.assertEqual(active.stdout.strip(), "enabled='1'", active.stdout + active.stderr)
+        policy = self.ssh("cpu1", "sudo /usr/local/sbin/nanohpc-auto-updates-check")
+        self.assertEqual(policy.returncode, 0, policy.stdout + policy.stderr)
+        after = update.read_snapshot("cpu1", admin_config)
+        self.assertNotIn("nanohpc-security-fixture", after["security_backlog"])
         version = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nanohpc-update-fixture")
         self.assertEqual(version.stdout.strip(), "2", version.stdout + version.stderr)
+        security_version = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nanohpc-security-fixture")
+        self.assertEqual(security_version.stdout.strip(), "3", security_version.stdout + security_version.stderr)
         self.assertNotIn("systemctl reboot", applied.stdout)
         state = self.on_front("scontrol show node cpu1 -o")
         self.assertNotIn("DRAIN", state, applied.stdout + applied.stderr)
@@ -2409,8 +2446,42 @@ echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/so
             login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "cpu1", "true")
             self.assertEqual(login.returncode, 0, f"{user}: {login.stdout}{login.stderr}")
 
-        unpin = self.ssh("cpu1", "sudo rm /etc/apt/preferences.d/nanohpc-update-fixture")
-        self.assertEqual(unpin.returncode, 0, unpin.stdout + unpin.stderr)
+        automatic_fixture = """
+set -eu
+for name in nanohpc-auto-fixture nvidia-nanohpc-fixture; do
+  for version in 1 2; do
+    folder=/tmp/$name-$version
+    mkdir -p "$folder/DEBIAN"
+    printf 'Package: %s\\nVersion: %s\\nArchitecture: all\\nMaintainer: nanoHPC test <test@example.invalid>\\nDescription: disposable security update test\\n' "$name" "$version" > "$folder/DEBIAN/control"
+    dpkg-deb --build "$folder" "/tmp/${name}_${version}_all.deb" >/dev/null
+  done
+  sudo dpkg -i "/tmp/${name}_1_all.deb"
+  cp "/tmp/${name}_2_all.deb" /tmp/nanohpc-security-repo/
+done
+cd /tmp/nanohpc-security-repo
+dpkg-scanpackages . /dev/null > Packages
+gzip -kf Packages
+# This disposable Release file has no package hash or changing date. Refresh its index explicitly.
+sudo rm -f /var/lib/apt/lists/_tmp_nanohpc-security-repo_._Packages
+sudo apt-get update -o APT::Update::Error-Mode=any
+sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l unattended-upgrade
+"""
+        automatic = self.ssh("cpu1", "bash -se", stdin=automatic_fixture)
+        self.assertEqual(automatic.returncode, 0, automatic.stdout + automatic.stderr)
+        updated_automatically = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nanohpc-auto-fixture")
+        self.assertEqual(updated_automatically.stdout.strip(), "2", automatic.stdout + automatic.stderr)
+        driver_held = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nvidia-nanohpc-fixture")
+        self.assertEqual(driver_held.stdout.strip(), "1", automatic.stdout + automatic.stderr)
+
+        restore_sources = self.ssh(
+            "cpu1",
+            "sudo rm -f /etc/apt/sources.list.d/nanohpc-*fixture.list; "
+            "sudo cp -a /tmp/nanohpc-original-sources/. /etc/apt/sources.list.d/; "
+            "if test -f /tmp/nanohpc-original-sources-list; then "
+            "sudo cp /tmp/nanohpc-original-sources-list /etc/apt/sources.list; fi; "
+            "sudo apt-get update -o APT::Update::Error-Mode=any",
+        )
+        self.assertEqual(restore_sources.returncode, 0, restore_sources.stdout + restore_sources.stderr)
         self.check_ssh_undo_on_vm(admin_config, environment, command)
 
     def check_ssh_undo_on_vm(self, admin_config: Path, environment: dict[str, str], command: list[str]) -> None:
@@ -2534,6 +2605,86 @@ os.replace(replacement, target)
             self.assertEqual(login.returncode, 0, f"after package repair, {user}: {login.stdout}{login.stderr}")
         removed = on_vm("sudo", "rm", "-rf", ssh_update.BACKUP)
         self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimStorageUpdateTest(SimUsersBase):
+    """A configured backup VM can complete the manual gate for automatic security updates."""
+
+    def test_backup_vm_enables_security_updates_after_manual_check(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+        before = self.ssh("store", "apt-config shell enabled APT::Periodic::Unattended-Upgrade")
+        self.assertEqual(before.stdout.strip(), "enabled='0'", before.stdout + before.stderr)
+        # Lima's base /boot entry and cloud-init Netplan timestamps fail the production restart check.
+        baseline = r"""
+import os, pathlib, time
+fstab = pathlib.Path('/etc/fstab')
+lines = []
+for line in fstab.read_text().splitlines():
+    fields = line.split()
+    if len(fields) >= 4 and fields[1] == '/boot' and 'nofail' not in fields[3].split(','):
+        fields[3] += ',nofail'
+        line = '\t'.join(fields)
+    lines.append(line)
+fstab.write_text('\n'.join(lines) + '\n')
+boot_time = time.time() - float(pathlib.Path('/proc/uptime').read_text().split()[0])
+for path in pathlib.Path('/etc/netplan').glob('*.yaml'):
+    os.utime(path, (boot_time - 10, boot_time - 10))
+"""
+        safe = self.ssh("store", "sudo /usr/bin/python3 -c " + shlex.quote(baseline))
+        self.assertEqual(safe.returncode, 0, safe.stdout + safe.stderr)
+        fixture = """
+set -eu
+sudo apt-get install -y dpkg-dev
+for version in 1 2; do
+  folder=/tmp/nanohpc-store-fixture-$version
+  mkdir -p "$folder/DEBIAN"
+  printf 'Package: nanohpc-store-fixture\\nVersion: %s\\nArchitecture: all\\nMaintainer: nanoHPC test <test@example.invalid>\\nDescription: disposable storage update test\\n' "$version" > "$folder/DEBIAN/control"
+  dpkg-deb --build "$folder" "/tmp/nanohpc-store-fixture_${version}_all.deb" >/dev/null
+done
+sudo dpkg -i /tmp/nanohpc-store-fixture_1_all.deb
+sudo rm -f /etc/apt/sources.list.d/*
+sudo rm -f /etc/apt/sources.list
+sudo find /var/lib/apt/lists -maxdepth 1 -type f ! -name lock -delete
+mkdir -p /tmp/nanohpc-store-repo
+cp /tmp/nanohpc-store-fixture_2_all.deb /tmp/nanohpc-store-repo/
+cd /tmp/nanohpc-store-repo
+dpkg-scanpackages . /dev/null > Packages
+gzip -kf Packages
+echo 'deb [trusted=yes] file:/tmp/nanohpc-store-repo ./' | sudo tee /etc/apt/sources.list.d/nanohpc-store-fixture.list >/dev/null
+"""
+        prepared = self.ssh("store", "bash -se", stdin=fixture)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        admin_config = self.ssh_config_for("alice")
+        environment = {**os.environ, "SSH_AUTH_SOCK": self.agent_socket, "XDG_STATE_HOME": str(self.keys / "state")}
+        command = [
+            "uv",
+            "run",
+            "nanohpc",
+            "update",
+            str(cluster),
+            "store",
+            "--include",
+            "extra",
+            "--ssh-config",
+            str(admin_config),
+        ]
+        preview = subprocess.run(
+            [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        applied = subprocess.run(
+            [*command, "--confirm", "store"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        version = self.ssh("store", "dpkg-query -W -f='${Version}' nanohpc-store-fixture")
+        self.assertEqual(version.stdout.strip(), "2", version.stdout + version.stderr)
+        after = self.ssh("store", "apt-config shell enabled APT::Periodic::Unattended-Upgrade")
+        self.assertEqual(after.stdout.strip(), "enabled='1'", after.stdout + after.stderr)
+        policy = self.ssh("store", "sudo /usr/local/sbin/nanohpc-auto-updates-check")
+        self.assertEqual(policy.returncode, 0, policy.stdout + policy.stderr)
+        state = self.on_front("scontrol show node cpu1 -o")
+        self.assertNotIn("DRAIN", state, applied.stdout + applied.stderr)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

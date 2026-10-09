@@ -1,0 +1,39 @@
+# Ubuntu may already have unattended upgrades enabled. Set our gate before installing packages.
+- name: Check whether a confirmed update cleared the security backlog
+  ansible.builtin.stat:
+    path: /var/lib/nanohpc/automatic-security-updates-enabled
+  register: security_updates_marker
+
+- name: Restrict automatic installs to Ubuntu security packages after the manual update
+  ansible.builtin.template:
+    src: auto-updates.conf.j2
+    dest: /etc/apt/apt.conf.d/99nanohpc-auto-updates
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install Ubuntu's automatic security update runner
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+
+- name: Run the daily APT timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    masked: false
+    state: started
+  loop: [apt-daily.timer, apt-daily-upgrade.timer]
+
+- name: Install the effective automatic update check
+  ansible.builtin.copy:
+    src: auto-updates-check
+    dest: /usr/local/sbin/nanohpc-auto-updates-check
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check the effective schedule, sources, reboot rule, and package exclusions
+  ansible.builtin.command: /usr/local/sbin/nanohpc-auto-updates-check
+  changed_when: false
+  when: not ansible_check_mode

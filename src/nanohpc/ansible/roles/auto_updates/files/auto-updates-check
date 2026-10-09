@@ -1,0 +1,61 @@
+#!/usr/bin/python3
+"""Verify nanoHPC's effective unattended-upgrade policy with Ubuntu's installed matcher."""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+import apt_pkg
+
+
+def main() -> int:
+    """Name every unsafe setting, so a deploy fails instead of silently leaving it active."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--activating", action="store_true", help="check enabled policy just before writing its marker")
+    arguments = parser.parse_args()
+    apt_pkg.init_config()
+    config = apt_pkg.config
+    marker = Path("/var/lib/nanohpc/automatic-security-updates-enabled").exists()
+    expected = "1" if marker or arguments.activating else "0"
+    problems: list[str] = []
+    for timer in ("apt-daily.timer", "apt-daily-upgrade.timer"):
+        for state in ("is-enabled", "is-active"):
+            result = subprocess.run(["systemctl", state, "--quiet", timer], check=False)
+            if result.returncode != 0:
+                problems.append(f"{timer} is not {state.removeprefix('is-')}")
+    if config.find("APT::Periodic::Unattended-Upgrade", "") != expected:
+        problems.append(f"automatic installs must be {expected} until the confirmed update clears the backlog")
+    if config.find("APT::Periodic::Update-Package-Lists", "") != "1":
+        problems.append("APT package lists must refresh daily")
+    if config.find_b("Unattended-Upgrade::Automatic-Reboot", True):
+        problems.append("automatic reboots must be off")
+    origins = config.value_list("Unattended-Upgrade::Allowed-Origins")
+    patterns = config.value_list("Unattended-Upgrade::Origins-Pattern")
+    if origins != ["${distro_id}:${distro_codename}-security"] or patterns:
+        problems.append(f"only the Ubuntu security pocket may be selected: {origins!r}, {patterns!r}")
+    loader = importlib.machinery.SourceFileLoader("unattended_upgrade", "/usr/bin/unattended-upgrade")
+    specification = importlib.util.spec_from_loader(loader.name, loader)
+    if specification is None:
+        raise RuntimeError("cannot load installed unattended-upgrade")
+    program = importlib.util.module_from_spec(specification)
+    loader.exec_module(program)
+    blacklist = config.value_list("Unattended-Upgrade::Package-Blacklist")
+    for name in ("nvidia-driver-595-open", "libnvidia-compute-595", "linux-modules-nvidia-595-open-generic",
+                 "cuda-toolkit-13-0"):
+        if not program.is_pkgname_in_blacklist(name, blacklist):
+            problems.append(f"{name} is not excluded")
+    for name in ("libc6", "openssh-server"):
+        if program.is_pkgname_in_blacklist(name, blacklist):
+            problems.append(f"{name} should remain eligible")
+    for problem in problems:
+        print(problem, file=sys.stderr)
+    if not problems:
+        print(f"automatic security updates {'enabled' if expected == '1' else 'waiting for confirmed manual update'}")
+    return bool(problems)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
