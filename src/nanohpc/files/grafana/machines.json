@@ -49,7 +49,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * (1 - avg by (machine) (rate(node_cpu_seconds_total{job=~\"node|node-.+\",mode=\"idle\"}[5m])))",
+          "expr": "100 * (1 - avg by (machine) (irate(node_cpu_seconds_total{job=~\"node|node-.+\",mode=\"idle\"}[75s]) and resets(node_cpu_seconds_total{job=~\"node|node-.+\",mode=\"idle\"}[75s]) == 0)) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -77,7 +77,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "node_memory_MemAvailable_bytes{job=~\"node|node-.+\"}",
+          "expr": "node_memory_MemAvailable_bytes{job=~\"node|node-.+\"} and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -105,7 +105,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "node_filesystem_avail_bytes{job=~\"node|node-.+\",fstype!~\"tmpfs|overlay|squashfs|nfs.*\"}",
+          "expr": "node_filesystem_avail_bytes{job=~\"node|node-.+\",fstype!~\"tmpfs|overlay|squashfs|nfs.*\"} and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)",
           "legendFormat": "{{machine}} {{mountpoint}}"
         }
       ]
@@ -135,12 +135,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(cluster_gpu_utilization_percent{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 1)",
+          "expr": "(cluster_gpu_utilization_percent{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
           "legendFormat": "{{machine}} GPU {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "avg by (machine) (cluster_gpu_utilization_percent{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 0)",
+          "expr": "avg by (machine) (cluster_gpu_utilization_percent{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -168,12 +168,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(cluster_gpu_memory_used_bytes{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 1)",
+          "expr": "(cluster_gpu_memory_used_bytes{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
           "legendFormat": "{{machine}} GPU {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "sum by (machine) (cluster_gpu_memory_used_bytes{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 0)",
+          "expr": "sum by (machine) (cluster_gpu_memory_used_bytes{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -201,12 +201,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(cluster_gpu_temperature_celsius{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 1)",
+          "expr": "(cluster_gpu_temperature_celsius{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
           "legendFormat": "{{machine}} GPU {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "max by (machine) (cluster_gpu_temperature_celsius{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 0)",
+          "expr": "max by (machine) (cluster_gpu_temperature_celsius{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
           "legendFormat": "{{machine}}"
         }
       ]
@@ -234,12 +234,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(cluster_gpu_power_watts{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 1)",
+          "expr": "(cluster_gpu_power_watts{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
           "legendFormat": "{{machine}} GPU {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "sum by (machine) (cluster_gpu_power_watts{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 90)) and on() (vector(${gpu_group:raw}) == 0)",
+          "expr": "sum by (machine) (cluster_gpu_power_watts{job=~\"node|node-.+\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\"} < 75) and on(machine) (up{job=~\"node|node-.+\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
           "legendFormat": "{{machine}}"
         }
       ]

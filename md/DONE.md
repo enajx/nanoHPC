@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-09: honest Machines dashboard readings
+
+- Every Machines dashboard query requires a successful machine scrape in the last 45 seconds. GPU panels also require a collector reading less than 75 seconds old. CPU in use uses the last two idle-counter readings and omits a point when the counter resets. These limits follow the 30-second scrape and GPU collection intervals.
+- A `promtool` test using the dashboard's 11 actual queries failed before the change and passed after it. It covers a machine outage, a CPU restart and a separate counter reset while online, a stale GPU collector, a Prometheus gap, and recovery. Focused dashboard tests passed. A separate agent reviewed the queries and test. A live Grafana render was unavailable in the local environment.
+- Files: `src/nanohpc/files/grafana/machines.json`, `tests/test_machine_dashboard_data.py`, `tests/test_dashboards.py`.
+
 ## 2026-10-09: Machines Node type column
 
 - The Slurm and demo Machines pages show `Node type` as its own column, using each machine's configured front, compute, or storage role. The role is no longer repeated beside the machine name. The monitor site's existing role column is named `Node type` and still shows Monitor or Machine. The compact Overview list keeps its current columns.
