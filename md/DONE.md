@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-09: public demo logo
+
+- The public demo header uses the framed network mark and a drawn `nanoHPC` wordmark in the style of SLURM-REAL. It has no subtitle. Deployed Slurm and monitor sites keep their configured cluster name and logo.
+- The built demo and deployed-site browser tests passed at desktop and 320px phone widths. The built demo was also inspected in Chromium at both widths, and a separate agent reviewed the change.
+- Files: `src/nanohpc/website-source/{public/nanohpc-mark.png,src/brand-logo.tsx,src/main.tsx,src/style.css,tests/demo.spec.ts}`, `src/nanohpc/website/`.
+
 ## 2026-10-09: configured cluster name in Grafana
 
 - Grafana's folder and all dashboard titles now show the name from `cluster.yml` in both Slurm and monitor mode. Dashboard UIDs stay fixed so the website links keep working. The website and Slurm already used the configured name, and install paths remain fixed.

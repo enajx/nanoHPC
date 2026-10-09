@@ -14,6 +14,7 @@ import { FontButton, storedFont } from './font-button'
 import { ClusterMap, MapToggle, machinesMapKey, overviewMapKey, rememberMapShown, storedMapShown } from './cluster-map'
 import { DemoDashboard } from './demo-dashboard'
 import { AboutButton } from './about-button'
+import { BrandLogo } from './brand-logo'
 import { SettingsButton } from './settings-button'
 import { MonitorApp } from './monitor'
 import { PartitionBox } from './partition-box'
@@ -236,7 +237,9 @@ function App({ site }: { site: SiteSettings }) {
   const freshness = <div className={`freshness ${failed || stale ? 'warning' : ''}`}><span className="status-dot"/>{demo ? 'Updates every 30s' : failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{(demo || data) && <small>Last update {new Date(demo ? demoUpdatedAt : data!.generated_at).toLocaleTimeString()}</small>}</div>
   return <>
     <a className="skip" href="#main" onClick={(event) => { event.preventDefault(); document.getElementById('main')?.focus() }}>Skip to content</a>
-    <header className="topbar"><a href="#overview" className="brand">{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <GenericMark/>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">{demo ? 'lightweight Slurm cluster and monitoring tool' : 'Slurm cluster monitor'}</span></span></a>
+    <header className={demo ? 'topbar demo-topbar' : 'topbar'}><a href="#overview" className={demo ? 'brand demo-brand' : 'brand'}>{demo
+      ? <><img className="brand-mark" src="nanohpc-mark.png" alt="nanoHPC mark"/><BrandLogo/></>
+      : <>{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <GenericMark/>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">Slurm cluster monitor</span></span></>}</a>
       <div className="header-buttons"><AboutButton/><FontButton/><AccentButton/></div>
     </header>
     <div className="layout"><aside className="sidebar">

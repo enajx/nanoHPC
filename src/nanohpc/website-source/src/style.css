@@ -281,6 +281,10 @@ footer a { text-decoration: underline; }
 
 .topbar { height: 64px; }
 .brand-mark { width: 36px; height: 36px; }
+.demo-brand .brand-mark { width: 48px; height: 48px; flex: none; }
+.brand-logo { height: 48px; width: auto; flex: none; display: block; background: white; border: 2px solid #172322; box-shadow: 3px 3px 0 #172322; }
+@media (max-width: 720px) { .demo-brand .brand-mark, .brand-logo { height: 36px; } .demo-brand .brand-mark { width: 36px; } }
+@media (max-width: 360px) { .demo-topbar { padding: 0 10px; } .demo-brand { gap: 8px; } .demo-brand .brand-mark, .brand-logo { height: 32px; } .demo-brand .brand-mark { width: 32px; } .demo-topbar .header-buttons { gap: 6px; } }
 .layout { min-height: calc(100vh - 64px); }
 main.compact { padding-top: 28px; }
 main.compact .page-heading { margin: 0; }
