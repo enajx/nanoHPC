@@ -141,8 +141,9 @@ laptop reaches it with `ssh -L` through the front node. VS Code users can open t
 
 ## 5. Shared disk space without a quota
 
-**What a user can do.** `/home` has quotas, but `/tmp` and `/var/tmp` are on the system disk with
-none. On the front node, the system disk also holds the Slurm state, the accounting database, and
+**What a user can do.** `/home` usage is measured, with notices and a threshold that holds new jobs;
+writing to `/home` stays possible. `/tmp` and `/var/tmp` are on the system disk with no per-user
+limit. On the front node, the system disk also holds the Slurm state, the accounting database, and
 other services: one user who fills it (large temporary files from a package build, a dataset
 downloaded to `/tmp`, core dumps) stops them for everyone. Jobs on compute nodes write to the
 system disk's `/tmp` too, unless `TMPDIR` points to scratch.
@@ -158,8 +159,8 @@ made and set in the task prolog), so jobs do not write temporary files to the co
 system disks; the scratch cleanup removes it after some days unused, never while a job runs. A private `/tmp`
 per job (Slurm `job_container/tmpfs`) is the other option.
 
-A large download (say 50 GB) is not affected: it is written where the user saves it (home, under
-its quota, or scratch in a job), not to `/tmp`. Only tools that stage files in `/tmp` first hit the
+A large download (say 50 GB) is not affected: it is written where the user saves it (home or
+scratch in a job), not to `/tmp`. Only tools that stage files in `/tmp` first hit the
 limit; the user then sets `TMPDIR` to a folder in home, or runs it in a job.
 
 **Test.** A normal user writing to `/tmp` on the front node stops at the fixed size and the

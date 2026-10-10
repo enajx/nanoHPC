@@ -306,6 +306,10 @@ if has front; then
   check "the status collector's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-monitor-snapshot.service'
   check "the status snapshot is fresh (under 2 minutes old)" \
     test "$(( $(date +%s) - $(stat -c %Y /var/lib/nanohpc/monitor/status.json 2>/dev/null || echo 0) ))" -lt 120
+  if test -f /etc/systemd/system/nanohpc-home-job-policy.timer; then
+    check "home job policy timer" systemctl is-active --quiet nanohpc-home-job-policy.timer
+    check "the home job policy's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-home-job-policy.service'
+  fi
   # Ask the front node's Prometheus which machines have a metrics problem. If Prometheus does not answer,
   # say so rather than reporting no problems.
   problem_machines() {

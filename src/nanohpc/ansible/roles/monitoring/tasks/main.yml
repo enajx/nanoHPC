@@ -34,6 +34,7 @@
           Type=oneshot
           ExecStart=/usr/local/bin/cluster-home-quotas --output /var/lib/nanohpc/metrics-textfile/home-quotas.prom \
             --repquota /usr/sbin/repquota --filesystem {{ '/home' if nanohpc.home.device else '/' }} \
+            --soft-bytes {{ nanohpc.home.soft_bytes }} --hard-bytes {{ nanohpc.home.hard_bytes }} \
             --users {{ nanohpc.users | map(attribute='name') | join(' ') }}
           TimeoutStartSec=40
           NoNewPrivileges=true
@@ -96,6 +97,15 @@
         group: cluster-monitor
         mode: "0755"
 
+    - name: Create the private home policy status folder
+      ansible.builtin.file:
+        path: /var/lib/nanohpc/home-policy
+        state: directory
+        owner: cluster-monitor
+        group: cluster-monitor
+        mode: "0700"
+      when: nanohpc.mode | default('slurm') != 'monitor'
+
     - name: Install the status collector and its machine status rules
       ansible.builtin.copy:
         src: "{{ nanohpc.package_files }}/{{ item.name }}"
@@ -151,6 +161,8 @@
             {% if nanohpc.mode | default('slurm') == 'monitor' %}--mode monitor \
             {% endif %}
             --output /var/lib/nanohpc/monitor/status.json \
+            {% if nanohpc.mode | default('slurm') != 'monitor' %}--home-policy-output /var/lib/nanohpc/home-policy/status.json \
+            {% endif %}
             --machine-markdown-output /var/lib/nanohpc/monitor/machines.md \
             --metrics /var/lib/nanohpc/monitor-textfile/cluster.prom \
             --controller {{ groups['role_front'][0] }} --cluster-name {{ nanohpc.cluster_name }} \
@@ -172,7 +184,7 @@
           RestrictSUIDSGID=true
           RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
           CapabilityBoundingSet=
-          ReadWritePaths=/var/lib/nanohpc/monitor /var/lib/nanohpc/monitor-textfile
+          ReadWritePaths=/var/lib/nanohpc/monitor /var/lib/nanohpc/monitor-textfile{{ ' /var/lib/nanohpc/home-policy' if nanohpc.mode | default('slurm') != 'monitor' else '' }}
           MemoryMax=256M
           CPUQuota=25%
           {% else %}
@@ -215,3 +227,126 @@
         - /var/lib/nanohpc/monitor/machines.md
         - /var/lib/nanohpc/monitor-textfile/cluster.prom
       when: not ansible_check_mode  # checks this deploy's result
+
+    - name: Check that private home policy data was written
+      ansible.builtin.stat:
+        path: /var/lib/nanohpc/home-policy/status.json
+      register: home_policy_snapshot
+      failed_when: not home_policy_snapshot.stat.exists or home_policy_snapshot.stat.mode != '0600'
+      when: nanohpc.mode | default('slurm') != 'monitor' and not ansible_check_mode
+
+- name: Queue new jobs when a user exceeds the home job-wait threshold
+  when: nanohpc.mode | default('slurm') != 'monitor' and inventory_hostname in groups['role_front']
+  block:
+    - name: Install the home job policy command
+      ansible.builtin.copy:
+        src: "{{ nanohpc.package_files }}/cluster-home-job-policy"
+        dest: /usr/local/bin/cluster-home-job-policy
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create the private home usage box folder
+      ansible.builtin.file:
+        path: /var/lib/nanohpc-home-notices
+        state: directory
+        owner: root
+        group: root
+        mode: "0711"
+
+    - name: Show each user's private home usage box on interactive shell login
+      ansible.builtin.copy:
+        src: "{{ nanohpc.package_files }}/nanohpc-home-notice.sh"
+        dest: /etc/profile.d/nanohpc-home-notice.sh
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /bin/sh -n %s
+
+    - name: Check whether zsh login profile exists
+      ansible.builtin.stat:
+        path: /etc/zsh/zprofile
+      register: zsh_login_profile
+
+    - name: Show the private home usage box in interactive zsh logins
+      ansible.builtin.blockinfile:
+        path: /etc/zsh/zprofile
+        marker: "# {mark} nanoHPC home usage at login"
+        block: |
+          if [ -r /etc/profile.d/nanohpc-home-notice.sh ]; then
+            . /etc/profile.d/nanohpc-home-notice.sh
+          fi
+        validate: /usr/bin/zsh -n %s
+      when: zsh_login_profile.stat.exists
+
+    - name: Install the home job policy service and timer
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/nanohpc-home-job-policy.{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {% if item == 'service' %}
+          [Unit]
+          Description=Queue new jobs above the home usage threshold (nanoHPC)
+          After=slurmctld.service slurmdbd.service nanohpc-monitor-snapshot.service
+
+          [Service]
+          Type=oneshot
+          StateDirectory=nanohpc-home-job-policy
+          StateDirectoryMode=0700
+          ExecStart=/usr/local/bin/cluster-home-job-policy \
+            --status /var/lib/nanohpc/home-policy/status.json \
+            --state /var/lib/nanohpc-home-job-policy/held.json \
+            --notice-dir /var/lib/nanohpc-home-notices \
+            --sacctmgr /usr/bin/sacctmgr --cluster {{ nanohpc.cluster_name }} \
+            --notice-bytes {{ nanohpc.home.soft_bytes }} --hard-bytes {{ nanohpc.home.hard_bytes }} \
+            {{ nanohpc.home.policy_user_args }}
+          TimeoutStartSec=90
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=true
+          PrivateTmp=true
+          PrivateDevices=true
+          ProtectKernelTunables=true
+          ProtectKernelModules=true
+          ProtectControlGroups=true
+          RestrictSUIDSGID=true
+          RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+          ReadWritePaths=/var/lib/nanohpc-home-notices
+          MemoryMax=128M
+          CPUQuota=25%
+          {% else %}
+          [Unit]
+          Description=Check home usage against new-job threshold every 5 minutes (nanoHPC)
+
+          [Timer]
+          OnBootSec=1min
+          OnUnitActiveSec=5min
+          AccuracySec=30s
+
+          [Install]
+          WantedBy=timers.target
+          {% endif %}
+      loop: [service, timer]
+      register: home_job_policy_units
+
+    - name: Apply the home job policy once now
+      ansible.builtin.systemd_service:
+        name: nanohpc-home-job-policy.service
+        state: started
+        daemon_reload: "{{ home_job_policy_units.changed }}"
+      register: home_job_policy_initial
+      retries: 15
+      delay: 10
+      until: home_job_policy_initial is succeeded
+      changed_when: false
+      when: not (ansible_check_mode and home_job_policy_units is changed)
+
+    - name: Run the home job policy timer
+      ansible.builtin.systemd_service:
+        name: nanohpc-home-job-policy.timer
+        enabled: true
+        state: started
+        daemon_reload: "{{ home_job_policy_units.changed }}"
+      when: not (ansible_check_mode and home_job_policy_units is changed)

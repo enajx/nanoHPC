@@ -390,13 +390,9 @@ class StorageStep(Step):
                 advice = disk_problem(facts, device, False) or scratch_warning(facts, device, cleanup, job_retention)
                 if advice:
                     yield plain(advice, "warning", widget_id("scratch-advice", name))
-        yield Static("Quotas and cleanup", classes="subheading")
-        for key, label in (("quota_soft_gb", "home soft limit GB"), ("quota_hard_gb", "home hard limit GB")):
+        yield Static("Home usage and cleanup", classes="subheading")
+        for key, label in (("quota_soft_gb", "home notice GB"), ("quota_hard_gb", "home new-job wait GB")):
             yield field(label, BoundInput(state, ["home", key], "int", str(HOME_DEFAULTS[key]), f"home-{key}"))
-        yield field(
-            "grace period",
-            BoundInput(state, ["home", "quota_grace"], "text", HOME_DEFAULTS["quota_grace"], "home-quota_grace"),
-        )
         yield field(
             "scratch cleanup days",
             BoundInput(
