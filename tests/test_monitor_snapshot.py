@@ -42,7 +42,7 @@ elif name=='scontrol' and 'partition' in args:
 elif name=='scontrol':
  print('PriorityWeightFairshare = 10000\\nPriorityWeightAge = 1000\\nPriorityDecayHalfLife = 7-00:00:00\\nPriorityMaxAge = 7-00:00:00')
 elif name=='squeue' and '--json' in args:
- print(json.dumps({'jobs':[{'job_id':1,'name':'test \\"job\\"','user_name':'alice','job_state':['RUNNING'],'state_reason':'None','nodes':'gpu1','tres_req_str':'cpu=4,mem=32G,node=1,gres/gpu=1','start_time':{'number':100,'set':True},'submit_time':{'number':90,'set':True},'priority':{'number':2500,'set':True}}, {'job_id':2,'name':'cpu\\tjob','user_name':'bob','job_state':['PENDING'],'state_reason':'Dependency','tres_req_str':'cpu=2,mem=128M,node=1','start_time':{'number':9999999999,'set':True},'submit_time':{'number':90,'set':True},'priority':{'number':100,'set':True}}]}))
+ print(json.dumps({'jobs':[{'job_id':1,'name':'test \\"job\\"','user_name':'alice','job_state':['RUNNING'],'state_reason':'None','nodes':'gpu1','tres_req_str':'cpu=4,mem=32G,node=1,gres/gpu=1','start_time':{'number':100,'set':True},'submit_time':{'number':90,'set':True},'priority':{'number':2500,'set':True},'time_limit':{'set':True,'infinite':False,'number':1430}}, {'job_id':2,'name':'cpu\\tjob','user_name':'bob','job_state':['PENDING'],'state_reason':'Dependency','tres_req_str':'cpu=2,mem=128M,node=1','start_time':{'number':9999999999,'set':True},'submit_time':{'number':90,'set':True},'priority':{'number':100,'set':True},'time_limit':{'set':False,'infinite':True,'number':0}}]}))
 elif name=='squeue': print('1|alice|RUNNING\\n2|bob|PENDING')
 elif name=='sshare': print('|5000|\\nroot|0|1\\nalice|3600|0.25\\nbob|1800|0.5')
 elif name=='sprio': print('2|bob|5010|5000|10')
@@ -214,6 +214,7 @@ class SnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="monitor-snapshot-") as directory:
             root = Path(directory)
             output = root / "status.json"
+            private_home = root / "home-policy.json"
             metrics = root / "cluster.prom"
             mirror = root / "public-mirror.json"
             machines = root / "machines.md"
@@ -226,6 +227,8 @@ class SnapshotTests(unittest.TestCase):
                 str(COLLECTOR),
                 "--output",
                 str(output),
+                "--home-policy-output",
+                str(private_home),
                 "--metrics",
                 str(metrics),
                 "--controller",
@@ -251,6 +254,8 @@ class SnapshotTests(unittest.TestCase):
             result = subprocess.run(args, env=env, capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(output.read_text())
+            self.assertEqual([row["user"] for row in json.loads(private_home.read_text())["users"]], ["alice", "bob"])
+            self.assertEqual(private_home.stat().st_mode & 0o777, 0o600)
             self.assertEqual(mirror.read_bytes(), output.read_bytes())
             self.assertEqual(machines_mirror.read_bytes(), machines.read_bytes())
             machine_text = machines.read_text()
@@ -283,6 +288,7 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(data["jobs"][0]["node"], "gpu1")
             self.assertGreater(data["jobs"][0]["seconds"], 0)
             self.assertEqual(data["jobs"][1]["priority"], 100)
+            self.assertEqual([job["time_limit_minutes"] for job in data["jobs"]], [1430, None])
             self.assertEqual((data["total_gpus"], data["allocated_gpus"]), (4, 2))
             self.assertEqual(data["nodes"][1]["available_gpus"], 2)
             self.assertEqual((data["nodes"][2]["available_gpus"], data["nodes"][2]["total_gpus"]), (0, 0))
@@ -323,6 +329,28 @@ class SnapshotTests(unittest.TestCase):
             self.assertIn('cluster_job_requested_gpus{job_id="2"} 0', text)
             self.assertIn('cluster_job_elapsed_seconds{job_id="2"} 0', text)
             self.assertIn('reason="Dependency"', text)
+            filtered = subprocess.run(
+                args + ["--exclude-users", "alice"], env=env, capture_output=True, text=True, check=False
+            )
+            self.assertEqual(filtered.returncode, 0, filtered.stderr)
+            filtered_data = json.loads(output.read_text())
+            self.assertEqual([row["user"] for row in filtered_data["users"]], ["bob"])
+            self.assertEqual([row["user"] for row in json.loads(private_home.read_text())["users"]], ["alice", "bob"])
+            self.assertEqual([row["user"] for row in filtered_data["ranking"]], ["bob"])
+            self.assertEqual(filtered_data["running_jobs"], 1)
+            self.assertEqual(filtered_data["jobs"][0]["user"], "alice")
+            filtered_metrics = metrics.read_text()
+            self.assertNotIn('cluster_allocated_gpu_hours{user="alice"}', filtered_metrics)
+            self.assertIn('cluster_job_info{job_id="1",user="alice"', filtered_metrics)
+            all_filtered = subprocess.run(
+                args + ["--exclude-users", "alice", "bob"], env=env, capture_output=True, text=True, check=False
+            )
+            self.assertEqual(all_filtered.returncode, 0, all_filtered.stderr)
+            self.assertEqual(json.loads(output.read_text())["users"], [])
+            self.assertEqual(json.loads(output.read_text())["ranking"], [])
+            self.assertIn('cluster_job_info{job_id="1",user="alice"', metrics.read_text())
+            unfiltered = subprocess.run(args, env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(unfiltered.returncode, 0, unfiltered.stderr)
             # Finished jobs of the last 7 days, from accounting; running and pending jobs come from squeue only.
             self.assertIn(
                 'cluster_job_info{job_id="7",user="alice",job_name="train|a",state="COMPLETED",reason="",node="gpu1",partition="main"} 1',

@@ -27,6 +27,7 @@ TOP_FIELDS = (
     "scratch",
     "backup",
     "alerts",
+    "user_check",
     "auto_deploy",
     "nanohpc_version",
 )
@@ -41,9 +42,27 @@ POLICY_DEFAULTS: dict[str, Any] = {
     "age_weight": 1000,
     "age_max": "7-00:00:00",
 }
-HOME_DEFAULTS: dict[str, Any] = {"quota_soft_gb": 300, "quota_hard_gb": 400, "quota_grace": "7days"}
+HOME_DEFAULTS: dict[str, Any] = {"quota_soft_gb": 300, "quota_hard_gb": 400}
 SCRATCH_DEFAULTS: dict[str, Any] = {"cleanup_days": 14, "job_retention_days": 7}
 ALERTS_DEFAULTS: dict[str, Any] = {"slack": False}
+USER_CHECK_DEFAULTS: dict[str, Any] = {"allowed_tunnels": []}
+USER_CHECK_PROGRAMS = frozenset(
+    {
+        "tailscale",
+        "tailscaled",
+        "cloudflared",
+        "ngrok",
+        "frpc",
+        "zrok",
+        "bore",
+        "chisel",
+        "sshuttle",
+        "autossh",
+        "code tunnel",
+        "ssh -R",
+        "ssh -w",
+    }
+)
 AUTO_DEPLOY_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "repository": None,
@@ -221,6 +240,14 @@ def with_defaults(checker: Checker, value: Any, path: str, defaults: dict[str, A
     return {**defaults, **(section or {})}
 
 
+def check_home(checker: Checker, value: Any) -> dict[str, Any]:
+    """Read home notice and job-wait thresholds; accept old, unused quota_grace settings."""
+    if value is None:
+        return dict(HOME_DEFAULTS)
+    section = checker.mapping(value, "home", (), (*HOME_DEFAULTS, "quota_grace"))
+    return {**HOME_DEFAULTS, **{key: entry for key, entry in (section or {}).items() if key in HOME_DEFAULTS}}
+
+
 def check_cluster(checker: Checker, value: Any, users: set[str], mode: str) -> dict[str, Any] | None:
     """Check the cluster section: name, admins, and website."""
     required = ("name", "monitor_host", "website") if mode == "monitor" else ("name", "admins", "website")
@@ -396,7 +423,7 @@ def check_users(checker: Checker, value: Any) -> list[dict[str, Any]]:
     uids: dict[int, str] = {}
     for index, item in enumerate(value):
         path = f"users[{index}]"
-        user = checker.mapping(item, path, ("name", "uid", "ssh_keys"), ())
+        user = checker.mapping(item, path, ("name", "uid", "ssh_keys"), ("test_account", "slack_id"))
         if user is None:
             continue
         name = checker.matches(user.get("name"), USER_NAME, f"{path}.name", "a lowercase Linux user name")
@@ -419,6 +446,15 @@ def check_users(checker: Checker, value: Any) -> list[dict[str, Any]]:
             else:
                 uids[uid] = str(name)
         keys = user.get("ssh_keys")
+        if "test_account" in user:
+            checker.boolean(user["test_account"], f"{path}.test_account")
+        if "slack_id" in user:
+            checker.matches(
+                user["slack_id"],
+                re.compile(r"[UW][A-Z0-9]{2,}"),
+                f"{path}.slack_id",
+                "a Slack member ID such as U123ABC",
+            )
         if "ssh_keys" in user:
             if not isinstance(keys, list) or not keys:
                 checker.fail(f"{path}.ssh_keys", "must be a non-empty list of public keys")
@@ -777,10 +813,11 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "users": users,
         "partitions": partitions,
         "policy": check_policy(checker, top.get("policy")),
-        "home": with_defaults(checker, top.get("home"), "home", HOME_DEFAULTS),
+        "home": check_home(checker, top.get("home")),
         "scratch": with_defaults(checker, top.get("scratch"), "scratch", SCRATCH_DEFAULTS),
         "backup": check_backup(checker, top.get("backup"), machines),
         "alerts": with_defaults(checker, top.get("alerts"), "alerts", ALERTS_DEFAULTS),
+        "user_check": check_user_check(checker, top.get("user_check"), users, machines),
         "auto_deploy": with_defaults(checker, top.get("auto_deploy"), "auto_deploy", AUTO_DEPLOY_DEFAULTS),
         "nanohpc_version": top.get("nanohpc_version"),
     }
@@ -794,14 +831,49 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         and home["quota_soft_gb"] > home["quota_hard_gb"]
     ):
         checker.fail("home.quota_soft_gb", "must not be larger than home.quota_hard_gb")
-    checker.matches(
-        home["quota_grace"], re.compile(r"\d+(days|hours|minutes)"), "home.quota_grace", "a time like 7days"
-    )
     checker.positive(config["scratch"]["cleanup_days"], "scratch.cleanup_days")
     checker.positive(config["scratch"]["job_retention_days"], "scratch.job_retention_days")
     checker.boolean(config["alerts"]["slack"], "alerts.slack")
     check_auto_deploy(checker, config)
     return config, checker.errors
+
+
+def check_user_check(
+    checker: Checker, value: Any, users: list[dict[str, Any]], machines: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Validate explicit tunnel exceptions for configured users, programs, and machines."""
+    section = with_defaults(checker, value, "user_check", USER_CHECK_DEFAULTS)
+    entries = section["allowed_tunnels"]
+    if not isinstance(entries, list):
+        checker.fail("user_check.allowed_tunnels", "must be a list")
+        return {"allowed_tunnels": []}
+    known_users = {user["name"] for user in users if isinstance(user.get("name"), str)}
+    allowed: list[dict[str, Any]] = []
+    for index, item in enumerate(entries):
+        path = f"user_check.allowed_tunnels[{index}]"
+        entry = checker.mapping(item, path, ("user", "program", "machines"), ())
+        if entry is None:
+            continue
+        name = entry.get("user")
+        if not isinstance(name, str) or name not in known_users:
+            checker.fail(f"{path}.user", "must name a configured user")
+        program = entry.get("program")
+        if not isinstance(program, str) or program not in USER_CHECK_PROGRAMS:
+            checker.fail(f"{path}.program", f"must be one of: {', '.join(sorted(USER_CHECK_PROGRAMS))}")
+        targets = entry.get("machines")
+        if not isinstance(targets, list) or not targets:
+            checker.fail(f"{path}.machines", "must be a non-empty list of configured machine names")
+            continue
+        seen: set[str] = set()
+        for machine_index, machine in enumerate(targets):
+            if not isinstance(machine, str) or machine not in machines:
+                checker.fail(f"{path}.machines[{machine_index}]", "must name a configured machine")
+            elif machine in seen:
+                checker.fail(f"{path}.machines", f"has duplicate machine {machine}")
+            else:
+                seen.add(machine)
+        allowed.append(entry)
+    return {"allowed_tunnels": allowed}
 
 
 def check_auto_deploy(checker: Checker, config: dict[str, Any]) -> None:
@@ -873,13 +945,22 @@ def secrets(config: dict[str, Any], folder: Path) -> list[str]:
     env = read_env(env_path) if env_path.is_file() else {}
     # Read whether or not their feature is on yet, so the front node has them when a commit turns it on.
     webhook = env.get("NANOHPC_SLACK_WEBHOOK")
+    bot_token = env.get("NANOHPC_SLACK_BOT_TOKEN")
     deploy_secret = env.get("NANOHPC_DEPLOY_WEBHOOK_SECRET")
-    config["secrets"] = {"slack_webhook": webhook, "deploy_webhook": deploy_secret}
+    config["secrets"] = {"slack_webhook": webhook, "slack_bot_token": bot_token, "deploy_webhook": deploy_secret}
     errors = []
     if config["alerts"]["slack"] is True and not webhook:
         errors.append(f"alerts.slack is true but {env_path} has no NANOHPC_SLACK_WEBHOOK")
     if webhook is not None and not re.fullmatch(r"https?://[^\s'\"]+", webhook):
         errors.append("NANOHPC_SLACK_WEBHOOK in .env must be an http(s) URL")
+    if bot_token is not None and not re.fullmatch(r"xoxb-[A-Za-z0-9-]+", bot_token):
+        errors.append("NANOHPC_SLACK_BOT_TOKEN in .env must be a Slack bot token starting xoxb-")
+    if (
+        config["alerts"]["slack"] is True
+        and any(isinstance(user, dict) and user.get("slack_id") for user in config["users"])
+        and not bot_token
+    ):
+        errors.append(f"users with slack_id need NANOHPC_SLACK_BOT_TOKEN in {env_path} when alerts.slack is true")
     if config.get("auto_deploy", {}).get("webhook") is True and not deploy_secret:
         errors.append(f"auto_deploy.webhook is true but {env_path} has no NANOHPC_DEPLOY_WEBHOOK_SECRET")
     if deploy_secret is not None and len(deploy_secret) < 32:

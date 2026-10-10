@@ -156,6 +156,12 @@ server {
 {{ grafana_access }}            limit_except GET { deny all; }
 {{ grafana }}        }
 
+        # The Machine dropdown reads this one Prometheus label list through Grafana.
+        location = {{ prefix }}grafana/api/datasources/uid/cluster-detail/resources/api/v1/label/machine/values {
+{{ grafana_access }}            limit_except GET { deny all; }
+            limit_req zone=nanohpc_queries burst=20 nodelay;
+{{ grafana }}        }
+
         location = {{ prefix }}grafana/api/ds/query {
 {{ grafana_access }}            limit_except POST { deny all; }
             limit_req zone=nanohpc_queries burst=20 nodelay;

@@ -6,6 +6,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
+import jinja2
 import yaml
 
 REPO = Path(__file__).resolve().parents[1]
@@ -61,6 +62,51 @@ class DailyRulesTests(unittest.TestCase):
             for rule in group["rules"]:
                 self.assertNotRegex(rule["expr"], r"\[\d+[smhd]:", rule["record"])
 
+    def test_test_accounts_are_excluded_from_daily_user_records(self) -> None:
+        """Render the deploy task and check all three per-user rules, including no test accounts."""
+        source = RULES.read_text()
+        token = "__NANOHPC_TEST_ACCOUNT_REGEX__"
+        records = {
+            "cluster_daily_allocated_gpu_hours_total",
+            "cluster_daily_decayed_gpu_hours",
+            "cluster_daily_fairshare_factor",
+        }
+        self.assertEqual(source.count(token), 3)
+        tasks = yaml.safe_load((REPO / "src/nanohpc/ansible/roles/prometheus/tasks/main.yml").read_text())
+        prepared = next(task for task in tasks if task["name"].startswith("Prepare daily rules"))
+        installed = next(task for task in tasks if task["name"].startswith("Install the daily summary rules"))
+        self.assertEqual(installed["ansible.builtin.copy"]["content"], "{{ daily_rules_text }}")
+        environment = jinja2.Environment()
+        environment.globals["lookup"] = lambda _kind, path, rstrip: (
+            Path(path).read_text().rstrip() if rstrip else Path(path).read_text()
+        )
+        for users, matcher in (
+            ([{"name": "alice"}, {"name": "test-user_1", "test_account": True}], 'user!~"test-user_1"'),
+            ([{"name": "alice"}], 'user!~"a^"'),
+        ):
+            with self.subTest(users=users):
+                variables = {"nanohpc": {"package_files": str(RULES.parent), "users": users, "mode": "slurm"}}
+                for key, template in prepared["vars"].items():
+                    variables[key] = environment.from_string(template).render(**variables)
+                rendered_text = environment.from_string(
+                    prepared["ansible.builtin.set_fact"]["daily_rules_text"]
+                ).render(**variables)
+                self.assertNotIn(token, rendered_text)
+                rendered = yaml.safe_load(rendered_text)
+                rules = {rule["record"]: rule["expr"] for group in rendered["groups"] for rule in group["rules"]}
+                for record in records:
+                    self.assertIn(matcher, rules[record])
+                    self.assertNotIn("\\-", rules[record])
+                for record in set(rules) - records:
+                    self.assertNotIn("user!~", rules[record])
+        variables = {"nanohpc": {"package_files": str(RULES.parent), "users": ["alice"], "mode": "monitor"}}
+        for key, template in prepared["vars"].items():
+            variables[key] = environment.from_string(template).render(**variables)
+        monitor_text = environment.from_string(prepared["ansible.builtin.set_fact"]["daily_rules_text"]).render(
+            **variables
+        )
+        self.assertEqual(monitor_text, MONITOR_DAILY_RULES.read_text())
+
     @unittest.skipIf(shutil.which("promtool") is None, "promtool is not installed, so the rule unit tests cannot run")
     def test_promtool_rule_tests(self) -> None:
         """promtool evaluates the rules against fixed input series and expected results."""
@@ -106,19 +152,34 @@ class MonitorRulesTests(unittest.TestCase):
         self.assertIn("cluster_daily_gpu_utilization_percent", records)
         self.assertIn("cluster_daily_scrape_coverage_ratio", records)
         self.assertFalse(any("allocat" in name or "fairshare" in name or "jobs" in name for name in records))
-        self.assertFalse(any("cluster_allocated" in rule["expr"] or "cluster_pending_jobs" in rule["expr"]
-                             for group in groups for rule in group["rules"]))
+        self.assertFalse(
+            any(
+                "cluster_allocated" in rule["expr"] or "cluster_pending_jobs" in rule["expr"]
+                for group in groups
+                for rule in group["rules"]
+            )
+        )
 
     def test_monitor_alerts_cover_health_inventory_and_freshness(self) -> None:
         """Alerts use collector health and inventory mismatch, without storage or scheduler alerts."""
         groups = yaml.safe_load(MONITOR_ALERT_RULES.read_text())["groups"]
         self.assertEqual([group["name"] for group in groups], ["monitor-alerts"])
         rules = {rule["alert"]: rule for rule in groups[0]["rules"]}
-        self.assertEqual(set(rules), {
-            "HealthCheckFailing", "HealthCheckWarning", "HealthChecksNotRunning", "HealthChecksMissing",
-            "MachineMetricsMissing", "MonitorMachineOffline", "MonitorMachineUnhealthy",
-            "SnapshotStale", "GpuMetricsStale", "GPUInventoryChanged",
-        })
+        self.assertEqual(
+            set(rules),
+            {
+                "HealthCheckFailing",
+                "HealthCheckWarning",
+                "HealthChecksNotRunning",
+                "HealthChecksMissing",
+                "MachineMetricsMissing",
+                "MonitorMachineOffline",
+                "MonitorMachineUnhealthy",
+                "SnapshotStale",
+                "GpuMetricsStale",
+                "GPUInventoryChanged",
+            },
+        )
         self.assertIn("cluster_monitor_machine_health", rules["MonitorMachineUnhealthy"]["expr"])
         self.assertIn("cluster_monitor_gpu_inventory_mismatch", rules["GPUInventoryChanged"]["expr"])
         for name, rule in rules.items():

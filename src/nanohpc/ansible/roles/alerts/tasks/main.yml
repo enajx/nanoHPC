@@ -67,6 +67,22 @@
   register: slack_webhook_removed
   when: not nanohpc.alerts.slack
 
+- name: Install the optional Slack bot token
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/alertmanager/slack-bot-token
+    content: "{{ nanohpc_secrets.slack_bot_token }}"
+    owner: root
+    group: cluster-alertmanager
+    mode: "0640"
+  no_log: true
+  when: nanohpc.alerts.slack and nanohpc_secrets.slack_bot_token is not none
+
+- name: Remove the Slack bot token when unset
+  ansible.builtin.file:
+    path: /etc/nanohpc/alertmanager/slack-bot-token
+    state: absent
+  when: not (nanohpc.alerts.slack and nanohpc_secrets.slack_bot_token is not none)
+
 - name: Install the Alertmanager configuration
   vars:
     alertmanager_config_text: |
@@ -173,3 +189,78 @@
   retries: 15
   delay: 2
   when: not ansible_check_mode  # checks this deploy's result
+
+# The user check publishes findings as Prometheus metrics. This timer sends
+# channel notices through the existing Slack webhook and optional private
+# messages through a bot token. It is off in monitor
+# mode, where there is no Slurm user check, and whenever Slack is off.
+- name: Install the user check channel notifier
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-user-check-notify"
+    dest: /usr/local/bin/nanohpc-user-check-notify
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the user check channel notifier service and timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/nanohpc-user-check-notify.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if item == 'service' %}
+      [Unit]
+      Description=Post user check findings to Slack (nanoHPC)
+      After=network-online.target nanohpc-prometheus.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      User=cluster-alertmanager
+      Group=cluster-alertmanager
+      ExecStart=/usr/local/bin/nanohpc-user-check-notify \
+        --prometheus http://127.0.0.1:9090 \
+        --webhook-file /etc/nanohpc/alertmanager/slack-webhook \
+        --state /var/lib/nanohpc/alertmanager/user-check.json --now now{% if nanohpc.mode | default('slurm') != 'monitor' %}{% for user in nanohpc.users %} --user {{ user.name }}:{{ user.slack_id | default('') }}{% endfor %}{% endif %}{% if nanohpc_secrets.slack_bot_token | default(None) %} --bot-token-file /etc/nanohpc/alertmanager/slack-bot-token{% endif %}
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      PrivateDevices=true
+      ProtectKernelTunables=true
+      ProtectKernelModules=true
+      ProtectControlGroups=true
+      CapabilityBoundingSet=
+      RestrictSUIDSGID=true
+      ReadWritePaths=/var/lib/nanohpc/alertmanager
+      MemoryMax=128M
+      {% else %}
+      [Unit]
+      Description=Check user findings for Slack every minute (nanoHPC)
+
+      [Timer]
+      OnBootSec=2min
+      OnUnitActiveSec=1min
+      AccuracySec=10s
+
+      [Install]
+      WantedBy=timers.target
+      {% endif %}
+  loop: [service, timer]
+  register: user_check_notify_units
+
+- name: Run the user check channel notifier timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-user-check-notify.timer
+    enabled: "{{ nanohpc.alerts.slack and nanohpc.mode | default('slurm') != 'monitor' }}"
+    state: "{{ 'started' if nanohpc.alerts.slack and nanohpc.mode | default('slurm') != 'monitor' else 'stopped' }}"
+    daemon_reload: "{{ user_check_notify_units.changed }}"
+  when: not (ansible_check_mode and user_check_notify_units is changed)
+
+- name: Check the user check channel notifier now
+  ansible.builtin.systemd_service:
+    name: nanohpc-user-check-notify.service
+    state: started
+  changed_when: false
+  when: not ansible_check_mode and nanohpc.alerts.slack and nanohpc.mode | default('slurm') != 'monitor'

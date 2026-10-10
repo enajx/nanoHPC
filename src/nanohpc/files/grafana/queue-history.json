@@ -1,6 +1,6 @@
 {
   "uid": "nanohpc-queue-history",
-  "title": "Queue history",
+  "title": "[% nanohpc.cluster_name %]: Queue history",
   "schemaVersion": 39,
   "editable": false,
   "refresh": "30s",

@@ -52,7 +52,9 @@ elif command.strip() == 'id -un':
     print('alice')
 elif 'nanohpc-update-snapshot' in command:
     print(json.dumps({{'lists_hash': os.environ.get('UPDATE_FAKE_LISTS_HASH', 'lists1'),
-                       'dpkg_hash': 'dpkg1', 'packages': [
+                       'dpkg_hash': 'dpkg1',
+                       'security_backlog': [] if state.get('installed') and os.environ.get('UPDATE_FAKE_CLEAR_SECURITY') else ['bash', 'openssh-server'],
+                       'packages': [
         {{'name': 'bash', 'version': os.environ.get('UPDATE_FAKE_BASH_VERSION', '5.2'), 'ubuntu': True, 'security': True}},
         {{'name': 'openssh-server', 'version': '9.6', 'ubuntu': True, 'security': True}},
         {{'name': 'vendor-tool', 'version': '2', 'ubuntu': False, 'security': False}},
@@ -102,6 +104,13 @@ elif 'apt-get install' in command:
     save()
     if os.environ.get('UPDATE_FAKE_LOCK_LOSS_ON_INSTALL'):
         time.sleep(0.2)
+elif 'automatic-security-updates-enabled' in command:
+    state['automatic_enabled'] = True
+    save()
+elif 'apt-config shell enabled APT::Periodic::Unattended-Upgrade' in command:
+    print("enabled='1'" if state.get('automatic_enabled') else "enabled='0'")
+elif 'nanohpc-auto-updates-check' in command:
+    pass
 elif 'sshd -t' in command or 'systemctl is-active slurmd' in command:
     if 'slurmd' in command:
         print('active')
@@ -153,11 +162,11 @@ class ComputeUpdateCommandTest(unittest.TestCase):
             check=False,
         )
 
-    def test_storage_only_machine_is_refused_before_ssh(self) -> None:
+    def test_storage_only_machine_is_accepted_for_a_dry_run(self) -> None:
         result = self.update("store", "--dry-run")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("compute or front", result.stderr.lower())
-        self.assertFalse(self.log.exists())
+        self.assertNotIn("not a compute or front", result.stderr.lower())
+        self.assertTrue(self.log.exists())
 
     def test_real_run_requires_matching_machine_confirmation(self) -> None:
         result = self.update("cpu1", "--confirm", "gpu4")
@@ -376,6 +385,45 @@ class ComputeUpdateDryRunTest(unittest.TestCase):
 
 class ComputeUpdateApplyTest(unittest.TestCase):
     """Apply one approved plan after draining, and return the node only when safe."""
+
+    def test_security_gate_activates_only_after_backlog_clears(self) -> None:
+        """The public update command keeps the gate off for pending security and enables it when clear."""
+        for cleared in (False, True):
+            with self.subTest(cleared=cleared), tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory)
+                bin_folder = folder / "bin"
+                bin_folder.mkdir()
+                write_command(bin_folder, "ssh", FAKE_PREVIEW_SSH)
+                state = folder / "machine.json"
+                state.write_text(json.dumps({"node_state": "IDLE"}))
+                machine_facts = folder / "facts.json"
+                machine_facts.write_text(json.dumps(facts()))
+                environment = {
+                    **os.environ,
+                    "PATH": f"{bin_folder}:{os.environ['PATH']}",
+                    "UPDATE_SSH_LOG": str(folder / "ssh.log"),
+                    "UPDATE_FAKE_STATE": str(state),
+                    "UPDATE_FAKE_FACTS": str(machine_facts),
+                    "UPDATE_FAKE_CLEAR_SECURITY": "1" if cleared else "",
+                    "XDG_STATE_HOME": str(folder / "state"),
+                }
+                command = [
+                    sys.executable,
+                    "-c",
+                    "from nanohpc.cli import main; main()",
+                    "update",
+                    str(ROOT / "examples/cluster.yml"),
+                    "cpu1",
+                ]
+                preview = subprocess.run(
+                    [*command, "--dry-run"], capture_output=True, text=True, env=environment, check=False
+                )
+                self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+                applied = subprocess.run(
+                    [*command, "--confirm", "cpu1"], capture_output=True, text=True, env=environment, check=False
+                )
+                self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+                self.assertEqual(json.loads(state.read_text()).get("automatic_enabled", False), cleared)
 
     def test_clean_update_resumes_but_restart_needed_stays_drained(self) -> None:
         for restart_needed in (False, True):

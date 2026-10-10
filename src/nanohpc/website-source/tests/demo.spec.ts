@@ -36,7 +36,7 @@ test('the four demo dashboards embed fixed Grafana snapshots', async ({ page }) 
   const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
   for (const [section, titles] of [
     ['Jobs', ['Running Jobs and Queue', 'Queue history']],
-    ['Users', ['GPU usage history']],
+    ['Users', ['GPU usage history per user']],
     ['Cluster usage', ['Machine and GPU metrics']],
   ] as const) {
     await nav.getByRole('link', { name: section, exact: true }).click()
@@ -49,16 +49,18 @@ test('the four demo dashboards embed fixed Grafana snapshots', async ({ page }) 
 
 test('Machines table shows machine states, demo link speeds, and GPU availability', async ({ page }) => {
   await page.goto(`${origin}${prefix}`)
+  await page.getByRole('group', { name: 'Machines view' }).getByRole('button', { name: 'List view' }).click()
   await expect(page.locator('.machine-list table thead th').nth(3)).toHaveText('Link Speed')
   await expect(page.locator('.machine-list table tbody tr td:nth-child(4)')).toHaveText(Array(5).fill('1 Gb/s'))
   await page.goto(`${origin}${prefix}#machines`)
   const table = page.locator('.machine-list table')
-  await expect(table.locator('thead th')).toHaveText(['Machine', 'Health', 'State', 'Link Speed', 'GPUs'])
+  await expect(table.locator('thead th')).toHaveText(['Machine', 'Node type', 'Health', 'State', 'Link Speed', 'GPUs'])
   await expect(table.locator('tbody tr')).toHaveCount(6)
   await expect(table.locator('tbody tr th a')).toHaveText(['front', 'H100', 'H200', 'B200', 'Threadripper', 'DGX'])
+  await expect(table.locator('tbody tr td:nth-child(2)')).toHaveText(['Front node', 'Compute', 'Compute', 'Compute', 'Compute', 'Compute'])
   await expect(table.getByRole('link', { name: 'front', exact: true })).toHaveCount(1)
   await expect(table.locator('tbody tr').filter({ hasText: 'Threadripper' })).toContainText('Idle')
-  await expect(table.locator('tbody tr td:nth-child(4)')).toHaveText(Array(6).fill('1 Gb/s'))
+  await expect(table.locator('tbody tr td:nth-child(5)')).toHaveText(Array(6).fill('1 Gb/s'))
   await expect(table.getByRole('link', { name: 'B200', exact: true })).toHaveCount(1)
 })
 
@@ -94,6 +96,29 @@ test('demo waiting time uses its selected period', async ({ page }) => {
   await expect(card).toContainText('12 min')
 })
 
+test('Overview map updates its sample measurements after demo data loads', async ({ page }) => {
+  await page.goto(`${origin}${prefix}`)
+  const map = page.locator('.overview-machines .cluster-map-canvas')
+  await expect(map).toHaveAttribute('aria-label', /H100: 3 of 4 GPUs allocated.*shared home \d+ requests per second/)
+  await expect(map).not.toHaveAttribute('aria-label', /GPU busy unknown/)
+})
+
+test('Overview fits on a 1440 by 900 desktop with its content visible', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.overview-machines .cluster-map-canvas canvas')).toBeVisible()
+  await expect(page.locator('.gpu-allocation-chart .recharts-area').first()).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Running jobs' })).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Top of queue' })).toBeVisible()
+  await expect(page.locator('main footer')).toBeVisible()
+  const pageSize = await page.evaluate(() => ({ height: document.documentElement.scrollHeight, width: document.documentElement.scrollWidth }))
+  expect(pageSize.height).toBeLessThanOrEqual(900)
+  expect(pageSize.width).toBeLessThanOrEqual(1440)
+  await page.getByRole('group', { name: 'Machines view' }).getByRole('button', { name: 'List view' }).click()
+  await expect(page.locator('.overview-machines tbody tr')).toHaveCount(5)
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(900)
+})
+
 test('demo header and Machines page fit a 320px phone', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 })
   await page.goto(origin + prefix)
@@ -116,8 +141,12 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await page.route('https://snapshots.raintank.io/dashboard/snapshot/**', route => route.fulfill({ contentType: 'text/html', body: '<h1>Grafana sample snapshot</h1>' }))
   await page.clock.install({ time: new Date('2026-10-05T12:34:00') })
   await page.goto(`${origin}${prefix}`)
-  await expect(page.locator('.brand-title')).toHaveText('nanoHPC')
-  await expect(page.locator('.brand-sub')).toHaveText('lightweight Slurm cluster and monitoring tool')
+  const brand = page.locator('header .brand')
+  const mark = brand.getByRole('img', { name: 'nanoHPC mark' })
+  await expect(mark).toBeVisible()
+  await expect.poll(() => mark.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+  await expect(brand.getByRole('img', { name: 'nanoHPC', exact: true })).toBeVisible()
+  await expect(brand.locator('.brand-sub')).toHaveCount(0)
   await expect(page.getByText('Public demo with fictional machines')).toHaveCount(0)
   await expect(page.getByText('Sample data', { exact: true })).toHaveCount(0)
   await expect(page.getByText('Updates every 30s')).toBeVisible()
@@ -126,7 +155,7 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await page.clock.fastForward(30_000)
   await expect(page.locator('.freshness small')).not.toHaveText(firstUpdate ?? '')
   await expect(page.getByText('Data is stale')).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Overview' })).toHaveCSS('width', '1px')
   const guide = readFileSync(`${built}/docs.md`, 'utf8')
   expect(guide).toMatch(/^# nanoHPC documentation/m)
   expect(guide).toContain('Host nanoHPC')
@@ -211,6 +240,21 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   expect(await page.locator('iframe').count()).toBe(0)
   expect(outside).toEqual([])
   expect(failed).toEqual([])
+})
+
+test('demo header fits a 320px phone', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 })
+  await page.route('https://snapshots.raintank.io/dashboard/snapshot/**', route => route.fulfill({ contentType: 'text/html', body: '<h1>Grafana sample snapshot</h1>' }))
+  await page.goto(`${origin}${prefix}`)
+  const brand = page.locator('header .brand')
+  await expect(brand.getByRole('img', { name: 'nanoHPC mark' })).toBeVisible()
+  await expect(brand.getByRole('img', { name: 'nanoHPC', exact: true })).toBeVisible()
+  const wordmark = await brand.locator('.brand-logo').boundingBox()
+  const buttons = await page.locator('header .header-buttons').boundingBox()
+  expect(wordmark).not.toBeNull()
+  expect(buttons).not.toBeNull()
+  expect(wordmark!.x + wordmark!.width).toBeLessThan(buttons!.x)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320)
 })
 
 test('demo partition map keeps machine names clear of other names and servers', async ({ page }) => {

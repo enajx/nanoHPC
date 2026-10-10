@@ -5,6 +5,7 @@ because it takes minutes and several GB of memory.
 """
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -25,7 +26,7 @@ from typing import Any
 import yaml
 from textual.widgets import DataTable
 
-from nanohpc import fixuid, maintenance_lock, probe, ssh_update, wizard
+from nanohpc import fixuid, maintenance_lock, probe, ssh_update, update, wizard
 from nanohpc.config import check_config, load_config
 from nanohpc.probe import probe_machine
 from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config
@@ -347,6 +348,14 @@ class SimMonitorDeployTest(unittest.TestCase):
         self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
         deployed = self.run_nanohpc("sim", "deploy", str(self.sim))
         self.assertEqual(deployed.returncode, 0, deployed.stdout + deployed.stderr)
+        for machine in ("host", "gpu1", "cpu1"):
+            with self.subTest(machine=machine, feature="unsupported wall power"):
+                absent = self.ssh(
+                    machine,
+                    "test ! -e /var/lib/nanohpc/metrics-textfile/power.prom && "
+                    "test ! -e /etc/systemd/system/nanohpc-power-metrics.timer",
+                )
+                self.assertEqual(absent.returncode, 0, absent.stdout + absent.stderr)
         checked = self.run_nanohpc(
             "check", str(self.state / "cluster.yml"), "--ssh-config", str(self.state / "ssh_config")
         )
@@ -376,6 +385,141 @@ class SimMonitorDeployTest(unittest.TestCase):
         )
         self.assertEqual(website.returncode, 0, website.stdout + website.stderr)
         self.assertEqual(json.loads(website.stdout)["mode"], "monitor")
+        cluster_name = yaml.safe_load((self.state / "cluster.yml").read_text())["cluster"]["name"]
+        grafana = self.ssh("host", "curl -fsS http://127.0.0.1:3000/cluster/grafana/api/search?type=dash-db")
+        self.assertEqual(grafana.returncode, 0, grafana.stdout + grafana.stderr)
+        dashboards = json.loads(grafana.stdout)
+        self.assertEqual({item["uid"] for item in dashboards}, {"nanohpc-machines", "nanohpc-history"})
+        for dashboard in dashboards:
+            self.assertTrue(dashboard["title"].startswith(f"{cluster_name}: "), dashboard)
+            self.assertEqual(dashboard["folderTitle"], cluster_name)
+        machines_dashboard = self.ssh(
+            "host", "curl -fsS http://127.0.0.1:3000/cluster/grafana/api/dashboards/uid/nanohpc-machines"
+        )
+        self.assertEqual(machines_dashboard.returncode, 0, machines_dashboard.stdout + machines_dashboard.stderr)
+        variables = json.loads(machines_dashboard.stdout)["dashboard"]["templating"]["list"]
+        self.assertEqual([variable["name"] for variable in variables], ["gpu_group", "machine"])
+        self.assertTrue(variables[1]["multi"])
+        self.assertTrue(variables[1]["includeAll"])
+        power_panel = next(
+            panel
+            for panel in json.loads(machines_dashboard.stdout)["dashboard"]["panels"]
+            if panel["title"] == "Total power"
+        )
+        self.assertIn("cluster_wall_power_watts", power_panel["targets"][0]["expr"])
+        machine_label_route = (
+            "https://lab.example.org/cluster/grafana/api/datasources/uid/cluster-detail/"
+            "resources/api/v1/label/machine/values"
+        )
+        public_labels = self.ssh("host", f"curl -fsSk --resolve lab.example.org:443:127.0.0.1 '{machine_label_route}'")
+        self.assertEqual(public_labels.returncode, 0, public_labels.stdout + public_labels.stderr)
+        self.assertTrue({"host", "gpu1", "cpu1"}.issubset(set(json.loads(public_labels.stdout)["data"])))
+        denied = self.ssh(
+            "host",
+            "curl -sSk -o /dev/null -w '%{http_code}' --resolve lab.example.org:443:127.0.0.1 "
+            "'https://lab.example.org/cluster/grafana/api/datasources/uid/cluster-detail/"
+            "resources/api/v1/label/job/values'",
+        )
+        self.assertEqual(denied.stdout, "403")
+
+        # Recreate the old folder on this VM, then confirm redeploy removes it.
+        provider = "/etc/nanohpc/grafana/provisioning/dashboards/cluster.yml"
+        previous = self.ssh("host", f"cat {provider}")
+        self.assertIn(f"folder: {cluster_name}\n", previous.stdout)
+        self.assertIn("folderUid: nanohpc-cluster", previous.stdout)
+        old_provider = self.ssh(
+            "host",
+            f"sudo sed -i -e 's/^    folder: {cluster_name}$/    folder: Cluster/' "
+            f"-e '/^    folderUid: nanohpc-cluster$/d' {provider} && sudo systemctl restart nanohpc-grafana",
+        )
+        self.assertEqual(old_provider.returncode, 0, old_provider.stdout + old_provider.stderr)
+        folders_url = "http://127.0.0.1:3000/cluster/grafana/api/folders"
+        for _ in range(60):
+            before = self.ssh("host", f"curl -fsS '{folders_url}'")
+            if before.returncode == 0 and any(folder["title"] == "Cluster" for folder in json.loads(before.stdout)):
+                break
+            time.sleep(1)
+        else:
+            self.fail(f"Grafana did not create the old folder: {before.stdout} {before.stderr}")
+        # The VM has no management chip. Give its front node one fake input sensor,
+        # then check the real deploy, systemd, node_exporter, and Prometheus path.
+        fake_ipmi = "#!/bin/sh\nprintf 'PSU1 Power In | DFh | ok | 10.0 | 500 Watts\\n'\n"
+        encoded = base64.b64encode(fake_ipmi.encode()).decode()
+        installed = self.ssh(
+            "host",
+            f"printf '%s' '{encoded}' | base64 -d | sudo tee /usr/local/bin/ipmitool >/dev/null && "
+            "sudo chmod 0755 /usr/local/bin/ipmitool",
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        upgraded = self.run_nanohpc("sim", "deploy", str(self.sim))
+        self.assertEqual(upgraded.returncode, 0, upgraded.stdout + upgraded.stderr)
+        timer = self.ssh("host", "systemctl is-active nanohpc-power-metrics.timer")
+        self.assertEqual(timer.stdout.strip(), "active", timer.stderr)
+        power_query = "curl -fsSG --data-urlencode 'query=cluster_wall_power_watts' http://127.0.0.1:9090/api/v1/query"
+        for _ in range(30):
+            power = self.ssh("host", power_query)
+            if power.returncode == 0 and len(json.loads(power.stdout)["data"]["result"]) == 1:
+                break
+            time.sleep(2)
+        else:
+            self.fail(f"The power reading did not reach Prometheus: {power.stdout} {power.stderr}")
+        reading = json.loads(power.stdout)["data"]["result"][0]
+        self.assertEqual(reading["metric"]["machine"], "host")
+        self.assertEqual(float(reading["value"][1]), 500)
+        stamp_command = (
+            "sed -n 's/^cluster_power_collection_timestamp_seconds //p' /var/lib/nanohpc/metrics-textfile/power.prom"
+        )
+        first_stamp = float(self.ssh("host", stamp_command).stdout.strip())
+        for _ in range(35):
+            time.sleep(2)
+            later = self.ssh("host", stamp_command)
+            if later.returncode == 0 and float(later.stdout.strip()) > first_stamp:
+                break
+        else:
+            self.fail("The wall-power timer did not refresh the reading")
+        after = self.ssh("host", f"curl -fsS '{folders_url}'")
+        self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
+        self.assertEqual(
+            [
+                (folder["uid"], folder["title"])
+                for folder in json.loads(after.stdout)
+                if folder["uid"] != "sharedwithme"
+            ],
+            [("nanohpc-cluster", cluster_name)],
+        )
+        moved = self.ssh("host", "curl -fsS http://127.0.0.1:3000/cluster/grafana/api/search?type=dash-db")
+        self.assertEqual(moved.returncode, 0, moved.stdout + moved.stderr)
+        self.assertEqual({item["uid"] for item in json.loads(moved.stdout)}, {"nanohpc-machines", "nanohpc-history"})
+        self.assertTrue(all(item["folderUid"] == "nanohpc-cluster" for item in json.loads(moved.stdout)))
+
+        # A temporary failed sensor read during a later deploy must leave its
+        # scheduled collector in place, so it can recover without another deploy.
+        broken = base64.b64encode(b"#!/bin/sh\nexit 1\n").decode()
+        failed_reader = self.ssh(
+            "host", f"printf '%s' '{broken}' | base64 -d | sudo tee /usr/local/bin/ipmitool >/dev/null"
+        )
+        self.assertEqual(failed_reader.returncode, 0, failed_reader.stderr)
+        redeployed = self.run_nanohpc("sim", "deploy", str(self.sim))
+        self.assertEqual(redeployed.returncode, 0, redeployed.stdout + redeployed.stderr)
+        preserved = self.ssh(
+            "host",
+            "systemctl is-active nanohpc-power-metrics.timer && "
+            "test -e /etc/systemd/system/nanohpc-power-metrics.service",
+        )
+        self.assertEqual(preserved.returncode, 0, preserved.stdout + preserved.stderr)
+        stale_stamp = float(self.ssh("host", stamp_command).stdout.strip())
+        restored = self.ssh(
+            "host",
+            f"printf '%s' '{encoded}' | base64 -d | sudo tee /usr/local/bin/ipmitool >/dev/null",
+        )
+        self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+        for _ in range(45):
+            time.sleep(2)
+            refreshed = self.ssh("host", stamp_command)
+            if refreshed.returncode == 0 and refreshed.stdout.strip() and float(refreshed.stdout.strip()) > stale_stamp:
+                break
+        else:
+            self.fail("The retained wall-power timer did not recover after the sensor returned")
 
 
 class SimUsersBase(unittest.TestCase):
@@ -585,6 +729,18 @@ class SimUsersBase(unittest.TestCase):
         # Only the listed Grafana routes, read-only; nothing that changes the site.
         self.assertEqual(status("front", "127.0.0.1", f"{path}grafana/api/search", ""), "403")
         self.assertEqual(status("front", "127.0.0.1", f"{path}grafana/login", ""), "403")
+        machine_labels = f"{path}grafana/api/datasources/uid/cluster-detail/resources/api/v1/label/machine/values"
+        self.assertEqual(status("front", "127.0.0.1", machine_labels, ""), "200")
+        self.assertIn(status("front", "127.0.0.1", machine_labels, "-X POST"), {"403", "405"})
+        self.assertEqual(
+            status(
+                "front",
+                "127.0.0.1",
+                f"{path}grafana/api/datasources/uid/cluster-detail/resources/api/v1/label/job/values",
+                "",
+            ),
+            "403",
+        )
         self.assertIn(status("front", "127.0.0.1", f"{path}site.json", "-X POST"), {"403", "405"})
         # Plain HTTP only redirects to HTTPS.
         redirect = self.ssh(
@@ -786,6 +942,87 @@ class SimSmallSlurmDeployTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimUserCheckTest(SimUsersBase):
+    """The deployed minute check and channel notifier work on Ubuntu 24.04 VMs."""
+
+    sim = SIM / "x86-build.yml"
+    state = ROOT / ".nanohpc-sim" / "x86-build"
+
+    def test_deployed_user_check_and_channel_notification(self) -> None:
+        """Deploy the real services, stop a user tunnel, and post its finding from the front node."""
+        cluster, config, public_key = self.up_with_test_key()
+        config["users"].append({"name": "bob", "uid": 2001, "ssh_keys": [public_key]})
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        for machine in ("front", "cpu1"):
+            self.assertEqual(self.ssh(machine, "systemctl is-active nanohpc-user-check.timer").stdout.strip(), "active")
+            self.assertEqual(self.ssh(machine, "sudo systemctl start nanohpc-user-check.service").returncode, 0)
+        self.on_front("sudo pkill -x cloudflared || true")
+        self.on_front("sudo cp /usr/bin/sleep /tmp/cloudflared; sudo chmod 755 /tmp/cloudflared")
+        self.on_front("sudo rm -f /tmp/cloudflared-bob.log /tmp/cloudflared.pid")
+        self.on_front(
+            "sudo -u bob sh -c 'nohup /tmp/cloudflared 120 >/tmp/cloudflared-bob.log 2>&1 & echo $!' > /tmp/cloudflared.pid"
+        )
+        before = self.on_front("ps -p $(cat /tmp/cloudflared.pid) -o user=,stat= || true").strip()
+        self.assertTrue(before.startswith("bob ") and "S" in before, f"bob's test tunnel did not start: {before}")
+        self.assertEqual(self.ssh("front", "sudo systemctl restart nanohpc-user-check.service").returncode, 0)
+        state = self.on_front("ps -p $(cat /tmp/cloudflared.pid) -o stat= || true").strip()
+        metrics = self.on_front("cat /var/lib/nanohpc/metrics-textfile/user-check.prom")
+        self.assertTrue(not state or state.startswith("Z"), f"cloudflared is still running: {state}\n{metrics}")
+        self.assertIn('kind="tunnel"', metrics)
+        self.assertIn('user="bob"', metrics)
+        self.assertIn('program="cloudflared"', metrics)
+        self.assertIn('action="stopped"', metrics)
+
+        receiver = textwrap.dedent("""
+            import http.server
+            class Hook(http.server.BaseHTTPRequestHandler):
+                def do_POST(self):
+                    body = self.rfile.read(int(self.headers["Content-Length"]))
+                    with open("/tmp/user-check-webhook.log", "ab") as log:
+                        log.write(body + b"\\n")
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+            http.server.HTTPServer(("127.0.0.1", 18081), Hook).serve_forever()
+        """)
+        self.assertEqual(self.ssh("front", "cat > /tmp/user-check-webhook.py", stdin=receiver).returncode, 0)
+        self.on_front("rm -f /tmp/user-check-webhook.log")
+        self.on_front("(nohup python3 /tmp/user-check-webhook.py >/dev/null 2>&1 &)")
+        self.addCleanup(self.ssh, "front", "pkill -f /tmp/user-check-webhook.py")
+        config["alerts"] = {"slack": True}
+        cluster.write_text(yaml.safe_dump(config))
+        (cluster.parent / ".env").write_text("NANOHPC_SLACK_WEBHOOK=http://127.0.0.1:18081/slack\n")
+        result = self.deploy(self.state / "ssh_config", agent=False)
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        self.assertEqual(self.on_front("systemctl is-active nanohpc-user-check-notify.timer").strip(), "active")
+        posted = self.on_front("cat /tmp/user-check-webhook.log")
+        for word in ("bob", "cloudflared", "front", "stopped"):
+            self.assertIn(word, posted)
+
+        config["user_check"] = {"allowed_tunnels": [{"user": "bob", "program": "cloudflared", "machines": ["front"]}]}
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.deploy(self.state / "ssh_config", agent=False)
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        self.on_front("sudo rm -f /tmp/cloudflared-bob-allowed.log /tmp/cloudflared-allowed.pid")
+        self.on_front(
+            "sudo -u bob sh -c 'nohup /tmp/cloudflared 120 >/tmp/cloudflared-bob-allowed.log 2>&1 & echo $!' > /tmp/cloudflared-allowed.pid"
+        )
+        allowed_pid = self.on_front("cat /tmp/cloudflared-allowed.pid").strip()
+        self.assertEqual(self.ssh("front", "sudo systemctl restart nanohpc-user-check.service").returncode, 0)
+        allowed_state = self.on_front(f"ps -p {allowed_pid} -o user=,stat= || true").strip()
+        self.assertTrue(
+            allowed_state.startswith("bob ") and "S" in allowed_state,
+            f"allowed cloudflared was stopped: {allowed_state}",
+        )
+        allowed_metrics = self.on_front("cat /var/lib/nanohpc/metrics-textfile/user-check.prom")
+        self.assertNotIn(f'id="front-{allowed_pid}-', allowed_metrics)
+        self.on_front(f"sudo kill {allowed_pid} || true")
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimDeployTest(SimUsersBase):
     """End to end: `nanohpc sim deploy` sets up Slurm, users, SSH access, sudo, and Munge on the everyday
     cluster. Real Lima VMs. The first run builds Slurm on the front VM (tens of minutes); later runs use the
@@ -881,9 +1118,7 @@ class SimDeployTest(SimUsersBase):
             }
             header = quotas["User"]
             soft, hard = header.index("BlockSoftLimit"), header.index("BlockHardLimit")
-            self.assertEqual(
-                (quotas["alice"][soft], quotas["alice"][hard]), (str(300 * 1024 * 1024), str(400 * 1024 * 1024))
-            )
+            self.assertEqual((quotas["alice"][soft], quotas["alice"][hard]), ("0", "0"))
 
         with self.subTest("local scratch on a disk or in an image, with per-user caches and cleanup"):
             self.assertEqual(self.ssh("gpu4", "findmnt -n -o SOURCE --mountpoint /scratch").stdout.strip(), "/dev/vdb")
@@ -1043,6 +1278,9 @@ class SimDeployTest(SimUsersBase):
                     f"nanohpc-{name}" for name in ["history", "machines", "overview", "queue-history", "queue", "usage"]
                 ),
             )
+            for dashboard in found:
+                self.assertTrue(dashboard["title"].startswith(f"{config['cluster']['name']}: "), dashboard)
+                self.assertEqual(dashboard["folderTitle"], config["cluster"]["name"])
             # Both data sources answer through Grafana for an anonymous viewer.
             for source in ("cluster-detail", "cluster-history"):
                 answer = self.on_front(f"curl -sf '{grafana}/api/datasources/proxy/uid/{source}/api/v1/query?query=1'")
@@ -1199,7 +1437,7 @@ class SimDeployTest(SimUsersBase):
             front = next(line for line in result.stdout.splitlines() if line.startswith("Dry run: front "))
             for task in (
                 "accounts : Create the users with their fixed UIDs",
-                "home_server : Set each user's home quota",
+                "home_server : Create private home folders",
                 "slurm_controller : Set each partition's time limit",
             ):
                 self.assertIn(task, front)
@@ -1433,12 +1671,12 @@ class SimPartialDeployTest(SimUsersBase):
             self.assertIn("accounts : Create the users with their fixed UIDs", summary["store"])
             self.assertIn("scratch : Create each user's private scratch folder", summary["gpu2"])
             self.assertIn("slurm_controller : Add the users as job submitters", summary["front"])
-            self.assertIn("home_server : Set each user's home quota", summary["front"])
+            self.assertIn("home_server : Create private home folders", summary["front"])
             for machine in changed["machines"]:
                 self.assertIn("carol:x:2005:2005:", self.ssh(machine, "getent passwd carol").stdout, machine)
             quotas = self.on_front("sudo repquota -u -O csv /home")
             self.assertIn("carol,", quotas)
-            self.assertIn(f",{300 * 1024 * 1024},{400 * 1024 * 1024},", quotas.split("carol,", 1)[1].splitlines()[0])
+            self.assertIn(",0,0,", quotas.split("carol,", 1)[1].splitlines()[0])
             self.assertIn("carol", self.on_front("sacctmgr -n -P show assoc user=carol format=User"))
             self.assertEqual(self.ssh("gpu2", "stat -c '%U %a' /scratch/carol").stdout.strip(), "carol 700")
             self.assertEqual(self.ssh("gpu2", "test -x /usr/local/bin/scratch-job-cleanup").returncode, 0)
@@ -1919,7 +2157,7 @@ class SimRootHomeRebootTest(SimUsersBase):
         super().setUp()
 
     def test_root_home_survives_reboot(self) -> None:
-        _, config, _ = self.up_and_deploy()
+        self.up_and_deploy()
         self.on_front("sudo -u alice sh -c 'echo reboot-check > /home/alice/nanohpc-reboot-check'")
         front = next(vm.instance for vm in plan_of(self.sim).vms if vm.machine == "front")
         self.reboot_vm("front", front)
@@ -1937,7 +2175,7 @@ class SimRootHomeRebootTest(SimUsersBase):
         columns = rows["User"]
         self.assertEqual(
             (rows["alice"][columns.index("BlockSoftLimit")], rows["alice"][columns.index("BlockHardLimit")]),
-            (str(config["home"]["quota_soft_gb"] * 1024 * 1024), str(config["home"]["quota_hard_gb"] * 1024 * 1024)),
+            ("0", "0"),
         )
 
 
@@ -1977,10 +2215,7 @@ class SimRebootTest(SimUsersBase):
                             rows["alice"][columns.index("BlockSoftLimit")],
                             rows["alice"][columns.index("BlockHardLimit")],
                         ),
-                        (
-                            str(config["home"]["quota_soft_gb"] * 1024 * 1024),
-                            str(config["home"]["quota_hard_gb"] * 1024 * 1024),
-                        ),
+                        ("0", "0"),
                     )
                 else:
                     self.assertEqual((source, fstype), (f"{store_address}:/home", "nfs4"))
@@ -2086,7 +2321,7 @@ class SimMissingHomeDiskTest(SimUsersBase):
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimXfsQuotaTest(SimUsersBase):
-    """XFS home and scratch disks work, and the home quota stops writes over NFS."""
+    """XFS home and scratch disks work, with usage accounting and unrestricted writes over NFS."""
 
     def setUp(self) -> None:
         self.sim = SIM / "xfs-quota.yml"
@@ -2094,7 +2329,7 @@ class SimXfsQuotaTest(SimUsersBase):
         super().setUp()
 
     def test_xfs_disks_and_nfs_quota(self) -> None:
-        _, config, _ = self.up_with_test_key()
+        self.up_with_test_key()
         for machine in ("store", "gpu4"):
             installed = self.ssh(machine, "sudo apt-get install -y xfsprogs")
             self.assertEqual(installed.returncode, 0, f"{machine}: {installed.stdout}{installed.stderr}")
@@ -2133,16 +2368,103 @@ class SimXfsQuotaTest(SimUsersBase):
         columns = rows["User"]
         self.assertEqual(
             (rows["alice"][columns.index("BlockSoftLimit")], rows["alice"][columns.index("BlockHardLimit")]),
-            (str(config["home"]["quota_soft_gb"] * 1024 * 1024), str(config["home"]["quota_hard_gb"] * 1024 * 1024)),
+            ("0", "0"),
         )
 
-        limited = self.ssh("store", "sudo setquota -u alice 2048 2048 0 0 /home")
-        self.assertEqual(limited.returncode, 0, limited.stdout + limited.stderr)
         written = self.ssh(
             "front", "sudo -u alice dd if=/dev/zero of=/home/alice/nanohpc-quota-check bs=1M count=4 status=none"
         )
-        self.assertNotEqual(written.returncode, 0, written.stdout + written.stderr)
-        self.assertIn("Disk quota exceeded", written.stderr)
+        self.assertEqual(written.returncode, 0, written.stdout + written.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimHomeJobPolicyTest(SimUsersBase):
+    """A home threshold holds new Slurm jobs without stopping one already running."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_new_jobs_wait_then_resume(self) -> None:
+        """Check the deployed policy command against real Slurm accounting and scheduling."""
+        _, config, _ = self.up_and_deploy()
+        self.assertIn("alice", self.on_front("sudo repquota -u -v -O csv /home"))
+        private_status = "/var/lib/nanohpc/home-policy/status.json"
+        self.assertEqual(self.on_front(f"sudo stat -c %a {private_status}").strip(), "600")
+        policy_users = json.loads(self.on_front(f"sudo cat {private_status}"))["users"]
+        self.assertEqual({row["user"] for row in policy_users}, {user["name"] for user in config["users"]})
+        alice_ssh = self.ssh_config_for("alice")
+        login = self.run_command(
+            "ssh", "-tt", "-F", str(alice_ssh), "-o", "BatchMode=yes", "front", stdin="exit\n", agent=True
+        )
+        self.assertEqual(login.returncode, 0, login.stdout + login.stderr)
+        self.assertIn("Home usage:", login.stdout)
+        running = (
+            self.on_front(
+                "sudo -u alice sbatch --parsable --partition=main --chdir=/home/alice "
+                "--output=/home/alice/nanohpc-policy-%j.out --cpus-per-task=1 --mem=128M "
+                "--time=00:05:00 --wrap='sleep 180'"
+            )
+            .strip()
+            .split(";")[0]
+        )
+        self.addCleanup(self.ssh, "front", f"sudo scancel {running}")
+        for _ in range(30):
+            state = self.on_front(f"squeue -h -j {running} -o '%T'").strip()
+            if state == "RUNNING":
+                break
+            time.sleep(2)
+        self.assertEqual(state, "RUNNING")
+
+        status = "/tmp/nanohpc-home-job-policy-test-status.json"
+        held = "/tmp/nanohpc-home-job-policy-test-held.json"
+        notices = "/var/lib/nanohpc-home-notices"
+        self.addCleanup(self.ssh, "front", f"sudo rm -f {status} {held} {held.removesuffix('.json')}.lock")
+        hard = config["home"]["quota_hard_gb"] * 1024**3
+
+        def run_policy(used: int) -> None:
+            snapshot = {
+                "generated_at": datetime.now().astimezone().isoformat(),
+                "users": [{"user": "alice", "home": {"used_bytes": used, "soft_bytes": hard // 2, "hard_bytes": hard}}],
+            }
+            encoded = base64.b64encode(json.dumps(snapshot).encode()).decode()
+            command = (
+                f"printf '%s' '{encoded}' | base64 -d | sudo tee {status} >/dev/null && "
+                f"sudo /usr/local/bin/cluster-home-job-policy --status {status} --state {held} "
+                f"--notice-dir {notices} --notice-bytes {hard // 2} "
+                f"--sacctmgr /usr/bin/sacctmgr --cluster {config['cluster']['name']} "
+                f"--hard-bytes {hard} --user alice:2000"
+            )
+            self.on_front(command)
+
+        run_policy(hard)
+        notice = self.on_front("sudo -u alice cat /var/lib/nanohpc-home-notices/alice")
+        self.assertIn("New jobs wait", notice)
+        private = self.ssh("front", "sudo -u bob cat /var/lib/nanohpc-home-notices/alice")
+        self.assertNotEqual(private.returncode, 0)
+        self.assertEqual(self.on_front(f"squeue -h -j {running} -o '%T'").strip(), "RUNNING")
+        self.on_front("sudo -u alice dd if=/dev/zero of=/home/alice/nanohpc-policy-write bs=1M count=4 status=none")
+        pending = (
+            self.on_front(
+                "sudo -u alice sbatch --parsable --partition=main --chdir=/home/alice "
+                "--output=/home/alice/nanohpc-policy-%j.out --cpus-per-task=1 --mem=128M "
+                "--time=00:02:00 --wrap='true'"
+            )
+            .strip()
+            .split(";")[0]
+        )
+        self.addCleanup(self.ssh, "front", f"sudo scancel {pending}")
+        for _ in range(30):
+            queue = self.on_front(f"squeue -h -j {pending} -o '%T|%r'").strip()
+            if "AssocMaxJobsLimit" in queue:
+                break
+            time.sleep(2)
+        self.assertIn("PENDING|AssocMaxJobsLimit", queue)
+        run_policy(0)
+        state, _ = self.finished_job(pending)
+        self.assertEqual(state, "COMPLETED")
+        self.assertEqual(self.on_front("sudo stat -c %s /home/alice/nanohpc-policy-write").strip(), str(4 * 1024**2))
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
@@ -2229,6 +2551,11 @@ class SimComputeUpdateTest(SimUsersBase):
         self.assertIn("nofail", home.stdout.strip().split(","))
         reboot_setting = self.ssh("cpu1", "apt-config dump Unattended-Upgrade::Automatic-Reboot")
         self.assertIn('Unattended-Upgrade::Automatic-Reboot "false";', reboot_setting.stdout)
+        for machine in ("front", "gpu4", "cpu1"):
+            waiting = self.ssh(machine, "apt-config shell enabled APT::Periodic::Unattended-Upgrade")
+            self.assertEqual(waiting.stdout.strip(), "enabled='0'", waiting.stdout + waiting.stderr)
+            policy = self.ssh(machine, "sudo /usr/local/sbin/nanohpc-auto-updates-check")
+            self.assertEqual(policy.returncode, 0, f"{machine}: {policy.stdout}{policy.stderr}")
         # Lima writes Netplan after boot and its base /boot entry lacks nofail. The real saved-setting
         # checks should pass on a safe baseline, while SimRestartCheckTest covers refusal of unsafe settings.
         baseline = r"""
@@ -2251,8 +2578,9 @@ for path in pathlib.Path('/etc/netplan').glob('*.yaml'):
         setup = """
 set -eu
 sudo apt-get install -y dpkg-dev
-for name in nanohpc-update-fixture openssh-nanohpc-fixture; do
-  for version in 1 2; do
+for name in nanohpc-update-fixture openssh-nanohpc-fixture nanohpc-security-fixture; do
+  for version in 1 2 3; do
+    if [ "$version" = 3 ] && [ "$name" != nanohpc-security-fixture ]; then continue; fi
     folder=/tmp/$name-$version
     mkdir -p "$folder/DEBIAN"
     printf 'Package: %s\\nVersion: %s\\nArchitecture: all\\nMaintainer: nanoHPC test <test@example.invalid>\\nDescription: disposable update test\\n' "$name" "$version" > "$folder/DEBIAN/control"
@@ -2260,13 +2588,31 @@ for name in nanohpc-update-fixture openssh-nanohpc-fixture; do
   done
   sudo dpkg -i "/tmp/${name}_1_all.deb"
 done
-printf 'Package: *\nPin: release o=Ubuntu\nPin-Priority: -1\n' | sudo tee /etc/apt/preferences.d/nanohpc-update-fixture >/dev/null
+mkdir -p /tmp/nanohpc-original-sources
+sudo cp -a /etc/apt/sources.list.d/. /tmp/nanohpc-original-sources/
+sudo rm -f /etc/apt/sources.list.d/*
+sudo find /var/lib/apt/lists -maxdepth 1 -type f ! -name lock -delete
+if [ -f /etc/apt/sources.list ]; then
+  sudo cp /etc/apt/sources.list /tmp/nanohpc-original-sources-list
+  sudo rm /etc/apt/sources.list
+fi
 mkdir -p /tmp/nanohpc-update-repo
 cp /tmp/nanohpc-update-fixture_2_all.deb /tmp/openssh-nanohpc-fixture_2_all.deb /tmp/nanohpc-update-repo/
 cd /tmp/nanohpc-update-repo
 dpkg-scanpackages . /dev/null > Packages
 gzip -kf Packages
 echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/sources.list.d/nanohpc-update-fixture.list >/dev/null
+for pocket in security updates; do
+  mkdir -p /tmp/nanohpc-$pocket-repo
+  version=2
+  if [ "$pocket" = updates ]; then version=3; fi
+  cp "/tmp/nanohpc-security-fixture_${version}_all.deb" "/tmp/nanohpc-$pocket-repo/"
+  cd "/tmp/nanohpc-$pocket-repo"
+  dpkg-scanpackages . /dev/null > Packages
+  gzip -kf Packages
+  printf 'Origin: Ubuntu\nLabel: Ubuntu\nSuite: noble-%s\nCodename: noble-%s\nArchitectures: %s\nComponents: main\n' "$pocket" "$pocket" "$(dpkg --print-architecture)" > Release
+  echo "deb [trusted=yes] file:/tmp/nanohpc-$pocket-repo ./" | sudo tee "/etc/apt/sources.list.d/nanohpc-$pocket-fixture.list" >/dev/null
+done
 """
         prepared = self.ssh("cpu1", "bash -se", stdin=setup)
         self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
@@ -2299,12 +2645,25 @@ echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/so
         )
         self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
         self.assertIn("nanohpc-update-fixture=2", preview.stdout)
+        self.assertIn("nanohpc-security-fixture=3", preview.stdout)
+        snapshot = update.read_snapshot("cpu1", admin_config)
+        self.assertIn("nanohpc-security-fixture", snapshot["security_backlog"])
+        security_candidate = next(pkg for pkg in snapshot["packages"] if pkg["name"] == "nanohpc-security-fixture")
+        self.assertFalse(security_candidate["security"])
         applied = subprocess.run(
             [*command, "--confirm", "cpu1"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
         )
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        active = self.ssh("cpu1", "apt-config shell enabled APT::Periodic::Unattended-Upgrade")
+        self.assertEqual(active.stdout.strip(), "enabled='1'", active.stdout + active.stderr)
+        policy = self.ssh("cpu1", "sudo /usr/local/sbin/nanohpc-auto-updates-check")
+        self.assertEqual(policy.returncode, 0, policy.stdout + policy.stderr)
+        after = update.read_snapshot("cpu1", admin_config)
+        self.assertNotIn("nanohpc-security-fixture", after["security_backlog"])
         version = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nanohpc-update-fixture")
         self.assertEqual(version.stdout.strip(), "2", version.stdout + version.stderr)
+        security_version = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nanohpc-security-fixture")
+        self.assertEqual(security_version.stdout.strip(), "3", security_version.stdout + security_version.stderr)
         self.assertNotIn("systemctl reboot", applied.stdout)
         state = self.on_front("scontrol show node cpu1 -o")
         self.assertNotIn("DRAIN", state, applied.stdout + applied.stderr)
@@ -2328,8 +2687,42 @@ echo 'deb [trusted=yes] file:/tmp/nanohpc-update-repo ./' | sudo tee /etc/apt/so
             login = self.run_command("ssh", "-F", str(admin_config), "-o", "BatchMode=yes", "-l", user, "cpu1", "true")
             self.assertEqual(login.returncode, 0, f"{user}: {login.stdout}{login.stderr}")
 
-        unpin = self.ssh("cpu1", "sudo rm /etc/apt/preferences.d/nanohpc-update-fixture")
-        self.assertEqual(unpin.returncode, 0, unpin.stdout + unpin.stderr)
+        automatic_fixture = """
+set -eu
+for name in nanohpc-auto-fixture nvidia-nanohpc-fixture; do
+  for version in 1 2; do
+    folder=/tmp/$name-$version
+    mkdir -p "$folder/DEBIAN"
+    printf 'Package: %s\\nVersion: %s\\nArchitecture: all\\nMaintainer: nanoHPC test <test@example.invalid>\\nDescription: disposable security update test\\n' "$name" "$version" > "$folder/DEBIAN/control"
+    dpkg-deb --build "$folder" "/tmp/${name}_${version}_all.deb" >/dev/null
+  done
+  sudo dpkg -i "/tmp/${name}_1_all.deb"
+  cp "/tmp/${name}_2_all.deb" /tmp/nanohpc-security-repo/
+done
+cd /tmp/nanohpc-security-repo
+dpkg-scanpackages . /dev/null > Packages
+gzip -kf Packages
+# This disposable Release file has no package hash or changing date. Refresh its index explicitly.
+sudo rm -f /var/lib/apt/lists/_tmp_nanohpc-security-repo_._Packages
+sudo apt-get update -o APT::Update::Error-Mode=any
+sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l unattended-upgrade
+"""
+        automatic = self.ssh("cpu1", "bash -se", stdin=automatic_fixture)
+        self.assertEqual(automatic.returncode, 0, automatic.stdout + automatic.stderr)
+        updated_automatically = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nanohpc-auto-fixture")
+        self.assertEqual(updated_automatically.stdout.strip(), "2", automatic.stdout + automatic.stderr)
+        driver_held = self.ssh("cpu1", "dpkg-query -W -f='${Version}' nvidia-nanohpc-fixture")
+        self.assertEqual(driver_held.stdout.strip(), "1", automatic.stdout + automatic.stderr)
+
+        restore_sources = self.ssh(
+            "cpu1",
+            "sudo rm -f /etc/apt/sources.list.d/nanohpc-*fixture.list; "
+            "sudo cp -a /tmp/nanohpc-original-sources/. /etc/apt/sources.list.d/; "
+            "if test -f /tmp/nanohpc-original-sources-list; then "
+            "sudo cp /tmp/nanohpc-original-sources-list /etc/apt/sources.list; fi; "
+            "sudo apt-get update -o APT::Update::Error-Mode=any",
+        )
+        self.assertEqual(restore_sources.returncode, 0, restore_sources.stdout + restore_sources.stderr)
         self.check_ssh_undo_on_vm(admin_config, environment, command)
 
     def check_ssh_undo_on_vm(self, admin_config: Path, environment: dict[str, str], command: list[str]) -> None:
@@ -2453,6 +2846,86 @@ os.replace(replacement, target)
             self.assertEqual(login.returncode, 0, f"after package repair, {user}: {login.stdout}{login.stderr}")
         removed = on_vm("sudo", "rm", "-rf", ssh_update.BACKUP)
         self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimStorageUpdateTest(SimUsersBase):
+    """A configured backup VM can complete the manual gate for automatic security updates."""
+
+    def test_backup_vm_enables_security_updates_after_manual_check(self) -> None:
+        cluster, _, _ = self.up_and_deploy()
+        before = self.ssh("store", "apt-config shell enabled APT::Periodic::Unattended-Upgrade")
+        self.assertEqual(before.stdout.strip(), "enabled='0'", before.stdout + before.stderr)
+        # Lima's base /boot entry and cloud-init Netplan timestamps fail the production restart check.
+        baseline = r"""
+import os, pathlib, time
+fstab = pathlib.Path('/etc/fstab')
+lines = []
+for line in fstab.read_text().splitlines():
+    fields = line.split()
+    if len(fields) >= 4 and fields[1] == '/boot' and 'nofail' not in fields[3].split(','):
+        fields[3] += ',nofail'
+        line = '\t'.join(fields)
+    lines.append(line)
+fstab.write_text('\n'.join(lines) + '\n')
+boot_time = time.time() - float(pathlib.Path('/proc/uptime').read_text().split()[0])
+for path in pathlib.Path('/etc/netplan').glob('*.yaml'):
+    os.utime(path, (boot_time - 10, boot_time - 10))
+"""
+        safe = self.ssh("store", "sudo /usr/bin/python3 -c " + shlex.quote(baseline))
+        self.assertEqual(safe.returncode, 0, safe.stdout + safe.stderr)
+        fixture = """
+set -eu
+sudo apt-get install -y dpkg-dev
+for version in 1 2; do
+  folder=/tmp/nanohpc-store-fixture-$version
+  mkdir -p "$folder/DEBIAN"
+  printf 'Package: nanohpc-store-fixture\\nVersion: %s\\nArchitecture: all\\nMaintainer: nanoHPC test <test@example.invalid>\\nDescription: disposable storage update test\\n' "$version" > "$folder/DEBIAN/control"
+  dpkg-deb --build "$folder" "/tmp/nanohpc-store-fixture_${version}_all.deb" >/dev/null
+done
+sudo dpkg -i /tmp/nanohpc-store-fixture_1_all.deb
+sudo rm -f /etc/apt/sources.list.d/*
+sudo rm -f /etc/apt/sources.list
+sudo find /var/lib/apt/lists -maxdepth 1 -type f ! -name lock -delete
+mkdir -p /tmp/nanohpc-store-repo
+cp /tmp/nanohpc-store-fixture_2_all.deb /tmp/nanohpc-store-repo/
+cd /tmp/nanohpc-store-repo
+dpkg-scanpackages . /dev/null > Packages
+gzip -kf Packages
+echo 'deb [trusted=yes] file:/tmp/nanohpc-store-repo ./' | sudo tee /etc/apt/sources.list.d/nanohpc-store-fixture.list >/dev/null
+"""
+        prepared = self.ssh("store", "bash -se", stdin=fixture)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        admin_config = self.ssh_config_for("alice")
+        environment = {**os.environ, "SSH_AUTH_SOCK": self.agent_socket, "XDG_STATE_HOME": str(self.keys / "state")}
+        command = [
+            "uv",
+            "run",
+            "nanohpc",
+            "update",
+            str(cluster),
+            "store",
+            "--include",
+            "extra",
+            "--ssh-config",
+            str(admin_config),
+        ]
+        preview = subprocess.run(
+            [*command, "--dry-run"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        applied = subprocess.run(
+            [*command, "--confirm", "store"], cwd=ROOT, env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        version = self.ssh("store", "dpkg-query -W -f='${Version}' nanohpc-store-fixture")
+        self.assertEqual(version.stdout.strip(), "2", version.stdout + version.stderr)
+        after = self.ssh("store", "apt-config shell enabled APT::Periodic::Unattended-Upgrade")
+        self.assertEqual(after.stdout.strip(), "enabled='1'", after.stdout + after.stderr)
+        policy = self.ssh("store", "sudo /usr/local/sbin/nanohpc-auto-updates-check")
+        self.assertEqual(policy.returncode, 0, policy.stdout + policy.stderr)
+        state = self.on_front("scontrol show node cpu1 -o")
+        self.assertNotIn("DRAIN", state, applied.stdout + applied.stderr)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

@@ -1,6 +1,6 @@
 {
   "uid": "nanohpc-queue",
-  "title": "Running Jobs and Queue",
+  "title": "[% nanohpc.cluster_name %]: Running Jobs and Queue",
   "schemaVersion": 39,
   "editable": false,
   "refresh": "30s",

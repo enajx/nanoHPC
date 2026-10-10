@@ -1,0 +1,242 @@
+#!/usr/bin/python3
+"""Queue new jobs above the configured home threshold through association MaxJobs=0.
+
+A snapshot must be less than two minutes old and complete for the configured users.
+The collector accepts quota readings younger than ten minutes, matching the five
+minute reader schedule. Running jobs are not cancelled. State records the previous
+administrator limit before changing Slurm, so a retry can finish interrupted work.
+Manual changes to a managed zero limit suspend management until usage falls below
+the threshold. A manual change to exactly zero cannot be distinguished
+from this service's own zero. Run as root; the state directory must be private.
+The root-owned notice directory must be traversable by users. Each --user NAME:UID
+receives an atomic 0400 usage box, owned by that UID, for interactive login display.
+"""
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import subprocess
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+
+def save(path: Path, state: dict[str, Any]) -> None:
+    """Replace state atomically and sync its directory before changing Slurm."""
+    temporary = path.with_name("." + path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(state, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    os.fsync(descriptor)
+    os.close(descriptor)
+
+
+def usage(path: Path, users: list[str], notice: int, hard: int) -> dict[str, int]:
+    """Validate all users before any accounting changes."""
+    snapshot = json.loads(path.read_text())
+    stamp = datetime.fromisoformat(snapshot["generated_at"])
+    if stamp.tzinfo is None or not 0 <= (datetime.now(UTC) - stamp).total_seconds() < 120:
+        raise ValueError("Home status is stale or has an invalid timestamp")
+    result: dict[str, int] = {}
+    for row in snapshot["users"]:
+        user = row["user"]
+        if user not in users:
+            continue
+        home = row["home"]
+        if user in result or not isinstance(home, dict):
+            raise ValueError("Missing or duplicate home usage for " + user)
+        if (
+            type(home.get("used_bytes")) is not int
+            or home["used_bytes"] < 0
+            or type(home.get("hard_bytes")) is not int
+            or home["hard_bytes"] != hard
+            or type(home.get("soft_bytes")) is not int
+            or home["soft_bytes"] != notice
+        ):
+            raise ValueError("Invalid home usage or configured threshold for " + user)
+        result[user] = home["used_bytes"]
+    if set(result) != set(users):
+        raise ValueError("Missing configured users in home status")
+    return result
+
+
+def usage_box(path: Path, uid: int, used: int, notice: int, hard: int) -> None:
+    """Publish one private usage box, owned by its user, using an atomic rename."""
+    lines = [
+        f"Home usage: {used / 1024**3:.2f} GB / {hard / 1024**3:.2f} GB job-wait threshold.",
+        f"Notice threshold: {notice / 1024**3:.2f} GB.",
+    ]
+    if used >= notice:
+        lines.append("Notice: home usage is at or above the notice threshold.")
+    if used >= hard:
+        lines.extend(
+            [
+                "New jobs wait until home usage is below the job-wait threshold.",
+                "Running jobs continue. Remove unneeded files from home to resume new jobs.",
+            ]
+        )
+    width = max(len(line) for line in lines)
+    border = "+" + "-" * (width + 2) + "+"
+    content = "\n".join([border, *["| " + line.ljust(width) + " |" for line in lines], border]) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fchown(stream.fileno(), uid, -1)
+        os.fchmod(stream.fileno(), 0o400)
+        os.fsync(stream.fileno())
+    Path(temporary_name).replace(path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    os.fsync(directory)
+    os.close(directory)
+
+
+def limits(command: str, cluster: str, users: list[str]) -> dict[str, str]:
+    """Require one unambiguous association per configured user."""
+    output = subprocess.run(
+        [
+            command,
+            "--noheader",
+            "--parsable2",
+            "show",
+            "assoc",
+            "where",
+            "cluster=" + cluster,
+            "account=" + cluster,
+            "format=User,MaxJobs",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout
+    result: dict[str, str] = {}
+    for line in output.splitlines():
+        fields = line.split("|")
+        if fields[0] not in users:
+            continue
+        if len(fields) != 2 or fields[0] in result or not valid_limit(fields[1]):
+            raise ValueError("Ambiguous or invalid Slurm association: " + line)
+        result[fields[0]] = fields[1]
+    if set(result) != set(users):
+        raise ValueError("Missing configured Slurm associations")
+    return result
+
+
+def valid_limit(value: Any) -> bool:
+    """Accept only explicit nonnegative limits or an unset limit."""
+    return isinstance(value, str) and (value == "" or re.fullmatch(r"[0-9]+", value) is not None)
+
+
+def change(command: str, cluster: str, user: str, value: str) -> None:
+    """Change the cluster account's user association without touching running jobs."""
+    subprocess.run(
+        [
+            command,
+            "-i",
+            "modify",
+            "user",
+            "where",
+            "name=" + user,
+            "cluster=" + cluster,
+            "account=" + cluster,
+            "set",
+            "MaxJobs=" + (value or "-1"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def main() -> None:
+    """Serialize runs and journal every accounting mutation."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("status", "state", "notice-dir"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    for name in ("sacctmgr", "cluster"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--hard-bytes", type=int, required=True)
+    parser.add_argument("--notice-bytes", type=int, required=True)
+    parser.add_argument("--user", action="append", required=True, metavar="NAME:UID")
+    args = parser.parse_args()
+    users: dict[str, int] = {}
+    for item in args.user:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*:[0-9]+", item) is None:
+            raise ValueError("Invalid configured user name and UID")
+        name, raw_uid = item.split(":")
+        if name in users or not 0 < int(raw_uid) < 2**32 - 1:
+            raise ValueError("Duplicate configured user or invalid UID")
+        users[name] = int(raw_uid)
+    if not 0 < args.notice_bytes <= args.hard_bytes or re.fullmatch(r"[A-Za-z0-9_-]+", args.cluster) is None:
+        raise ValueError("Invalid configured users, cluster, or hard threshold")
+    readings = usage(args.status, list(users), args.notice_bytes, args.hard_bytes)
+    with args.state.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        state = json.loads(args.state.read_text()) if args.state.exists() else {"cluster": args.cluster, "users": {}}
+        if state.get("cluster") != args.cluster or not isinstance(state.get("users"), dict):
+            raise ValueError("Invalid policy state or changed cluster")
+        for user, entry in state["users"].items():
+            if (
+                re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", user) is None
+                or not isinstance(entry, dict)
+                or not valid_limit(entry.get("prior"))
+                or entry.get("phase") not in ("setting", "blocked", "restoring", "overridden")
+            ):
+                raise ValueError("Invalid policy state")
+            if user not in users:
+                print(f"Retaining saved limit for removed user {user}; active users still managed", flush=True)
+        current = limits(args.sacctmgr, args.cluster, list(users))
+        for user in users:
+            entry = state["users"].get(user)
+            above = readings[user] >= args.hard_bytes
+            if entry is not None:
+                if entry["phase"] == "restoring" and current[user] == entry["prior"]:
+                    del state["users"][user]
+                    save(args.state, state)
+                    entry = None
+                elif current[user] != "0":
+                    if entry["phase"] == "setting" and current[user] == entry["prior"] and above:
+                        change(args.sacctmgr, args.cluster, user, "0")
+                        current[user] = "0"
+                    else:
+                        entry["phase"] = "overridden"
+                        save(args.state, state)
+                if entry is not None and entry["phase"] == "overridden":
+                    if not above:
+                        del state["users"][user]
+                        save(args.state, state)
+                    continue
+            if above:
+                if entry is None:
+                    if current[user] == "0":
+                        continue
+                    entry = {"prior": current[user], "phase": "setting"}
+                    state["users"][user] = entry
+                    save(args.state, state)
+                    change(args.sacctmgr, args.cluster, user, "0")
+                entry["phase"] = "blocked"
+                save(args.state, state)
+            elif entry is not None:
+                entry["phase"] = "restoring"
+                save(args.state, state)
+                change(args.sacctmgr, args.cluster, user, entry["prior"])
+                del state["users"][user]
+                save(args.state, state)
+        for user, uid in users.items():
+            usage_box(args.notice_dir / user, uid, readings[user], args.notice_bytes, args.hard_bytes)
+        for old_box in args.notice_dir.iterdir():
+            if old_box.name not in users:
+                old_box.unlink()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,62 @@
+# The root-only check runs after node_exporter creates the shared textfile folder. Findings are read
+# by node_exporter, so no notification secret is needed on the checked machine.
+- name: Check the metrics textfile folder
+  ansible.builtin.stat:
+    path: /var/lib/nanohpc/metrics-textfile
+  register: user_check_textfile
+
+- name: Require the metrics textfile folder
+  ansible.builtin.assert:
+    that: user_check_textfile.stat.isdir | default(false)
+    fail_msg: /var/lib/nanohpc/metrics-textfile is missing; deploy node_exporter first.
+  when: not ansible_check_mode
+
+- name: Install the user check
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-user-check"
+    dest: /usr/local/bin/cluster-user-check
+    owner: root
+    group: root
+    mode: "0755"
+    validate: python3 -m py_compile %s
+
+- name: Install the user check service
+  ansible.builtin.template:
+    src: nanohpc-user-check.service.j2
+    dest: /etc/systemd/system/nanohpc-user-check.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: user_check_service
+
+- name: Install the user check timer
+  ansible.builtin.copy:
+    src: nanohpc-user-check.timer
+    dest: /etc/systemd/system/nanohpc-user-check.timer
+    owner: root
+    group: root
+    mode: "0644"
+  register: user_check_timer
+
+# Run once during deploy, so a broken check fails before the timer starts.
+- name: Run the user check once
+  ansible.builtin.systemd_service:
+    name: nanohpc-user-check.service
+    state: started
+    daemon_reload: true
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Start the user check timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-user-check.timer
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Check that the user check wrote metrics
+  ansible.builtin.stat:
+    path: /var/lib/nanohpc/metrics-textfile/user-check.prom
+  register: user_check_output
+  failed_when: not user_check_output.stat.exists
+  when: not ansible_check_mode

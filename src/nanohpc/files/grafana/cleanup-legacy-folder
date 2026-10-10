@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Remove nanoHPC's old empty Grafana folder after dashboards move to the named folder."""
+
+import base64
+import json
+import sys
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+
+def get_json(base_url: str, path: str, authorization: str) -> list[dict[str, Any]]:
+    """Read one Grafana API list with the local administrator password."""
+    request = urllib.request.Request(base_url + path, headers={"Authorization": authorization})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.load(response)
+
+
+def main() -> None:
+    """Remove only a provisioned, empty legacy folder after the named folder is ready."""
+    if len(sys.argv) != 4:
+        raise SystemExit("usage: cleanup-legacy-folder GRAFANA_URL CLUSTER_NAME SECRETS_FILE")
+    base_url, cluster_name, secrets_path = sys.argv[1:]
+    base_url = base_url.rstrip("/")
+    secrets = Path(secrets_path).read_text().splitlines()
+    passwords = [line.split("=", 1)[1] for line in secrets if line.startswith("GF_SECURITY_ADMIN_PASSWORD=")]
+    if len(passwords) != 1:
+        raise RuntimeError("Grafana admin password is missing or duplicated")
+    authorization = "Basic " + base64.b64encode(f"nanohpc-admin:{passwords[0]}".encode()).decode()
+
+    folders = get_json(base_url, "/api/folders", authorization)
+    named = [folder for folder in folders if folder.get("uid") == "nanohpc-cluster"]
+    if len(named) != 1 or named[0].get("title") != cluster_name:
+        raise RuntimeError(f"Grafana folder nanohpc-cluster does not show the configured name {cluster_name}")
+    legacy = [
+        folder for folder in folders if folder.get("title") == "Cluster" and folder.get("uid") != "nanohpc-cluster"
+    ]
+    if not legacy:
+        print("no legacy Grafana folder")
+        return
+    if len(legacy) != 1 or legacy[0].get("managedBy") != "classic-file-provisioning":
+        raise RuntimeError("Grafana has an ambiguous Cluster folder; leaving it for administrator review")
+
+    old_uid = legacy[0]["uid"]
+    query = urllib.parse.urlencode({"type": "dash-db", "folderUIDs": old_uid, "limit": 1})
+    dashboards = get_json(base_url, "/api/search?" + query, authorization)
+    if dashboards and dashboards[0].get("folderUid") != old_uid:
+        raise RuntimeError("Grafana did not limit the dashboard search to the legacy folder")
+    remaining = [
+        item.get("title", item.get("uid", "unknown")) for item in dashboards if item.get("folderUid") == old_uid
+    ]
+    if remaining:
+        raise RuntimeError(f"Legacy Grafana folder still contains dashboards: {', '.join(remaining)}")
+    request = urllib.request.Request(
+        base_url + "/api/folders/" + old_uid,
+        headers={"Authorization": authorization},
+        method="DELETE",
+    )
+    with urllib.request.urlopen(request, timeout=15):
+        pass
+    print(f"removed empty legacy Grafana folder {old_uid}")
+
+
+if __name__ == "__main__":
+    main()

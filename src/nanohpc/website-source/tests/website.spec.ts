@@ -57,8 +57,8 @@ function snapshot(): object {
     total_gpus: 4,
     allocated_gpus: 2,
     jobs: [
-      { id: '101', user: 'alice', state: 'RUNNING', gpus: 2, node: 'gpu1', priority: 2500, seconds: 3725 },
-      { id: '102', user: 'bob', state: 'PENDING', gpus: 1, node: '', priority: 1200, seconds: 95 },
+      { id: '101', user: 'alice', state: 'RUNNING', gpus: 2, node: 'gpu1', priority: 2500, seconds: 3725, time_limit_minutes: 2160 },
+      { id: '102', user: 'bob', state: 'PENDING', gpus: 1, node: '', priority: 1200, seconds: 95, time_limit_minutes: null },
     ],
     nodes: [
       { name: 'front', role: 'Front node', health: 'Healthy', health_details: [], gpu_usage: 'Not applicable' },
@@ -138,6 +138,140 @@ test.afterAll(async () => {
   rmSync(folder, { recursive: true, force: true })
 })
 
+test('Overview map, compact layout, booked time, and Users ranking work in the served site', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 })
+  await mockGrafana(page)
+  await page.goto(`${origin}${prefix}`)
+  const overview = page.locator('main')
+  await expect(overview.getByRole('heading', { name: 'Overview' })).toBeAttached()
+  await expect(overview.getByRole('heading', { name: 'Overview' })).toHaveCSS('width', '1px')
+  await expect(overview.locator('footer .freshness')).toContainText('Updates every 30s')
+  const card = overview.locator('.overview-machines')
+  const views = card.getByRole('group', { name: 'Machines view' })
+  await expect(views.getByRole('button', { name: 'Cluster Map' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(card.getByRole('img', { name: /Cluster map:/ })).toBeVisible()
+  await expect(card.getByRole('img', { name: /Cluster map:/ })).toHaveAttribute('aria-label', /front: front node/)
+  expect(await card.locator('.cluster-map-canvas').evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(340)
+  const chart = overview.locator('.gpu-allocation-chart')
+  const cardWidth = await card.evaluate(element => element.getBoundingClientRect().width)
+  const chartWidth = await chart.evaluate(element => element.getBoundingClientRect().width)
+  expect(cardWidth / chartWidth).toBeGreaterThan(0.9)
+  expect(cardWidth / chartWidth).toBeLessThan(1.1)
+  await views.getByRole('button', { name: 'List view' }).click()
+  await expect(card.locator('tbody tr')).toHaveCount(2)
+  await expect(card.locator('.cluster-map')).toHaveCount(0)
+  await page.reload()
+  await expect(page.locator('.overview-machines tbody tr')).toHaveCount(2)
+  await page.getByRole('navigation', { name: 'Cluster navigation' }).getByRole('link', { name: 'Machines' }).click()
+  await expect(page.locator('main > .cluster-map')).toBeVisible()
+  await page.getByRole('button', { name: 'Show cluster map' }).click()
+  await page.getByRole('navigation', { name: 'Cluster navigation' }).getByRole('link', { name: 'Overview' }).click()
+  await expect(page.locator('.overview-machines tbody tr')).toHaveCount(2)
+  await expect(page.getByRole('table', { name: 'Running jobs' })).toContainText('1 day 12 hr')
+  await expect(page.getByRole('table', { name: 'Top of queue' })).toContainText('No limit')
+  await page.getByRole('navigation', { name: 'Cluster navigation' }).getByRole('link', { name: 'Users' }).click()
+  const users = page.locator('.users-top')
+  await expect(users.getByRole('heading', { name: 'GPU usage history per user' })).toBeVisible()
+  await expect(users.locator('.user-ranking thead th')).toHaveText(['Rank', 'User', 'GPU-hours', 'Fair-share'])
+  await expect(users.locator('.user-ranking tbody tr').first()).toContainText('120')
+  await expect(users.locator('.user-ranking tbody tr').first()).toContainText('0.25')
+  await expect(page.getByRole('region', { name: 'alice stats' })).toContainText('20')
+})
+
+test('served cluster Overview fits a 1440 by 900 desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('.overview-machines .cluster-map-canvas canvas')).toBeVisible()
+  await expect(page.locator('.gpu-allocation-chart')).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Running jobs' })).toBeVisible()
+  await expect(page.locator('main footer')).toBeVisible()
+  const pageSize = await page.evaluate(() => ({ height: document.documentElement.scrollHeight, width: document.documentElement.scrollWidth }))
+  expect(pageSize.height).toBeLessThanOrEqual(900)
+  expect(pageSize.width).toBeLessThanOrEqual(1440)
+})
+
+test('Partitions map uses one trunk and one branch turn per machine', async ({ page }) => {
+  await mockGrafana(page)
+  await page.goto(`${origin}${prefix}#machines`)
+  await page.getByRole('group', { name: 'Cluster map layout' }).getByRole('button', { name: 'Partitions' }).click()
+  const raw = await page.locator('.cluster-map-canvas').getAttribute('data-pipes')
+  expect(raw).not.toBeNull()
+  const pipes = JSON.parse(raw ?? '[]') as { from: string; to: string; tiles: [number, number][] }[]
+  expect(pipes.length).toBe(3)
+  expect(pipes.map(pipe => pipe.from)).toEqual(['front', 'front', 'front'])
+  expect(pipes.every(pipe => pipe.tiles.length <= 5)).toBe(true)
+  expect(pipes.every(pipe => pipe.tiles[1][0] === pipes[0].tiles[1][0])).toBe(true)
+})
+
+test('Offline and Unknown map machines stay transparent with their labels and pipes', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockGrafana(page)
+  let health: Record<string, string> = {}
+  let old = false
+  let sample = 0
+  await page.route(`**${prefix}data/status.json`, route => {
+    const data = snapshot() as { generated_at: string; nodes: { name: string; health: string }[] }
+    data.nodes.forEach(node => { node.health = health[node.name] ?? 'Healthy' })
+    if (old) data.generated_at = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    return route.fulfill({ json: data })
+  })
+  const solidPixels = async (): Promise<{ ink: number; white: number }> => {
+    await page.goto(`${origin}${prefix}?map-fade=${sample++}#machines`)
+    const canvas = page.locator('.cluster-map-canvas canvas')
+    await expect(canvas).toBeVisible()
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(2300)
+    return canvas.evaluate(element => {
+      const surface = element as HTMLCanvasElement
+      const top = Math.ceil(48 * surface.width / surface.clientWidth)
+      const pixels = surface.getContext('2d')!.getImageData(0, top, surface.width, surface.height - top).data
+      let ink = 0
+      let white = 0
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 3] > 250 && Math.abs(pixels[i] - 23) + Math.abs(pixels[i + 1] - 35) + Math.abs(pixels[i + 2] - 34) < 10) ink++
+        if (pixels[i + 3] > 250 && pixels[i] > 250 && pixels[i + 1] > 250 && pixels[i + 2] > 250) white++
+      }
+      return { ink, white }
+    })
+  }
+  const healthy = await solidPixels()
+  health = { cpu1: 'Offline' }
+  const offline = await solidPixels()
+  // With this fixture at 1440px, cpu1's stack is centered at (937, 516).
+  await page.mouse.move(937, 516)
+  await page.waitForTimeout(200)
+  const hoverPixels = await page.locator('.cluster-map-canvas canvas').evaluate(element => {
+    const canvas = element as HTMLCanvasElement
+    const rect = canvas.getBoundingClientRect()
+    const scale = canvas.width / rect.width
+    const count = (left: number, top: number, width: number, height: number) => {
+      const pixels = canvas.getContext('2d')!.getImageData(
+        Math.floor((left - rect.left) * scale), Math.floor((top - rect.top) * scale),
+        Math.ceil(width * scale), Math.ceil(height * scale),
+      ).data
+      let ink = 0
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 3] > 250 && Math.abs(pixels[i] - 23) + Math.abs(pixels[i + 1] - 35) + Math.abs(pixels[i + 2] - 34) < 10) ink++
+      }
+      return ink
+    }
+    return { stack: count(908, 472, 55, 21), tooltip: count(960, 510, 168, 100) }
+  })
+  expect(hoverPixels.tooltip, 'the Offline machine should still show its hover details').toBeGreaterThan(200)
+  expect(hoverPixels.stack, 'the hovered Offline stack should remain transparent').toBeLessThan(40)
+  health = { cpu1: 'Offline', gpu1: 'Unknown' }
+  const unknown = await solidPixels()
+  health = { front: 'Unknown', gpu1: 'Unknown', cpu1: 'Unknown', store: 'Unknown' }
+  const allUnknown = await solidPixels()
+  health = {}
+  old = true
+  const stale = await solidPixels()
+  expect(offline.ink, 'Offline machine, label, and pipe should lose solid ink').toBeLessThan(healthy.ink * 0.85)
+  expect(offline.white, 'Offline pipe rail and label should lose solid white').toBeLessThan(healthy.white * 0.85)
+  expect(unknown.ink, 'Unknown machine, label, and pipe should also lose solid ink').toBeLessThan(offline.ink * 0.82)
+  expect(Math.abs(stale.ink - allUnknown.ink), 'stale data should fade every machine').toBeLessThan(allUnknown.ink * 0.08)
+})
+
 /** Mocked Grafana: dashboards are a stub page; the query API answers the GPU chart and the cluster map. */
 async function mockGrafana(page: Page): Promise<void> {
   await page.route(`**${prefix}grafana/d/**`, route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Dashboard</title><p>Grafana dashboard (test stub)</p>' }))
@@ -197,6 +331,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   // Overview: summary, compute machines, GPU chart, current jobs.
   await expect(page.getByText('Updates every 30s')).toBeVisible()
   await expect(page.locator('.stat').filter({ hasText: 'GPUs allocated' })).toContainText('2 / 4')
+  await page.getByRole('group', { name: 'Machines view' }).getByRole('button', { name: 'List view' }).click()
   const machineRows = page.locator('.machine-list tbody tr')
   await expect(page.locator('.machine-list thead th').nth(3)).toHaveText('Speed /home | Internet')
   await expect(machineRows).toHaveCount(2)
@@ -249,9 +384,9 @@ test('the site renders every tab from the fixture data under a non-root path', a
   // Users: ranking, one card per user, and the usage dashboard.
   await nav.getByRole('link', { name: 'Users', exact: true }).click()
   await expect(page.locator('.user-spec')).toHaveCount(2)
-  await expect(page.getByRole('region', { name: 'alice stats' })).toContainText('At soft quota')
-  await expect(page.getByRole('cell', { name: '120.250', exact: true })).toBeVisible()
-  expect(new URL(await page.locator('iframe[title="GPU usage history"]').evaluate(frame => (frame as HTMLIFrameElement).src)).pathname)
+  await expect(page.getByRole('region', { name: 'alice stats' })).toContainText('Home notice')
+  await expect(page.getByRole('cell', { name: '120', exact: true })).toBeVisible()
+  expect(new URL(await page.locator('iframe[title="GPU usage history per user"]').evaluate(frame => (frame as HTMLIFrameElement).src)).pathname)
     .toBe(`${prefix}grafana/d/nanohpc-usage`)
 
   // Cluster usage: the machine metrics dashboard.
@@ -272,6 +407,22 @@ test('the site renders every tab from the fixture data under a non-root path', a
   expect(seen.errors).toEqual([])
 })
 
+test('Cluster usage links select one or several machines in the embedded dashboard', async ({ page }) => {
+  await mockGrafana(page)
+  for (const [hash, selected] of [
+    ['#usage', []],
+    ['#usage?machine=front', ['front']],
+    ['#usage?machine=gpu1&machine=cpu1', ['gpu1', 'cpu1']],
+  ] as const) {
+    await page.goto(`${origin}${prefix}${hash}`)
+    const frame = page.locator('iframe[title="Machine and GPU metrics"]')
+    await expect(frame).toBeVisible()
+    const source = new URL(await frame.getAttribute('src') ?? '', page.url())
+    expect(source.searchParams.getAll('var-machine')).toEqual(selected)
+    expect(source.searchParams.get('var-gpu_group')).toBe('0')
+  }
+})
+
 test('Overview waiting time switches between the three measured periods', async ({ page }) => {
   await mockGrafana(page)
   await page.goto(`${origin}${prefix}`)
@@ -288,12 +439,16 @@ test('Overview waiting time switches between the three measured periods', async 
 test('Machines lists every configured machine with its role while Overview stays compact', async ({ page }) => {
   await mockGrafana(page)
   await page.goto(`${origin}${prefix}`)
+  await page.getByRole('group', { name: 'Machines view' }).getByRole('button', { name: 'List view' }).click()
+  await expect(page.locator('.machine-list thead th')).toHaveText(['Machine', 'Health', 'State', 'Speed /home | Internet', 'GPUs'])
   await expect(page.locator('.machine-list tbody tr')).toHaveCount(2)
   await page.goto(`${origin}${prefix}#machines`)
+  await expect(page.locator('.machine-list thead th')).toHaveText(['Machine', 'Node type', 'Health', 'State', 'Speed /home | Internet', 'GPUs'])
   const rows = page.locator('.machine-list tbody tr')
   await expect(rows).toHaveCount(4)
   await expect(rows.locator('th')).toContainText(['front', 'gpu1', 'cpu1', 'store'])
-  await expect(rows.locator('.role-tag')).toHaveText(['Front node', 'Compute', 'Compute', 'Storage'])
+  await expect(rows.locator('td:nth-child(2)')).toHaveText(['Front node', 'Compute', 'Compute', 'Storage'])
+  await expect(rows.locator('.role-tag')).toHaveCount(0)
   await expect(page.locator('.machine-spec')).toHaveCount(4)
 })
 
@@ -308,6 +463,7 @@ test('machine labels explain health, speed, and waiting updates', async ({ page 
     } : node),
   } }))
   await page.goto(`${origin}${prefix}`)
+  await page.getByRole('group', { name: 'Machines view' }).getByRole('button', { name: 'List view' }).click()
   const row = page.locator('.machine-list tbody tr').filter({ hasText: 'gpu1' })
   await row.getByRole('button', { name: 'Healthy' }).click()
   await expect(page.getByRole('dialog', { name: 'gpu1: Healthy' })).toContainText('No health problems reported')
@@ -321,6 +477,30 @@ test('machine labels explain health, speed, and waiting updates', async ({ page 
   const card = page.getByRole('region', { name: 'gpu1 specs' })
   await card.getByRole('button', { name: 'Needs update' }).click()
   await expect(page.getByRole('dialog', { name: 'gpu1: Needs update' })).toContainText('package update')
+})
+
+test('/home speed box color follows the shown small-file write speed', async ({ page }) => {
+  await mockGrafana(page)
+  const data = snapshot() as { nodes: { name: string; specs?: object }[] }
+  let smallWrite = 0.9
+  let largeRead = 125
+  await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: {
+    ...data, nodes: data.nodes.map(node => node.name === 'gpu1' ? {
+      ...node, specs: { ...node.specs, speeds: {
+        home_large_read: largeRead, home_small_write: smallWrite, internet_download: 95,
+      } },
+    } : node),
+  } }))
+  for (const [index, [write, read, color]] of ([[0.9, 125, 'state-problem'], [1, 125, 'state-warning'], [10, 0, 'state-healthy']] as const).entries()) {
+    smallWrite = write
+    largeRead = read
+    if (index === 0) await page.goto(`${origin}${prefix}#machines`)
+    else await page.reload()
+    const row = page.locator('.machine-list tbody tr').filter({ hasText: 'gpu1' })
+    const box = row.getByRole('button', { name: '/home speed' })
+    await expect(box).toContainText(`${Math.round(write)} MB/s`)
+    await expect(box).toHaveClass(new RegExp(`\\b${color}\\b`))
+  }
 })
 
 test('the guide covers supported containers and interactive notebooks without claiming unsupported queue rules', async ({ page }) => {
@@ -364,6 +544,7 @@ test('planned maintenance is distinct from a machine fault and a paused queue sh
   const nodes = data.nodes.map(node => node.name === 'gpu1' ? { ...node, health: 'Maintenance', health_details: ['The queue is paused (partitions down)'] } : node)
   await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: { ...data, nodes, queue_paused: true } }))
   await page.goto(`${origin}${prefix}`)
+  await page.getByRole('group', { name: 'Machines view' }).getByRole('button', { name: 'List view' }).click()
   await expect(page.locator('.stat').filter({ hasText: 'GPUs allocated' })).toContainText('0 / 0')
   await expect(page.locator('.machine-list tbody tr').filter({ hasText: 'gpu1' })).toContainText('Scheduled maintenance')
 })
@@ -433,6 +614,8 @@ test('monitor mode shows measured machines and login names without Slurm claims'
   await expect(page.getByRole('region', { name: 'Cluster summary' })).toContainText('2')
   await expect(page.locator('.machine-list tbody tr')).toHaveCount(2)
   await nav.getByRole('link', { name: 'Machines' }).click()
+  await expect(page.locator('.machine-list thead th').nth(1)).toHaveText('Node type')
+  await expect(page.locator('.machine-list tbody tr td:nth-child(2)')).toHaveText(['Monitor', 'Machine'])
   await expect(page.getByRole('region', { name: 'gpu1 specs' })).toContainText('2× RTX')
   await expect(page.getByRole('table', { name: 'GPU readings' })).toContainText('GPU 0')
   await expect(page.getByRole('table', { name: 'GPU readings' })).toContainText('55%')
@@ -444,6 +627,10 @@ test('monitor mode shows measured machines and login names without Slurm claims'
   await expect(page.getByRole('list', { name: 'Login names' })).toContainText('alice')
   await expect(page.getByRole('list', { name: 'Login names' })).toContainText('bob')
   await expect(page.locator('main')).not.toContainText(/allocated|fair.share|pending|queue|job|NFS/i)
+  await page.goto(`${origin}${prefix}#usage?machine=host&machine=gpu1`)
+  const metrics = page.locator('iframe[title="Machine and GPU metrics"]')
+  await expect(metrics).toBeVisible()
+  expect(new URL(await metrics.getAttribute('src') ?? '', page.url()).searchParams.getAll('var-machine')).toEqual(['host', 'gpu1'])
   expectInsidePrefix(seen.requests)
   expect(seen.errors).toEqual([])
 })

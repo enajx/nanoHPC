@@ -23,7 +23,7 @@ const tabs = [
   { hash: 'docs', title: 'How to', dashboards: [] },
   { hash: 'queue', title: 'Jobs', dashboards: ['Running Jobs and Queue', 'Queue history'] },
   { hash: 'machines', title: 'Machines', dashboards: [] },
-  { hash: 'users', title: 'Users', dashboards: ['GPU usage history'] },
+  { hash: 'users', title: 'Users', dashboards: ['GPU usage history per user'] },
   { hash: 'usage', title: 'Cluster usage', dashboards: ['Machine and GPU metrics'] },
   { hash: 'policy', title: 'Cluster policy', dashboards: [] },
 ]

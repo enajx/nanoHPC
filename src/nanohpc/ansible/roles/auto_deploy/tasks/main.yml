@@ -111,6 +111,7 @@
     content: |
       # Secrets for automatic deploys, copied from the administrator's .env by nanohpc deploy.
       {% if nanohpc_secrets.slack_webhook %}NANOHPC_SLACK_WEBHOOK={{ nanohpc_secrets.slack_webhook }}
+      {% endif %}{% if nanohpc_secrets.slack_bot_token | default(None) %}NANOHPC_SLACK_BOT_TOKEN={{ nanohpc_secrets.slack_bot_token }}
       {% endif %}{% if nanohpc_secrets.deploy_webhook %}NANOHPC_DEPLOY_WEBHOOK_SECRET={{ nanohpc_secrets.deploy_webhook }}
       {% endif %}
   no_log: true

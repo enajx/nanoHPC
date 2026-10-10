@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Activity, ChartNoAxesColumnIncreasing, Server, UsersRound } from 'lucide-react'
 import { AccentButton } from './accent-button'
 import { FontButton } from './font-button'
-import { ClusterMap, MapToggle, storedMapShown } from './cluster-map'
+import { ClusterMap, MapToggle, machinesMapKey, storedMapShown } from './cluster-map'
 import { healthText, MachineCards, size, SpeedBoxes, type Machine } from './machines'
 import { MachineLabel } from './machine-dialog'
 import type { MonitorSiteSettings } from './site'
@@ -126,7 +126,7 @@ function ReadingTable({ nodes, readings, stale }: { nodes: Machine[]; readings: 
 /** Machine health and observed GPU activity, including the monitoring host. */
 function MachineTable({ nodes, stale }: { nodes: Machine[] | null; stale: boolean }) {
   return <section className="panel machine-list"><div className="panel-heading"><h2>Machines</h2></div>
-    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Role</th><th>Health</th><th>GPU activity</th><th>GPUs installed</th><th>Internet speed</th></tr></thead>
+    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Node type</th><th>Health</th><th>GPU activity</th><th>GPUs installed</th><th>Internet speed</th></tr></thead>
       <tbody>{nodes?.map(node => <tr key={node.name}><th><a href={`#machines?machine=${encodeURIComponent(node.name)}`}>{node.name}</a></th>
         <td>{node.role}</td><td><MachineLabel node={node} topic="health" stale={stale} demo={false} className={`state-${(stale ? 'Unknown' : node.health ?? 'Unknown').toLowerCase()}`} label={healthText(stale ? 'Unknown' : node.health ?? 'Unknown')}>{healthText(stale ? 'Unknown' : node.health ?? 'Unknown')}</MachineLabel></td>
         <td>{stale ? 'Unknown' : node.gpu_usage ?? 'Unknown'}</td><td>{node.total_gpus ?? node.specs?.gpu_count ?? 'Unknown'}</td><td><SpeedBoxes node={node} stale={stale} demo={false} named={false}/></td></tr>)}</tbody></table></div>
@@ -142,12 +142,13 @@ function Dashboard({ name, path }: { name: string; path: string }) {
 /** Render the monitor-specific navigation and content without scheduler concepts. */
 export function MonitorApp({ site }: { site: MonitorSiteSettings }) {
   const [page, setPage] = useState<MonitorPage>(currentPage)
-  const [mapShown, setMapShown] = useState(storedMapShown)
+  const [usageState, setUsageState] = useState(() => window.location.hash.split('?')[1] ?? '')
+  const [mapShown, setMapShown] = useState(() => storedMapShown(machinesMapKey))
   const { data, failed, stale } = useMonitorSnapshot()
   const refresh = data?.refresh_seconds ?? 30
   const readings = useGpuMetrics(refresh)
   useEffect(() => {
-    const changed = () => setPage(currentPage())
+    const changed = () => { setPage(currentPage()); setUsageState(window.location.hash.split('?')[1] ?? '') }
     window.addEventListener('hashchange', changed)
     return () => window.removeEventListener('hashchange', changed)
   }, [])
@@ -156,11 +157,15 @@ export function MonitorApp({ site }: { site: MonitorSiteSettings }) {
   const nodes = data?.nodes ?? []
   const gpuCount = data ? data.total_gpus ?? 'Unknown' : '—'
   const graph = (uid: string, from: string) => `grafana/d/${uid}?orgId=1&kiosk&hideLogo=true&refresh=${refresh}s&from=${from}&to=now`
+  const metricsMachineParams = new URLSearchParams(usageState).getAll('machine')
+    .filter(machine => machine.length > 0)
+    .map(machine => `&var-machine=${encodeURIComponent(machine)}`).join('')
+  const freshness = <div className={`freshness ${old ? 'warning' : ''}`}><span className="status-dot"/>{failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{data && <small>Last update {new Date(data.generated_at).toLocaleTimeString()}</small>}</div>
   return <>
     <a className="skip" href="#main" onClick={event => { event.preventDefault(); document.getElementById('main')?.focus() }}>Skip to content</a>
     <header className="topbar"><a href="#overview" className="brand">{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <svg className="brand-mark generic-mark" viewBox="0 0 48 48" role="img" aria-label="Cluster mark"><rect x="10" y="9" width="28" height="8"/><rect x="10" y="20" width="28" height="8"/><rect x="10" y="31" width="28" height="8"/></svg>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">Machine monitor</span></span></a><div className="header-buttons"><FontButton/><AccentButton/></div></header>
     <div className="layout"><aside className="sidebar"><nav aria-label="Cluster navigation">{pages.map(({ id, title, icon: Icon }) => <a key={id} href={`#${id}`} aria-current={page === id ? 'page' : undefined}><Icon size={19}/><span>{title}</span></a>)}</nav></aside>
-      <main id="main" tabIndex={-1}><div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}<div className={`freshness ${old ? 'warning' : ''}`}><span className="status-dot"/>{failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{data && <small>Last update {new Date(data.generated_at).toLocaleTimeString()}</small>}</div></div></div>
+      <main id="main" tabIndex={-1} className={page === 'overview' ? 'compact' : undefined}><div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}</div></div>
         {old && <div role="alert" className="notice">{data ? 'Showing stale data.' : 'Monitoring data unavailable.'}</div>}
         {page === 'overview' && <><section aria-label="Cluster summary" className="stat-grid monitor-stats">
           <a className="stat panel" href="#machines"><span>Machines</span><strong>{data ? nodes.length : '—'}</strong></a>
@@ -168,8 +173,9 @@ export function MonitorApp({ site }: { site: MonitorSiteSettings }) {
           <a className="stat panel" href="#machines"><span>GPUs installed</span><strong>{gpuCount}</strong></a>
         </section><MachineTable nodes={data?.nodes ?? null} stale={old}/></>}
         {page === 'machines' && <>{mapShown && <ClusterMap nodes={nodes} jobs={[]} pendingJobs={0} stale={old} refreshSeconds={refresh} mode="monitor"/>}<MachineTable nodes={data?.nodes ?? null} stale={old}/><ReadingTable nodes={nodes} readings={readings} stale={old}/><MachineCards nodes={nodes} stale={old} roles={['Monitor', 'Machine']}/></>}
-        {page === 'usage' && <><Dashboard name="Machine and GPU metrics" path={`${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0`}/><Dashboard name="Long-term history" path={graph('nanohpc-history', 'now-1y')}/></>}
+        {page === 'usage' && <><Dashboard name="Machine and GPU metrics" path={`${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0${metricsMachineParams}`}/><Dashboard name="Long-term history" path={graph('nanohpc-history', 'now-1y')}/></>}
         {page === 'users' && <section className="panel table-panel"><h2>Login names</h2>{site.users.length ? <ul aria-label="Login names" className="monitor-users">{site.users.map(user => <li key={user}>{user}</li>)}</ul> : <p>No login names configured.</p>}</section>}
+        <footer>{freshness}<p>{site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
       </main></div>
   </>
 }

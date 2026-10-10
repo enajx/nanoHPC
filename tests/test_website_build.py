@@ -92,8 +92,13 @@ class WebsiteBuildTest(unittest.TestCase):
         """No website source or built file names the deployment the website was ported from."""
         built = built_text_files()
         self.assertTrue(built, "no built files; run npm run build in src/nanohpc/website-source/")
-        sources = [SOURCE / path for path in source_paths()]
-        sources += [path for folder in ("scripts", "tests") for path in (SOURCE / folder).rglob("*") if path.is_file()]
+        sources = [SOURCE / path for path in source_paths() if Path(path).suffix in TEXT_SUFFIXES]
+        sources += [
+            path
+            for folder in ("scripts", "tests")
+            for path in (SOURCE / folder).rglob("*")
+            if path.is_file() and path.suffix in TEXT_SUFFIXES
+        ]
         for path in sources + built:
             text = path.read_text(encoding="utf-8")
             for pattern in forbidden_patterns():

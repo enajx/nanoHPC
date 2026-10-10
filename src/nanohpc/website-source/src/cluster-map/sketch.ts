@@ -96,7 +96,7 @@ const DOT_GAP = 30
 const USER_COLORS = ['#5294ff', '#ff8a67', '#a184f5', '#42b883', '#f7ce46', '#ed77b5', '#65b7c1', '#b9d064']
 
 /** Start the map in `container`; the canvas follows the container's size. */
-export function createClusterMap(container: HTMLElement, layout: LayoutName): ClusterMap {
+export function createClusterMap(container: HTMLElement, layout: LayoutName, maxHeight: number | null): ClusterMap {
   let nodes: Node[] = []
   let links: Link[] = []
   let pieces: Piece[] = []
@@ -258,6 +258,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     pieces = layouts[layoutName]()
     for (let step = 0; step < 40 && labelsOverlap(); step++) for (const n of nodes) { n.tx *= SPREAD; n.ty *= SPREAD }
     container.dataset.labelBoxes = JSON.stringify(nodes.map(n => ({ name: n.name, ...withShadow(labelBox(n, n.tx, n.ty)), server: serverOutline(n) })))
+    container.dataset.pipes = JSON.stringify(links.map(link => ({ from: link.from.name, to: link.to.name, tiles: routeTiles(link.from, link.to, destination) })))
   }
 
   function labelsOverlap(): boolean {
@@ -310,9 +311,11 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   function fitView(animate: boolean) {
     if (!nodes.length || !sketch) return
     const b = sceneBounds()
-    const z = Math.min((sketch.width - MARGIN * 2) / (b.x1 - b.x0), MAX_ZOOM)
-    const height = Math.ceil((b.y1 - b.y0) * z + TOP_MARGIN + MARGIN)
-    const target = { z, x: sketch.width / 2 - ((b.x0 + b.x1) / 2) * z, y: TOP_MARGIN - b.y0 * z }
+    const top = maxHeight === null ? TOP_MARGIN : 34
+    const margin = maxHeight === null ? MARGIN : 8
+    const z = Math.min((sketch.width - margin * 2) / (b.x1 - b.x0), MAX_ZOOM, maxHeight === null ? Infinity : (maxHeight - top - margin) / (b.y1 - b.y0))
+    const height = Math.ceil((b.y1 - b.y0) * z + top + margin)
+    const target = { z, x: sketch.width / 2 - ((b.x0 + b.x1) / 2) * z, y: top - b.y0 * z }
     if (animate) { camTarget = target; heightTarget = height }
     else { cam = target; camTarget = null; heightTarget = null; setHeight(height) }
   }
@@ -337,16 +340,34 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
 
   // ---------------------------------------------------------------- links
 
-  // Connectors run along the grid: along x to the midpoint, along y, then along x into the target.
-  function routeTiles(a: Node, b: Node): [number, number][] {
-    if (Math.abs(a.x! - b.x!) < 1e-6 || Math.abs(a.y! - b.y!) < 1e-6) return [[a.x!, a.y!], [b.x!, b.y!]]
-    const mx = (a.x! + b.x!) / 2
-    return [[a.x!, a.y!], [mx, a.y!], [mx, b.y!], [b.x!, b.y!]]
+  type Tile = [number, number]
+  const current = (n: Node): Tile => [n.x!, n.y!]
+  const destination = (n: Node): Tile => [n.tx, n.ty]
+
+  /** Keep Default and Geographic pipes, and use a shared trunk in Partitions. */
+  function routeTiles(a: Node, b: Node, at: (node: Node) => Tile): Tile[] {
+    if (layoutName === 'partitions') return trunkTiles(a, b, at)
+    const [ax, ay] = at(a), [bx, by] = at(b)
+    if (Math.abs(ax - bx) < 1e-6 || Math.abs(ay - by) < 1e-6) return [[ax, ay], [bx, by]]
+    const mx = (ax + bx) / 2
+    return [[ax, ay], [mx, ay], [mx, by], [bx, by]]
+  }
+
+  /** Branch each machine from one lane shared by its partition area. */
+  function trunkTiles(a: Node, b: Node, at: (node: Node) => Tile): Tile[] {
+    const [ax, ay] = at(a), [bx, by] = at(b)
+    const spine = (ax + Math.min(...nodes.filter(node => !node.front).map(node => at(node)[0]))) / 2
+    const area = pieces.find(piece => piece.members.includes(b))?.members ?? [b]
+    const columns = [...new Set(area.map(node => Math.round(at(node)[1] * 1000) / 1000))].sort((p, q) => p - q)
+    const middle = Math.max(0, Math.floor((columns.length - 1) / 2))
+    const lane = columns.length > 1 ? (columns[middle] + columns[middle + 1]) / 2 : by
+    const tiles: Tile[] = [[ax, ay], [spine, ay], [spine, lane], [bx, lane], [bx, by]]
+    return tiles.filter((tile, index) => index === 0 || Math.abs(tile[0] - tiles[index - 1][0]) > 1e-6 || Math.abs(tile[1] - tiles[index - 1][1]) > 1e-6)
   }
 
   function updateLinkGeometry() {
     for (const l of links) {
-      l.pts = routeTiles(l.from, l.to).map(([x, y]) => iso(x, y))
+      l.pts = routeTiles(l.from, l.to, current).map(([x, y]) => iso(x, y))
       l.segs = []
       l.total = 0
       for (let i = 0; i < l.pts.length - 1; i++) {
@@ -519,7 +540,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   function drawPulse(p: p5, pulse: { node: Node; kind: Packet['kind']; t: number }) {
     const c = iso(pulse.node.x!, pulse.node.y!)
     const col = p.color(accent)
-    col.setAlpha(200 * (1 - pulse.t))
+    col.setAlpha(200 * (1 - pulse.t) * (faded(pulse.node) ? 110 / 255 : 1))
     p.noFill()
     p.stroke(col)
     p.strokeWeight(2)
@@ -527,11 +548,16 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     p.ellipse(c.x, c.y, TW * r * 1.4, TH * r * 1.4)
   }
 
+  /** Machines with no reliable health reading stay transparent, including while hovered. */
+  function faded(n: Node): boolean {
+    return stale || n.health === 'Offline' || n.health === 'Unknown'
+  }
+
   // A white rail with a dark outline; dark dashes move only while shared-home requests flow.
   function drawLink(p: p5, l: Link) {
     const ctx = p.drawingContext as CanvasRenderingContext2D
-    const hot = hovered !== null && (hovered === l.to || hovered === l.from)
-    const dim = hovered !== null && !hot
+    const hot = hovered !== null && (hovered === l.to || hovered === l.from) && !faded(l.to) && !faded(l.from)
+    const dim = (hovered !== null && !hot) || faded(l.to) || faded(l.from)
     const shape = (color: p5.Color | string, weight: number) => {
       p.stroke(typeof color === 'string' ? p.color(color) : color)
       p.strokeWeight(weight)
@@ -543,7 +569,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     p.strokeCap(p.SQUARE)
     p.strokeJoin(p.MITER)
     shape(dim ? p.color(23, 35, 34, 90) : INK, 11)
-    shape('#ffffff', 7)
+    shape(p.color(255, 255, 255, dim ? 110 : 255), 7)
     const requests = stale ? 0 : l.to.nfsRequests ?? 0
     const speed = requests ? 10 + Math.min(30, requests / REQUESTS_PER_DOT * 3) : 0
     ctx.setLineDash([10, 10])
@@ -556,8 +582,13 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   function drawPacket(p: p5, packet: Packet) {
     const d = packet.dir === 1 ? packet.d : packet.link.total - packet.d
     const pos = pointAlong(packet.link, d)
-    p.fill(dotColor(packet.kind))
-    p.stroke(INK)
+    const alpha = faded(packet.link.from) || faded(packet.link.to) ? 110 : 255
+    const color = p.color(dotColor(packet.kind))
+    color.setAlpha(alpha)
+    p.fill(color)
+    const border = p.color(INK)
+    border.setAlpha(alpha)
+    p.stroke(border)
     p.strokeWeight(1.5)
     p.circle(pos.x, pos.y, packet.size * 1.6)
   }
@@ -567,7 +598,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   // glowing brighter and pulsing faster with the GPU's measured busy %. GPU 0 is the top layer.
   function drawNode(p: p5, n: Node) {
     const b = nodeBox(n)
-    const alpha = hovered !== null && hovered !== n && !hovered.neighbors.has(n) ? 110 : 255
+    const alpha = faded(n) || (hovered !== null && hovered !== n && !hovered.neighbors.has(n)) ? 110 : 255
     const tone = (color: string) => { const c = p.color(color); c.setAlpha(alpha); return c }
     const up = (pt: Point, dy: number) => ({ x: pt.x, y: pt.y - dy })
     const face = (points: Point[], color: string) => {
@@ -645,7 +676,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
   // Label box like the website's cards: the name in the page font, numbers in monospace.
   function drawLabel(p: p5, n: Node) {
     const b = nodeBox(n)
-    const alpha = hovered !== null && hovered !== n ? 120 : 255
+    const alpha = faded(n) || (hovered !== null && hovered !== n) ? 120 : 255
     const sub = subtitle(n)
     const { x, y, w, h } = labelBox(n, n.x!, n.y!)
     const hasBar = n.totalGpus > 0 || n.fpgaUsagePercent !== null
@@ -673,7 +704,9 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName): Cl
     p.textFont(MONO)
     p.textStyle(p.NORMAL)
     p.textSize(10)
-    p.fill(n.front ? INK : MUTED)
+    const subtitleColor = p.color(n.front ? INK : MUTED)
+    subtitleColor.setAlpha(alpha)
+    p.fill(subtitleColor)
     p.textAlign(p.RIGHT, p.TOP)
     p.text(sub, x + w - 11, y + 10)
   }
