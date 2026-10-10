@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-10: Offline and Unknown machines on the Cluster Map
+
+- The map fades the stack, name label, pipe, and moving traffic for a machine with Offline or Unknown health. Hover still shows its details without making it solid. When the snapshot is stale, every machine fades.
+- A served-site browser test failed against the old map for an Offline machine and an opaque pipe rail, and its hover check failed with a temporary regression. All passed with the fix. The nearby deployed-site and demo map tests passed.
+- Files: `src/nanohpc/website-source/src/cluster-map/sketch.ts`, `src/nanohpc/website-source/tests/website.spec.ts`, `src/nanohpc/website/`.
+
 ## 2026-10-09: Total power in the Machines dashboard
 
 - On deployed Slurm and monitor sites, the Machines dashboard's Total power panel sums fresh wall-power readings from IPMI power-supply input sensors on the machines chosen in the Machine dropdown. All includes every machine with a readable sensor. An unsupported, offline, or stale machine drops out; no estimate replaces its reading. Collection runs every 30 seconds on supported machines. A failed sensor read during redeploy leaves an existing timer in place so it can recover. A dry run says that first sensor detection waits for the real deploy, after APT lists are available. The public demo keeps its fixed Grafana snapshot.

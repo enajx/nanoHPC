@@ -540,7 +540,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
   function drawPulse(p: p5, pulse: { node: Node; kind: Packet['kind']; t: number }) {
     const c = iso(pulse.node.x!, pulse.node.y!)
     const col = p.color(accent)
-    col.setAlpha(200 * (1 - pulse.t))
+    col.setAlpha(200 * (1 - pulse.t) * (faded(pulse.node) ? 110 / 255 : 1))
     p.noFill()
     p.stroke(col)
     p.strokeWeight(2)
@@ -548,11 +548,16 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
     p.ellipse(c.x, c.y, TW * r * 1.4, TH * r * 1.4)
   }
 
+  /** Machines with no reliable health reading stay transparent, including while hovered. */
+  function faded(n: Node): boolean {
+    return stale || n.health === 'Offline' || n.health === 'Unknown'
+  }
+
   // A white rail with a dark outline; dark dashes move only while shared-home requests flow.
   function drawLink(p: p5, l: Link) {
     const ctx = p.drawingContext as CanvasRenderingContext2D
-    const hot = hovered !== null && (hovered === l.to || hovered === l.from)
-    const dim = hovered !== null && !hot
+    const hot = hovered !== null && (hovered === l.to || hovered === l.from) && !faded(l.to) && !faded(l.from)
+    const dim = (hovered !== null && !hot) || faded(l.to) || faded(l.from)
     const shape = (color: p5.Color | string, weight: number) => {
       p.stroke(typeof color === 'string' ? p.color(color) : color)
       p.strokeWeight(weight)
@@ -564,7 +569,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
     p.strokeCap(p.SQUARE)
     p.strokeJoin(p.MITER)
     shape(dim ? p.color(23, 35, 34, 90) : INK, 11)
-    shape('#ffffff', 7)
+    shape(p.color(255, 255, 255, dim ? 110 : 255), 7)
     const requests = stale ? 0 : l.to.nfsRequests ?? 0
     const speed = requests ? 10 + Math.min(30, requests / REQUESTS_PER_DOT * 3) : 0
     ctx.setLineDash([10, 10])
@@ -577,8 +582,13 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
   function drawPacket(p: p5, packet: Packet) {
     const d = packet.dir === 1 ? packet.d : packet.link.total - packet.d
     const pos = pointAlong(packet.link, d)
-    p.fill(dotColor(packet.kind))
-    p.stroke(INK)
+    const alpha = faded(packet.link.from) || faded(packet.link.to) ? 110 : 255
+    const color = p.color(dotColor(packet.kind))
+    color.setAlpha(alpha)
+    p.fill(color)
+    const border = p.color(INK)
+    border.setAlpha(alpha)
+    p.stroke(border)
     p.strokeWeight(1.5)
     p.circle(pos.x, pos.y, packet.size * 1.6)
   }
@@ -588,7 +598,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
   // glowing brighter and pulsing faster with the GPU's measured busy %. GPU 0 is the top layer.
   function drawNode(p: p5, n: Node) {
     const b = nodeBox(n)
-    const alpha = hovered !== null && hovered !== n && !hovered.neighbors.has(n) ? 110 : 255
+    const alpha = faded(n) || (hovered !== null && hovered !== n && !hovered.neighbors.has(n)) ? 110 : 255
     const tone = (color: string) => { const c = p.color(color); c.setAlpha(alpha); return c }
     const up = (pt: Point, dy: number) => ({ x: pt.x, y: pt.y - dy })
     const face = (points: Point[], color: string) => {
@@ -666,7 +676,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
   // Label box like the website's cards: the name in the page font, numbers in monospace.
   function drawLabel(p: p5, n: Node) {
     const b = nodeBox(n)
-    const alpha = hovered !== null && hovered !== n ? 120 : 255
+    const alpha = faded(n) || (hovered !== null && hovered !== n) ? 120 : 255
     const sub = subtitle(n)
     const { x, y, w, h } = labelBox(n, n.x!, n.y!)
     const hasBar = n.totalGpus > 0 || n.fpgaUsagePercent !== null
@@ -694,7 +704,9 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
     p.textFont(MONO)
     p.textStyle(p.NORMAL)
     p.textSize(10)
-    p.fill(n.front ? INK : MUTED)
+    const subtitleColor = p.color(n.front ? INK : MUTED)
+    subtitleColor.setAlpha(alpha)
+    p.fill(subtitleColor)
     p.textAlign(p.RIGHT, p.TOP)
     p.text(sub, x + w - 11, y + 10)
   }

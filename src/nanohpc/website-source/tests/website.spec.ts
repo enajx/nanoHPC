@@ -203,6 +203,75 @@ test('Partitions map uses one trunk and one branch turn per machine', async ({ p
   expect(pipes.every(pipe => pipe.tiles[1][0] === pipes[0].tiles[1][0])).toBe(true)
 })
 
+test('Offline and Unknown map machines stay transparent with their labels and pipes', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockGrafana(page)
+  let health: Record<string, string> = {}
+  let old = false
+  let sample = 0
+  await page.route(`**${prefix}data/status.json`, route => {
+    const data = snapshot() as { generated_at: string; nodes: { name: string; health: string }[] }
+    data.nodes.forEach(node => { node.health = health[node.name] ?? 'Healthy' })
+    if (old) data.generated_at = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    return route.fulfill({ json: data })
+  })
+  const solidPixels = async (): Promise<{ ink: number; white: number }> => {
+    await page.goto(`${origin}${prefix}?map-fade=${sample++}#machines`)
+    const canvas = page.locator('.cluster-map-canvas canvas')
+    await expect(canvas).toBeVisible()
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(2300)
+    return canvas.evaluate(element => {
+      const surface = element as HTMLCanvasElement
+      const top = Math.ceil(48 * surface.width / surface.clientWidth)
+      const pixels = surface.getContext('2d')!.getImageData(0, top, surface.width, surface.height - top).data
+      let ink = 0
+      let white = 0
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 3] > 250 && Math.abs(pixels[i] - 23) + Math.abs(pixels[i + 1] - 35) + Math.abs(pixels[i + 2] - 34) < 10) ink++
+        if (pixels[i + 3] > 250 && pixels[i] > 250 && pixels[i + 1] > 250 && pixels[i + 2] > 250) white++
+      }
+      return { ink, white }
+    })
+  }
+  const healthy = await solidPixels()
+  health = { cpu1: 'Offline' }
+  const offline = await solidPixels()
+  // With this fixture at 1440px, cpu1's stack is centered at (937, 516).
+  await page.mouse.move(937, 516)
+  await page.waitForTimeout(200)
+  const hoverPixels = await page.locator('.cluster-map-canvas canvas').evaluate(element => {
+    const canvas = element as HTMLCanvasElement
+    const rect = canvas.getBoundingClientRect()
+    const scale = canvas.width / rect.width
+    const count = (left: number, top: number, width: number, height: number) => {
+      const pixels = canvas.getContext('2d')!.getImageData(
+        Math.floor((left - rect.left) * scale), Math.floor((top - rect.top) * scale),
+        Math.ceil(width * scale), Math.ceil(height * scale),
+      ).data
+      let ink = 0
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 3] > 250 && Math.abs(pixels[i] - 23) + Math.abs(pixels[i + 1] - 35) + Math.abs(pixels[i + 2] - 34) < 10) ink++
+      }
+      return ink
+    }
+    return { stack: count(908, 472, 55, 21), tooltip: count(960, 510, 168, 100) }
+  })
+  expect(hoverPixels.tooltip, 'the Offline machine should still show its hover details').toBeGreaterThan(200)
+  expect(hoverPixels.stack, 'the hovered Offline stack should remain transparent').toBeLessThan(40)
+  health = { cpu1: 'Offline', gpu1: 'Unknown' }
+  const unknown = await solidPixels()
+  health = { front: 'Unknown', gpu1: 'Unknown', cpu1: 'Unknown', store: 'Unknown' }
+  const allUnknown = await solidPixels()
+  health = {}
+  old = true
+  const stale = await solidPixels()
+  expect(offline.ink, 'Offline machine, label, and pipe should lose solid ink').toBeLessThan(healthy.ink * 0.85)
+  expect(offline.white, 'Offline pipe rail and label should lose solid white').toBeLessThan(healthy.white * 0.85)
+  expect(unknown.ink, 'Unknown machine, label, and pipe should also lose solid ink').toBeLessThan(offline.ink * 0.82)
+  expect(Math.abs(stale.ink - allUnknown.ink), 'stale data should fade every machine').toBeLessThan(allUnknown.ink * 0.08)
+})
+
 /** Mocked Grafana: dashboards are a stub page; the query API answers the GPU chart and the cluster map. */
 async function mockGrafana(page: Page): Promise<void> {
   await page.route(`**${prefix}grafana/d/**`, route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Dashboard</title><p>Grafana dashboard (test stub)</p>' }))
