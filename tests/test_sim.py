@@ -5,6 +5,7 @@ because it takes minutes and several GB of memory.
 """
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -347,6 +348,14 @@ class SimMonitorDeployTest(unittest.TestCase):
         self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
         deployed = self.run_nanohpc("sim", "deploy", str(self.sim))
         self.assertEqual(deployed.returncode, 0, deployed.stdout + deployed.stderr)
+        for machine in ("host", "gpu1", "cpu1"):
+            with self.subTest(machine=machine, feature="unsupported wall power"):
+                absent = self.ssh(
+                    machine,
+                    "test ! -e /var/lib/nanohpc/metrics-textfile/power.prom && "
+                    "test ! -e /etc/systemd/system/nanohpc-power-metrics.timer",
+                )
+                self.assertEqual(absent.returncode, 0, absent.stdout + absent.stderr)
         checked = self.run_nanohpc(
             "check", str(self.state / "cluster.yml"), "--ssh-config", str(self.state / "ssh_config")
         )
@@ -392,6 +401,12 @@ class SimMonitorDeployTest(unittest.TestCase):
         self.assertEqual([variable["name"] for variable in variables], ["gpu_group", "machine"])
         self.assertTrue(variables[1]["multi"])
         self.assertTrue(variables[1]["includeAll"])
+        power_panel = next(
+            panel
+            for panel in json.loads(machines_dashboard.stdout)["dashboard"]["panels"]
+            if panel["title"] == "Total power"
+        )
+        self.assertIn("cluster_wall_power_watts", power_panel["targets"][0]["expr"])
         machine_label_route = (
             "https://lab.example.org/cluster/grafana/api/datasources/uid/cluster-detail/"
             "resources/api/v1/label/machine/values"
@@ -426,8 +441,42 @@ class SimMonitorDeployTest(unittest.TestCase):
             time.sleep(1)
         else:
             self.fail(f"Grafana did not create the old folder: {before.stdout} {before.stderr}")
+        # The VM has no management chip. Give its front node one fake input sensor,
+        # then check the real deploy, systemd, node_exporter, and Prometheus path.
+        fake_ipmi = "#!/bin/sh\nprintf 'PSU1 Power In | DFh | ok | 10.0 | 500 Watts\\n'\n"
+        encoded = base64.b64encode(fake_ipmi.encode()).decode()
+        installed = self.ssh(
+            "host",
+            f"printf '%s' '{encoded}' | base64 -d | sudo tee /usr/local/bin/ipmitool >/dev/null && "
+            "sudo chmod 0755 /usr/local/bin/ipmitool",
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         upgraded = self.run_nanohpc("sim", "deploy", str(self.sim))
         self.assertEqual(upgraded.returncode, 0, upgraded.stdout + upgraded.stderr)
+        timer = self.ssh("host", "systemctl is-active nanohpc-power-metrics.timer")
+        self.assertEqual(timer.stdout.strip(), "active", timer.stderr)
+        power_query = "curl -fsSG --data-urlencode 'query=cluster_wall_power_watts' http://127.0.0.1:9090/api/v1/query"
+        for _ in range(30):
+            power = self.ssh("host", power_query)
+            if power.returncode == 0 and len(json.loads(power.stdout)["data"]["result"]) == 1:
+                break
+            time.sleep(2)
+        else:
+            self.fail(f"The power reading did not reach Prometheus: {power.stdout} {power.stderr}")
+        reading = json.loads(power.stdout)["data"]["result"][0]
+        self.assertEqual(reading["metric"]["machine"], "host")
+        self.assertEqual(float(reading["value"][1]), 500)
+        stamp_command = (
+            "sed -n 's/^cluster_power_collection_timestamp_seconds //p' /var/lib/nanohpc/metrics-textfile/power.prom"
+        )
+        first_stamp = float(self.ssh("host", stamp_command).stdout.strip())
+        for _ in range(35):
+            time.sleep(2)
+            later = self.ssh("host", stamp_command)
+            if later.returncode == 0 and float(later.stdout.strip()) > first_stamp:
+                break
+        else:
+            self.fail("The wall-power timer did not refresh the reading")
         after = self.ssh("host", f"curl -fsS '{folders_url}'")
         self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
         self.assertEqual(
@@ -442,6 +491,35 @@ class SimMonitorDeployTest(unittest.TestCase):
         self.assertEqual(moved.returncode, 0, moved.stdout + moved.stderr)
         self.assertEqual({item["uid"] for item in json.loads(moved.stdout)}, {"nanohpc-machines", "nanohpc-history"})
         self.assertTrue(all(item["folderUid"] == "nanohpc-cluster" for item in json.loads(moved.stdout)))
+
+        # A temporary failed sensor read during a later deploy must leave its
+        # scheduled collector in place, so it can recover without another deploy.
+        broken = base64.b64encode(b"#!/bin/sh\nexit 1\n").decode()
+        failed_reader = self.ssh(
+            "host", f"printf '%s' '{broken}' | base64 -d | sudo tee /usr/local/bin/ipmitool >/dev/null"
+        )
+        self.assertEqual(failed_reader.returncode, 0, failed_reader.stderr)
+        redeployed = self.run_nanohpc("sim", "deploy", str(self.sim))
+        self.assertEqual(redeployed.returncode, 0, redeployed.stdout + redeployed.stderr)
+        preserved = self.ssh(
+            "host",
+            "systemctl is-active nanohpc-power-metrics.timer && "
+            "test -e /etc/systemd/system/nanohpc-power-metrics.service",
+        )
+        self.assertEqual(preserved.returncode, 0, preserved.stdout + preserved.stderr)
+        stale_stamp = float(self.ssh("host", stamp_command).stdout.strip())
+        restored = self.ssh(
+            "host",
+            f"printf '%s' '{encoded}' | base64 -d | sudo tee /usr/local/bin/ipmitool >/dev/null",
+        )
+        self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+        for _ in range(45):
+            time.sleep(2)
+            refreshed = self.ssh("host", stamp_command)
+            if refreshed.returncode == 0 and refreshed.stdout.strip() and float(refreshed.stdout.strip()) > stale_stamp:
+                break
+        else:
+            self.fail("The retained wall-power timer did not recover after the sensor returned")
 
 
 class SimUsersBase(unittest.TestCase):

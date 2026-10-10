@@ -3,6 +3,7 @@
 #   restart needed) on every machine, every 5 minutes;
 # - GPU readings every 30 seconds on machines with GPUs: from nvidia-smi for real GPUs, made-up values
 #   for the fake GPUs of a simulated machine.
+# - wall power every 30 seconds on machines with readable IPMI power-supply input sensors.
 
 - name: Install what the machine spec collector reads
   ansible.builtin.apt:
@@ -189,3 +190,6 @@
     - /etc/systemd/system/nanohpc-gpu-metrics.service
     - /var/lib/nanohpc/metrics-textfile/gpu.prom
   when: gpu is none
+
+- name: Set up wall-power readings where the management chip supports them
+  ansible.builtin.include_tasks: power.yml

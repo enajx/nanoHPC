@@ -102,7 +102,7 @@
       "gridPos": {
         "x": 0,
         "y": 24,
-        "w": 24,
+        "w": 12,
         "h": 8
       },
       "datasource": {
@@ -120,6 +120,34 @@
           "refId": "A",
           "expr": "node_filesystem_avail_bytes{job=~\"node|node-.+\",machine=~\"$machine\",fstype!~\"tmpfs|overlay|squashfs|nfs.*\"} and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)",
           "legendFormat": "{{machine}} {{mountpoint}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Total power",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(cluster_wall_power_watts{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_power_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45))",
+          "legendFormat": "Total"
         }
       ]
     },
