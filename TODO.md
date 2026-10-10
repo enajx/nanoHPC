@@ -144,7 +144,7 @@ flowchart LR
 - [x] The machines Grafana dashboard uses fresh real readings, with gaps for outages, stale GPU data, and CPU counter resets. See [DONE.md](md/DONE.md).
 - [x] Deployed Slurm and monitor sites have a multi-select Machine filter for every machine metric panel, with All by default and repeatable `?machine=` links. See [DONE.md](md/DONE.md).
 - [x] The deployed Machines dashboard has a Total power panel summing fresh IPMI power-supply input readings from the machines chosen in the Machine dropdown; unsupported machines are omitted. See [DONE.md](md/DONE.md).
-- [ ] On the Cluster Map, a machine whose health is Offline or Unknown is drawn transparent, as other machines are while one is hovered: its stack, its name label, and its pipes; it stays transparent when hovered (from SLURM-REAL, 2026-10-09). How SLURM-REAL built it: its TODO item of 2026-10-09 and the commits it names (github.com/enajx/SLURM-REAL).
+- [x] On the Cluster Map, Offline and Unknown machines have transparent stacks, labels, and pipes, including while hovered or while the snapshot is stale. See [DONE.md](md/DONE.md).
 
 - [ ] Above the soft limit (`home.quota_soft_gb` in `cluster.yml`, e.g. 300 GB) users only get a notice; writing never stops (today the soft limit becomes a hard stop after `quota_grace`).
 - [ ] No hard limit for writing to `/home`; the hard limit (`home.quota_hard_gb`) applies to running jobs instead: a user above it cannot start jobs until they clean up, which is more flexible (today the filesystem stops writes at the hard limit).
