@@ -63,7 +63,7 @@ nanohpc deploy cluster.yml --dry-run    # shows what would change
 nanohpc deploy cluster.yml
 ```
 
-**4. Making changes after deployment**
+**Making changes after deployment**
 
 Edit `cluster.yml` (or run the wizard again), then deploy again, or only the part you changed:
 
