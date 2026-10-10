@@ -63,6 +63,8 @@ nanohpc deploy cluster.yml --dry-run    # shows what would change
 nanohpc deploy cluster.yml
 ```
 
+That's it! Slurm is running, and monitor website is running and accessible through the DNS or public IP of the host machine.
+
 **Making changes after deployment**
 
 Edit `cluster.yml` (or run the wizard again), then deploy again, or only the part you changed:
