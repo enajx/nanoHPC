@@ -8,7 +8,7 @@
  *     "logo": str | null,           // relative URL of the logo next to index.html, such as "logo.png";
  *                                   // null shows a small generic mark
  *     "login_address": str,         // host name users SSH to
- *     "home_quota_soft_gb": int,    // per-user /home quotas
+ *     "home_quota_soft_gb": int,    // per-user /home notice threshold
  *     "home_quota_hard_gb": int,
  *     "scratch_cleanup_days": int   // staged scratch data unused this long is deleted
  *     "demo": bool                    // optional; generated sample site only

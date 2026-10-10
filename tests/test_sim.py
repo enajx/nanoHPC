@@ -1118,9 +1118,7 @@ class SimDeployTest(SimUsersBase):
             }
             header = quotas["User"]
             soft, hard = header.index("BlockSoftLimit"), header.index("BlockHardLimit")
-            self.assertEqual(
-                (quotas["alice"][soft], quotas["alice"][hard]), (str(300 * 1024 * 1024), str(400 * 1024 * 1024))
-            )
+            self.assertEqual((quotas["alice"][soft], quotas["alice"][hard]), ("0", "0"))
 
         with self.subTest("local scratch on a disk or in an image, with per-user caches and cleanup"):
             self.assertEqual(self.ssh("gpu4", "findmnt -n -o SOURCE --mountpoint /scratch").stdout.strip(), "/dev/vdb")
@@ -1439,7 +1437,7 @@ class SimDeployTest(SimUsersBase):
             front = next(line for line in result.stdout.splitlines() if line.startswith("Dry run: front "))
             for task in (
                 "accounts : Create the users with their fixed UIDs",
-                "home_server : Set each user's home quota",
+                "home_server : Create private home folders",
                 "slurm_controller : Set each partition's time limit",
             ):
                 self.assertIn(task, front)
@@ -1673,12 +1671,12 @@ class SimPartialDeployTest(SimUsersBase):
             self.assertIn("accounts : Create the users with their fixed UIDs", summary["store"])
             self.assertIn("scratch : Create each user's private scratch folder", summary["gpu2"])
             self.assertIn("slurm_controller : Add the users as job submitters", summary["front"])
-            self.assertIn("home_server : Set each user's home quota", summary["front"])
+            self.assertIn("home_server : Create private home folders", summary["front"])
             for machine in changed["machines"]:
                 self.assertIn("carol:x:2005:2005:", self.ssh(machine, "getent passwd carol").stdout, machine)
             quotas = self.on_front("sudo repquota -u -O csv /home")
             self.assertIn("carol,", quotas)
-            self.assertIn(f",{300 * 1024 * 1024},{400 * 1024 * 1024},", quotas.split("carol,", 1)[1].splitlines()[0])
+            self.assertIn(",0,0,", quotas.split("carol,", 1)[1].splitlines()[0])
             self.assertIn("carol", self.on_front("sacctmgr -n -P show assoc user=carol format=User"))
             self.assertEqual(self.ssh("gpu2", "stat -c '%U %a' /scratch/carol").stdout.strip(), "carol 700")
             self.assertEqual(self.ssh("gpu2", "test -x /usr/local/bin/scratch-job-cleanup").returncode, 0)
@@ -2159,7 +2157,7 @@ class SimRootHomeRebootTest(SimUsersBase):
         super().setUp()
 
     def test_root_home_survives_reboot(self) -> None:
-        _, config, _ = self.up_and_deploy()
+        self.up_and_deploy()
         self.on_front("sudo -u alice sh -c 'echo reboot-check > /home/alice/nanohpc-reboot-check'")
         front = next(vm.instance for vm in plan_of(self.sim).vms if vm.machine == "front")
         self.reboot_vm("front", front)
@@ -2177,7 +2175,7 @@ class SimRootHomeRebootTest(SimUsersBase):
         columns = rows["User"]
         self.assertEqual(
             (rows["alice"][columns.index("BlockSoftLimit")], rows["alice"][columns.index("BlockHardLimit")]),
-            (str(config["home"]["quota_soft_gb"] * 1024 * 1024), str(config["home"]["quota_hard_gb"] * 1024 * 1024)),
+            ("0", "0"),
         )
 
 
@@ -2217,10 +2215,7 @@ class SimRebootTest(SimUsersBase):
                             rows["alice"][columns.index("BlockSoftLimit")],
                             rows["alice"][columns.index("BlockHardLimit")],
                         ),
-                        (
-                            str(config["home"]["quota_soft_gb"] * 1024 * 1024),
-                            str(config["home"]["quota_hard_gb"] * 1024 * 1024),
-                        ),
+                        ("0", "0"),
                     )
                 else:
                     self.assertEqual((source, fstype), (f"{store_address}:/home", "nfs4"))
@@ -2326,7 +2321,7 @@ class SimMissingHomeDiskTest(SimUsersBase):
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimXfsQuotaTest(SimUsersBase):
-    """XFS home and scratch disks work, and the home quota stops writes over NFS."""
+    """XFS home and scratch disks work, with usage accounting and unrestricted writes over NFS."""
 
     def setUp(self) -> None:
         self.sim = SIM / "xfs-quota.yml"
@@ -2334,7 +2329,7 @@ class SimXfsQuotaTest(SimUsersBase):
         super().setUp()
 
     def test_xfs_disks_and_nfs_quota(self) -> None:
-        _, config, _ = self.up_with_test_key()
+        self.up_with_test_key()
         for machine in ("store", "gpu4"):
             installed = self.ssh(machine, "sudo apt-get install -y xfsprogs")
             self.assertEqual(installed.returncode, 0, f"{machine}: {installed.stdout}{installed.stderr}")
@@ -2373,16 +2368,103 @@ class SimXfsQuotaTest(SimUsersBase):
         columns = rows["User"]
         self.assertEqual(
             (rows["alice"][columns.index("BlockSoftLimit")], rows["alice"][columns.index("BlockHardLimit")]),
-            (str(config["home"]["quota_soft_gb"] * 1024 * 1024), str(config["home"]["quota_hard_gb"] * 1024 * 1024)),
+            ("0", "0"),
         )
 
-        limited = self.ssh("store", "sudo setquota -u alice 2048 2048 0 0 /home")
-        self.assertEqual(limited.returncode, 0, limited.stdout + limited.stderr)
         written = self.ssh(
             "front", "sudo -u alice dd if=/dev/zero of=/home/alice/nanohpc-quota-check bs=1M count=4 status=none"
         )
-        self.assertNotEqual(written.returncode, 0, written.stdout + written.stderr)
-        self.assertIn("Disk quota exceeded", written.stderr)
+        self.assertEqual(written.returncode, 0, written.stdout + written.stderr)
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimHomeJobPolicyTest(SimUsersBase):
+    """A home threshold holds new Slurm jobs without stopping one already running."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "kernel-quota.yml"
+        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        super().setUp()
+
+    def test_new_jobs_wait_then_resume(self) -> None:
+        """Check the deployed policy command against real Slurm accounting and scheduling."""
+        _, config, _ = self.up_and_deploy()
+        self.assertIn("alice", self.on_front("sudo repquota -u -v -O csv /home"))
+        private_status = "/var/lib/nanohpc/home-policy/status.json"
+        self.assertEqual(self.on_front(f"sudo stat -c %a {private_status}").strip(), "600")
+        policy_users = json.loads(self.on_front(f"sudo cat {private_status}"))["users"]
+        self.assertEqual({row["user"] for row in policy_users}, {user["name"] for user in config["users"]})
+        alice_ssh = self.ssh_config_for("alice")
+        login = self.run_command(
+            "ssh", "-tt", "-F", str(alice_ssh), "-o", "BatchMode=yes", "front", stdin="exit\n", agent=True
+        )
+        self.assertEqual(login.returncode, 0, login.stdout + login.stderr)
+        self.assertIn("Home usage:", login.stdout)
+        running = (
+            self.on_front(
+                "sudo -u alice sbatch --parsable --partition=main --chdir=/home/alice "
+                "--output=/home/alice/nanohpc-policy-%j.out --cpus-per-task=1 --mem=128M "
+                "--time=00:05:00 --wrap='sleep 180'"
+            )
+            .strip()
+            .split(";")[0]
+        )
+        self.addCleanup(self.ssh, "front", f"sudo scancel {running}")
+        for _ in range(30):
+            state = self.on_front(f"squeue -h -j {running} -o '%T'").strip()
+            if state == "RUNNING":
+                break
+            time.sleep(2)
+        self.assertEqual(state, "RUNNING")
+
+        status = "/tmp/nanohpc-home-job-policy-test-status.json"
+        held = "/tmp/nanohpc-home-job-policy-test-held.json"
+        notices = "/var/lib/nanohpc-home-notices"
+        self.addCleanup(self.ssh, "front", f"sudo rm -f {status} {held} {held.removesuffix('.json')}.lock")
+        hard = config["home"]["quota_hard_gb"] * 1024**3
+
+        def run_policy(used: int) -> None:
+            snapshot = {
+                "generated_at": datetime.now().astimezone().isoformat(),
+                "users": [{"user": "alice", "home": {"used_bytes": used, "soft_bytes": hard // 2, "hard_bytes": hard}}],
+            }
+            encoded = base64.b64encode(json.dumps(snapshot).encode()).decode()
+            command = (
+                f"printf '%s' '{encoded}' | base64 -d | sudo tee {status} >/dev/null && "
+                f"sudo /usr/local/bin/cluster-home-job-policy --status {status} --state {held} "
+                f"--notice-dir {notices} --notice-bytes {hard // 2} "
+                f"--sacctmgr /usr/bin/sacctmgr --cluster {config['cluster']['name']} "
+                f"--hard-bytes {hard} --user alice:2000"
+            )
+            self.on_front(command)
+
+        run_policy(hard)
+        notice = self.on_front("sudo -u alice cat /var/lib/nanohpc-home-notices/alice")
+        self.assertIn("New jobs wait", notice)
+        private = self.ssh("front", "sudo -u bob cat /var/lib/nanohpc-home-notices/alice")
+        self.assertNotEqual(private.returncode, 0)
+        self.assertEqual(self.on_front(f"squeue -h -j {running} -o '%T'").strip(), "RUNNING")
+        self.on_front("sudo -u alice dd if=/dev/zero of=/home/alice/nanohpc-policy-write bs=1M count=4 status=none")
+        pending = (
+            self.on_front(
+                "sudo -u alice sbatch --parsable --partition=main --chdir=/home/alice "
+                "--output=/home/alice/nanohpc-policy-%j.out --cpus-per-task=1 --mem=128M "
+                "--time=00:02:00 --wrap='true'"
+            )
+            .strip()
+            .split(";")[0]
+        )
+        self.addCleanup(self.ssh, "front", f"sudo scancel {pending}")
+        for _ in range(30):
+            queue = self.on_front(f"squeue -h -j {pending} -o '%T|%r'").strip()
+            if "AssocMaxJobsLimit" in queue:
+                break
+            time.sleep(2)
+        self.assertIn("PENDING|AssocMaxJobsLimit", queue)
+        run_policy(0)
+        state, _ = self.finished_job(pending)
+        self.assertEqual(state, "COMPLETED")
+        self.assertEqual(self.on_front("sudo stat -c %s /home/alice/nanohpc-policy-write").strip(), str(4 * 1024**2))
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

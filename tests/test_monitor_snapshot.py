@@ -214,6 +214,7 @@ class SnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="monitor-snapshot-") as directory:
             root = Path(directory)
             output = root / "status.json"
+            private_home = root / "home-policy.json"
             metrics = root / "cluster.prom"
             mirror = root / "public-mirror.json"
             machines = root / "machines.md"
@@ -226,6 +227,8 @@ class SnapshotTests(unittest.TestCase):
                 str(COLLECTOR),
                 "--output",
                 str(output),
+                "--home-policy-output",
+                str(private_home),
                 "--metrics",
                 str(metrics),
                 "--controller",
@@ -251,6 +254,8 @@ class SnapshotTests(unittest.TestCase):
             result = subprocess.run(args, env=env, capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(output.read_text())
+            self.assertEqual([row["user"] for row in json.loads(private_home.read_text())["users"]], ["alice", "bob"])
+            self.assertEqual(private_home.stat().st_mode & 0o777, 0o600)
             self.assertEqual(mirror.read_bytes(), output.read_bytes())
             self.assertEqual(machines_mirror.read_bytes(), machines.read_bytes())
             machine_text = machines.read_text()
@@ -330,6 +335,7 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(filtered.returncode, 0, filtered.stderr)
             filtered_data = json.loads(output.read_text())
             self.assertEqual([row["user"] for row in filtered_data["users"]], ["bob"])
+            self.assertEqual([row["user"] for row in json.loads(private_home.read_text())["users"]], ["alice", "bob"])
             self.assertEqual([row["user"] for row in filtered_data["ranking"]], ["bob"])
             self.assertEqual(filtered_data["running_jobs"], 1)
             self.assertEqual(filtered_data["jobs"][0]["user"], "alice")

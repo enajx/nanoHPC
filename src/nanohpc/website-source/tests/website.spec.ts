@@ -384,7 +384,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   // Users: ranking, one card per user, and the usage dashboard.
   await nav.getByRole('link', { name: 'Users', exact: true }).click()
   await expect(page.locator('.user-spec')).toHaveCount(2)
-  await expect(page.getByRole('region', { name: 'alice stats' })).toContainText('At soft quota')
+  await expect(page.getByRole('region', { name: 'alice stats' })).toContainText('Home notice')
   await expect(page.getByRole('cell', { name: '120', exact: true })).toBeVisible()
   expect(new URL(await page.locator('iframe[title="GPU usage history per user"]').evaluate(frame => (frame as HTMLIFrameElement).src)).pathname)
     .toBe(`${prefix}grafana/d/nanohpc-usage`)

@@ -98,11 +98,14 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(home["server_address"], "192.168.104.10")
         self.assertEqual(home["device"], "/dev/vdb")
         self.assertEqual(home["clients"], ["gpu4", "gpu2", "cpu1", "gpu4i"])
-        # setquota counts 1 KiB blocks; the example asks for 300 and 400 GB.
+        self.assertEqual(home["quotas"], [{"name": user["name"]} for user in self.config["users"]])
         self.assertEqual(
-            home["quotas"][0], {"name": "alice", "soft_kib": 300 * 1024 * 1024, "hard_kib": 400 * 1024 * 1024}
+            home["policy_user_args"],
+            " ".join(f"--user {user['name']}:{user['uid']}" for user in self.config["users"]),
         )
-        self.assertEqual(home["grace_seconds"], 7 * 86400)
+        self.assertEqual(home["soft_bytes"], 300 * 1024**3)
+        self.assertEqual(home["hard_bytes"], 400 * 1024**3)
+        self.assertNotIn("grace_seconds", home)
         scratch = variables["scratch"]
         self.assertEqual(scratch["machines"]["gpu4"], {"device": "/dev/vdb", "image_gb": None})
         self.assertEqual(scratch["machines"]["gpu2"], {"device": None, "image_gb": 2})

@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Publish selected home quota totals as node_exporter metrics, for the status collector on the front node.
 
-Runs as root on the home machine. Reads user block quotas with `repquota -u -O csv FILESYSTEM` and writes a
+Runs as root on the home machine. Reads user block quotas with `repquota -u -v -O csv FILESYSTEM` and writes a
 node_exporter textfile (mode 0644) with, for each named user:
   cluster_home_quota_used_bytes{user="NAME"}, cluster_home_quota_soft_bytes{user="NAME"},
   cluster_home_quota_hard_bytes{user="NAME"}
@@ -14,6 +14,8 @@ Arguments:
   --repquota PATH          the repquota program (for example /usr/sbin/repquota).
   --filesystem PATH        mount point of the filesystem that holds /home and its quotas: /home when it is
                            its own mount, / when /home is a folder on the root disk.
+  --soft-bytes INTEGER    configured notice threshold, independent of filesystem limits.
+  --hard-bytes INTEGER    configured job wait threshold, independent of filesystem limits.
   --users NAME [NAME ...]  the cluster's users; nobody else (root, service accounts) is written.
 """
 
@@ -27,7 +29,9 @@ import time
 from pathlib import Path
 
 
-def collect(repquota: str, filesystem: str, users: list[str]) -> dict[str, dict[str, int]]:
+def collect(
+    repquota: str, filesystem: str, users: list[str], soft_bytes: int, hard_bytes: int
+) -> dict[str, dict[str, int]]:
     """Read filesystem quota blocks and retain only named cluster users."""
     if (
         not users
@@ -35,11 +39,13 @@ def collect(repquota: str, filesystem: str, users: list[str]) -> dict[str, dict[
         or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", user) for user in users)
     ):
         raise ValueError("Invalid cluster user list")
+    if soft_bytes <= 0 or hard_bytes < soft_bytes:
+        raise ValueError("Invalid configured quota thresholds")
     output = subprocess.run(
-        [repquota, "-u", "-O", "csv", filesystem], capture_output=True, text=True, check=True, timeout=25
+        [repquota, "-u", "-v", "-O", "csv", filesystem], capture_output=True, text=True, check=True, timeout=25
     ).stdout
     rows = csv.DictReader(output.splitlines())
-    required = {"User", "BlockUsed", "BlockSoftLimit", "BlockHardLimit"}
+    required = {"User", "BlockUsed"}
     if rows.fieldnames is None or not required.issubset(rows.fieldnames):
         raise ValueError("Quota output is missing required columns")
     selected: dict[str, dict[str, int]] = {}
@@ -49,10 +55,10 @@ def collect(repquota: str, filesystem: str, users: list[str]) -> dict[str, dict[
             continue
         if name in selected:
             raise ValueError("Duplicate quota record for " + name)
-        used, soft, hard = (int(row[field]) * 1024 for field in ("BlockUsed", "BlockSoftLimit", "BlockHardLimit"))
-        if used < 0 or soft <= 0 or hard < soft:
-            raise ValueError("Invalid quota values for " + name)
-        selected[name] = {"used_bytes": used, "soft_bytes": soft, "hard_bytes": hard}
+        raw_used = row["BlockUsed"]
+        if raw_used is None or not re.fullmatch(r"[0-9]+", raw_used):
+            raise ValueError("Invalid quota usage for " + name)
+        selected[name] = {"used_bytes": int(raw_used) * 1024, "soft_bytes": soft_bytes, "hard_bytes": hard_bytes}
     if set(selected) != set(users):
         raise ValueError("Missing cluster user quota record")
     return selected
@@ -63,8 +69,8 @@ def metrics(quotas: dict[str, dict[str, int]], collected: float) -> str:
     lines = []
     for field, meaning in [
         ("used_bytes", "Bytes used in /home"),
-        ("soft_bytes", "Soft quota on /home in bytes"),
-        ("hard_bytes", "Hard quota on /home in bytes"),
+        ("soft_bytes", "Configured notice threshold on /home in bytes"),
+        ("hard_bytes", "Configured job wait threshold on /home in bytes"),
     ]:
         lines += [f"# HELP cluster_home_quota_{field} {meaning}.", f"# TYPE cluster_home_quota_{field} gauge"]
         lines += [
@@ -96,9 +102,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repquota", required=True)
     parser.add_argument("--filesystem", required=True)
+    parser.add_argument("--soft-bytes", type=int, required=True)
+    parser.add_argument("--hard-bytes", type=int, required=True)
     parser.add_argument("--users", nargs="+", required=True)
     arguments = parser.parse_args()
-    quotas = collect(arguments.repquota, arguments.filesystem, arguments.users)
+    quotas = collect(
+        arguments.repquota, arguments.filesystem, arguments.users, arguments.soft_bytes, arguments.hard_bytes
+    )
     publish(arguments.output, metrics(quotas, time.time()))
 
 

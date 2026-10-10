@@ -2,6 +2,13 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-10: Home usage notices and new-job threshold
+
+- `/home` quotas measure each user's usage without blocking writes. Above the configurable soft threshold (300 GB by default), the user sees a private usage and notice box on interactive front-node login, following the SLURM-REAL login notice. The Users page also shows usage against the thresholds.
+- Above the configurable hard threshold (400 GB by default), the front node sets that user's Slurm association `MaxJobs=0`: new jobs wait, running jobs continue, and `/home` remains writable. A five-minute timer restores the previous association limit when usage falls. The command checks fresh, complete private status before changing Slurm and keeps a journal of prior limits. A deploy runs it once after the collector starts.
+- The full Python suite passed (512 tests, 37 skipped), as did the focused website tests. `SimHomeJobPolicyTest` passed on Ubuntu 24.04 with a real running and waiting job, interactive login, private status, an over-threshold home write, and release after usage fell. `SimXfsQuotaTest` passed with `/home` on a separate XFS storage machine. `SimRebootTest` passed after restarting the storage, front, and two compute VMs; `SimRootHomeRebootTest` passed after restarting the front VM with `/home` on its root disk. An independent agent reviewed the feature. The built demo passed its served-site browser smoke test.
+- Files: `src/nanohpc/{config.py,deploy.py,ansible/roles/{home_server,monitoring}/,files/{cluster-home-quotas,cluster-home-job-policy,cluster-monitor-snapshot,nanohpc-home-notice.sh,cluster-health},website-source/,website/}`, `tests/test_{home_job_policy,home_quota,monitor_snapshot,sim}.py`, `md/testing.md`.
+
 ## 2026-10-10: Offline and Unknown machines on the Cluster Map
 
 - The map fades the stack, name label, pipe, and moving traffic for a machine with Offline or Unknown health. Hover still shows its details without making it solid. When the snapshot is stale, every machine fades.
