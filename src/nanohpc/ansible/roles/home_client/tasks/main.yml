@@ -17,6 +17,58 @@
     state: present
     install_recommends: false
 
+# Ubuntu's default ProtectHome=yes can trigger the /home automount while logind
+# starts. Hide /home with a private tmpfs instead, so root SSH works during an
+# NFS outage. Reload the unit now; the running logind adopts it on next boot.
+- name: Create the logind override folder for shared /home clients
+  ansible.builtin.file:
+    path: /etc/systemd/system/systemd-logind.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Keep logind startup independent of shared /home
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/systemd-logind.service.d/90-nanohpc-home.conf
+    content: |
+      [Service]
+      ProtectHome=tmpfs
+    owner: root
+    group: root
+    mode: '0644'
+  register: home_logind_override
+
+# MariaDB's Ubuntu unit uses ProtectHome=yes. Even ProtectHome=tmpfs tries to
+# set up a mount namespace through an unavailable /home automount and leaves
+# the database failed. MariaDB runs as mysql; access to user homes still
+# follows their file permissions (nanoHPC creates them with mode 0700).
+- name: Create the MariaDB override folder on the front node
+  ansible.builtin.file:
+    path: /etc/systemd/system/mariadb.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: inventory_hostname in groups['role_front']
+
+- name: Keep MariaDB startup independent of shared /home
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/mariadb.service.d/90-nanohpc-home.conf
+    content: |
+      [Service]
+      ProtectHome=no
+    owner: root
+    group: root
+    mode: '0644'
+  register: home_mariadb_override
+  when: inventory_hostname in groups['role_front']
+
+- name: Load service overrides for the next start
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: (home_logind_override.changed or home_mariadb_override.changed) and not ansible_check_mode
+
 - name: Read the previous shared /home fstab entry
   ansible.builtin.shell: awk '$2 == "/home" { print; exit }' /etc/fstab
   register: home_fstab_before
@@ -24,7 +76,7 @@
   check_mode: false
 
 - name: Read the current shared /home options
-  ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /home
+  ansible.builtin.command: findmnt -n -t nfs4 -o OPTIONS --mountpoint /home
   register: home_options_before
   changed_when: false
   check_mode: false
@@ -55,6 +107,8 @@
       - defaults
       - _netdev
       - nofail
+      - x-systemd.automount
+      - x-systemd.mount-timeout=90
 
 - name: Require a previous fstab entry for safe NFS mount recovery
   ansible.builtin.assert:
@@ -162,7 +216,7 @@
     path: /etc/fstab
     regexp: '^\S+\s+/home\s'
     # nosuid,nodev: no program or device file in /home gives root (the export is no_root_squash).
-    line: "{{ nanohpc.home.server_address }}:/home /home nfs4 rw,nosuid,nodev,_netdev,nofail,hard,timeo=600,retrans=2 0 0"
+    line: "{{ nanohpc.home.server_address }}:/home /home nfs4 rw,nosuid,nodev,_netdev,nofail,hard,timeo=600,retrans=2,x-systemd.automount,x-systemd.mount-timeout=90 0 0"
     backup: true
   register: home_fstab
 
@@ -245,7 +299,7 @@
       when: home_fstab_before.stdout == ''
 
     - name: Check whether the previous shared /home is still mounted
-      ansible.builtin.command: findmnt -n -o SOURCE --mountpoint /home
+      ansible.builtin.command: findmnt -n -t nfs4 -o SOURCE --mountpoint /home
       register: home_after_failed_mount
       changed_when: false
       failed_when: false
@@ -265,7 +319,7 @@
           The previous fstab entry was restored. Stop jobs and logins using /home, then deploy again.
 
 - name: Check that /home is the shared one
-  ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /home
+  ansible.builtin.command: findmnt -n -t nfs4 -o SOURCE,FSTYPE --mountpoint /home
   register: home_now
   changed_when: false
   check_mode: false
@@ -273,7 +327,7 @@
   when: not (ansible_check_mode and (home_fstab is changed or home_needs_new_mount or (home_mount.stdout | default('') | trim) != nanohpc.home.server_address ~ ':/home nfs4'))  # dry run: not mounted yet
 
 - name: Check that shared /home has the required mount options
-  ansible.builtin.command: findmnt -n -o OPTIONS --mountpoint /home
+  ansible.builtin.command: findmnt -n -t nfs4 -o OPTIONS --mountpoint /home
   register: home_options_now
   changed_when: false
   check_mode: false

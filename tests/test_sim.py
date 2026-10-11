@@ -2180,6 +2180,245 @@ class SimRootHomeRebootTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimHomeAutomountBootTest(SimUsersBase):
+    """A compute node boots to root SSH without its /home server and reconnects on first use."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "home-automount.yml"
+        self.state = ROOT / ".nanohpc-sim" / "home-automount"
+        super().setUp()
+
+    def root_ssh(
+        self, machine: str, command: str, timeout_seconds: int, internal_address: str | None
+    ) -> subprocess.CompletedProcess[str]:
+        """Bound root SSH while /home may be unavailable."""
+        environment = {key: value for key, value in os.environ.items() if key != "SSH_AUTH_SOCK"}
+        route = (
+            ["-J", "gpu4", "-o", f"HostName={internal_address}", "-o", "Port=22"]
+            if internal_address is not None
+            else []
+        )
+        return subprocess.run(
+            [
+                "ssh",
+                "-F",
+                str(self.ssh_config_for("root")),
+                *route,
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=3",
+                machine,
+                command,
+            ],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+
+    def test_compute_boots_without_home_server_and_reconnects(self) -> None:
+        _, config, _ = self.up_and_deploy()
+        options = self.ssh("cpu1", "awk '$2 == \"/home\" { print $4 }' /etc/fstab").stdout.strip().split(",")
+        for option in ("nosuid", "nodev", "hard", "nofail", "x-systemd.automount", "x-systemd.mount-timeout=90"):
+            self.assertIn(option, options)
+        self.on_front("sudo -u alice sh -c 'echo reconnect > /home/alice/nanohpc-automount-check'")
+
+        instances = {vm.machine: vm.instance for vm in plan_of(self.sim).vms}
+        cpu_address = config["machines"]["cpu1"]["address"]
+        before = self.root_ssh("cpu1", "cat /proc/sys/kernel/random/boot_id", 30, cpu_address)
+        self.assertEqual(before.returncode, 0, before.stdout + before.stderr)
+        stopped = self.run_command("limactl", "stop", instances["front"])
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        reboot = self.root_ssh("cpu1", "systemctl reboot --no-wall", 30, cpu_address)
+        self.assertIn(reboot.returncode, (0, 255), reboot.stdout + reboot.stderr)
+
+        deadline = time.monotonic() + 180
+        root = reboot
+        while time.monotonic() < deadline:
+            root = self.root_ssh(
+                "cpu1",
+                "systemctl is-active ssh systemd-logind.service home.automount && systemctl show -p ProtectHome --value systemd-logind.service && cat /proc/sys/kernel/random/boot_id && cut -d ' ' -f 1 /proc/uptime",
+                25,
+                cpu_address,
+            )
+            lines = root.stdout.splitlines()
+            if (
+                root.returncode == 0
+                and lines[:4] == ["active", "active", "active", "tmpfs"]
+                and lines[-2] != before.stdout.strip()
+            ):
+                break
+            time.sleep(5)
+        self.assertEqual(root.returncode, 0, root.stdout + root.stderr)
+        self.assertEqual(root.stdout.splitlines()[:4], ["active", "active", "active", "tmpfs"])
+        self.assertNotEqual(root.stdout.splitlines()[-2], before.stdout.strip())
+        self.assertLess(float(root.stdout.splitlines()[-1]), 90, "root SSH waited for the 90-second NFS mount timeout")
+        attempt = self.root_ssh("cpu1", "systemctl start --no-block home.mount", 30, cpu_address)
+        self.assertEqual(attempt.returncode, 0, attempt.stdout + attempt.stderr)
+        time.sleep(100)
+        still = self.root_ssh("cpu1", "systemctl is-active ssh home.automount", 30, cpu_address)
+        self.assertEqual(still.returncode, 0, still.stdout + still.stderr)
+        self.assertEqual(still.stdout.splitlines(), ["active", "active"])
+
+        started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", instances["front"])
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.refresh_vm_port("front", instances["front"])
+        self.wait_for_vm("front", "systemctl is-active nfs-server")
+        read = self.root_ssh("cpu1", "timeout 120 cat /home/alice/nanohpc-automount-check", 150, cpu_address)
+        self.assertEqual(read.returncode, 0, read.stdout + read.stderr)
+        self.assertEqual(read.stdout.strip(), "reconnect")
+        mounted = self.root_ssh("cpu1", "findmnt -n -t nfs4 -o SOURCE,FSTYPE --mountpoint /home", 30, cpu_address)
+        self.assertEqual(mounted.returncode, 0, mounted.stdout + mounted.stderr)
+        self.assertEqual(mounted.stdout.split(), [config["machines"]["front"]["address"] + ":/home", "nfs4"])
+        recovered_check = self.root_ssh("cpu1", "systemctl start nanohpc-user-check.service", 90, cpu_address)
+        self.assertEqual(recovered_check.returncode, 0, recovered_check.stdout + recovered_check.stderr)
+        health = self.root_ssh("cpu1", "cluster-health", 60, cpu_address)
+        self.assertEqual(health.returncode, 0, health.stdout + health.stderr)
+        self.assertIn("ok    /home is the shared NFS mount", health.stdout)
+        self.refresh_vm_port("cpu1", instances["cpu1"])
+        self.wait_for_vm("cpu1", "true")
+        dry = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--dry-run")
+        self.assertEqual(dry.returncode, 0, self.failure(dry))
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimHomeAutomountStorageTest(SimUsersBase):
+    """Front and compute clients reboot with /home served by a separate storage machine."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "home-automount-storage.yml"
+        self.state = ROOT / ".nanohpc-sim" / "home-automount-storage"
+        super().setUp()
+
+    def bounded_ssh(self, machine: str, command: str, jump: str, address: str) -> subprocess.CompletedProcess[str]:
+        """Reach a rebooting VM over the internal network with a bounded root login."""
+        return subprocess.run(
+            [
+                "ssh",
+                "-F",
+                str(self.ssh_config_for("root")),
+                "-J",
+                jump,
+                "-o",
+                f"HostName={address}",
+                "-o",
+                "Port=22",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=3",
+                machine,
+                command,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=25,
+        )
+
+    def test_front_and_compute_reconnect_after_reboot(self) -> None:
+        _, config, _ = self.up_and_deploy()
+        instances = {vm.machine: vm.instance for vm in plan_of(self.sim).vms}
+        marker = self.ssh("store", "sudo -u alice sh -c 'echo storage-reboot > /home/alice/nanohpc-storage-reboot'")
+        self.assertEqual(marker.returncode, 0, marker.stdout + marker.stderr)
+        front_address = config["machines"]["front"]["address"]
+        gpu_address = config["machines"]["gpu4"]["address"]
+        store_address = config["machines"]["store"]["address"]
+
+        def reboot_and_wait(machine: str, jump: str, address: str) -> None:
+            """Require fresh root SSH and an active automount before the NFS timeout."""
+            before = self.bounded_ssh(machine, "cat /proc/sys/kernel/random/boot_id", jump, address)
+            self.assertEqual(before.returncode, 0, before.stdout + before.stderr)
+            reboot = self.bounded_ssh(machine, "systemctl reboot --no-wall", jump, address)
+            self.assertIn(reboot.returncode, (0, 255), reboot.stdout + reboot.stderr)
+            deadline = time.monotonic() + 180
+            result = reboot
+            while time.monotonic() < deadline:
+                result = self.bounded_ssh(
+                    machine,
+                    "systemctl is-active ssh systemd-logind.service home.automount && systemctl show -p ProtectHome --value systemd-logind.service && cat /proc/sys/kernel/random/boot_id && cut -d ' ' -f 1 /proc/uptime",
+                    jump,
+                    address,
+                )
+                lines = result.stdout.splitlines()
+                if (
+                    result.returncode == 0
+                    and len(lines) >= 6
+                    and [lines[0], lines[2], lines[3]] == ["active", "active", "tmpfs"]
+                    and lines[1] in ("active", "activating")
+                    and lines[-2] != before.stdout.strip()
+                ):
+                    break
+                time.sleep(5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            lines = result.stdout.splitlines()
+            self.assertEqual([lines[0], lines[2], lines[3]], ["active", "active", "tmpfs"])
+            self.assertIn(lines[1], ("active", "activating"))
+            self.assertNotEqual(result.stdout.splitlines()[-2], before.stdout.strip())
+            self.assertLess(float(result.stdout.splitlines()[-1]), 90)
+
+        def check_home(machine: str, jump: str, address: str) -> None:
+            """Read the storage server's marker and require the real NFS mount."""
+            read = self.bounded_ssh(machine, "timeout 30 cat /home/alice/nanohpc-storage-reboot", jump, address)
+            self.assertEqual(read.returncode, 0, read.stdout + read.stderr)
+            self.assertEqual(read.stdout.strip(), "storage-reboot")
+            mount = self.bounded_ssh(machine, "findmnt -n -t nfs4 -o SOURCE,FSTYPE --mountpoint /home", jump, address)
+            self.assertEqual(mount.returncode, 0, mount.stdout + mount.stderr)
+            self.assertEqual(mount.stdout.split(), [store_address + ":/home", "nfs4"])
+
+        stopped = self.run_command("limactl", "stop", instances["store"])
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        reboot_and_wait("front", "gpu4", front_address)
+        time.sleep(100)
+        still = self.bounded_ssh(
+            "front", "systemctl is-active ssh systemd-logind.service home.automount mariadb", "gpu4", front_address
+        )
+        self.assertEqual(still.returncode, 0, still.stdout + still.stderr)
+        self.assertEqual(still.stdout.splitlines(), ["active", "active", "active", "active"])
+        mariadb_home = self.bounded_ssh(
+            "front", "systemctl show -p ProtectHome --value mariadb.service", "gpu4", front_address
+        )
+        self.assertEqual(mariadb_home.returncode, 0, mariadb_home.stdout + mariadb_home.stderr)
+        self.assertEqual(mariadb_home.stdout.strip(), "no")
+        started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", instances["store"])
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.refresh_vm_port("store", instances["store"])
+        self.wait_for_vm("store", "systemctl is-active nfs-server")
+        check_home("front", "gpu4", front_address)
+        front_services = self.bounded_ssh(
+            "front", "systemctl is-active ssh home.automount slurmctld", "gpu4", front_address
+        )
+        self.assertEqual(front_services.returncode, 0, front_services.stdout + front_services.stderr)
+        self.assertEqual(front_services.stdout.splitlines(), ["active", "active", "active"])
+        health_deadline = time.monotonic() + 360
+        front_health = self.bounded_ssh("front", "cluster-health", "gpu4", front_address)
+        while front_health.returncode != 0 and time.monotonic() < health_deadline:
+            time.sleep(15)
+            front_health = self.bounded_ssh("front", "cluster-health", "gpu4", front_address)
+        self.assertEqual(front_health.returncode, 0, front_health.stdout + front_health.stderr)
+
+        reboot_and_wait("gpu4", "store", gpu_address)
+        check_home("gpu4", "store", gpu_address)
+        for machine in ("front", "gpu4"):
+            self.refresh_vm_port(machine, instances[machine])
+            self.wait_for_vm(machine, "true")
+        dry = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--dry-run")
+        self.assertEqual(dry.returncode, 0, self.failure(dry))
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimRebootTest(SimUsersBase):
     """A deployed home disk, NFS clients, quotas, and both scratch kinds survive a machine reboot."""
 
@@ -2202,7 +2441,14 @@ class SimRebootTest(SimUsersBase):
         for machine in ("store", "front", "gpu4", "gpu2"):
             with self.subTest(machine=machine):
                 self.reboot_vm(machine, instances[machine])
-                mount = self.wait_for_vm(machine, "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home")
+                if machine != "store":
+                    self.wait_for_vm(machine, "timeout 120 stat -t /home/.")
+                mount = self.wait_for_vm(
+                    machine,
+                    "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home -t nfs4"
+                    if machine != "store"
+                    else "findmnt -n -o SOURCE,FSTYPE,OPTIONS --mountpoint /home",
+                )
                 source, fstype, options = mount.strip().split()
                 if machine == "store":
                     self.assertEqual((source, fstype), ("/dev/vdb", "ext4"))
