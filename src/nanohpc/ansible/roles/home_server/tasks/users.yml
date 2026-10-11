@@ -81,4 +81,6 @@
   loop: "{{ nanohpc.users }}"
   loop_control:
     label: "{{ item.name }}"
-  when: not home_quota_pending
+  # A dry run has not created a newly listed user yet, so repquota cannot list that user.
+  # The real run still requires its record after the account and home folder exist.
+  when: not home_quota_pending and (not ansible_check_mode or item.name in ansible_facts.getent_passwd)

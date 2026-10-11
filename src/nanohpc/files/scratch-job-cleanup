@@ -6,8 +6,10 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+UTC = timezone.utc  # noqa: UP017 (datetime.UTC needs Python 3.11; Ubuntu 22.04 has 3.10)
 
 JOB_FOLDER = re.compile(r"job-(\d+)-[A-Za-z0-9_]+")
 END_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d")

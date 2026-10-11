@@ -557,8 +557,17 @@ def front_post_checks(
     clusters = restart.read(front, ssh_config, "sacctmgr -n -P list cluster", 30)
     if config["cluster"]["name"] not in [line.split("|")[0].strip() for line in clusters.splitlines()]:
         raise UpdateError(f"{front}: Slurm accounting does not list {config['cluster']['name']}")
-    mount = restart.read(front, ssh_config, "findmnt -n -o SOURCE --mountpoint /home", 30)
     server = home_server(config)
+    if server != front:
+        restart.read(front, ssh_config, "timeout 10 stat -t /home/.", 30)
+    mount = restart.read(
+        front,
+        ssh_config,
+        "findmnt -n -t nfs4 -o SOURCE --mountpoint /home"
+        if server != front
+        else "findmnt -n -o SOURCE --mountpoint /home",
+        30,
+    )
     if server != front and mount != f"{config['machines'][server]['address']}:/home":
         raise UpdateError(f"{front}: /home is {mount}, expected {config['machines'][server]['address']}:/home")
     if server == front:

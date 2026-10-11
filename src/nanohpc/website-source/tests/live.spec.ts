@@ -8,6 +8,7 @@
  *
  * NANOHPC_LIVE_URL       the site root, with its trailing slash (required).
  * NANOHPC_LIVE_HOST_RULES Chromium --host-resolver-rules, to reach the site through an SSH tunnel (optional).
+ * NANOHPC_LIVE_JOB_ID and NANOHPC_LIVE_JOB_NODE check a running job on the deployed Overview page (optional).
  * The certificate may come from a test authority: HTTPS errors are ignored (see playwright.live.config.ts).
  *
  * It visits every tab and fails, with a list, on: any response from the site's origin with status 400 or more
@@ -108,9 +109,13 @@ test('the deployed site loads every tab without refused routes, errors, or CSP v
   await expect(freshness).not.toContainText('Connecting', { timeout: 15_000 })
   const freshnessText = await freshness.innerText()
   if (!freshnessText.includes(`Updates every ${live.status.refresh_seconds}s`)) problems.data.push(`status.json is not current: the page says "${freshnessText.replace(/\s+/g, ' ')}"`)
-  const shown = await page.locator('.machine-list .machine-link').allInnerTexts()
   const compute = live.status.nodes.filter(node => node.role === 'Compute').map(node => node.name)
+  const overviewView = page.getByRole('group', { name: 'Machines view' })
+  await expect(overviewView.getByRole('button', { name: 'Cluster Map' })).toHaveAttribute('aria-pressed', 'true')
+  await overviewView.getByRole('button', { name: 'List view' }).click()
+  const shown = await page.locator('.overview-machines .machine-link').allInnerTexts()
   if (JSON.stringify(shown) !== JSON.stringify(compute)) problems.data.push(`machine table shows ${shown.join(', ')}, status.json has ${compute.join(', ')}`)
+  await overviewView.getByRole('button', { name: 'Cluster Map' }).click()
   if (await page.locator('.notice[role="alert"]').count()) problems.data.push(`the page warns: ${await page.locator('.notice[role="alert"]').first().innerText()}`)
 
   const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
@@ -148,4 +153,23 @@ test('the deployed site loads every tab without refused routes, errors, or CSP v
 
   const report = Object.entries(problems).filter(([, items]) => items.length).map(([kind, items]) => `${kind}:\n  ${items.join('\n  ')}`)
   expect(report, `problems found on ${liveUrl}`).toEqual([])
+})
+
+test('a running compute job appears on the deployed Overview', async ({ page }) => {
+  const jobId = process.env.NANOHPC_LIVE_JOB_ID ?? ''
+  const node = process.env.NANOHPC_LIVE_JOB_NODE ?? ''
+  test.skip(!jobId || !node, 'set NANOHPC_LIVE_JOB_ID and NANOHPC_LIVE_JOB_NODE')
+  await page.goto(liveUrl)
+  await expect.poll(() => page.evaluate(async id => {
+    const response = await fetch('data/status.json', { cache: 'no-store' })
+    if (!response.ok) return null
+    const status = await response.json() as { jobs: { id: string; state: string; node: string }[] }
+    const job = status.jobs.find(item => String(item.id) === id)
+    return job ? { state: job.state, node: job.node } : null
+  }, jobId), { timeout: 60_000 }).toEqual({ state: 'RUNNING', node })
+  const row = page.getByRole('table', { name: 'Running jobs' }).getByRole('row').filter({
+    has: page.getByRole('cell', { name: jobId, exact: true }),
+  })
+  await expect(row).toBeVisible({ timeout: 60_000 })
+  await expect(row.getByRole('cell').last()).toHaveText(node)
 })
