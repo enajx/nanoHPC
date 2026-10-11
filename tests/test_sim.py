@@ -757,9 +757,9 @@ class SimUsersBase(unittest.TestCase):
         expected = "403" if website.get("allow") else "200"
         self.assertEqual(status("cpu1", front, f"{path}site.json", ""), expected)
         self.assertEqual(status("cpu1", front, f"{path}grafana/d/nanohpc-overview", ""), expected)
-        self.browser_check(host, path)
+        self.browser_check(host, path, None)
 
-    def browser_check(self, host: str, path: str) -> None:
+    def browser_check(self, host: str, path: str, running_job: tuple[str, str] | None) -> None:
         """Open every page of the website in a real browser through an SSH tunnel to the front node (real nginx,
         Grafana, and security headers): the live Playwright test in the website source. It needs Node and
         Playwright's Chromium on this machine (npm ci; npx playwright install chromium in the website source).
@@ -780,11 +780,14 @@ class SimUsersBase(unittest.TestCase):
             "NANOHPC_LIVE_URL": f"https://{host}{path}",
             "NANOHPC_LIVE_HOST_RULES": f"MAP {host}:443 127.0.0.1:18443",
         }
-        result = subprocess.run(
-            ["npm", "run", "test:live"], cwd=source, env=environment, capture_output=True, text=True, check=False
-        )
+        command = ["npm", "run", "test:live"]
+        if running_job is not None:
+            environment["NANOHPC_LIVE_JOB_ID"], environment["NANOHPC_LIVE_JOB_NODE"] = running_job
+            command.extend(["--", "--grep", "running compute job appears"])
+        result = subprocess.run(command, cwd=source, env=environment, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, self.failure(result)[-2000:])
         tunnel.terminate()
+        tunnel.wait(timeout=10)
         after = int(self.on_front(refused).strip() or 0)
         self.assertEqual(after, before, self.on_front("sudo tail -20 /var/log/nginx/error.log"))
 
@@ -1573,20 +1576,37 @@ class SimDeployTest(SimUsersBase):
                 return json.loads(self.on_front("cat /var/lib/nanohpc/monitor/status.json"))
 
             job = self.on_front(
-                "cd /tmp && sudo -u alice sbatch --parsable -p main -t 5 -o /dev/null --wrap 'sleep 300'"
+                "cd /tmp && sudo -u alice sbatch --parsable -p main -w cpu1 -t 20 -o /dev/null --wrap 'sleep 900'"
             ).strip()
             self.addCleanup(self.ssh, "front", f"sudo scancel {job}")
+            for _ in range(30):
+                running = self.on_front(f"squeue -h -j {job} -o '%T %N'").strip()
+                if running == "RUNNING cpu1":
+                    break
+                time.sleep(2)
+            self.assertEqual(running, "RUNNING cpu1")
             first = snapshot()
             for _ in range(20):
                 status = snapshot()
                 healthy = {node["name"]: node["health"] for node in status["nodes"]}
-                if status["generated_at"] != first["generated_at"] and job in {
-                    str(item["id"]) for item in status["jobs"]
-                } and set(healthy.values()) == {"Healthy"}:  # fmt: skip
+                shown_job = next((item for item in status["jobs"] if str(item["id"]) == job), None)
+                if (
+                    status["generated_at"] != first["generated_at"]
+                    and shown_job is not None
+                    and shown_job["state"] == "RUNNING"
+                    and shown_job["node"] == "cpu1"
+                    and set(healthy.values()) == {"Healthy"}
+                ):
                     break
                 time.sleep(6)
             self.assertNotEqual(status["generated_at"], first["generated_at"])
             self.assertEqual(status["refresh_seconds"], 30)
+            self.assertIsNotNone(shown_job, f"job {job} is missing from the status snapshot")
+            assert shown_job is not None
+            self.assertEqual((shown_job["state"], shown_job["node"]), ("RUNNING", "cpu1"))
+            website = config["cluster"]["website"]
+            website_path = website.get("path", "/cluster/").rstrip("/") + "/"
+            self.browser_check(website["hostname"], website_path, (job, "cpu1"))
             # Two refreshes in a row are about 30 seconds apart.
             stamps = [status["generated_at"]]
             for _ in range(60):

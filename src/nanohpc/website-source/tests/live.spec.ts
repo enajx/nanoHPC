@@ -8,6 +8,7 @@
  *
  * NANOHPC_LIVE_URL       the site root, with its trailing slash (required).
  * NANOHPC_LIVE_HOST_RULES Chromium --host-resolver-rules, to reach the site through an SSH tunnel (optional).
+ * NANOHPC_LIVE_JOB_ID and NANOHPC_LIVE_JOB_NODE check a running job on the deployed Overview page (optional).
  * The certificate may come from a test authority: HTTPS errors are ignored (see playwright.live.config.ts).
  *
  * It visits every tab and fails, with a list, on: any response from the site's origin with status 400 or more
@@ -152,4 +153,23 @@ test('the deployed site loads every tab without refused routes, errors, or CSP v
 
   const report = Object.entries(problems).filter(([, items]) => items.length).map(([kind, items]) => `${kind}:\n  ${items.join('\n  ')}`)
   expect(report, `problems found on ${liveUrl}`).toEqual([])
+})
+
+test('a running compute job appears on the deployed Overview', async ({ page }) => {
+  const jobId = process.env.NANOHPC_LIVE_JOB_ID ?? ''
+  const node = process.env.NANOHPC_LIVE_JOB_NODE ?? ''
+  test.skip(!jobId || !node, 'set NANOHPC_LIVE_JOB_ID and NANOHPC_LIVE_JOB_NODE')
+  await page.goto(liveUrl)
+  await expect.poll(() => page.evaluate(async id => {
+    const response = await fetch('data/status.json', { cache: 'no-store' })
+    if (!response.ok) return null
+    const status = await response.json() as { jobs: { id: string; state: string; node: string }[] }
+    const job = status.jobs.find(item => String(item.id) === id)
+    return job ? { state: job.state, node: job.node } : null
+  }, jobId), { timeout: 60_000 }).toEqual({ state: 'RUNNING', node })
+  const row = page.getByRole('table', { name: 'Running jobs' }).getByRole('row').filter({
+    has: page.getByRole('cell', { name: jobId, exact: true }),
+  })
+  await expect(row).toBeVisible({ timeout: 60_000 })
+  await expect(row.getByRole('cell').last()).toHaveText(node)
 })

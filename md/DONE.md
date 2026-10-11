@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-11: full simulated setup through a live website job
+
+- A fresh six-machine Ubuntu 24.04 simulated cluster deployed from an empty state. `SimDeployTest` submitted job 5 to `cpu1`, saw it running in Slurm and the 30-second status snapshot, and confirmed its job ID and node in the deployed Overview through HTTPS and a real browser. The test passed (one test in 2460 seconds).
+- The live browser test accepts a job ID and node from the VM test. The existing page checks still run, and the second tunnel closes fully before the test continues. Focused Python lint, formatting, type checking, TypeScript checking, and the demo build passed. A separate agent reviewed the test flow.
+- Files: `tests/test_sim.py`, `src/nanohpc/website-source/tests/live.spec.ts`, `md/testing.md`.
+
 ## 2026-10-11: Ubuntu release VM checks
 
 - `SimClusterTest` and `SimReleaseTest` passed from fresh VMs on Ubuntu 22.04 and 26.04. They checked the core deploy, Slurm jobs, shared `/home`, scratch cleanup under each system Python, root and administrator access, and repeat deploys. The 22.04 test also checked migration of Apptainer's previous global APT key and source entry to a scoped keyring and source.
