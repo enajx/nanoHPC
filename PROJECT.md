@@ -159,7 +159,8 @@ flowchart LR
 - Checked: core deploy VM tests passed on Ubuntu 22.04 and 26.04; nine focused Ubuntu 24.04 VM suites passed, including full, changed-configuration, and partial redeploys. Ubuntu 22.04 now runs the installed home-policy and scratch-cleanup commands with its system Python, and Apptainer uses a scoped PPA key. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
 - Next: complete the remaining v0.1 release checks and documentation ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
-- Remaining work before release is tracked in [TODO.md](TODO.md), including an end-to-end simulated setup, real x86 and GPU checks, and administrator documentation.
+- A fresh six-machine simulated setup passed from an empty state through a running `cpu1` job visible on the deployed website. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
+- Remaining work before release is tracked in [TODO.md](TODO.md), including real x86 and GPU checks and administrator documentation.
 
 ## Notes
 

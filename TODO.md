@@ -210,7 +210,7 @@ flowchart LR
   - [ ] The README has monitor-only setup instructions (`README.md` currently says TBA).
 - [x] Before the release, the core deploy VM tests pass on Ubuntu 22.04 and 26.04, alongside focused VM regressions on 24.04. See [DONE.md](md/DONE.md).
 - [ ] Once nanoHPC is released and development slows down, bring the split-out real-VM tests (`SimRedeployTest`, `SimAlertsTest`, and the ones run only when relevant) back into every run, so users get proper tests when deploying on their systems.
-- [ ] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website.
+- [x] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website. See [DONE.md](md/DONE.md).
 - [ ] A full setup is tested on real x86 machines, and once on a real GPU machine for the NVIDIA driver and CUDA.
 - [ ] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option.
 - [ ] The repository is published under the MIT license.
