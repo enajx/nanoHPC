@@ -117,7 +117,7 @@ flowchart LR
 - Checked: the built wheel installs with `uv tool install`; the installed command runs outside the checkout and reaches Ubuntu 24.04 machines over SSH. See [DONE.md](md/DONE.md).
 - Built: the simulated test cluster, `nanohpc sim up/down` with Lima VMs ([testing.md](md/testing.md)). Checked on macOS (Apple Silicon) with the everyday, home-on-storage, and 20-node clusters, and on a Linux x86 host with the everyday cluster (GitHub Actions, run by hand only).
 - Checked: a manual GitHub Actions run built and deployed Slurm 26.05.4 on two Ubuntu 24.04 x86_64 VMs, then completed a batch job on the compute VM. See [testing.md](md/testing.md) and [DONE.md](md/DONE.md).
-- Built: `nanohpc deploy`: Slurm, users, SSH access, sudo by forwarded key, and Munge (M3a), checked end to end on the simulated cluster (Ubuntu 24.04, ARM64). See [DONE.md](md/DONE.md).
+- Built: `nanohpc deploy`: Slurm, users, SSH access, sudo by forwarded key, and Munge (M3a). A full fresh six-machine Ubuntu 24.04 simulated cluster deploy passed, including jobs, storage, monitoring, HTTPS, browser access, a no-change redeploy, and a changed-configuration dry run. See [DONE.md](md/DONE.md).
 - Built: `/home` over NFS with per-user usage accounting and local scratch with cleanup (M3b), checked on the simulated cluster with Ubuntu 22.04, 24.04, and 26.04, and both `/home` layouts.
 - Built: `cluster-submit` job modes, `stage-dataset`, uv for users, and `cluster-health`, which every deploy runs at the end (M3c). With this, setting up Slurm, users, storage, and scratch (phase 4's cluster part) is done; open follow-ups are in [TODO.md](TODO.md).
 - Built: optional read-only shared datasets with `stage-dataset --shared NAME`, including wizard setup, a narrow NFS export, private local staging and cleanup, health checks, and `--only node` updates. A fresh Ubuntu 24.04 VM test covered the server, both compute mounts, a refused source write, staging reuse, and a newly added CPU node. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
@@ -157,7 +157,7 @@ flowchart LR
 - Checked: after an Ubuntu 24.04 kernel update and reboot, the home server still mounts `/home` with active quotas; a deploy works both before and after the update. See [testing.md](md/testing.md).
 - Next: v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
-- Remaining work before release is tracked in [TODO.md](TODO.md), including node additions and redeploy checks, and wider VM validation.
+- Remaining work before release is tracked in [TODO.md](TODO.md), including applying a changed configuration without disturbing a running cluster, and wider VM validation.
 
 ## Notes
 
