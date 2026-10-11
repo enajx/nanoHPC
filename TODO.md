@@ -148,7 +148,8 @@ flowchart LR
 
 - [x] Above `home.quota_soft_gb` (300 GB by default), users see a private notice on interactive login and can keep writing. See [DONE.md](md/DONE.md).
 - [x] Above `home.quota_hard_gb` (400 GB by default), new Slurm jobs wait until home usage falls; running jobs and writes continue. See [DONE.md](md/DONE.md).
-- [ ] Machines boot normally when the machine serving `/home` is down: `/home` is mounted with `hard,nofail,x-systemd.automount,x-systemd.mount-timeout=90` (plus `nosuid,nodev`), so the boot never waits on it, SSH comes up, and `/home` connects by itself on first use once the server answers (as in the source deployment, commit 7b76d31, roles/nfs_client). Checked on the simulated cluster by rebooting a compute node with the home server down. Agreed for later (2026-10-02); no live remount handling needed before v0.1, since no real cluster runs nanoHPC yet.
+- [x] Machines keep root SSH when the `/home` server is down and reconnect shared `/home` on first use after it returns. See [DONE.md](md/DONE.md).
+- [ ] After an NFS `/home` outage, Ubuntu auxiliary services such as `polkit` and `systemd-timedated` recover from failed starts when storage returns.
 - [x] A push to the configuration repository during a manual deploy's real run cannot start an overlapping automatic deploy through the GitHub webhook. See [DONE.md](md/DONE.md).
 - [ ] Website follow-ups: the printed forwarding rules are tried with real nginx, Apache, and Caddy (with `forwarded_by`); switching between certificate types, hostnames, paths, and build modes is checked on the simulated cluster; nginx starts on machines with IPv6 turned off.
 

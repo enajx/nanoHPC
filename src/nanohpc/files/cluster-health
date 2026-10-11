@@ -246,9 +246,9 @@ if has home; then
     note "the last /home backup run worked" test "${last_exit:-0}" = 0
   fi
 elif ! has backup; then
-  check "/home is the shared NFS mount" sh -c 'findmnt -n -o FSTYPE --mountpoint /home | grep -qx nfs4'
   # A hung NFS server makes /home hang rather than fail; the timeout turns that into a failure.
   check "/home answers within 10 seconds" timeout 10 stat -t /home/.
+  check "/home is the shared NFS mount" sh -c 'findmnt -n -t nfs4 -o FSTYPE --mountpoint /home | grep -qx nfs4'
 fi
 
 if has shared; then

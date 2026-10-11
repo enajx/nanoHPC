@@ -158,8 +158,14 @@
 
 # /home: the shared /home (NFS) or the home disk is mounted over the local /home folder. Stop if that
 # would hide anything other than the home folders of the accounts nanoHPC deploys with.
+- name: Wake an existing shared /home automount before checking its source
+  ansible.builtin.command: timeout 30 stat -t /home/.
+  changed_when: false
+  check_mode: false
+  when: inventory_hostname in nanohpc.home.clients
+
 - name: Read where /home comes from now
-  ansible.builtin.command: findmnt -n -o SOURCE,FSTYPE --mountpoint /home
+  ansible.builtin.command: "findmnt -n -o SOURCE,FSTYPE --mountpoint /home {{ '-t nfs4' if inventory_hostname in nanohpc.home.clients else '' }}"
   register: home_mount
   changed_when: false
   check_mode: false
