@@ -1701,6 +1701,96 @@ class SimDeployTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimConfigRedeployTest(SimUsersBase):
+    """A full deploy applies one changed partition limit while a batch job keeps running on Ubuntu 24.04 VMs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "config-redeploy.yml"
+        self.state = ROOT / ".nanohpc-sim" / "config-redeploy"
+        super().setUp()
+
+    def test_partition_change_keeps_cluster_running(self) -> None:
+        cluster, config, _ = self.up_and_deploy()
+        machines = config["machines"]
+        protected = "sudo sha256sum /etc/ssh/sshd_config.d/10-nanohpc.conf /etc/munge/munge.key /etc/fstab"
+
+        def protected_state(machine: str) -> str:
+            """Read the SSH, Munge, and mount file hashes, requiring all three files."""
+            result = self.ssh(machine, protected)
+            self.assertEqual(result.returncode, 0, f"{machine}: {result.stderr}")
+            self.assertEqual(len(result.stdout.splitlines()), 3, machine)
+            return result.stdout
+
+        before = {machine: protected_state(machine) for machine in machines}
+        self.assertIn("MaxTime=1-00:00:00", self.on_front("scontrol show partition main"))
+
+        job = self.on_front(
+            "cd /tmp && sudo -u alice sbatch --parsable -p main -w cpu1 -t 40 -o /dev/null --wrap 'sleep 1800'"
+        ).strip()
+        self.addCleanup(self.ssh, "front", f"sudo scancel {job}")
+
+        def job_state() -> str:
+            """Read the running job's state and assigned machine."""
+            return self.on_front(f"squeue -h -j {job} -o '%T %N'").strip()
+
+        for _ in range(30):
+            if job_state() == "RUNNING cpu1":
+                break
+            time.sleep(2)
+        self.assertEqual(job_state(), "RUNNING cpu1")
+
+        config["partitions"]["main"]["max_time"] = "12:00:00"
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        dry_run, marker, real_run = result.stdout.partition("Dry run passed: applying the changes.")
+        self.assertTrue(marker)
+        for machine in machines:
+            self.assertRegex(dry_run, rf"Dry run: {machine} would change \d+ things?: ")
+        changed_tasks = []
+        task = ""
+        for line in real_run.splitlines():
+            if line.startswith(("TASK [", "RUNNING HANDLER [")):
+                task = line.split("] ", 1)[0] + "]"
+            elif line.startswith("changed: "):
+                machine = line.split("[", 1)[1].split("]", 1)[0]
+                changed_tasks.append((task, machine))
+        self.assertCountEqual(
+            changed_tasks,
+            [
+                ("TASK [slurm_controller : Install slurm.conf and cgroup.conf]", "front"),
+                ("TASK [slurm_controller : Install the job submission rules]", "front"),
+                (
+                    "TASK [slurm_controller : Set each partition's time limit, refusing requests that cannot fit]",
+                    "front",
+                ),
+                ("TASK [slurm_controller : Run the Slurm controller]", "front"),
+                ("TASK [slurm_compute : Install slurm.conf and cgroup.conf]", "gpu4"),
+                ("TASK [slurm_compute : Install slurm.conf and cgroup.conf]", "cpu1"),
+                ("RUNNING HANDLER [slurm_compute : Restart slurmd]", "gpu4"),
+                ("RUNNING HANDLER [slurm_compute : Restart slurmd]", "cpu1"),
+            ],
+        )
+
+        self.assertIn("MaxTime=12:00:00", self.on_front("scontrol show partition main"))
+        self.assertEqual(job_state(), "RUNNING cpu1")
+        for machine in machines:
+            self.assertEqual(protected_state(machine), before[machine], machine)
+            self.assertIn("alice:x:2000:2000:", self.ssh(machine, "getent passwd alice").stdout)
+            self.assertEqual(self.ssh(machine, "systemctl is-active munge").stdout.strip(), "active")
+        self.assertIn("nfs4", self.ssh("cpu1", "findmnt -n -o FSTYPE --mountpoint /home").stdout)
+
+        next_job = self.on_front(
+            "cd /tmp && sudo -u alice sbatch --wait --parsable -p main -w cpu1 -t 5 -o /dev/null --wrap hostname"
+        )
+        self.assertTrue(next_job.strip(), next_job)
+        self.assertEqual(job_state(), "RUNNING cpu1")
+        unchanged = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assert_no_changes(unchanged, len(machines))
+        self.assertEqual(job_state(), "RUNNING cpu1")
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimRedeployTest(SimUsersBase):
     """The safety checks that each need another deploy, on the everyday cluster: a missing certificate issued
     again, a drained node as a warning only, a deploy by an administrator's forwarded key, the stop with no key
