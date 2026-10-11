@@ -23,6 +23,9 @@
     checksum: "sha256:{{ nanohpc.metrics.node_exporter.sha256[metrics_arch] }}"
     mode: "0644"
   register: node_exporter_download
+  until: node_exporter_download is succeeded
+  retries: 3
+  delay: 5
 
 - name: Unpack node_exporter (owned by root, whatever the archive says)
   ansible.builtin.unarchive:
