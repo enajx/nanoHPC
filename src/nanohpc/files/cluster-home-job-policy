@@ -19,9 +19,11 @@ import os
 import re
 import subprocess
 import tempfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+UTC = timezone.utc  # noqa: UP017 (datetime.UTC needs Python 3.11; Ubuntu 22.04 has 3.10)
 
 
 def save(path: Path, state: dict[str, Any]) -> None:
