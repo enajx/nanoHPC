@@ -46,7 +46,7 @@ Requires [Lima](https://lima-vm.io) (`brew install lima` on macOS). Each test cl
 | --- | --- |
 | `tests/sim/everyday.yml` | [examples/cluster.yml](../examples/cluster.yml) (at the repo root): `/home` on the front node, backup to the storage machine |
 | `tests/sim/config-redeploy.yml` | [tests/sim/cluster-small.yml](../tests/sim/cluster-small.yml) (at the repo root): three Ubuntu 24.04 machines for a full deploy after a partition change while a job runs |
-| `tests/sim/x86-build.yml` | Two Ubuntu 24.04 machines for the manual Linux x86 Slurm build and job check |
+| `tests/sim/x86-build.yml` | Two Ubuntu 24.04 machines for the manual Linux x86 Slurm build, job, and deployed website check |
 | `tests/sim/home-on-storage.yml` | `tests/sim/cluster-home-on-storage.yml`: `/home` on the storage machine, no backup |
 | `tests/sim/home-automount.yml` | Ubuntu 24.04 front/home server and two clients for the NFS automount outage test |
 | `tests/sim/home-automount-storage.yml` | Ubuntu 24.04 front, compute, and separate `/home` server for reboot and reconnect checks |
@@ -177,8 +177,8 @@ Not covered: the NVIDIA driver, CUDA, and binding a job to a specific GPU. These
 
 ## Linux host: GitHub Actions
 
-The workflow [sim-linux.yml](../.github/workflows/sim-linux.yml) (at the repo root) runs the unit tests and two real-VM tests on GitHub's Linux x86 runner, which has KVM. It runs only when started by hand (`gh workflow run sim-linux.yml`), because free Actions minutes are limited: run it when the Linux check is needed, for example before a release, not on every push. The first VM test checks `nanohpc sim up/down`. The second deploys Slurm from source on a two-machine Ubuntu 24.04 cluster, checks the installed version on both machines, and waits for a batch job on the compute VM to finish. Its VMs request 4 GB together. The repository is private, so the runner has 2 CPUs and about 7 GB of memory, and the run uses Actions minutes.
+The workflow [sim-linux.yml](../.github/workflows/sim-linux.yml) (at the repo root) runs the unit tests and two real-VM tests on GitHub's Linux x86 runner, which has KVM. It runs only when started by hand (`gh workflow run sim-linux.yml`) because the VM deploy is slow. The first VM test checks `nanohpc sim up/down`. The second deploys a complete two-machine Ubuntu 24.04 Slurm cluster from empty VMs, checks Slurm's x86 build, a completed batch job, a running job in the status snapshot, and that job on the deployed website through HTTPS and a real browser. Its VMs request 4 GB together. The public repository's standard `ubuntu-24.04` runner has 4 CPUs and 16 GB of memory ([GitHub runner specifications](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)).
 
 ## CPU types
 
-The Mac makes ARM64 VMs. Most lab machines are x86. nanoHPC builds Slurm from source for each CPU type. The manual Linux workflow checks an x86 Slurm deploy and batch job. Before a release, the full setup is also run on x86 machines (a Linux host with Lima, or cloud VMs), then once on a real GPU machine for the driver and CUDA.
+The Mac makes ARM64 VMs. Most lab machines are x86. nanoHPC builds Slurm from source for each CPU type. The manual Linux workflow checks a complete x86 deploy, batch job, and live website on Lima VMs. A real GPU machine is still needed to check the NVIDIA driver and CUDA.

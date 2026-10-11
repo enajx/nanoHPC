@@ -1179,13 +1179,13 @@ curl -fsS --cacert /tmp/new-website-ca.pem \\
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimSmallSlurmDeployTest(SimUsersBase):
-    """Deploy two fresh VMs and run a Slurm job, sized for the manual Linux x86 runner."""
+    """Deploy two fresh VMs, run a job, and check the deployed website on the Linux x86 runner."""
 
     sim = SIM / "x86-build.yml"
     state = ROOT / ".nanohpc-sim" / "x86-build"
 
     def test_slurm_build_and_job(self) -> None:
-        self.up_with_test_key()
+        _, config, _ = self.up_with_test_key()
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assertEqual(result.returncode, 0, self.failure(result))
         self.assertIn("Dry run passed: applying the changes.", result.stdout)
@@ -1195,6 +1195,28 @@ class SimSmallSlurmDeployTest(SimUsersBase):
             "cd /tmp && sudo -u alice sbatch --parsable --wait -o /dev/null -p main -w cpu1 --wrap hostname"
         ).strip()
         self.assertEqual(self.finished_job(job), ("COMPLETED", "cpu1"))
+        running_job = self.on_front(
+            "cd /tmp && sudo -u alice sbatch --parsable -p main -w cpu1 -t 20 -o /dev/null --wrap 'sleep 900'"
+        ).strip()
+        self.addCleanup(self.ssh, "front", f"sudo scancel {running_job}")
+        for _ in range(30):
+            running = self.on_front(f"squeue -h -j {running_job} -o '%T %N'").strip()
+            if running == "RUNNING cpu1":
+                break
+            time.sleep(2)
+        self.assertEqual(running, "RUNNING cpu1")
+        for _ in range(20):
+            status = json.loads(self.on_front("cat /var/lib/nanohpc/monitor/status.json"))
+            shown = next((item for item in status["jobs"] if str(item["id"]) == running_job), None)
+            if shown is not None and (shown["state"], shown["node"]) == ("RUNNING", "cpu1"):
+                break
+            time.sleep(6)
+        self.assertIsNotNone(shown, f"job {running_job} is missing from the status snapshot")
+        assert shown is not None
+        self.assertEqual((shown["state"], shown["node"]), ("RUNNING", "cpu1"))
+        website = config["cluster"]["website"]
+        path = website.get("path", "/cluster/").rstrip("/") + "/"
+        self.browser_check(website["hostname"], path, (running_job, "cpu1"))
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
