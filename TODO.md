@@ -151,7 +151,7 @@ flowchart LR
 - [x] Machines keep root SSH when the `/home` server is down and reconnect shared `/home` on first use after it returns. See [DONE.md](md/DONE.md).
 - [x] After an NFS `/home` outage, Ubuntu auxiliary services such as `polkit` and `systemd-timedated` recover from failed starts when storage returns. See [DONE.md](md/DONE.md).
 - [x] A push to the configuration repository during a manual deploy's real run cannot start an overlapping automatic deploy through the GitHub webhook. See [DONE.md](md/DONE.md).
-- [ ] Website follow-ups: the printed forwarding rules are tried with real nginx, Apache, and Caddy (with `forwarded_by`); switching between certificate types, hostnames, paths, and build modes is checked on the simulated cluster; nginx starts on machines with IPv6 turned off.
+- [x] Website forwarding, certificate and build switches, and IPv4-only nginx startup are checked on the simulated cluster. See [DONE.md](md/DONE.md).
 
 ### Backup, alerts, and auto-deploy
 

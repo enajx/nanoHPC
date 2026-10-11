@@ -11,13 +11,16 @@ import jinja2
 TEMPLATE = Path(__file__).resolve().parents[1] / "src/nanohpc/ansible/roles/website/templates/website.conf.j2"
 
 
-def render(website: dict[str, Any], certificate: str | None) -> str:
+def render(website: dict[str, Any], certificate: str | None, ipv6_available: bool) -> str:
     """Render the template with Ansible's regex_escape filter (re.escape)."""
     environment = jinja2.Environment(trim_blocks=True, undefined=jinja2.StrictUndefined)
     environment.filters["regex_escape"] = re.escape
     template = environment.from_string(TEMPLATE.read_text())
     return template.render(
-        website=website, tls_certificate=certificate, tls_certificate_key=None if certificate is None else "/k.pem"
+        website=website,
+        tls_certificate=certificate,
+        tls_certificate_key=None if certificate is None else "/k.pem",
+        website_ipv6_available={"rc": 0 if ipv6_available else 1},
     )
 
 
@@ -38,8 +41,18 @@ def website_of(changes: dict[str, Any]) -> dict[str, Any]:
 class WebsiteNginxTest(unittest.TestCase):
     """Routes, access limits, and the path, as written into nginx's configuration."""
 
+    def test_ipv6_listeners_follow_host_support(self) -> None:
+        """A host without IPv6 still listens on IPv4 for HTTP and HTTPS."""
+        for available in (True, False):
+            with self.subTest(ipv6_available=available):
+                config = render(website_of({}), "/c.pem", ipv6_available=available)
+                self.assertIn("listen 80 default_server;", config)
+                self.assertIn("listen 443 ssl default_server;", config)
+                self.assertEqual("listen [::]:80 default_server;" in config, available)
+                self.assertEqual("listen [::]:443 ssl default_server;" in config, available)
+
     def test_default_site(self) -> None:
-        text = render(website_of({}), "/c.pem")
+        text = render(website_of({}), "/c.pem", True)
         self.assertIn("return 301 https://cluster.example.org$request_uri;", text)
         self.assertIn("location ^~ /cluster/ {", text)
         self.assertIn("alias /srv/nanohpc-web/current/;", text)
@@ -61,12 +74,14 @@ class WebsiteNginxTest(unittest.TestCase):
         self.assertNotIn("allow 127.0.0.1;", text)
 
     def test_before_the_certificate_exists_only_port_80(self) -> None:
-        text = render(website_of({}), None)
+        text = render(website_of({}), None, True)
         self.assertIn("/.well-known/acme-challenge/", text)
         self.assertNotIn("listen 443", text)
 
     def test_allow_list_and_forwarding(self) -> None:
-        text = render(website_of({"allow": ["10.0.0.0/8", "192.168.1.7"], "forwarded_by": "203.0.113.5"}), "/c.pem")
+        text = render(
+            website_of({"allow": ["10.0.0.0/8", "192.168.1.7"], "forwarded_by": "203.0.113.5"}), "/c.pem", True
+        )
         self.assertIn("set_real_ip_from 203.0.113.5;\n    real_ip_header X-Forwarded-For;", text)
         # Once for the whole site, and again inside each Grafana route (which otherwise denies everything);
         # the front node itself always, for its own checks.
@@ -80,7 +95,7 @@ class WebsiteNginxTest(unittest.TestCase):
 
     def test_machine_labels_have_one_read_only_grafana_route(self) -> None:
         """The dropdown may read machine names, without exposing other Prometheus labels."""
-        text = render(website_of({}), "/c.pem")
+        text = render(website_of({}), "/c.pem", True)
         route = text.split(
             "location = /cluster/grafana/api/datasources/uid/cluster-detail/resources/api/v1/label/machine/values {"
         )[1].split("\n        }")[0]
@@ -91,15 +106,15 @@ class WebsiteNginxTest(unittest.TestCase):
 
     def test_deploy_hook_route(self) -> None:
         """With the webhook on, GitHub (from anywhere) may POST to <path>deploy-hook, and nothing else there."""
-        self.assertNotIn("deploy-hook", render(website_of({}), "/c.pem"))
-        text = render(website_of({"deploy_hook": True, "allow": ["10.0.0.0/8"]}), "/c.pem")
+        self.assertNotIn("deploy-hook", render(website_of({}), "/c.pem", True))
+        text = render(website_of({"deploy_hook": True, "allow": ["10.0.0.0/8"]}), "/c.pem", True)
         route = text.split("location = /cluster/deploy-hook {")[1].split("\n    }")[0]
         self.assertIn("allow all;", route)
         self.assertIn("proxy_pass http://127.0.0.1:9099;", route)
         self.assertIn("limit_except POST { deny all; }", route)
 
     def test_whole_hostname_and_logo(self) -> None:
-        text = render(website_of({"path": "/", "logo": {"source": "/x/l.svg", "name": "logo.svg"}}), "/c.pem")
+        text = render(website_of({"path": "/", "logo": {"source": "/x/l.svg", "name": "logo.svg"}}), "/c.pem", True)
         self.assertIn("location ^~ / {", text)
         self.assertIn("location = /logo.svg {", text)
         self.assertNotIn("return 404", text)
