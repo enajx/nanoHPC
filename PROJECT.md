@@ -114,6 +114,7 @@ flowchart LR
 
 - The design decisions were agreed on 2026-09-30 ([plan-port.md](md/plan-port.md)).
 - Built: the `cluster.yml` format ([examples/cluster.yml](examples/cluster.yml), [examples/minimal.yml](examples/minimal.yml)) and `nanohpc validate`, which checks a configuration and reports every error with its field path (`src/nanohpc/config.py`). Tests: `uv run python -m unittest discover -s tests`.
+- Checked: the built wheel installs with `uv tool install`; the installed command runs outside the checkout and reaches Ubuntu 24.04 machines over SSH. See [DONE.md](md/DONE.md).
 - Built: the simulated test cluster, `nanohpc sim up/down` with Lima VMs ([testing.md](md/testing.md)). Checked on macOS (Apple Silicon) with the everyday, home-on-storage, and 20-node clusters, and on a Linux x86 host with the everyday cluster (GitHub Actions, run by hand only).
 - Checked: a manual GitHub Actions run built and deployed Slurm 26.05.4 on two Ubuntu 24.04 x86_64 VMs, then completed a batch job on the compute VM. See [testing.md](md/testing.md) and [DONE.md](md/DONE.md).
 - Built: `nanohpc deploy`: Slurm, users, SSH access, sudo by forwarded key, and Munge (M3a), checked end to end on the simulated cluster (Ubuntu 24.04, ARM64). See [DONE.md](md/DONE.md).
