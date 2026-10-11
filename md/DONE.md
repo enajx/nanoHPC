@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-11: Install the command with uv
+
+- Built the project wheel and installed it with `uv tool install` into an isolated tool directory. From outside the checkout, the installed `nanohpc` command reported its version and validated `examples/minimal.yml`.
+- The installed command ran `nanohpc check` over SSH against two fresh Ubuntu 24.04 VMs. SSH was `ok` for both machines; the check reported their expected undeployed state. The wheel contains the Ansible playbook, helper commands, and website files used by deploy.
+- Files verified: `pyproject.toml`, `src/nanohpc/cli.py`, and package resources under `src/nanohpc/`. No code change was needed.
+
 ## 2026-10-11: Website forwarding and configuration switches
 
 - The printed forwarding rules now work through real nginx, Apache, and Caddy with `forwarded_by`: allowed visitors reach the site, denied visitors receive 403, and the bare path redirects with 301. Apache accepts a verified certificate chain beyond its default depth; Caddy's redirect is explicitly permanent.

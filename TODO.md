@@ -166,7 +166,7 @@ flowchart LR
 
 ### Commands
 
-- [ ] `nanohpc` is installed with `uv tool install` and runs from any machine with SSH access to the cluster.
+- [x] `nanohpc` installs with `uv tool install` and runs from an SSH-capable administrator machine. See [DONE.md](md/DONE.md).
 - [x] Every deploy runs a read-only dry run first (Ansible check mode on every machine; it changes nothing except refreshing apt's package lists) and continues to the real run on its own. Machines whose dry run failed are left out of the real run, unchanged, and listed at the end with what failed; the deploy then exits with an error, so an automatic deploy records a failure and alerts. If the front node or the home machine fails its dry run, nothing is deployed. Every role works in check mode (a first deploy of a new machine can only be partly previewed).
 - [x] `nanohpc init` is a full-screen terminal wizard (Textual) that writes a whole `cluster.yml` with simple defaults, or opens an existing one to change it, and probes the machines over SSH for CPUs, memory, GPU type and count, disks, and Ubuntu version. Its steps: machines, storage, users, partitions and policy, website, extras, review.
 - [x] `SETUP-for-AGENTS.md` lists the setup steps for agents, matching the wizard's (agents write `cluster.yml` from the examples); PROJECT.md links to it, and the wizard's footer points to it for an installation by an AI agent.
