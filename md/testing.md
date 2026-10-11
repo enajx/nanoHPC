@@ -45,6 +45,7 @@ Requires [Lima](https://lima-vm.io) (`brew install lima` on macOS). Each test cl
 | Sim file | Cluster |
 | --- | --- |
 | `tests/sim/everyday.yml` | [examples/cluster.yml](../examples/cluster.yml) (at the repo root): `/home` on the front node, backup to the storage machine |
+| `tests/sim/config-redeploy.yml` | [tests/sim/cluster-small.yml](../tests/sim/cluster-small.yml) (at the repo root): three Ubuntu 24.04 machines for a full deploy after a partition change while a job runs |
 | `tests/sim/x86-build.yml` | Two Ubuntu 24.04 machines for the manual Linux x86 Slurm build and job check |
 | `tests/sim/home-on-storage.yml` | `tests/sim/cluster-home-on-storage.yml`: `/home` on the storage machine, no backup |
 | `tests/sim/home-automount.yml` | Ubuntu 24.04 front/home server and two clients for the NFS automount outage test |
@@ -92,6 +93,7 @@ Run them one at a time on a laptop: with three test clusters up at once (12 VMs 
 
 Which ones to run (agreed 2026-10-03), on Ubuntu 24.04 while developing:
 - The everyday test (`SimDeployTest`) and the test of the feature being built, once from a new cluster at the end of each milestone.
+- `SimConfigRedeployTest` after deploy or Slurm configuration changes. It changes a partition limit with a batch job running, checks the exact changed tasks and protected files, then verifies another job and a no-change redeploy.
 - `SimHomeOnStorageTest` and `SimHomeBindRemountTest` when storage mount tasks change; `SimHomeOnStorageTest` also when accounts or backup change. `SimReleaseTest` with `NANOHPC_SIM_FILE=variations` (the less common settings) when the website or its certificates change; `SimAlertsTest` (stale GPU readings and Slack alerts, with up to half an hour of waiting) when alerts or metrics change. `SimRedeployTest` (the safety checks that each need another deploy: a missing certificate issued again, a drained node, an administrator's forwarded key, the stop with no key, administrators' root login (also with the home machine's NFS server stopped), the dry run's stop on a key in `/root/.ssh` that would stop working, a removed user, a UID conflict that leaves that machine out of the deploy) when accounts, SSH, sudo, preflight, `deploy.py`, or the certificates change.
 - `SimRebootTest` and `SimRootHomeRebootTest` when boot mounts or quotas change. They restart VMs one at a time after deploy and check the live mounts, quotas, and files after boot.
 - `SimMissingHomeDiskTest` when the home server's boot mount or NFS dependency changes. It boots the storage VM without its separate `/home` disk, checks root SSH and the absence of a live NFS `/home` export, then restores the disk and checks the original data through an NFS client.

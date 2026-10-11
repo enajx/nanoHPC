@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-11: Changed configuration redeploy verified
+
+- `SimConfigRedeployTest` deployed a three-machine Ubuntu 24.04 cluster, kept a batch job running on a compute node, changed one partition time limit in `cluster.yml`, and ran a full deploy. Only the expected Slurm configuration, controller, and compute restart tasks changed. SSH, Munge, and mount files stayed the same; the running job continued, another job completed, and a second full deploy made no changes.
+- The test passed from fresh VMs. A separate agent reviewed the test. Files: `tests/test_sim.py`, `tests/sim/config-redeploy.yml`, `md/testing.md`.
+
 ## 2026-10-11: Fresh cluster deploy verified
 
 - `nanohpc deploy` set up the everyday six-machine cluster from fresh Ubuntu 24.04 VMs. `SimDeployTest` passed through account and SSH access, Munge, Slurm and jobs, `/home` and backup, metrics and Grafana, HTTPS and browser checks, a no-change redeploy, a changed-configuration dry run, and `nanohpc check`.
