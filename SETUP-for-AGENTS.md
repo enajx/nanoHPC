@@ -1,5 +1,7 @@
 # Setting up a cluster with nanoHPC: steps for AI agents
 
+Administrators can follow the [administrator guide](md/administrator-guide.md) for requirements, setup, adding nodes, and common problems.
+
 People set up a cluster with the wizard, `nanohpc init`. An agent follows the same steps here and writes
 `cluster.yml` itself, from [examples/cluster.yml](examples/cluster.yml) (every setting, with comments) or
 [examples/minimal.yml](examples/minimal.yml). Read the code when something here is not enough. Check the

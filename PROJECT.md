@@ -160,7 +160,7 @@ flowchart LR
 - Next: complete the remaining v0.1 release checks and documentation ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - A fresh six-machine simulated setup passed from an empty state through a running `cpu1` job visible on the deployed website. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
-- Remaining work before release is tracked in [TODO.md](TODO.md), including real x86 and GPU checks and administrator documentation.
+- The [administrator guide](md/administrator-guide.md) covers requirements, configuration, first deploy, adding nodes, and common problems. Remaining work before release is tracked in [TODO.md](TODO.md), including real x86 and GPU checks.
 
 ## Notes
 
@@ -172,4 +172,4 @@ flowchart LR
   - Moving the production cluster from SLURM-REAL to nanoHPC: maybe later, not planned.
 - **Out of scope, in any form**: anything related to the forum software that shared the source deployment's front node. That was an accident of that site. The website runs on its own web server. Slurm-web (a job browser in the source deployment) is not carried over.
 - **Decisions**: the design decisions for the port are recorded in [plan-port.md](md/plan-port.md). Their outcome is reflected in the sections above.
-- **Setting up a cluster with nanoHPC** (rather than developing nanoHPC): follow [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md), the same steps as the setup wizard, `nanohpc init`.
+- **Setting up a cluster with nanoHPC** (rather than developing nanoHPC): use the [administrator guide](md/administrator-guide.md). For an agent-led setup, follow [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md), the same steps as the setup wizard, `nanohpc init`.
