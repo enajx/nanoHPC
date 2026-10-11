@@ -2,6 +2,10 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-11: MIT license
+
+- Added the MIT license with a project-level `nanoHPC contributors` copyright notice. The source distribution and wheel both include the complete license; the wheel records it in package metadata. Files: `LICENSE`, `pyproject.toml`.
+
 ## 2026-10-11: full x86 setup through the deployed website
 
 - The manual Linux workflow passed on GitHub's native x86 Ubuntu 24.04 runner. `SimSmallSlurmDeployTest` started two empty Lima VMs, deployed Slurm, checked its x86 build and a completed compute job, then confirmed a running `cpu1` job in Slurm, the status snapshot, and the deployed website through HTTPS and Chromium. The x86 test passed in 1,733 seconds; the workflow also passed 519 Python tests and the Lima up/down test. [Workflow run](https://github.com/enajx/nanoHPC/actions/runs/38172489236).
