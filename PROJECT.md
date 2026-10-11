@@ -30,8 +30,8 @@ The work moves from the source deployment to a released tool in phases. Task-lev
 1. **Define**: agree on the supported setups and the open design decisions. Done 2026-09-30.
 2. **Configuration**: the `cluster.yml` format, its validation, and example files. Done 2026-09-30.
 3. **Simulated cluster**: a test cluster of Lima VMs on macOS and Linux, so nanoHPC is tested without touching a real cluster. Done 2026-09-30.
-4. **Port and bootstrap**: bring Slurm, accounts, storage, monitoring, website, and backup over from the source deployment, made generic. One command sets up a new cluster from `cluster.yml`.
-5. **Wizard and operate**: a wizard writes `cluster.yml` by asking questions and probing the machines. Add a node and redeploy from the same file.
+4. **Port and bootstrap**: bring Slurm, accounts, storage, monitoring, website, and backup over from the source deployment, made generic. One command sets up a new cluster from `cluster.yml`. Done 2026-10-11.
+5. **Wizard and operate**: a wizard writes `cluster.yml` by asking questions and probing the machines. Add a node and redeploy from the same file. Done 2026-10-11.
 6. **Release v0.1**: tested on the simulated cluster and on real x86 machines, documented, published.
 7. **Later**: monitoring on a cluster with existing Slurm, LDAP users, AMD GPUs, restic and S3 backups, non-Ubuntu systems, other extras.
 
@@ -43,9 +43,9 @@ flowchart LR
 
   P1[Define scope and decisions]:::done --> P2[Configuration format]:::done
   P2 --> P3[Simulated cluster]:::done
-  P3 --> P4[Port and bootstrap]:::wip
+  P3 --> P4[Port and bootstrap]:::done
   P3 --> MON[Monitor without Slurm]:::done
-  P4 --> P5[Wizard and operate]:::wip
+  P4 --> P5[Wizard and operate]:::done
   P5 --> P6[Release v0.1]:::queued
   MON --> P6
   P6 --> P7[Later: existing Slurm, LDAP, AMD, backups, more OS]:::queued
@@ -139,6 +139,7 @@ flowchart LR
 - Built: the setup wizard (M7): `nanohpc init`, a full-screen terminal app that probes the machines and writes or edits `cluster.yml`; `nanohpc fix-uid`, which rechecks its preview and changes ownership only on the listed local files; [SETUP-for-AGENTS.md](SETUP-for-AGENTS.md) for agents.
 - Built: a dry run before every deploy (M8a): every deploy, manual or automatic, previews the changes on every machine first; machines whose dry run fails are left out (nothing is deployed when the front node or the home machine fails).
 - Built: partial deploys (M8b): `nanohpc deploy --only users|policy|partitions|node NAME` runs one part, with the same checks and dry run first.
+- Checked: a full deploy after changing a partition time limit updated only the expected Slurm tasks while a batch job kept running; another job completed, protected SSH, Munge, and mount files stayed the same, and a second full deploy made no changes. The three-machine Ubuntu 24.04 VM test passed. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
 - Built: `nanohpc check` (M8b): a read-only report on every machine against `cluster.yml` (SSH, health, users, mounts, GPUs, Slurm, deployed version), problems first.
 - Built: `nanohpc check --before-restart`: a read-only pass/fail report for every machine, including the front node, on fstab boot mounts, GRUB's next kernel and NVIDIA module, saved versus running Netplan or persistent NetworkManager settings, and automatic update restarts. Unverifiable results fail. See [DONE.md](md/DONE.md).
 - Built: `nanohpc restart CLUSTER_YML MACHINE --confirm MACHINE` for one compute machine: it drains the node, waits for allocated jobs, checks saved boot settings, reboots, checks fresh root and invoking administrator logins, the kernel, GPUs, `/home`, `/scratch`, and `slurmd`, then releases the node after a reserved Slurm test job passes. Failures leave it drained; front-node restarts stay manual. Ubuntu 24.04 VM tests covered an unsafe fstab refusal and a real job followed by reboot and a Slurm test job. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
@@ -157,7 +158,7 @@ flowchart LR
 - Checked: after an Ubuntu 24.04 kernel update and reboot, the home server still mounts `/home` with active quotas; a deploy works both before and after the update. See [testing.md](md/testing.md).
 - Next: v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
-- Remaining work before release is tracked in [TODO.md](TODO.md), including applying a changed configuration without disturbing a running cluster, and wider VM validation.
+- Remaining work before release is tracked in [TODO.md](TODO.md), including wider VM validation and administrator documentation.
 
 ## Notes
 
