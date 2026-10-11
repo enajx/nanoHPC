@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-11: Ubuntu release VM checks
+
+- `SimClusterTest` and `SimReleaseTest` passed from fresh VMs on Ubuntu 22.04 and 26.04. They checked the core deploy, Slurm jobs, shared `/home`, scratch cleanup under each system Python, root and administrator access, and repeat deploys. The 22.04 test also checked migration of Apptainer's previous global APT key and source entry to a scoped keyring and source.
+- Nine focused Ubuntu 24.04 VM suites passed: cluster, monitor deploy, website follow-ups, small Slurm deploy, user check, full deploy, configuration redeploy, redeploy, and partial deploy. The partial-deploy test first failed because adding a machine shifted the nightly speed-test timer on existing nodes. A hostname-based schedule made its final full deploy unchanged. A separate regression test checks stable schedules and distinct times for the known node names. The hash spreads timers but can give other names the same minute. A transient node exporter download failure led to a three-attempt retry.
+- The full set of Ubuntu 24.04 VM suites was not run. The user chose focused checks after the first nine suites because the full matrix takes several hours. Files: `src/nanohpc/ansible/roles/{apptainer,machine_metrics,node_metrics}/`, `src/nanohpc/files/{cluster-home-job-policy,scratch-job-cleanup,apptainer-ppa.asc}`, `tests/test_{sim,speed_test}.py`, `md/testing.md`.
+
 ## 2026-10-11: Changed configuration redeploy verified
 
 - `SimConfigRedeployTest` deployed a three-machine Ubuntu 24.04 cluster, kept a batch job running on a compute node, changed one partition time limit in `cluster.yml`, and ran a full deploy. Only the expected Slurm configuration, controller, and compute restart tasks changed. SSH, Munge, and mount files stayed the same; the running job continued, another job completed, and a second full deploy made no changes.
