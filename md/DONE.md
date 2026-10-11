@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-11: Fresh cluster deploy verified
+
+- `nanohpc deploy` set up the everyday six-machine cluster from fresh Ubuntu 24.04 VMs. `SimDeployTest` passed through account and SSH access, Munge, Slurm and jobs, `/home` and backup, metrics and Grafana, HTTPS and browser checks, a no-change redeploy, a changed-configuration dry run, and `nanohpc check`.
+- A dry run that adds a user now skips the quota-record assertion for that not-yet-created account. A real deploy still requires the account's quota record. The VM test fills Grafana's machine variable before querying Prometheus, and its file-state comparison excludes the private home-policy status rewritten by the background timer. A separate agent reviewed both changes.
+- Files: `src/nanohpc/ansible/roles/home_server/tasks/users.yml`, `tests/test_sim.py`.
+
 ## 2026-10-11: Install the command with uv
 
 - Built the project wheel and installed it with `uv tool install` into an isolated tool directory. From outside the checkout, the installed `nanohpc` command reported its version and validated `examples/minimal.yml`.

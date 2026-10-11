@@ -174,7 +174,7 @@ flowchart LR
 - [x] The wizard and the docs explain the three kinds of storage (home: small, safe, backed up; shared scratch: large, fast, cleaned by age; local scratch: per machine, per job), recommend a faster network (10 GbE or more) before adding shared storage, and suggest moving `/home` off the front node to its own storage machine (or a NAS) as the cluster grows.
 - [x] The wizard asks for the website's hostname, path, HTTPS choice, and who can open it, and recommends (says it is not required) a private network such as WireGuard or Tailscale for security and simpler administrator access.
 - [x] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid` (built in M7: after the administrator confirms and a read-only check, it renumbers that user on that machine). The deploy's stop on a UID conflict stays as a safety net.
-- [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
+- [x] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below. See [DONE.md](md/DONE.md).
 - [ ] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster.
 - [x] Partial deploys instead of separate commands (agreed 2026-10-03): `nanohpc deploy --only users|policy|partitions` or `--only node NAME`, with the same checks and dry run (see [DONE.md](md/DONE.md)).
 - [x] `nanohpc check` reports, without changing anything, every machine against `cluster.yml`: problems first, non-zero exit code on problems (see [DONE.md](md/DONE.md)).

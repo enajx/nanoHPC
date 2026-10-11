@@ -811,11 +811,12 @@ class SimUsersBase(unittest.TestCase):
     def machine_state(self, machine: str) -> str:
         """Return what a deploy could change on a machine: the files (with checksums) in /etc, /srv, /opt,
         /usr/local, and /var/lib/nanohpc, without the folders that change by themselves (metrics, the status
-        snapshot, the Prometheus, Grafana, and Alertmanager data, the scratch image, the backup copy); unit files
-        and running services; mounts; and on the front node, quota limits and Slurm's QoS and associations."""
+        snapshot, private home-policy status, the Prometheus, Grafana, and Alertmanager data, the scratch image,
+        the backup copy); unit files and running services; mounts; and on the front node, quota limits and Slurm's
+        QoS and associations."""
         script = textwrap.dedent("""
             set -eu
-            skip='/var/lib/nanohpc/(prometheus|history|grafana|alertmanager|metrics-textfile|monitor|monitor-textfile|scratch\\.img)(/|$)|^/srv/nanohpc-backup(/|$)'
+            skip='/var/lib/nanohpc/(prometheus|history|grafana|alertmanager|metrics-textfile|monitor|monitor-textfile|home-policy|scratch\\.img)(/|$)|^/srv/nanohpc-backup(/|$)'
             find /etc /srv /opt /usr/local /var/lib/nanohpc -xdev 2>/dev/null | grep -Ev "$skip" | sort | tr '\\n' '\\0' \\
               | xargs -0 stat -c '%n %a %U %G %s %Y'
             find /etc /srv /opt /usr/local /var/lib/nanohpc -xdev -type f 2>/dev/null | grep -Ev "$skip" | sort | tr '\\n' '\\0' \\
@@ -1478,7 +1479,7 @@ class SimDeployTest(SimUsersBase):
             before = self.on_front(serial)
             renew = self.ssh(
                 "front",
-                "sudo REQUESTS_CA_BUNDLE=/etc/nanohpc/test-acme/ca.pem /opt/nanohpc-certbot/current/bin/certbot renew --force-renewal "
+                "sudo REQUESTS_CA_BUNDLE=/etc/nanohpc/test-acme/ca.pem /opt/nanohpc-certbot/current/bin/certbot renew --force-renewal --no-random-sleep-on-renew "
                 "--non-interactive --config-dir /etc/nanohpc/website/letsencrypt --work-dir /var/lib/nanohpc/certbot "
                 "--logs-dir /var/log/nanohpc-certbot --deploy-hook /usr/local/sbin/nanohpc-website-reload",
             )
@@ -1525,7 +1526,13 @@ class SimDeployTest(SimUsersBase):
             for panel in panels:
                 for target in panel.get("targets", []):
                     if target.get("expr", "").startswith(("100 * (1 - avg", "node_")):
-                        shown = {series["metric"]["machine"] for series in query(target["expr"])}
+                        # Grafana fills this variable before sending the query to Prometheus.
+                        expression = target["expr"].replace("$machine", ".+")
+                        for _ in range(5):
+                            shown = {series["metric"]["machine"] for series in query(expression)}
+                            if shown == set(machines):
+                                break
+                            time.sleep(15)
                         self.assertEqual(shown, set(machines), f"{panel['title']}: {target['expr']}")
             front = machines["front"]["address"]
             self.assertNotEqual(self.ssh("gpu4", f"curl -s --max-time 5 http://{front}:3000/").returncode, 0)
