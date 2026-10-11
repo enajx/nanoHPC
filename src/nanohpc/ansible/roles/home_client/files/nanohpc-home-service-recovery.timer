@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for Ubuntu services blocked by a home outage (nanoHPC)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

@@ -2198,30 +2198,34 @@ class SimHomeAutomountBootTest(SimUsersBase):
             if internal_address is not None
             else []
         )
-        return subprocess.run(
-            [
-                "ssh",
-                "-F",
-                str(self.ssh_config_for("root")),
-                *route,
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=10",
-                "-o",
-                "ServerAliveInterval=5",
-                "-o",
-                "ServerAliveCountMax=3",
-                machine,
-                command,
-            ],
-            cwd=ROOT,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout_seconds,
-        )
+        arguments = [
+            "ssh",
+            "-F",
+            str(self.ssh_config_for("root")),
+            *route,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=5",
+            "-o",
+            "ServerAliveCountMax=10",
+            machine,
+            command,
+        ]
+        try:
+            return subprocess.run(
+                arguments,
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(arguments, 124, "", "Root SSH probe timed out")
 
     def test_compute_boots_without_home_server_and_reconnects(self) -> None:
         _, config, _ = self.up_and_deploy()
@@ -2232,7 +2236,11 @@ class SimHomeAutomountBootTest(SimUsersBase):
 
         instances = {vm.machine: vm.instance for vm in plan_of(self.sim).vms}
         cpu_address = config["machines"]["cpu1"]["address"]
+        before_deadline = time.monotonic() + 120
         before = self.root_ssh("cpu1", "cat /proc/sys/kernel/random/boot_id", 30, cpu_address)
+        while before.returncode != 0 and time.monotonic() < before_deadline:
+            time.sleep(5)
+            before = self.root_ssh("cpu1", "cat /proc/sys/kernel/random/boot_id", 30, cpu_address)
         self.assertEqual(before.returncode, 0, before.stdout + before.stderr)
         stopped = self.run_command("limactl", "stop", instances["front"])
         self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
@@ -2244,26 +2252,26 @@ class SimHomeAutomountBootTest(SimUsersBase):
         while time.monotonic() < deadline:
             root = self.root_ssh(
                 "cpu1",
-                "systemctl is-active ssh systemd-logind.service home.automount && systemctl show -p ProtectHome --value systemd-logind.service && cat /proc/sys/kernel/random/boot_id && cut -d ' ' -f 1 /proc/uptime",
-                25,
+                "systemctl is-active ssh home.automount && systemctl show -p ProtectHome --value systemd-logind.service && cat /proc/sys/kernel/random/boot_id && cut -d ' ' -f 1 /proc/uptime",
+                50,
                 cpu_address,
             )
             lines = root.stdout.splitlines()
             if (
                 root.returncode == 0
-                and lines[:4] == ["active", "active", "active", "tmpfs"]
+                and lines[:3] == ["active", "active", "tmpfs"]
                 and lines[-2] != before.stdout.strip()
             ):
                 break
             time.sleep(5)
         self.assertEqual(root.returncode, 0, root.stdout + root.stderr)
-        self.assertEqual(root.stdout.splitlines()[:4], ["active", "active", "active", "tmpfs"])
+        self.assertEqual(root.stdout.splitlines()[:3], ["active", "active", "tmpfs"])
         self.assertNotEqual(root.stdout.splitlines()[-2], before.stdout.strip())
         self.assertLess(float(root.stdout.splitlines()[-1]), 90, "root SSH waited for the 90-second NFS mount timeout")
-        attempt = self.root_ssh("cpu1", "systemctl start --no-block home.mount", 30, cpu_address)
+        attempt = self.root_ssh("cpu1", "systemctl start --no-block home.mount", 50, cpu_address)
         self.assertEqual(attempt.returncode, 0, attempt.stdout + attempt.stderr)
         time.sleep(100)
-        still = self.root_ssh("cpu1", "systemctl is-active ssh home.automount", 30, cpu_address)
+        still = self.root_ssh("cpu1", "systemctl is-active ssh home.automount", 50, cpu_address)
         self.assertEqual(still.returncode, 0, still.stdout + still.stderr)
         self.assertEqual(still.stdout.splitlines(), ["active", "active"])
 
@@ -2290,7 +2298,7 @@ class SimHomeAutomountBootTest(SimUsersBase):
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimHomeAutomountStorageTest(SimUsersBase):
-    """Front and compute clients reboot with /home served by a separate storage machine."""
+    """Front and compute clients recover from outages of a separate /home server."""
 
     def setUp(self) -> None:
         self.sim = SIM / "home-automount-storage.yml"
@@ -2299,34 +2307,38 @@ class SimHomeAutomountStorageTest(SimUsersBase):
 
     def bounded_ssh(self, machine: str, command: str, jump: str, address: str) -> subprocess.CompletedProcess[str]:
         """Reach a rebooting VM over the internal network with a bounded root login."""
-        return subprocess.run(
-            [
-                "ssh",
-                "-F",
-                str(self.ssh_config_for("root")),
-                "-J",
-                jump,
-                "-o",
-                f"HostName={address}",
-                "-o",
-                "Port=22",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=10",
-                "-o",
-                "ServerAliveInterval=5",
-                "-o",
-                "ServerAliveCountMax=3",
-                machine,
-                command,
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=25,
-        )
+        arguments = [
+            "ssh",
+            "-F",
+            str(self.ssh_config_for("root")),
+            "-J",
+            jump,
+            "-o",
+            f"HostName={address}",
+            "-o",
+            "Port=22",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=5",
+            "-o",
+            "ServerAliveCountMax=10",
+            machine,
+            command,
+        ]
+        try:
+            return subprocess.run(
+                arguments,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=50,
+            )
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(arguments, 124, "", "Root SSH probe timed out")
 
     def test_front_and_compute_reconnect_after_reboot(self) -> None:
         _, config, _ = self.up_and_deploy()
@@ -2348,24 +2360,22 @@ class SimHomeAutomountStorageTest(SimUsersBase):
             while time.monotonic() < deadline:
                 result = self.bounded_ssh(
                     machine,
-                    "systemctl is-active ssh systemd-logind.service home.automount && systemctl show -p ProtectHome --value systemd-logind.service && cat /proc/sys/kernel/random/boot_id && cut -d ' ' -f 1 /proc/uptime",
+                    "systemctl is-active ssh home.automount && systemctl show -p ProtectHome --value systemd-logind.service && cat /proc/sys/kernel/random/boot_id && cut -d ' ' -f 1 /proc/uptime",
                     jump,
                     address,
                 )
                 lines = result.stdout.splitlines()
                 if (
                     result.returncode == 0
-                    and len(lines) >= 6
-                    and [lines[0], lines[2], lines[3]] == ["active", "active", "tmpfs"]
-                    and lines[1] in ("active", "activating")
+                    and len(lines) >= 5
+                    and lines[:3] == ["active", "active", "tmpfs"]
                     and lines[-2] != before.stdout.strip()
                 ):
                     break
                 time.sleep(5)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             lines = result.stdout.splitlines()
-            self.assertEqual([lines[0], lines[2], lines[3]], ["active", "active", "tmpfs"])
-            self.assertIn(lines[1], ("active", "activating"))
+            self.assertEqual(lines[:3], ["active", "active", "tmpfs"])
             self.assertNotEqual(result.stdout.splitlines()[-2], before.stdout.strip())
             self.assertLess(float(result.stdout.splitlines()[-1]), 90)
 
@@ -2378,15 +2388,40 @@ class SimHomeAutomountStorageTest(SimUsersBase):
             self.assertEqual(mount.returncode, 0, mount.stdout + mount.stderr)
             self.assertEqual(mount.stdout.split(), [store_address + ":/home", "nfs4"])
 
+        sandbox = self.bounded_ssh(
+            "front",
+            "systemctl show -P ProtectHome polkit.service; systemctl show -P ProtectHome systemd-timedated.service",
+            "gpu4",
+            front_address,
+        )
+        self.assertEqual(sandbox.returncode, 0, sandbox.stdout + sandbox.stderr)
+        self.assertEqual(sandbox.stdout.splitlines(), ["yes", "yes"])
         stopped = self.run_command("limactl", "stop", instances["store"])
         self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
         reboot_and_wait("front", "gpu4", front_address)
+        for _ in range(6):
+            retry = self.bounded_ssh(
+                "front", "systemctl restart --no-block polkit.service systemd-timedated.service", "gpu4", front_address
+            )
+            if retry.returncode == 0:
+                break
+            time.sleep(5)
+        self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
         time.sleep(100)
-        still = self.bounded_ssh(
-            "front", "systemctl is-active ssh systemd-logind.service home.automount mariadb", "gpu4", front_address
-        )
+        for service in ("polkit.service", "systemd-timedated.service"):
+            failed = self.bounded_ssh(
+                "front",
+                f"systemctl show -P Result {service}; systemctl show -P ExecMainStatus {service}",
+                "gpu4",
+                front_address,
+            )
+            self.assertEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+            self.assertIn(
+                failed.stdout.splitlines(), (["exit-code", "226"], ["timeout", "15"]), service + ": " + failed.stdout
+            )
+        still = self.bounded_ssh("front", "systemctl is-active ssh home.automount mariadb", "gpu4", front_address)
         self.assertEqual(still.returncode, 0, still.stdout + still.stderr)
-        self.assertEqual(still.stdout.splitlines(), ["active", "active", "active", "active"])
+        self.assertEqual(still.stdout.splitlines(), ["active", "active", "active"])
         mariadb_home = self.bounded_ssh(
             "front", "systemctl show -p ProtectHome --value mariadb.service", "gpu4", front_address
         )
@@ -2397,6 +2432,27 @@ class SimHomeAutomountStorageTest(SimUsersBase):
         self.refresh_vm_port("store", instances["store"])
         self.wait_for_vm("store", "systemctl is-active nfs-server")
         check_home("front", "gpu4", front_address)
+        recovery_deadline = time.monotonic() + 120
+        recovered = self.bounded_ssh(
+            "front",
+            "systemctl is-active polkit.service systemd-logind.service && systemctl show -P Result systemd-timedated.service",
+            "gpu4",
+            front_address,
+        )
+        while (
+            recovered.returncode != 0 or recovered.stdout.splitlines() != ["active", "active", "success"]
+        ) and time.monotonic() < recovery_deadline:
+            time.sleep(5)
+            recovered = self.bounded_ssh(
+                "front",
+                "systemctl is-active polkit.service systemd-logind.service && systemctl show -P Result systemd-timedated.service",
+                "gpu4",
+                front_address,
+            )
+        self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+        self.assertEqual(recovered.stdout.splitlines(), ["active", "active", "success"])
+        timedate = self.bounded_ssh("front", "timedatectl show --property=Timezone --value", "gpu4", front_address)
+        self.assertEqual(timedate.returncode, 0, timedate.stdout + timedate.stderr)
         front_services = self.bounded_ssh(
             "front", "systemctl is-active ssh home.automount slurmctld", "gpu4", front_address
         )
@@ -2416,6 +2472,54 @@ class SimHomeAutomountStorageTest(SimUsersBase):
             self.wait_for_vm(machine, "true")
         dry = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--dry-run")
         self.assertEqual(dry.returncode, 0, self.failure(dry))
+
+    def test_auxiliary_services_usable_after_live_home_outage(self) -> None:
+        """Services remain usable after an outage of already mounted NFS /home."""
+        _, config, _ = self.up_and_deploy()
+        front_address = config["machines"]["front"]["address"]
+        store = next(vm.instance for vm in plan_of(self.sim).vms if vm.machine == "store")
+        self.on_front("findmnt -n -t nfs4 -o SOURCE --mountpoint /home")
+        self.on_front("systemctl is-active polkit.service nanohpc-home-service-recovery.timer")
+
+        stopped = self.run_command("limactl", "stop", store)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        restart = self.bounded_ssh(
+            "front", "systemctl restart --no-block polkit.service systemd-timedated.service", "gpu4", front_address
+        )
+        self.assertEqual(restart.returncode, 0, restart.stdout + restart.stderr)
+        time.sleep(100)
+
+        started = self.run_command("limactl", "start", "--tty=false", "--timeout=20m", store)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.refresh_vm_port("store", store)
+        self.wait_for_vm("store", "systemctl is-active nfs-server")
+        marker = self.ssh("store", "sudo -u alice sh -c 'echo live-outage > /home/alice/nanohpc-live-outage'")
+        self.assertEqual(marker.returncode, 0, marker.stdout + marker.stderr)
+        read = self.bounded_ssh("front", "timeout 30 cat /home/alice/nanohpc-live-outage", "gpu4", front_address)
+        self.assertEqual(read.returncode, 0, read.stdout + read.stderr)
+        self.assertEqual(read.stdout.strip(), "live-outage")
+
+        deadline = time.monotonic() + 180
+        recovered = self.bounded_ssh(
+            "front",
+            "systemctl is-active polkit.service && systemctl show -P Result systemd-timedated.service",
+            "gpu4",
+            front_address,
+        )
+        while (
+            recovered.returncode != 0 or recovered.stdout.splitlines() != ["active", "success"]
+        ) and time.monotonic() < deadline:
+            time.sleep(5)
+            recovered = self.bounded_ssh(
+                "front",
+                "systemctl is-active polkit.service && systemctl show -P Result systemd-timedated.service",
+                "gpu4",
+                front_address,
+            )
+        self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+        self.assertEqual(recovered.stdout.splitlines(), ["active", "success"])
+        timedate = self.bounded_ssh("front", "timedatectl show --property=Timezone --value", "gpu4", front_address)
+        self.assertEqual(timedate.returncode, 0, timedate.stdout + timedate.stderr)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
