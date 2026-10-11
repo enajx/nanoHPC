@@ -69,11 +69,12 @@
     group: root
     mode: "0644"
     content: |
+      {% set speed_test_minute = ((inventory_hostname | hash('sha256'))[-8:] | int(base=16)) % 240 %}
       [Unit]
       Description=Measure home and Internet speed each night (nanoHPC)
 
       [Timer]
-      OnCalendar=*-*-* {{ '%02d' | format((4 + (3 * groups['all'].index(inventory_hostname)) // 60) % 24) }}:{{ '%02d' | format((3 * groups['all'].index(inventory_hostname)) % 60) }}:00
+      OnCalendar=*-*-* {{ '%02d' | format(4 + speed_test_minute // 60) }}:{{ '%02d' | format(speed_test_minute % 60) }}:00
       AccuracySec=1s
       Unit=nanohpc-speed-test.service
 

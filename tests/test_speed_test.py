@@ -1,5 +1,6 @@
 """Run the installed speed-test command against local files and inspect its exporter output."""
 
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,36 @@ ROLE = Path(__file__).resolve().parents[1] / "src/nanohpc/ansible/roles/machine_
 
 class SpeedTestCommandTests(unittest.TestCase):
     """Check the real command entry point, without a remote download."""
+
+    def test_timer_time_survives_a_new_machine(self) -> None:
+        """Adding a node does not reschedule speed tests on existing nodes."""
+        tasks = yaml.safe_load(ROLE.read_text())
+        content = next(
+            task["ansible.builtin.copy"]["content"]
+            for task in tasks
+            if task["name"] == "Install the nightly speed-test timer"
+        )
+        environment = jinja2.Environment(trim_blocks=True, undefined=jinja2.StrictUndefined)
+        environment.filters["hash"] = lambda value, algorithm: hashlib.new(algorithm, value.encode()).hexdigest()
+        template = environment.from_string(content)
+        original = ["cpu1", "front", "gpu2", "gpu4", "store"]
+        expanded = ["cpu1", "front", "gpu2", "gpu4", "gpu4i", "store"]
+        for machine in original:
+            with self.subTest(machine):
+                before = template.render(inventory_hostname=machine, groups={"all": original})
+                after = template.render(inventory_hostname=machine, groups={"all": expanded})
+                self.assertEqual(before, after)
+
+        # Both names can occur in supported clusters and share the same /home link.
+        schedules = {
+            machine: next(
+                line
+                for line in template.render(inventory_hostname=machine, groups={"all": expanded}).splitlines()
+                if line.startswith("OnCalendar=")
+            )
+            for machine in [*expanded, "b200"]
+        }
+        self.assertEqual(len(set(schedules.values())), len(schedules), schedules)
 
     def test_systemd_service_has_separate_settings_for_each_role(self) -> None:
         """The rendered service keeps MemoryMax separate from its writable paths."""
