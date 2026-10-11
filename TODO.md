@@ -212,7 +212,7 @@ flowchart LR
 - [ ] Once nanoHPC is released and development slows down, bring the split-out real-VM tests (`SimRedeployTest`, `SimAlertsTest`, and the ones run only when relevant) back into every run, so users get proper tests when deploying on their systems.
 - [x] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website. See [DONE.md](md/DONE.md).
 - [ ] A full setup is tested on real x86 machines, and once on a real GPU machine for the NVIDIA driver and CUDA.
-- [ ] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option.
+- [x] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option. See [administrator-guide.md](md/administrator-guide.md).
 - [ ] The repository is published under the MIT license.
 - [ ] Once released: a "Buy me a coffee" link in the repository, for people who find nanoHPC useful.
 - [ ] A nice retro-style and/or ASCII animation of the project exists, to use as promo on LinkedIn when sharing the project in the open.

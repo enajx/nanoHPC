@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-11: administrator guide
+
+- Added an administrator guide for requirements, configuration, the first deploy, adding nodes, and common problems. It covers the first sudo password prompt, forwarded administrator keys for later sudo, root recovery keys, the front-node-only automatic deploy key, and optional `ssh-add -c` confirmation.
+- Checked the documented commands against the CLI help and deployment source, checked local Markdown links, and had a separate agent review behavior and coverage. Files: `md/administrator-guide.md`, `SETUP-for-AGENTS.md`.
+
 ## 2026-10-11: full simulated setup through a live website job
 
 - A fresh six-machine Ubuntu 24.04 simulated cluster deployed from an empty state. `SimDeployTest` submitted job 5 to `cpu1`, saw it running in Slurm and the 30-second status snapshot, and confirmed its job ID and node in the deployed Overview through HTTPS and a real browser. The test passed (one test in 2460 seconds).
