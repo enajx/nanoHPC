@@ -340,6 +340,38 @@
   changed_when: false
   when: home_needs_new_mount and not ansible_check_mode
 
+- name: Install the home service recovery check
+  ansible.builtin.copy:
+    src: nanohpc-home-service-recovery
+    dest: /usr/local/sbin/nanohpc-home-service-recovery
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the home service recovery unit
+  ansible.builtin.copy:
+    src: nanohpc-home-service-recovery.service
+    dest: /etc/systemd/system/nanohpc-home-service-recovery.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the home service recovery timer
+  ansible.builtin.copy:
+    src: nanohpc-home-service-recovery.timer
+    dest: /etc/systemd/system/nanohpc-home-service-recovery.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start the home service recovery timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-home-service-recovery.timer
+    daemon_reload: true
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
 - name: Recheck the compute node's drain before returning it to Slurm
   ansible.builtin.command:
     argv: [scontrol, show, node, "{{ inventory_hostname }}", -o]

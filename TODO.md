@@ -149,7 +149,7 @@ flowchart LR
 - [x] Above `home.quota_soft_gb` (300 GB by default), users see a private notice on interactive login and can keep writing. See [DONE.md](md/DONE.md).
 - [x] Above `home.quota_hard_gb` (400 GB by default), new Slurm jobs wait until home usage falls; running jobs and writes continue. See [DONE.md](md/DONE.md).
 - [x] Machines keep root SSH when the `/home` server is down and reconnect shared `/home` on first use after it returns. See [DONE.md](md/DONE.md).
-- [ ] After an NFS `/home` outage, Ubuntu auxiliary services such as `polkit` and `systemd-timedated` recover from failed starts when storage returns.
+- [x] After an NFS `/home` outage, Ubuntu auxiliary services such as `polkit` and `systemd-timedated` recover from failed starts when storage returns. See [DONE.md](md/DONE.md).
 - [x] A push to the configuration repository during a manual deploy's real run cannot start an overlapping automatic deploy through the GitHub webhook. See [DONE.md](md/DONE.md).
 - [ ] Website follow-ups: the printed forwarding rules are tried with real nginx, Apache, and Caddy (with `forwarded_by`); switching between certificate types, hostnames, paths, and build modes is checked on the simulated cluster; nginx starts on machines with IPv6 turned off.
 

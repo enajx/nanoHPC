@@ -1,0 +1,33 @@
+#!/bin/sh
+# Retry Ubuntu services whose mount namespace failed or timed out while NFS /home was unavailable.
+set -eu
+
+failed_during_home_outage() {
+    service=$1
+    result=$(systemctl show -P Result "$service")
+    case "$result" in
+        timeout) return 0 ;;
+        exit-code) [ "$(systemctl show -P ExecMainStatus "$service")" = 226 ] ;;
+        *) return 1 ;;
+    esac
+}
+
+needs_recovery=false
+for service in polkit.service systemd-timedated.service; do
+    if failed_during_home_outage "$service"; then
+        needs_recovery=true
+    fi
+done
+[ "$needs_recovery" = true ] || exit 0
+
+# This can wake the automount. Skip this run if the server still cannot answer.
+timeout 10 stat /home/. >/dev/null 2>&1 || exit 0
+findmnt -n -t nfs4 -o FSTYPE --mountpoint /home | grep -qx nfs4 || exit 0
+
+for service in polkit.service systemd-timedated.service; do
+    if failed_during_home_outage "$service"; then
+        printf 'Retrying %s after shared /home reconnected\n' "$service"
+        systemctl reset-failed "$service"
+        systemctl start "$service"
+    fi
+done

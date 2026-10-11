@@ -1,0 +1,7 @@
+[Unit]
+Description=Recover Ubuntu services after shared home reconnects (nanoHPC)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nanohpc-home-service-recovery
+TimeoutStartSec=2min
