@@ -156,9 +156,10 @@ flowchart LR
 - Built: the home usage policy gives each user a private usage box on interactive login, with a notice above the soft threshold. Above the hard threshold, a front-node timer holds new Slurm jobs and restores the user's previous association limit when usage falls; running jobs and home writes continue. The live-job policy, XFS storage, and both `/home` reboot layouts passed Ubuntu 24.04 VM tests. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
 - Checked: XFS home and scratch disks work on Ubuntu 24.04 VMs. XFS quota accounting has no write limit, and a user can write to `/home` through NFS above the job-wait threshold. See [testing.md](md/testing.md).
 - Checked: after an Ubuntu 24.04 kernel update and reboot, the home server still mounts `/home` with active quotas; a deploy works both before and after the update. See [testing.md](md/testing.md).
-- Next: v0.1 after the VM tests on Ubuntu 22.04, 24.04, and 26.04 ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
+- Checked: core deploy VM tests passed on Ubuntu 22.04 and 26.04; nine focused Ubuntu 24.04 VM suites passed, including full, changed-configuration, and partial redeploys. Ubuntu 22.04 now runs the installed home-policy and scratch-cleanup commands with its system Python, and Apptainer uses a scoped PPA key. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
+- Next: complete the remaining v0.1 release checks and documentation ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
-- Remaining work before release is tracked in [TODO.md](TODO.md), including wider VM validation and administrator documentation.
+- Remaining work before release is tracked in [TODO.md](TODO.md), including an end-to-end simulated setup, real x86 and GPU checks, and administrator documentation.
 
 ## Notes
 

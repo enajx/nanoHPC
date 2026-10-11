@@ -890,6 +890,34 @@ class SimReleaseTest(SimUsersBase):
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assertEqual(result.returncode, 0, self.failure(result))
         version = yaml.safe_load(self.sim.read_text())["ubuntu"]
+        if version == "22.04":
+            # An older deployment put the PPA key in APT's global trust store.
+            old_key = self.ssh("front", "sudo apt-key add /etc/apt/keyrings/nanohpc-apptainer.asc")
+            self.assertEqual(old_key.returncode, 0, old_key.stdout + old_key.stderr)
+            self.assertEqual(
+                self.ssh(
+                    "front",
+                    "sudo rm /etc/apt/sources.list.d/nanohpc-apptainer.sources /etc/apt/keyrings/nanohpc-apptainer.asc",
+                ).returncode,
+                0,
+            )
+            old_source = self.ssh(
+                "front",
+                "sudo tee /etc/apt/sources.list.d/nanohpc-apptainer.list",
+                "deb https://ppa.launchpadcontent.net/apptainer/ppa/ubuntu jammy main\n",
+            )
+            self.assertEqual(old_source.returncode, 0, old_source.stdout + old_source.stderr)
+            key_list = "sudo gpg --batch --no-default-keyring --keyring /etc/apt/trusted.gpg --list-keys --with-colons"
+            fingerprint = "F6B0F5193D4F3301EF491FF0AFE36534FC6218AE"
+            before_keys = self.ssh("front", key_list)
+            self.assertEqual(before_keys.returncode, 0, before_keys.stdout + before_keys.stderr)
+            self.assertIn(fingerprint, before_keys.stdout)
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            self.assertEqual(self.ssh("front", "test -e /etc/apt/sources.list.d/nanohpc-apptainer.list").returncode, 1)
+            after_keys = self.ssh("front", key_list)
+            self.assertEqual(after_keys.returncode, 0, after_keys.stdout + after_keys.stderr)
+            self.assertNotIn(fingerprint, after_keys.stdout)
         self.assertIn(version, self.ssh("front", "cat /etc/os-release").stdout)
         nodes = sorted(line for line in self.on_front("sinfo -h -N -o '%N %P %T'").split("\n") if line)
         self.assertEqual(nodes, ["cpu1 main* idle", "gpu4 interactive idle", "gpu4 main* idle"])
@@ -917,6 +945,8 @@ class SimReleaseTest(SimUsersBase):
         self.assertIn("alice,ok,ok,", self.on_front("sudo repquota -a -u -O csv"))
         self.assertEqual(self.ssh("gpu4", "findmnt -n -o SOURCE --mountpoint /scratch").stdout.strip(), "/dev/vdb")
         self.assertTrue(self.ssh("cpu1", "findmnt -n -o SOURCE --mountpoint /scratch").stdout.startswith("/dev/loop"))
+        cleanup = self.ssh("cpu1", "python3 /usr/local/bin/scratch-job-cleanup --help")
+        self.assertEqual(cleanup.returncode, 0, cleanup.stdout + cleanup.stderr)
         self.check_website(config)
         result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
         self.assert_no_changes(result, len(config["machines"]))
