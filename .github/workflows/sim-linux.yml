@@ -1,7 +1,6 @@
 # Runs the simulated test cluster on a Linux x86 host (GitHub's runner, with KVM),
-# then deploys Slurm on two VMs and runs a job. See md/testing.md.
-# Started by hand only (`gh workflow run sim-linux.yml`): free Actions minutes are limited,
-# so it runs only when the Linux check is needed, e.g. before a release.
+# then deploys two VMs and checks Slurm, a running job, and the website. See md/testing.md.
+# Started by hand only (`gh workflow run sim-linux.yml`) because the VM deploy is slow.
 name: sim-linux
 
 on:
@@ -32,6 +31,18 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/nanohpc/website-source/package-lock.json
+
+      - name: Install live website test browser
+        working-directory: src/nanohpc/website-source
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
       - name: Unit tests
         run: uv run python -m unittest discover -s tests
 
@@ -40,7 +51,7 @@ jobs:
           NANOHPC_SIM: "1"
         run: uv run python -m unittest tests.test_sim.SimClusterTest
 
-      - name: Build Slurm and run a job on x86 VMs
+      - name: Full setup, job, and website on x86 VMs
         env:
           NANOHPC_SIM: "1"
         run: |

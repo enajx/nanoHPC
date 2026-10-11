@@ -32,7 +32,7 @@ The work moves from the source deployment to a released tool in phases. Task-lev
 3. **Simulated cluster**: a test cluster of Lima VMs on macOS and Linux, so nanoHPC is tested without touching a real cluster. Done 2026-09-30.
 4. **Port and bootstrap**: bring Slurm, accounts, storage, monitoring, website, and backup over from the source deployment, made generic. One command sets up a new cluster from `cluster.yml`. Done 2026-10-11.
 5. **Wizard and operate**: a wizard writes `cluster.yml` by asking questions and probing the machines. Add a node and redeploy from the same file. Done 2026-10-11.
-6. **Release v0.1**: tested on the simulated cluster and on real x86 machines, documented, published.
+6. **Release v0.1**: tested on the simulated cluster, on native x86 hardware through Lima, and on a real GPU machine; documented and published.
 7. **Later**: monitoring on a cluster with existing Slurm, LDAP users, AMD GPUs, restic and S3 backups, non-Ubuntu systems, other extras.
 
 ```mermaid
@@ -160,7 +160,7 @@ flowchart LR
 - Next: complete the remaining v0.1 release checks and documentation ([plan-port.md](md/plan-port.md), [TODO.md](TODO.md)).
 - The source deployment works in production on one front node and GPU compute nodes: Slurm with fair-share, shared home with quotas, scratch mode, monitoring, and the website.
 - A fresh six-machine simulated setup passed from an empty state through a running `cpu1` job visible on the deployed website. See [DONE.md](md/DONE.md) and [testing.md](md/testing.md).
-- The [administrator guide](md/administrator-guide.md) covers requirements, configuration, first deploy, adding nodes, and common problems. Remaining work before release is tracked in [TODO.md](TODO.md), including real x86 and GPU checks.
+- The [administrator guide](md/administrator-guide.md) covers requirements, configuration, first deploy, adding nodes, and common problems. A full setup passed on native x86 Ubuntu with Lima, including a running compute job on the deployed website. A real GPU driver and CUDA check remains before release. See [DONE.md](md/DONE.md), [testing.md](md/testing.md), and [TODO.md](TODO.md).
 
 ## Notes
 
