@@ -23,13 +23,15 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+import jinja2
 import yaml
 from textual.widgets import DataTable
 
 from nanohpc import fixuid, maintenance_lock, probe, ssh_update, update, wizard
 from nanohpc.config import check_config, load_config
+from nanohpc.deploy import website_variables
 from nanohpc.probe import probe_machine
-from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config
+from nanohpc.sim import SimPlan, load_sim, render_cluster, render_ssh_config, test_certificate
 from nanohpc.wizard.state import checklist
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -919,6 +921,226 @@ class SimReleaseTest(SimUsersBase):
         self.assert_no_changes(result, len(config["machines"]))
         result = self.deploy(self.ssh_config_for("alice"), agent=True)
         self.assertEqual(result.returncode, 0, self.failure(result))
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimWebsiteFollowupsTest(SimUsersBase):
+    """Change the live website settings and use the printed rules in real proxy servers."""
+
+    sim = SIM / "variations.yml"
+    state = ROOT / ".nanohpc-sim" / "variations"
+
+    def test_website_changes_and_forwarding(self) -> None:
+        cluster, config, _ = self.up_and_deploy()
+        self.assertTrue(self.on_front("readlink /srv/nanohpc-web/current").strip().split("/")[-1].startswith("front-"))
+        self.check_website(config)
+
+        # Change own certificate to the simulated Let's Encrypt service, a subpath, and a packaged build.
+        website = config["cluster"]["website"]
+        website.update(https="letsencrypt", certificate=None, certificate_key=None, path="/hpc/", build="package")
+        website["forwarded_by"] = config["machines"]["cpu1"]["address"]
+        website["allow"] = ["127.0.0.2/32"]
+        cluster.write_text(yaml.safe_dump(config))
+        changed = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(changed.returncode, 0, self.failure(changed))
+        self.assertFalse(self.on_front("readlink /srv/nanohpc-web/current").strip().split("/")[-1].startswith("front-"))
+        self.assertEqual(self.on_front("systemctl is-active nanohpc-website-certificate.timer").strip(), "active")
+        self.assertEqual(self.ssh("front", "sudo test -e /etc/nanohpc/website/tls/privkey.pem").returncode, 1)
+        self.check_website(config)
+        self.check_forwarding_rules(cluster)
+
+        # The test certificate service answers the new hostname, so the deploy must request a new certificate.
+        website["hostname"] = "new.cluster.example.org"
+        cluster.write_text(yaml.safe_dump(config))
+        renamed = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(renamed.returncode, 0, self.failure(renamed))
+        self.check_website(config)
+
+        # Return to an administrator's certificate, the whole hostname, and a front-node build.
+        own = test_certificate(self.state / "website-tls-new", website["hostname"])
+        website.update(
+            https="own",
+            certificate=str(own / "cert.pem"),
+            certificate_key=str(own / "key.pem"),
+            path="/",
+            build="front",
+            allow=[],
+            forwarded_by=None,
+        )
+        cluster.write_text(yaml.safe_dump(config))
+        restored = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(restored.returncode, 0, self.failure(restored))
+        self.assertTrue(self.on_front("readlink /srv/nanohpc-web/current").strip().split("/")[-1].startswith("front-"))
+        self.assertNotEqual(self.ssh("front", "systemctl is-active nanohpc-website-certificate.timer").returncode, 0)
+        self.assertEqual(self.ssh("front", "sudo test -s /etc/nanohpc/website/tls/privkey.pem").returncode, 0)
+        self.check_website_with_ca(config, own / "ca.pem")
+        self.check_nginx_without_ipv6(config)
+
+    def check_website_with_ca(self, config: dict[str, Any], ca: Path) -> None:
+        """Check the final own certificate, including its hostname, with the new test authority."""
+        website = config["cluster"]["website"]
+        copied = self.ssh("front", "cat > /tmp/new-website-ca.pem", stdin=ca.read_text())
+        self.assertEqual(copied.returncode, 0, copied.stderr)
+        host = website["hostname"]
+        result = self.ssh(
+            "front",
+            f"curl -fsS --cacert /tmp/new-website-ca.pem --resolve {host}:443:127.0.0.1 https://{host}/site.json",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["cluster_name"], config["cluster"]["name"])
+        page = self.ssh(
+            "front", f"curl -fsS --cacert /tmp/new-website-ca.pem --resolve {host}:443:127.0.0.1 https://{host}/"
+        )
+        self.assertEqual(page.returncode, 0, page.stdout + page.stderr)
+        script = re.search(r'<script[^>]+src="([^"]+\.js)"', page.stdout)
+        self.assertIsNotNone(script, page.stdout)
+        assert script is not None
+        asset_url = urllib.parse.urljoin(f"https://{host}/", script.group(1))
+        asset = self.ssh(
+            "front",
+            f"curl -fsS --cacert /tmp/new-website-ca.pem --resolve {host}:443:127.0.0.1 {asset_url} -o /dev/null",
+        )
+        self.assertEqual(asset.returncode, 0, asset.stdout + asset.stderr)
+
+    def check_nginx_without_ipv6(self, config: dict[str, Any]) -> None:
+        """Start the rendered site in real nginx while IPv6 socket calls fail."""
+        website = website_variables(config, simulated=True)
+        certificate = "/etc/nanohpc/website/tls/fullchain.pem"
+        environment = jinja2.Environment(trim_blocks=True, undefined=jinja2.StrictUndefined)
+        environment.filters["regex_escape"] = re.escape
+        template = environment.from_string(
+            (ROOT / "src/nanohpc/ansible/roles/website/templates/website.conf.j2").read_text()
+        )
+        for available in (True, False):
+            site = template.render(
+                website=website,
+                tls_certificate=certificate,
+                tls_certificate_key="/etc/nanohpc/website/tls/privkey.pem",
+                website_ipv6_available={"rc": 0 if available else 1},
+            )
+            site = site.replace("listen 80 default_server;", "listen 18080 default_server;")
+            site = site.replace("listen 443 ssl default_server;", "listen 18443 ssl default_server;")
+            site = site.replace("listen [::]:80 default_server;", "listen [::]:18080 default_server;")
+            site = site.replace("listen [::]:443 ssl default_server;", "listen [::]:18443 ssl default_server;")
+            path = f"/tmp/nanohpc-ipv6-{'yes' if available else 'no'}.conf"
+            copied = self.ssh("front", f"sudo tee {path} >/dev/null", stdin=site)
+            self.assertEqual(copied.returncode, 0, copied.stderr)
+        c_source = """#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <sys/socket.h>
+int socket(int domain, int type, int protocol) {
+    if (domain == AF_INET6) { errno = EAFNOSUPPORT; return -1; }
+    int (*next)(int, int, int) = dlsym(RTLD_NEXT, "socket");
+    return next(domain, type, protocol);
+}
+"""
+        copied = self.ssh("front", "sudo tee /tmp/nanohpc-no-ipv6.c >/dev/null", stdin=c_source)
+        self.assertEqual(copied.returncode, 0, copied.stderr)
+        nginx_config = """worker_processes 1;
+pid /tmp/nanohpc-ipv4-nginx.pid;
+error_log /tmp/nanohpc-ipv4-nginx.log;
+events {}
+http {
+    include /etc/nginx/mime.types;
+    include /tmp/nanohpc-ipv4-site.conf;
+}
+"""
+        copied = self.ssh("front", "sudo tee /tmp/nanohpc-ipv4-nginx.conf >/dev/null", stdin=nginx_config)
+        self.assertEqual(copied.returncode, 0, copied.stderr)
+        installed = self.ssh("front", "sudo apt-get install -y -qq gcc libc6-dev")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        build = self.ssh("front", "sudo gcc -shared -fPIC -o /tmp/nanohpc-no-ipv6.so /tmp/nanohpc-no-ipv6.c -ldl")
+        self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+        script = """set -eu
+if sudo env LD_PRELOAD=/tmp/nanohpc-no-ipv6.so python3 -c 'import socket; socket.socket(socket.AF_INET6)'; then
+    echo 'IPv6 probe unexpectedly succeeded' >&2
+    exit 1
+fi
+cp /tmp/nanohpc-ipv6-yes.conf /tmp/nanohpc-ipv4-site.conf
+sudo nginx -t -c /tmp/nanohpc-ipv4-nginx.conf
+if sudo env LD_PRELOAD=/tmp/nanohpc-no-ipv6.so nginx -c /tmp/nanohpc-ipv4-nginx.conf; then
+    sudo nginx -c /tmp/nanohpc-ipv4-nginx.conf -s stop
+    echo 'nginx unexpectedly started with an IPv6 listener' >&2
+    exit 1
+fi
+cp /tmp/nanohpc-ipv6-no.conf /tmp/nanohpc-ipv4-site.conf
+sudo env LD_PRELOAD=/tmp/nanohpc-no-ipv6.so nginx -c /tmp/nanohpc-ipv4-nginx.conf
+trap 'sudo nginx -c /tmp/nanohpc-ipv4-nginx.conf -s stop' EXIT
+curl -fsS --cacert /tmp/new-website-ca.pem \\
+    --resolve HOST:18443:127.0.0.1 https://HOST:18443/site.json
+""".replace("HOST", website["hostname"])
+        result = self.ssh("front", "sh -s", stdin=script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["cluster_name"], config["cluster"]["name"])
+
+    def check_forwarding_rules(self, cluster: Path) -> None:
+        """Run each printed proxy rule with a trusted and an untrusted visitor address."""
+        output = self.run_command("uv", "run", "nanohpc", "forwarding-rules", str(cluster))
+        self.assertEqual(output.returncode, 0, output.stderr)
+        rules = output.stdout
+        ca = self.on_front("curl -fsS --cacert /etc/nanohpc/test-acme/ca.pem https://127.0.0.1:15000/roots/0")
+        copied = self.ssh(
+            "cpu1", "sudo tee /usr/local/share/ca-certificates/nanohpc-website-test.crt >/dev/null", stdin=ca
+        )
+        self.assertEqual(copied.returncode, 0, copied.stderr)
+        self.assertEqual(self.ssh("cpu1", "sudo update-ca-certificates").returncode, 0)
+        configs = {
+            "nginx": (
+                "sudo apt-get update -qq && sudo apt-get install -y -qq nginx",
+                "sudo tee /etc/nginx/conf.d/nanohpc-proxy-test.conf >/dev/null",
+                "server { listen 8080; server_name localhost;\n"
+                + rules.split("--- nginx (inside the lab website's server block) ---\n", 1)[1].split("\n--- Apache", 1)[
+                    0
+                ]
+                + "\n}\n",
+                "sudo nginx -t && sudo systemctl restart nginx",
+                "sudo systemctl stop nginx",
+            ),
+            "Apache": (
+                "sudo apt-get install -y -qq apache2 && sudo a2enmod proxy proxy_http ssl headers",
+                "sudo tee /etc/apache2/sites-available/nanohpc-proxy-test.conf >/dev/null",
+                "Listen 8080\n<VirtualHost *:8080>\nServerName localhost\n"
+                + rules.split(
+                    "--- Apache (inside the lab website's VirtualHost; needs mod_proxy, mod_proxy_http, and mod_ssl) ---\n",
+                    1,
+                )[1].split("\n--- Caddy", 1)[0]
+                + "\n</VirtualHost>\n",
+                "sudo a2dissite 000-default && sudo a2ensite nanohpc-proxy-test && sudo apache2ctl configtest && sudo systemctl restart apache2",
+                "sudo systemctl stop apache2",
+            ),
+            "Caddy": (
+                "sudo apt-get install -y -qq caddy",
+                "sudo tee /etc/caddy/Caddyfile >/dev/null",
+                ":8080 {\n" + rules.split("--- Caddy (inside the lab website's site block) ---\n", 1)[1] + "\n}\n",
+                "sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl restart caddy",
+                "sudo systemctl stop caddy",
+            ),
+        }
+        for server, (install, write, content, start, stop) in configs.items():
+            with self.subTest(server=server):
+                installed = self.ssh("cpu1", install)
+                self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+                written = self.ssh("cpu1", write, stdin=content)
+                self.assertEqual(written.returncode, 0, written.stderr)
+                try:
+                    started = self.ssh("cpu1", start)
+                    self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+                    for source, expected in (("127.0.0.2", "200"), ("127.0.0.3", "403")):
+                        result = self.ssh(
+                            "cpu1",
+                            f"curl --silent --show-error --interface {source} -o /dev/null -w '%{{http_code}}' "
+                            f"http://127.0.0.1:8080/hpc/site.json",
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, expected, (server, source))
+                    redirect = self.ssh(
+                        "cpu1", "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:8080/hpc"
+                    )
+                    self.assertEqual(redirect.stdout.strip(), "301 http://127.0.0.1:8080/hpc/", server)
+                finally:
+                    stopped = self.ssh("cpu1", stop)
+                self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

@@ -2,6 +2,13 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-11: Website forwarding and configuration switches
+
+- The printed forwarding rules now work through real nginx, Apache, and Caddy with `forwarded_by`: allowed visitors reach the site, denied visitors receive 403, and the bare path redirects with 301. Apache accepts a verified certificate chain beyond its default depth; Caddy's redirect is explicitly permanent.
+- A deploy reloads nginx after Let's Encrypt replaces a certificate at the same path, including when the hostname changes. The website role checks whether IPv6 sockets work before writing nginx listeners, and keeps the package's default site from starting during installation until nanoHPC removes it.
+- `SimWebsiteFollowupsTest` passed on three Ubuntu 24.04 VMs after switching own and Let's Encrypt certificates, hostname, path, access, proxy, and package/front builds. Chromium checked the deployed pages. A separate real nginx process served HTTPS with IPv6 socket calls blocked; this verifies nginx startup under that failure, while a kernel-disabled cold boot was unavailable because the Lima VM lost SSH after reboot. The full local Python suite passed (517 tests, 41 skipped), as did the TypeScript check and an independent review.
+- Files: `src/nanohpc/ansible/roles/website/`, `src/nanohpc/render.py`, `src/nanohpc/website-source/tests/live.spec.ts`, `tests/test_{render,sim,website_nginx}.py`, `md/testing.md`.
+
 ## 2026-10-10: Home usage notices and new-job threshold
 
 - `/home` quotas measure each user's usage without blocking writes. Above the configurable soft threshold (300 GB by default), the user sees a private usage and notice box on interactive front-node login, following the SLURM-REAL login notice. The Users page also shows usage against the thresholds.
