@@ -49,6 +49,8 @@ nanoHPC connects using your normal `ssh MACHINE` account and adds no passwordles
 
 After setup, an administrator's loaded SSH key can unlock sudo through the forwarded agent. Administrators in `cluster.yml` also get key-only root login on every machine for recovery, with their keys stored locally so root can log in even if `/home` or the front node is down. With automatic deploys enabled, the front node gets its own root key, accepted only from the front node's address. Ordinary users log in to the front node; they do not get direct compute-node login.
 
+On the front node, ordinary users can forward local SSH connections only to compute machines listed in `cluster.yml`. Remote, X11, and socket forwarding are off for them. Desktop VS Code Remote-SSH cannot connect to the front node. The website's interactive notebook helper uses an allowed tunnel to a compute machine for Jupyter or browser-based VS Code inside a Slurm job. Administrators and root keep unrestricted forwarding.
+
 If `ssh-add -c` is enabled for your key, approve each requested use during a deploy. If you cannot answer the prompts, load a key without that option for this run.
 
 ## Add or change a machine

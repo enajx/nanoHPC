@@ -34,6 +34,8 @@ flowchart LR
   UC --> UA[Tunnel exceptions and private notices]:::done
   UC --> R
   UA --> R
+  UA --> CP[Clearer user-check posts]:::done
+  CP --> R
   WZ --> R
   N --> R
   S --> F[Setup follow-ups]:::queued
@@ -162,6 +164,10 @@ flowchart LR
 - [x] Administrators can allow a tunnel for a named user, program, and machine in `cluster.yml`; other user tunnels are stopped without ending the Slurm job. See [DONE.md](md/DONE.md).
 - [x] The front node reports stopped tunnels once and lasting user-process findings when first seen and again daily, using the configured notification channel. See [DONE.md](md/DONE.md).
 - [x] Users with a Slack ID receive private notices for lasting findings when the bot token is configured. See [DONE.md](md/DONE.md).
+- [x] Ordinary front-node users can forward SSH only to configured compute nodes; administrators remain unrestricted, and the notebook helper's tunnel works. See [DONE.md](md/DONE.md).
+- [x] User-check port posts name the program safely, include one user mention and a friendly word, and link to this cluster's guide. See [DONE.md](md/DONE.md).
+- [x] Front-node VS Code servers produce one finding and notices that explain Remote-SSH and link to the guide. See [DONE.md](md/DONE.md).
+- [x] The user guide and notebook helper explain why Remote-SSH to the front node fails and how to use VS Code or Jupyter inside a job. See [DONE.md](md/DONE.md).
 - [x] The front node can redeploy the whole cluster automatically from the administrator's configuration repository (off by default): it checks a branch every 10 minutes (set in `cluster.yml`; `main` by default, a stable or release branch suggested), pulls it with a read-only key, and deploys every machine itself with no one logging in and no password. A GitHub webhook can trigger it right after a push instead of waiting. The front node gets root SSH access to every machine for this (agreed 2026-10-02). The configuration repository pins the nanoHPC version the front node uses. `nanohpc deploy` from the administrator's machine stays. Each one runs the dry run first and applies only where it passed (machines whose dry run failed are left out; nothing is applied when the front node or the home machine fails), and alerts on any failure.
 
 ### Commands
@@ -207,7 +213,7 @@ flowchart LR
   - [x] The Tech stack badges flow across the available width in Markdown readers (`README.md`).
   - [x] The Tech stack no longer displays the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges (`README.md`).
   - [x] The README feature list is concise and plain, with no bold lead-ins (`README.md`).
-  - [ ] The README has monitor-only setup instructions (`README.md` currently says TBA).
+  - [x] The README has monitor-only setup instructions (`README.md`).
 - [x] Before the release, the core deploy VM tests pass on Ubuntu 22.04 and 26.04, alongside focused VM regressions on 24.04. See [DONE.md](md/DONE.md).
 - [ ] Once nanoHPC is released and development slows down, bring the split-out real-VM tests (`SimRedeployTest`, `SimAlertsTest`, and the ones run only when relevant) back into every run, so users get proper tests when deploying on their systems.
 - [x] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website. See [DONE.md](md/DONE.md).

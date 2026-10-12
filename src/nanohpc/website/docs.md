@@ -76,9 +76,9 @@ Shared vs scratch below explains where to submit from and the trade-offs of each
 
 ## Do's and don'ts
 
-Do: run installs, large downloads, Jupyter, and VS Code inside a batch job or an interactive shell on a compute machine. Keep notebook sessions protected by their token.
+Do: run installs, large downloads, Jupyter, and browser-based VS Code inside a batch job or an interactive shell on a compute machine. Keep notebook sessions protected by their token. Desktop VS Code can connect to an Existing Jupyter Server in a job.
 
-Don't: run heavy or long-lived work on {{cluster_name}}; the front node is shared by everyone. Do not leave personal services, crontabs, or open ports there.
+Don't: run heavy or long-lived work on {{cluster_name}}; the front node is shared by everyone. Do not leave personal services, crontabs, or open ports there. Desktop VS Code Remote-SSH cannot connect to the front node because SSH forwarding is limited to compute machines.
 
 ## Jobs examples
 
@@ -286,7 +286,7 @@ apptainer exec --nv pytorch.sif python train.py
 
 ### Interactive notebooks
 
-Download interactive-notebook.sh to your laptop, copy it into your shared home on the cluster, then open an interactive Slurm shell on a compute machine. The helper starts Jupyter or browser-based VS Code and prints an SSH tunnel command to run on your laptop. The session uses a token and ends when the interactive job ends. Replace PARTITION with a partition that allows interactive shells.
+Download interactive-notebook.sh to your laptop, copy it into your shared home on the cluster, then open an interactive Slurm shell on a compute machine. The helper starts Jupyter or browser-based VS Code and prints an SSH tunnel command to run on your laptop. Desktop VS Code Remote-SSH cannot connect to the front node because SSH forwarding is limited to compute machines. Use browser-based VS Code in a job, or choose Existing Jupyter Server in desktop VS Code and paste the Jupyter link. The session uses a token and ends when the interactive job ends. Replace PARTITION with a partition that allows interactive shells.
 
 ```bash
 # On your laptop, after downloading interactive-notebook.sh:

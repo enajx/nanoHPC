@@ -125,6 +125,8 @@ class UserCheckNotifyTest(unittest.TestCase):
             now,
             "--user",
             "alice:U123",
+            "--guide-url",
+            "https://cluster.example.org/hpc/#docs",
         ]
         if private:
             command.extend(("--bot-token-file", str(self.token), "--slack-api", self.http.url))
@@ -141,8 +143,47 @@ class UserCheckNotifyTest(unittest.TestCase):
             self.assertEqual(self.run_notify(now).returncode, 0)
         self.assertEqual(len(self.http.messages), 1)
         message = self.http.messages[0]
-        for word in ("<@U123> (alice)", "cloudflared", "compute-1", "job 42", "stopped"):
+        for word in ("<@U123>", "cloudflared", "compute-1", "job 42", "stopped"):
             self.assertIn(word, message)
+        self.assertNotIn("(alice)", message)
+
+    def test_port_post_names_program_once_and_links_guide(self) -> None:
+        """The public post names the program and user once and points at this cluster's guide."""
+        self.http.series = [finding("compute-1-port-alice", "alice", "port", "lasting", "`codex login` (port 1455)")]
+        result = self.run_notify("2026-10-05T12:00:00+00:00")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        message = self.http.messages[0]
+        self.assertEqual(message.count("<@U123>"), 1)
+        self.assertNotIn("(alice)", message)
+        self.assertIn("`codex login` (port 1455)", message)
+        self.assertIn("https://cluster.example.org/hpc/#docs", message)
+        self.assertIn("must run inside a Slurm job", message)
+
+    def test_vscode_post_explains_remote_ssh_and_alternatives(self) -> None:
+        """A VS Code finding gives a single notice with working options."""
+        self.http.series = [finding("front-vscode-alice", "alice", "vscode-server", "lasting", "")]
+        result = self.run_notify("2026-10-05T12:00:00+00:00")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.http.messages), 1)
+        message = self.http.messages[0]
+        self.assertEqual(message.count("<@U123>"), 1)
+        self.assertIn("Remote-SSH cannot connect", message)
+        self.assertIn("Existing Jupyter Server", message)
+        self.assertIn("https://cluster.example.org/hpc/#docs", message)
+
+    def test_private_port_and_vscode_notices_link_the_guide(self) -> None:
+        """The corresponding private notices keep the same advice as the channel posts."""
+        self.http.series = [
+            finding("port", "alice", "port", "lasting", "`codex login` (port 1455)"),
+            finding("vscode", "alice", "vscode-server", "lasting", ""),
+        ]
+        result = self.run_notify("2026-10-05T12:00:00+00:00", private=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        messages = [body["text"] for body in self.http.private_messages]
+        self.assertEqual(len(messages), 2)
+        self.assertTrue(all("https://cluster.example.org/hpc/#docs" in message for message in messages))
+        self.assertTrue(any("`codex login` (port 1455)" in message for message in messages))
+        self.assertTrue(any("Remote-SSH cannot connect" in message for message in messages))
 
     def test_lasting_finding_posts_first_and_daily_with_empty_labels(self) -> None:
         self.http.series = [

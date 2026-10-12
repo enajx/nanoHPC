@@ -78,6 +78,16 @@ def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._+-]", "_", Path(value).name)[:40] or "unknown"
 
 
+def display_command(process: dict) -> str:
+    """Name a listener without copying argument values that may contain credentials."""
+    name = safe_name(process["exe"])
+    argv = process["argv"]
+    subcommands = {"login", "serve", "run", "start", "listen"}
+    if len(argv) > 1 and argv[1] in subcommands:
+        return f"{name} {argv[1]}"
+    return name
+
+
 def start_time(entry: Path) -> str:
     """The process start time in clock ticks (field 22 of stat), which tells a reused PID apart."""
     return entry.joinpath("stat").read_text().rsplit(")", 1)[1].split()[19]
@@ -302,7 +312,7 @@ def main() -> None:
         }
 
     outside: dict[str, list[str]] = {}
-    ports: dict[str, set[int]] = {}
+    ports: dict[str, dict[str, set[int]]] = {}
     vscode: set[str] = set()
     for process in processes(args.root):
         user, admin = process["user"], process["user"] in args.admin
@@ -326,6 +336,7 @@ def main() -> None:
             or (Path(process["exe"]).name == "code" and process["argv"][1:2] == ["serve-web"])
         ):
             vscode.add(user)
+            continue
         if admin:
             continue
         # On a compute machine only root starts a user manager: Slurm's `su - <user>` for --export=ALL,VAR=value
@@ -333,7 +344,7 @@ def main() -> None:
         if args.role == "compute" and process["manager"]:
             continue
         if process["ports"]:
-            ports.setdefault(user, set()).update(process["ports"])
+            ports.setdefault(user, {}).setdefault(display_command(process), set()).update(process["ports"])
         if args.role == "compute" and not process["job"]:
             outside.setdefault(user, []).append(safe_name(process["exe"]))
     for user, commands in outside.items():
@@ -341,7 +352,7 @@ def main() -> None:
             sorted(set(commands))[:3]
         )
         found(f"{args.machine}-outside-job-{user}", "outside-job", user, "", "", "lasting", detail)
-    for user, numbers in ports.items():
+    for user, programs in ports.items():
         found(
             f"{args.machine}-port-{user}",
             "port",
@@ -349,7 +360,10 @@ def main() -> None:
             "",
             "",
             "lasting",
-            ("port " if len(numbers) == 1 else "ports ") + ", ".join(map(str, sorted(numbers))),
+            "; ".join(
+                f"`{command}` ({'port' if len(numbers) == 1 else 'ports'} {', '.join(map(str, sorted(numbers)))})"
+                for command, numbers in sorted(programs.items())
+            ),
         )
     for user in vscode:
         found(f"{args.machine}-vscode-server-{user}", "vscode-server", user, "", "", "lasting", "")

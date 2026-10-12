@@ -52,7 +52,23 @@ def root_keys(admins: list[str], auto_deploy_key: str | None) -> str:
 
 def sshd_settings(allowed: list[str]) -> str:
     """Render /etc/ssh/sshd_config.d/10-nanohpc.conf."""
-    return render("sshd_nanohpc.conf.j2", {"ssh_allowed": allowed})
+    return render(
+        "sshd_nanohpc.conf.j2", {"ssh_allowed": allowed, "inventory_hostname": "cpu1", "groups": {"role_front": []}}
+    )
+
+
+def front_sshd_settings() -> str:
+    """Render the front node's user forwarding rule with an administrator and compute node."""
+    return render(
+        "sshd_nanohpc.conf.j2",
+        {
+            "ssh_allowed": ["alice", "bob"],
+            "inventory_hostname": "front",
+            "groups": {"role_front": ["front"]},
+            "nanohpc": {"admins": ["alice"]},
+            "ssh_compute_permitopen": "10.0.0.11:* cpu1:*",
+        },
+    )
 
 
 # Settings another file in sshd_config.d could hold: keys from a command and from a certificate authority for
@@ -86,6 +102,13 @@ class RootKeysTest(unittest.TestCase):
                 "ssh-ed25519 AAAAcarol carol@laptop",
             ],
         )
+
+    def test_front_forwarding_match_has_its_own_line(self) -> None:
+        """A rendered Match line must not absorb the first forwarding directive."""
+        lines = front_sshd_settings().splitlines()
+        self.assertIn("Match User *,!root,!alice", lines)
+        self.assertIn("    AllowTcpForwarding local", lines)
+        self.assertIn("    PermitOpen 10.0.0.11:* cpu1:*", lines)
 
     def test_removed_administrator_loses_root(self) -> None:
         lines = key_lines(root_keys(["carol"], None))
@@ -356,6 +379,54 @@ class SshdChecksTest(unittest.TestCase):
     settings back) when another file still lets root in some other way, refuses root, or changes the key files of
     the users; with automatic deploys (login as root) the users' settings are checked for the first
     administrator."""
+
+    def test_front_forwarding_check_rejects_extra_destinations(self) -> None:
+        """An earlier sshd Match cannot add a noncompute forwarding destination."""
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(folder / "host_key")], check=True)
+            hosts: dict[str, Any] = {}
+            for host, earlier in {
+                "safe": "",
+                "extra": "Match User bob\n    PermitOpen 127.0.0.1:22\n",
+            }.items():
+                config_dir = folder / host / "sshd_config.d"
+                config_dir.mkdir(parents=True)
+                if earlier:
+                    (config_dir / "05-first.conf").write_text(earlier)
+                (config_dir / "10-nanohpc.conf").write_text(front_sshd_settings())
+                config = folder / host / "sshd_config"
+                config.write_text(f"Include {config_dir}/*.conf\nHostKey {folder}/host_key\n")
+                hosts[host] = {"sshd_config_file": str(config)}
+            inventory = {
+                "all": {
+                    "vars": {
+                        "ansible_connection": "local",
+                        "ansible_python_interpreter": sys.executable,
+                        "ssh_access": {"changed": False},
+                        "ssh_compute_permitopen": "10.0.0.11:* cpu1:*",
+                        "nanohpc": {
+                            "admins": ["alice"],
+                            "users": USERS[:2],
+                            "machines": {host: {"address": "198.51.100.7"} for host in hosts},
+                        },
+                    },
+                    "children": {"role_front": {"hosts": hosts}},
+                }
+            }
+            checks = [
+                task
+                for task in sshd_check_tasks()
+                if task["name"]
+                in (
+                    "Read effective SSH forwarding for ordinary front node users",
+                    "Require compute-only local forwarding for ordinary front node users",
+                )
+            ]
+            play = {"hosts": "role_front", "gather_facts": True, "gather_subset": ["min"], "tasks": checks}
+            record = run_playbook(folder, inventory, play, [], {})
+            self.assertEqual(list(record["failed"]), ["extra"], record["output"])
+            self.assertIn("not restricted to compute machines", record["output"])
 
     def test_checks_of_the_effective_settings(self) -> None:
         other_for_root = OTHER_SSHD_SETTINGS.replace(

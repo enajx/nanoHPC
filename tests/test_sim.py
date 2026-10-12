@@ -1226,6 +1226,58 @@ class SimUserCheckTest(SimUsersBase):
     sim = SIM / "x86-build.yml"
     state = ROOT / ".nanohpc-sim" / "x86-build"
 
+    def test_front_ssh_forwarding(self) -> None:
+        """Ordinary users can forward to compute nodes, but not to the front node's own services."""
+        cluster, config, public_key = self.up_with_test_key()
+        config["users"].append({"name": "bob", "uid": 2001, "ssh_keys": [public_key]})
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.deploy(self.state / "ssh_config", agent=False)
+        self.assertEqual(result.returncode, 0, self.failure(result))
+
+        def effective(user: str) -> list[str]:
+            settings = self.on_front(f"sudo sshd -T -C user={user},host=front,addr=127.0.0.1")
+            return settings.splitlines()
+
+        compute = config["machines"]["cpu1"]["address"]
+        bob_settings = effective("bob")
+        destinations = {
+            target for line in bob_settings if line.startswith("permitopen ") for target in line.split()[1:]
+        }
+        self.assertEqual(destinations, {f"{compute}:*", "cpu1:*"})
+        for setting in (
+            "allowtcpforwarding local",
+            "permitlisten none",
+            "x11forwarding no",
+            "allowstreamlocalforwarding no",
+        ):
+            self.assertIn(setting, bob_settings)
+        admin_settings = effective("alice")
+        self.assertIn("allowtcpforwarding yes", admin_settings)
+        self.assertIn("permitopen any", admin_settings)
+
+        def forward(user: str, target: str) -> subprocess.CompletedProcess[str]:
+            ssh_config = self.ssh_config_for(user)
+            return subprocess.run(
+                ["ssh", "-F", str(ssh_config), "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-W", target, "front"],
+                input="SSH-2.0-nanohpc-test\r\n",
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+
+        allowed = forward("bob", f"{compute}:22")
+        self.assertIn("SSH-2.0", allowed.stdout, allowed.stderr)
+        allowed_name = forward("bob", "cpu1:22")
+        self.assertIn("SSH-2.0", allowed_name.stdout, allowed_name.stderr)
+        refused = forward("bob", "127.0.0.1:22")
+        self.assertNotIn("SSH-2.0", refused.stdout)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("stdio forwarding failed", refused.stderr)
+        administrator = forward("alice", "127.0.0.1:22")
+        self.assertIn("SSH-2.0", administrator.stdout, administrator.stderr)
+
     def test_deployed_user_check_and_channel_notification(self) -> None:
         """Deploy the real services, stop a user tunnel, and post its finding from the front node."""
         cluster, config, public_key = self.up_with_test_key()

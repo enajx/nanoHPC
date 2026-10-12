@@ -222,7 +222,8 @@
       ExecStart=/usr/local/bin/nanohpc-user-check-notify \
         --prometheus http://127.0.0.1:9090 \
         --webhook-file /etc/nanohpc/alertmanager/slack-webhook \
-        --state /var/lib/nanohpc/alertmanager/user-check.json --now now{% if nanohpc.mode | default('slurm') != 'monitor' %}{% for user in nanohpc.users %} --user {{ user.name }}:{{ user.slack_id | default('') }}{% endfor %}{% endif %}{% if nanohpc_secrets.slack_bot_token | default(None) %} --bot-token-file /etc/nanohpc/alertmanager/slack-bot-token{% endif %}
+        --state /var/lib/nanohpc/alertmanager/user-check.json --now now \
+        --guide-url https://{{ nanohpc.website.hostname }}{{ nanohpc.website.path.rstrip('/') }}/#docs{% if nanohpc.mode | default('slurm') != 'monitor' %}{% for user in nanohpc.users %} --user {{ user.name }}:{{ user.slack_id | default('') }}{% endfor %}{% endif %}{% if nanohpc_secrets.slack_bot_token | default(None) %} --bot-token-file /etc/nanohpc/alertmanager/slack-bot-token{% endif %}
       NoNewPrivileges=true
       ProtectSystem=strict
       ProtectHome=true

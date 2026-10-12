@@ -513,12 +513,17 @@ test('the guide covers supported containers and interactive notebooks without cl
   await page.getByRole('tab', { name: 'Interactive notebooks' }).click()
   await expect(page.locator('.user-guide code').filter({ hasText: 'interactive-notebook.sh' }).first()).toBeVisible()
   await expect(page.locator('.user-guide code').filter({ hasText: 'scp interactive-notebook.sh' }).first()).toBeVisible()
+  await expect(page.locator('.topic-text').filter({ hasText: 'Desktop VS Code Remote-SSH cannot connect to the front node' })).toBeVisible()
   const docs = await page.request.get(`${origin}${prefix}docs.md`)
   expect(await docs.text()).toContain('Apptainer')
   expect(await docs.text()).toContain('scp interactive-notebook.sh')
+  expect(await docs.text()).toContain('Desktop VS Code Remote-SSH cannot connect to the front node')
+  expect(await docs.text()).toContain('Do not leave personal services, crontabs, or open ports there. Desktop VS Code Remote-SSH cannot connect to the front node because SSH forwarding is limited to compute machines.')
   expect(await docs.text()).not.toContain('Every job must state --time')
   const helper = await page.request.get(`${origin}${prefix}job-examples/interactive-notebook.sh`)
   expect(helper.ok()).toBe(true)
+  expect(await helper.text()).toContain('Remote-SSH cannot connect to the front node')
+  expect(await helper.text()).toContain('because SSH forwarding')
 })
 
 test('Cluster Usage excludes samples from a stale snapshot', async ({ page }) => {

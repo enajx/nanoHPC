@@ -2,6 +2,9 @@
 # Run inside a Slurm interactive shell. The second argument is the cluster's login address.
 # From that shell: bash interactive-notebook.sh jupyter|vscode LOGIN_HOST
 # Keep the printed SSH tunnel open on your laptop. Exit the Slurm shell to stop the server.
+# Desktop VS Code Remote-SSH cannot connect to the front node because SSH forwarding
+# is limited to compute machines. Use browser-based VS Code in a job, or connect
+# desktop VS Code to an Existing Jupyter Server through this tunnel.
 set -euo pipefail
 
 mode=${1:-}
@@ -16,7 +19,15 @@ if [[ -z ${SLURM_JOB_ID:-} ]]; then
 fi
 
 port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
-node=$(hostname)
+node=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
+if [[ -z $node ]]; then
+  echo 'Could not find the compute node for this Slurm job.' >&2
+  exit 2
+fi
+if [[ $node == *$'\n'* ]]; then
+  echo 'Start a one-node interactive Slurm job before running this helper.' >&2
+  exit 2
+fi
 echo "On your laptop, keep this open: ssh -N -L $port:$node:$port $login_host"
 
 if [[ $mode == jupyter ]]; then
