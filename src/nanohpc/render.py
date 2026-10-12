@@ -303,13 +303,14 @@ location {path} {{
 --- Apache (inside the lab website's VirtualHost; needs mod_proxy, mod_proxy_http, and mod_ssl) ---
 SSLProxyEngine on
 SSLProxyVerify require
+SSLProxyVerifyDepth 3
 SSLProxyCACertificateFile /etc/ssl/certs/ca-certificates.crt
 RedirectMatch 301 ^{bare}$ {path}
 ProxyPass {path} https://{hostname}{path}
 ProxyPassReverse {path} https://{hostname}{path}
 
 --- Caddy (inside the lab website's site block) ---
-redir {bare} {path}
+redir {bare} {path} 301
 handle {path}* {{
     reverse_proxy https://{hostname} {{
         header_up Host {hostname}

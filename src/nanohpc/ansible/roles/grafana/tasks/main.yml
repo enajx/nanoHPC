@@ -168,7 +168,8 @@
       providers:
         - name: cluster
           orgId: 1
-          folder: Cluster
+          folder: {{ nanohpc.cluster_name }}
+          folderUid: nanohpc-cluster
           type: file
           disableDeletion: true
           allowUiUpdates: false
@@ -179,12 +180,15 @@
 
 # Grafana reads the dashboard files again every 30 seconds, so a changed dashboard needs no restart.
 - name: Install the dashboards
-  ansible.builtin.copy:
+  ansible.builtin.template:
     src: "{{ nanohpc.package_files }}/grafana/{{ 'monitor-history.json' if nanohpc.mode | default('slurm') == 'monitor' and item == 'history.json' else item }}"
-    dest: /etc/nanohpc/grafana/dashboards/
+    dest: "/etc/nanohpc/grafana/dashboards/{{ item }}"
     owner: root
     group: root
     mode: "0644"
+    variable_start_string: "[%"
+    variable_end_string: "%]"
+    validate: "/usr/bin/python3 -m json.tool %s"
   loop: "{{ ['machines.json', 'history.json'] if nanohpc.mode | default('slurm') == 'monitor' else ['overview.json', 'machines.json', 'queue.json', 'queue-history.json'] }}"
 
 - name: Install per-user dashboards with the test accounts excluded
@@ -267,6 +271,29 @@
   until: >-
     (grafana_dashboards.json | map(attribute='uid') | select('match', '^nanohpc-') | list | length) ==
     (2 if nanohpc.mode | default('slurm') == 'monitor' else 6)
+    and
+    (grafana_dashboards.json | selectattr('folderUid', 'equalto', 'nanohpc-cluster') | list | length) ==
+    (2 if nanohpc.mode | default('slurm') == 'monitor' else 6)
   retries: 15
   delay: 2
   when: not ansible_check_mode  # checks this deploy's result
+
+- name: Install the old Grafana folder cleanup command
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/grafana/cleanup-legacy-folder"
+    dest: /usr/local/sbin/nanohpc-grafana-cleanup-folder
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Remove the old folder only after its dashboards moved
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /usr/local/sbin/nanohpc-grafana-cleanup-folder
+      - "http://127.0.0.1:3000{{ nanohpc.website.path }}grafana"
+      - "{{ nanohpc.cluster_name }}"
+      - /etc/nanohpc/grafana/secrets.env
+  register: grafana_folder_cleanup
+  changed_when: grafana_folder_cleanup.stdout.startswith('removed ')
+  when: not ansible_check_mode

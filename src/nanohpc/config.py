@@ -42,7 +42,7 @@ POLICY_DEFAULTS: dict[str, Any] = {
     "age_weight": 1000,
     "age_max": "7-00:00:00",
 }
-HOME_DEFAULTS: dict[str, Any] = {"quota_soft_gb": 300, "quota_hard_gb": 400, "quota_grace": "7days"}
+HOME_DEFAULTS: dict[str, Any] = {"quota_soft_gb": 300, "quota_hard_gb": 400}
 SCRATCH_DEFAULTS: dict[str, Any] = {"cleanup_days": 14, "job_retention_days": 7}
 ALERTS_DEFAULTS: dict[str, Any] = {"slack": False}
 USER_CHECK_DEFAULTS: dict[str, Any] = {"allowed_tunnels": []}
@@ -238,6 +238,14 @@ def with_defaults(checker: Checker, value: Any, path: str, defaults: dict[str, A
         return dict(defaults)
     section = checker.mapping(value, path, (), tuple(defaults))
     return {**defaults, **(section or {})}
+
+
+def check_home(checker: Checker, value: Any) -> dict[str, Any]:
+    """Read home notice and job-wait thresholds; accept old, unused quota_grace settings."""
+    if value is None:
+        return dict(HOME_DEFAULTS)
+    section = checker.mapping(value, "home", (), (*HOME_DEFAULTS, "quota_grace"))
+    return {**HOME_DEFAULTS, **{key: entry for key, entry in (section or {}).items() if key in HOME_DEFAULTS}}
 
 
 def check_cluster(checker: Checker, value: Any, users: set[str], mode: str) -> dict[str, Any] | None:
@@ -805,7 +813,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "users": users,
         "partitions": partitions,
         "policy": check_policy(checker, top.get("policy")),
-        "home": with_defaults(checker, top.get("home"), "home", HOME_DEFAULTS),
+        "home": check_home(checker, top.get("home")),
         "scratch": with_defaults(checker, top.get("scratch"), "scratch", SCRATCH_DEFAULTS),
         "backup": check_backup(checker, top.get("backup"), machines),
         "alerts": with_defaults(checker, top.get("alerts"), "alerts", ALERTS_DEFAULTS),
@@ -823,9 +831,6 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         and home["quota_soft_gb"] > home["quota_hard_gb"]
     ):
         checker.fail("home.quota_soft_gb", "must not be larger than home.quota_hard_gb")
-    checker.matches(
-        home["quota_grace"], re.compile(r"\d+(days|hours|minutes)"), "home.quota_grace", "a time like 7days"
-    )
     checker.positive(config["scratch"]["cleanup_days"], "scratch.cleanup_days")
     checker.positive(config["scratch"]["job_retention_days"], "scratch.job_retention_days")
     checker.boolean(config["alerts"]["slack"], "alerts.slack")

@@ -162,7 +162,7 @@ class DashboardTests(unittest.TestCase):
                 "Partition",
             ],
         )
-        self.assertEqual(queue["title"], "Running Jobs and Queue")
+        self.assertEqual(queue["title"], "[% nanohpc.cluster_name %]: Running Jobs and Queue")
 
 
 if __name__ == "__main__":

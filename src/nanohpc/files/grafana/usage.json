@@ -1,5 +1,5 @@
 {
-  "uid": "nanohpc-usage", "title": "GPU usage and fair-share", "schemaVersion": 39,
+  "uid": "nanohpc-usage", "title": "[% nanohpc.cluster_name %]: GPU usage and fair-share", "schemaVersion": 39,
   "editable": false, "refresh": "30s", "time": {"from": "now-6h", "to": "now"},
   "panels": [
     {"id": 1, "title": "Allocated GPU-hours", "description": "Allocated GPUs multiplied by runtime, including running jobs. Not GPU utilization. CPU usage is excluded.", "type": "timeseries", "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8}, "datasource": {"type": "prometheus", "uid": "cluster-detail"}, "targets": [{"refId": "A", "expr": "cluster_allocated_gpu_hours{user!~\"[% (nanohpc.users | selectattr('test_account', 'defined') | selectattr('test_account') | map(attribute='name') | join('|')) or 'a^' %]\"} and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "{{user}}"}]},

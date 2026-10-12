@@ -256,7 +256,7 @@ less training-JOB_ID.log
 
 ### Home space
 
-Your home is shared between the front and compute machines. Its soft quota is {{home_quota_soft_gb}} GB and its hard quota is {{home_quota_hard_gb}} GB. Keep large temporary data on local scratch.
+Your home is shared between the front and compute machines. Your usage appears privately when you log in. At {{home_quota_soft_gb}} GB, the login box shows a notice. At {{home_quota_hard_gb}} GB, new jobs wait until you clear space. Running jobs continue, and writing to your home stays possible. Keep large temporary data on local scratch.
 
 ```bash
 du -sh "$HOME"

@@ -2,6 +2,113 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-11: MIT license
+
+- Added the MIT license with a project-level `nanoHPC contributors` copyright notice. The source distribution and wheel both include the complete license; the wheel records it in package metadata. Files: `LICENSE`, `pyproject.toml`.
+
+## 2026-10-11: full x86 setup through the deployed website
+
+- The manual Linux workflow passed on GitHub's native x86 Ubuntu 24.04 runner. `SimSmallSlurmDeployTest` started two empty Lima VMs, deployed Slurm, checked its x86 build and a completed compute job, then confirmed a running `cpu1` job in Slurm, the status snapshot, and the deployed website through HTTPS and Chromium. The x86 test passed in 1,733 seconds; the workflow also passed 519 Python tests and the Lima up/down test. [Workflow run](https://github.com/enajx/nanoHPC/actions/runs/38172489236).
+- An independent agent reviewed the test and workflow. Files: `tests/test_sim.py`, `.github/workflows/sim-linux.yml`, `md/testing.md`.
+
+## 2026-10-11: administrator guide
+
+- Added an administrator guide for requirements, configuration, the first deploy, adding nodes, and common problems. It covers the first sudo password prompt, forwarded administrator keys for later sudo, root recovery keys, the front-node-only automatic deploy key, and optional `ssh-add -c` confirmation.
+- Checked the documented commands against the CLI help and deployment source, checked local Markdown links, and had a separate agent review behavior and coverage. Files: `md/administrator-guide.md`, `SETUP-for-AGENTS.md`.
+
+## 2026-10-11: full simulated setup through a live website job
+
+- A fresh six-machine Ubuntu 24.04 simulated cluster deployed from an empty state. `SimDeployTest` submitted job 5 to `cpu1`, saw it running in Slurm and the 30-second status snapshot, and confirmed its job ID and node in the deployed Overview through HTTPS and a real browser. The test passed (one test in 2460 seconds).
+- The live browser test accepts a job ID and node from the VM test. The existing page checks still run, and the second tunnel closes fully before the test continues. Focused Python lint, formatting, type checking, TypeScript checking, and the demo build passed. A separate agent reviewed the test flow.
+- Files: `tests/test_sim.py`, `src/nanohpc/website-source/tests/live.spec.ts`, `md/testing.md`.
+
+## 2026-10-11: Ubuntu release VM checks
+
+- `SimClusterTest` and `SimReleaseTest` passed from fresh VMs on Ubuntu 22.04 and 26.04. They checked the core deploy, Slurm jobs, shared `/home`, scratch cleanup under each system Python, root and administrator access, and repeat deploys. The 22.04 test also checked migration of Apptainer's previous global APT key and source entry to a scoped keyring and source.
+- Nine focused Ubuntu 24.04 VM suites passed: cluster, monitor deploy, website follow-ups, small Slurm deploy, user check, full deploy, configuration redeploy, redeploy, and partial deploy. The partial-deploy test first failed because adding a machine shifted the nightly speed-test timer on existing nodes. A hostname-based schedule made its final full deploy unchanged. A separate regression test checks stable schedules and distinct times for the known node names. The hash spreads timers but can give other names the same minute. A transient node exporter download failure led to a three-attempt retry.
+- The full set of Ubuntu 24.04 VM suites was not run. The user chose focused checks after the first nine suites because the full matrix takes several hours. Files: `src/nanohpc/ansible/roles/{apptainer,machine_metrics,node_metrics}/`, `src/nanohpc/files/{cluster-home-job-policy,scratch-job-cleanup,apptainer-ppa.asc}`, `tests/test_{sim,speed_test}.py`, `md/testing.md`.
+
+## 2026-10-11: Changed configuration redeploy verified
+
+- `SimConfigRedeployTest` deployed a three-machine Ubuntu 24.04 cluster, kept a batch job running on a compute node, changed one partition time limit in `cluster.yml`, and ran a full deploy. Only the expected Slurm configuration, controller, and compute restart tasks changed. SSH, Munge, and mount files stayed the same; the running job continued, another job completed, and a second full deploy made no changes.
+- The test passed from fresh VMs. A separate agent reviewed the test. Files: `tests/test_sim.py`, `tests/sim/config-redeploy.yml`, `md/testing.md`.
+
+## 2026-10-11: Fresh cluster deploy verified
+
+- `nanohpc deploy` set up the everyday six-machine cluster from fresh Ubuntu 24.04 VMs. `SimDeployTest` passed through account and SSH access, Munge, Slurm and jobs, `/home` and backup, metrics and Grafana, HTTPS and browser checks, a no-change redeploy, a changed-configuration dry run, and `nanohpc check`.
+- A dry run that adds a user now skips the quota-record assertion for that not-yet-created account. A real deploy still requires the account's quota record. The VM test fills Grafana's machine variable before querying Prometheus, and its file-state comparison excludes the private home-policy status rewritten by the background timer. A separate agent reviewed both changes.
+- Files: `src/nanohpc/ansible/roles/home_server/tasks/users.yml`, `tests/test_sim.py`.
+
+## 2026-10-11: Install the command with uv
+
+- Built the project wheel and installed it with `uv tool install` into an isolated tool directory. From outside the checkout, the installed `nanohpc` command reported its version and validated `examples/minimal.yml`.
+- The installed command ran `nanohpc check` over SSH against two fresh Ubuntu 24.04 VMs. SSH was `ok` for both machines; the check reported their expected undeployed state. The wheel contains the Ansible playbook, helper commands, and website files used by deploy.
+- Files verified: `pyproject.toml`, `src/nanohpc/cli.py`, and package resources under `src/nanohpc/`. No code change was needed.
+
+## 2026-10-11: Website forwarding and configuration switches
+
+- The printed forwarding rules now work through real nginx, Apache, and Caddy with `forwarded_by`: allowed visitors reach the site, denied visitors receive 403, and the bare path redirects with 301. Apache accepts a verified certificate chain beyond its default depth; Caddy's redirect is explicitly permanent.
+- A deploy reloads nginx after Let's Encrypt replaces a certificate at the same path, including when the hostname changes. The website role checks whether IPv6 sockets work before writing nginx listeners, and keeps the package's default site from starting during installation until nanoHPC removes it.
+- `SimWebsiteFollowupsTest` passed on three Ubuntu 24.04 VMs after switching own and Let's Encrypt certificates, hostname, path, access, proxy, and package/front builds. Chromium checked the deployed pages. A separate real nginx process served HTTPS with IPv6 socket calls blocked; this verifies nginx startup under that failure, while a kernel-disabled cold boot was unavailable because the Lima VM lost SSH after reboot. The full local Python suite passed (517 tests, 41 skipped), as did the TypeScript check and an independent review.
+- Files: `src/nanohpc/ansible/roles/website/`, `src/nanohpc/render.py`, `src/nanohpc/website-source/tests/live.spec.ts`, `tests/test_{render,sim,website_nginx}.py`, `md/testing.md`.
+
+## 2026-10-10: Home usage notices and new-job threshold
+
+- `/home` quotas measure each user's usage without blocking writes. Above the configurable soft threshold (300 GB by default), the user sees a private usage and notice box on interactive front-node login, following the SLURM-REAL login notice. The Users page also shows usage against the thresholds.
+- Above the configurable hard threshold (400 GB by default), the front node sets that user's Slurm association `MaxJobs=0`: new jobs wait, running jobs continue, and `/home` remains writable. A five-minute timer restores the previous association limit when usage falls. The command checks fresh, complete private status before changing Slurm and keeps a journal of prior limits. A deploy runs it once after the collector starts.
+- The full Python suite passed (512 tests, 37 skipped), as did the focused website tests. `SimHomeJobPolicyTest` passed on Ubuntu 24.04 with a real running and waiting job, interactive login, private status, an over-threshold home write, and release after usage fell. `SimXfsQuotaTest` passed with `/home` on a separate XFS storage machine. `SimRebootTest` passed after restarting the storage, front, and two compute VMs; `SimRootHomeRebootTest` passed after restarting the front VM with `/home` on its root disk. An independent agent reviewed the feature. The built demo passed its served-site browser smoke test.
+- Files: `src/nanohpc/{config.py,deploy.py,ansible/roles/{home_server,monitoring}/,files/{cluster-home-quotas,cluster-home-job-policy,cluster-monitor-snapshot,nanohpc-home-notice.sh,cluster-health},website-source/,website/}`, `tests/test_{home_job_policy,home_quota,monitor_snapshot,sim}.py`, `md/testing.md`.
+
+## 2026-10-10: Offline and Unknown machines on the Cluster Map
+
+- The map fades the stack, name label, pipe, and moving traffic for a machine with Offline or Unknown health. Hover still shows its details without making it solid. When the snapshot is stale, every machine fades.
+- A served-site browser test failed against the old map for an Offline machine and an opaque pipe rail, and its hover check failed with a temporary regression. All passed with the fix. The nearby deployed-site and demo map tests passed.
+- Files: `src/nanohpc/website-source/src/cluster-map/sketch.ts`, `src/nanohpc/website-source/tests/website.spec.ts`, `src/nanohpc/website/`.
+
+## 2026-10-09: Total power in the Machines dashboard
+
+- On deployed Slurm and monitor sites, the Machines dashboard's Total power panel sums fresh wall-power readings from IPMI power-supply input sensors on the machines chosen in the Machine dropdown. All includes every machine with a readable sensor. An unsupported, offline, or stale machine drops out; no estimate replaces its reading. Collection runs every 30 seconds on supported machines. A failed sensor read during redeploy leaves an existing timer in place so it can recover. A dry run says that first sensor detection waits for the real deploy, after APT lists are available. The public demo keeps its fixed Grafana snapshot.
+- The collector and Prometheus query tests failed before implementation and passed after it. The query test covers selection, outages, stale readings, and an empty total. `SimMonitorDeployTest` passed twice on three Ubuntu 24.04 VMs: two had no IPMI reading, while one used an injected 500 W sensor. The test checked the live Grafana panel, node exporter, Prometheus, timer refresh, and automatic recovery after a failed read. The test does not verify a physical management chip. An independent agent reviewed the implementation and the recovery test.
+- Files: `src/nanohpc/files/{cluster-power-metrics,grafana/machines.json}`, `src/nanohpc/ansible/roles/machine_metrics/tasks/{main,power}.yml`, `tests/test_{power_metrics,machine_dashboard_data,sim}.py`, `md/testing.md`.
+
+## 2026-10-09: Machine filter for live metrics
+
+- Deployed Slurm and monitor sites show a Machine dropdown beside GPU lines in the Machine and GPU metrics dashboard. Names come from Prometheus, All is the default, and multiple selections filter every panel. A `#usage?machine=NAME` link can name one or several machines. The front or monitor host remains selectable. The public demo keeps its fixed Grafana snapshot, which has no live filter.
+- The website allows only the GET request for Grafana's Prometheus machine-name list, with the same access and rate limits as metric queries. Other label lists and writes stay blocked.
+- The filter's PromQL test failed before the change and passed after it for one, two, and all machines. Eighteen focused Python tests and 18 built-site browser tests passed. A local nginx probe checked the allowed and blocked routes. `SimMonitorDeployTest` passed on three Ubuntu 24.04 VMs, including the live Grafana variable, machine-list response, and rejected label request. A separate agent reviewed the change.
+- Files: `src/nanohpc/files/grafana/machines.json`, `src/nanohpc/ansible/roles/website/templates/website.conf.j2`, `src/nanohpc/website-source/{src/,tests/}`, `src/nanohpc/website/`, `tests/test_{machine_dashboard_data,website_nginx,sim}.py`.
+
+## 2026-10-09: honest Machines dashboard readings
+
+- Every Machines dashboard query requires a successful machine scrape in the last 45 seconds. GPU panels also require a collector reading less than 75 seconds old. CPU in use uses the last two idle-counter readings and omits a point when the counter resets. These limits follow the 30-second scrape and GPU collection intervals.
+- A `promtool` test using the dashboard's 11 actual queries failed before the change and passed after it. It covers a machine outage, a CPU restart and a separate counter reset while online, a stale GPU collector, a Prometheus gap, and recovery. Focused dashboard tests passed. A separate agent reviewed the queries and test. A live Grafana render was unavailable in the local environment.
+- Files: `src/nanohpc/files/grafana/machines.json`, `tests/test_machine_dashboard_data.py`, `tests/test_dashboards.py`.
+
+## 2026-10-09: Machines Node type column
+
+- The Slurm and demo Machines pages show `Node type` as its own column, using each machine's configured front, compute, or storage role. The role is no longer repeated beside the machine name. The monitor site's existing role column is named `Node type` and still shows Monitor or Machine. The compact Overview list keeps its current columns.
+- The focused built-site browser tests failed before the change and passed after it for Slurm, monitor, and demo. The desktop Machines page was checked in Chromium, and both site and demo phone tests passed.
+- Files: `src/nanohpc/website-source/{src/main.tsx,src/monitor.tsx,src/style.css,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`.
+
+## 2026-10-09: Overview fits a desktop screen
+
+- The Overview fits at 1440 × 900 without page scrolling, including the footer. At desktop widths of 1360px and above, its Machines map and Cluster Usage chart sit side by side; card and job spacing is tighter. The map, chart, labels, and jobs remain visible.
+- The built demo and served cluster site passed focused 1440 × 900 browser tests. The existing compact Overview and 320px phone browser tests passed. The built demo was inspected in Chromium at the target size.
+- Files: `src/nanohpc/website-source/{src/main.tsx,src/style.css,tests/demo.spec.ts,tests/website.spec.ts}`, `src/nanohpc/website/`.
+
+## 2026-10-09: public demo logo
+
+- The public demo header uses the framed network mark and a drawn `nanoHPC` wordmark in the style of SLURM-REAL. It has no subtitle. Deployed Slurm and monitor sites keep their configured cluster name and logo.
+- The built demo and deployed-site browser tests passed at desktop and 320px phone widths. The built demo was also inspected in Chromium at both widths, and a separate agent reviewed the change.
+- Files: `src/nanohpc/website-source/{public/nanohpc-mark.png,src/brand-logo.tsx,src/main.tsx,src/style.css,tests/demo.spec.ts}`, `src/nanohpc/website/`.
+
+## 2026-10-09: configured cluster name in Grafana
+
+- Grafana's folder and all dashboard titles now show the name from `cluster.yml` in both Slurm and monitor mode. Dashboard UIDs stay fixed so the website links keep working. The website and Slurm already used the configured name, and install paths remain fixed.
+- After an upgrade, nanoHPC waits for every dashboard to move into the named folder, then removes the old file-provisioned `Cluster` folder in its dedicated Grafana instance only if it is empty. A folder containing dashboards blocks cleanup with a clear error. The dashboard UIDs and data stay intact.
+- Focused tests cover two cluster names, stable UIDs, empty-folder removal, and refusal to remove an occupied folder. The fresh and old-to-new monitor deployments ran on Ubuntu 24.04 VMs and were checked through Grafana's live API. Ansible syntax and Ruff checks passed. A separate agent reviewed the name change and cleanup.
+- Files: `src/nanohpc/ansible/roles/grafana/tasks/main.yml`, `src/nanohpc/files/grafana/`, `tests/test_{grafana_names,grafana_upgrade,sim}.py`, `md/testing.md`.
+
 ## 2026-10-08: REAL website updates and test accounts
 
 - Overview opens with a Cluster Map inside the Machines card, with a separately remembered List view. Both maps have smaller layout buttons and simpler Partitions pipes. The header, cards, job lists, and footer are more compact; the footer shows data freshness.
@@ -64,6 +171,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 - At this point the Machines table listed compute machines only, without Internet. The 2026-10-06 follow-up added all roles and real Internet measurements. GPU availability has a grey box. Status labels use green for healthy and active, yellow for attention, coral for problems, and blue for idle. Cluster usage has a titled Machine and GPU metrics panel and no long-term history panel.
 - The map opens by default and offers Default, Partitions, and Geographic views. The demo groups machines into fictional buildings. The machine list and sample jobs were later revised to five machines, as recorded above.
+- The animated p5 map shows machine stacks, connecting pipes, moving shared-home traffic, and GPU activity. The Machines page has a show/hide button. On 2026-10-10 the user accepted this map as the planned animated architecture diagram; the focused served-site browser test passed again.
 - Files: `src/nanohpc/website-source/{src,scripts,tests}`, `src/nanohpc/files/cluster-monitor-snapshot`, `tests/test_monitor_snapshot.py`, `src/nanohpc/website/`.
 
 ## 2026-10-05: Grafana snapshots and Machines table
@@ -336,3 +444,23 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 - `cluster.yml` can allow a named user's supported tunnel program on named machines; the config validator rejects unknown users, programs, and machines. The validated list reaches each machine's service. Files: `src/nanohpc/{config,deploy}.py`, `examples/cluster.yml`, `tests/{test_config,test_deploy}.py`.
 - When Slack alerts are on, a configured user's `slack_id` and `NANOHPC_SLACK_BOT_TOKEN` in `.env` enable private notices for lasting findings at first sight and daily. A failed private post retries without repeating an accepted channel post. Secrets reach automatic deploys but stay in restricted files. Focused config, deployment, and local HTTP notifier tests passed. Files: `src/nanohpc/{config,deploy}.py`, `src/nanohpc/files/nanohpc-user-check-notify`, `src/nanohpc/ansible/{partial.yml,roles/alerts/,roles/auto_deploy/}`, `tests/{test_config,test_deploy,test_user_check_notify,test_user_check_notify_deploy}.py`.
 - The final Python suite passed (495 tests, 32 skipped). A separate agent reviewed the checker, allow-list, notifier, deployment, and docs; its two findings were fixed and rechecked. The packaged website build check passed.
+
+## 2026-10-09: automatic security updates after a confirmed update
+
+- A Slurm-mode deploy installs Ubuntu's unattended-upgrades on every configured machine. It refreshes package lists daily, but leaves automatic installs off until that machine completes a confirmed `nanohpc update` with no eligible Ubuntu security backlog. The backlog check includes security versions hidden below a newer normal-updates candidate. Deploys keep the enabled state after the marker is written. Monitor-only deploys leave the host's existing update policy alone.
+- The managed policy allows only Ubuntu's security pocket, excludes NVIDIA/CUDA package names, never reboots automatically, and checks the effective APT policy and active timers. Driver updates remain in the administrator's confirmed update flow. `nanohpc update` also accepts backup and storage machines; it pauses new compute jobs, checks fresh logins, saved restart settings, storage services, and failed units, then restores scheduling only on success.
+- Focused Python tests and fresh Ubuntu 24.04 VM tests passed. The compute test cleared a security version below an updates candidate, then ran the real unattended-upgrade: the eligible package installed and the NVIDIA fixture stayed at its old version. The storage test updated the backup VM and verified the policy and restored compute scheduling. The full local suite passed (500 tests, 33 VM-only skips). A separate agent reviewed the safety paths. The built wheel contains the new role and checker.
+- Files: `src/nanohpc/{auto_updates,update,cli}.py`, `src/nanohpc/ansible/roles/{auto_updates,base}/`, `tests/{test_auto_updates,test_compute_update,test_front_update,test_sim}.py`, `md/testing.md`.
+
+## 2026-10-11: boot and reconnect with the `/home` server down
+
+- NFS clients mount `/home` with `hard,nofail,x-systemd.automount,x-systemd.mount-timeout=90,nosuid,nodev`. Root SSH works while the home server is down, and first use mounts `/home` after it returns. Preflight, health, and front-update checks wake the automount before checking the real NFS source.
+- On NFS clients, logind uses `ProtectHome=tmpfs`. Its startup can still wait for the NFS mount, but root SSH becomes usable after Ubuntu's optional PAM step times out. When the front node is an NFS client, MariaDB uses `ProtectHome=no`: both its vendor `yes` and a tested `tmpfs` override failed to create a mount namespace during the outage. MariaDB runs as `mysql`; nanoHPC creates user home folders with mode 0700, but files users make readable under `/home` are no longer hidden from that service by systemd.
+- Ubuntu 24.04 VM tests passed with `/home` on the front node and on a separate storage machine. They checked root SSH before and after the 90-second mount timeout, MariaDB during the storage outage, automatic NFS reconnect, timer-based front health recovery, a compute reboot, and a deploy dry run. The full local Python suite passed (514 tests, 39 VM-only skips). A separate agent reviewed the service settings and tests. Recovery of optional Ubuntu services is recorded below.
+- Files: `src/nanohpc/ansible/roles/{home_client,preflight}/`, `src/nanohpc/files/cluster-health`, `src/nanohpc/update.py`, `tests/{test_sim.py,sim/}`, `md/testing.md`.
+
+## 2026-10-11: recover Ubuntu services after a shared `/home` outage
+
+- NFS clients run a minute check for `polkit` and `systemd-timedated` failures caused by a mount namespace error or start timeout. Once `/home` answers again, the check clears only those failures and starts the affected services. Their vendor `ProtectHome=yes` setting stays in place.
+- The Ubuntu 24.04 separate-storage VM test first reproduced a lasting `polkit` failure after storage returned. With the check installed, it passed after a front-node reboot during the outage. A separate test passed after storage disappeared while NFS `/home` was already mounted. The front-node-as-home-server boot regression passed. The full local suite passed (515 tests, 40 VM-only skips). A separate agent reviewed the recovery and tests; its SSH timeout retry finding was fixed.
+- Files: `src/nanohpc/ansible/roles/home_client/{tasks,files}/`, `tests/test_sim.py`, `md/testing.md`.

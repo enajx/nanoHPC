@@ -23,7 +23,7 @@ flowchart LR
   C --> WZ[Wizard]:::done
   M --> MO[Monitor without Slurm]:::done
   W --> MO
-  S --> N[Add node + redeploy]:::queued
+  S --> N[Add node + redeploy]:::done
   W --> DEMO[Public demo build]:::done
   DEMO --> DP[Publish demo]:::done
   DP --> WF[Selected website follow-ups]:::done
@@ -99,7 +99,7 @@ flowchart LR
 - [x] A deploy remounts existing `/scratch` disk or image, `/home` disk or bind mount, and shared `/home` when its `/etc/fstab` entry changes; the managed `nosuid,nodev` options take effect without a reboot.
 - [x] A deploy applies changed NFS-specific `/home` mount options without a reboot, while protecting compute jobs and restoring the previous mount after failure. See [DONE.md](md/DONE.md).
 - [x] After a deploy, a rebooted machine comes back with `/home`, quotas, the NFS mounts, and `/scratch` (checked on Ubuntu 24.04 VMs). See [DONE.md](md/DONE.md).
-- [x] XFS home and scratch disks, and quota enforcement over NFS (a user over the hard limit cannot write), are checked on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md).
+- [x] XFS home and scratch disks, and home quota readings over NFS, are checked on Ubuntu 24.04 VMs. The later home usage policy lets users keep writing and holds new jobs at its hard threshold. See [DONE.md](md/DONE.md).
 - [x] `/home` quotas survive an Ubuntu kernel upgrade and reboot; the new kernel's quota modules and a later deploy are checked on Ubuntu 24.04 VMs. See [DONE.md](md/DONE.md).
 - [x] `nanohpc check --before-restart` reports saved boot settings on every machine and fails on unsafe or unverified fstab, GRUB, NVIDIA, network, or automatic update restart settings. See [DONE.md](md/DONE.md).
 - [x] A confirmed `nanohpc restart` of one compute machine drains, waits for jobs, checks, reboots, and releases it only after a Slurm test job passes; failures leave it drained. See [DONE.md](md/DONE.md).
@@ -107,7 +107,7 @@ flowchart LR
 - [x] A confirmed `nanohpc update` of one compute machine uses a matching dry run, named care groups, SSH undo protection, and checks before resuming or awaiting `nanohpc restart`. See [DONE.md](md/DONE.md).
 - [x] `nanohpc update` accepts the confirmed front node, checks it after installation, and pauses new job starts during named care-group updates. See [DONE.md](md/DONE.md).
 - [x] Manual and automatic deploys, the timer and webhook, updates, and compute restarts share a cluster maintenance lock. See [DONE.md](md/DONE.md).
-- [ ] The default configuration enables automatic security updates on every machine after any backlog is installed through the update procedure. Automatic updates never restart a machine or install NVIDIA/CUDA packages; driver changes need the administrator's confirmation.
+- [x] The default configuration enables automatic security updates on every machine after the confirmed update procedure clears its backlog, without automatic restarts or NVIDIA/CUDA upgrades. See [DONE.md](md/DONE.md).
 - [x] A home server with a missing local `/home` disk boots to root SSH without exporting an empty `/home`; the original data and NFS access return when the disk is restored. See [DONE.md](md/DONE.md).
 - [x] Admins have direct key-only root login on every machine for recovery, with their keys from `cluster.yml` on local disk; a dry run stops before replacing other root keys that would lose access. See [DONE.md](md/DONE.md).
 
@@ -116,7 +116,7 @@ flowchart LR
 - [x] The chosen SLURM-REAL website improvements and demo updates work in the built site; live measurements, guide, Apptainer, and notebook helper are included. See [DONE.md](md/DONE.md).
 - [x] The real Machines page colors `/home` speed from its shown many-small-files write speed. See [DONE.md](md/DONE.md).
 - [x] Deploy only monitoring tools on machines without Slurm, with a monitor-mode `cluster.yml`, wizard, dry run, check, and node deploy (see [DONE.md](md/DONE.md)).
-- [ ] The cluster name from the configuration is shown in the website, dashboards, and Slurm. Install paths are fixed (`/etc/nanohpc`, `/var/lib/nanohpc`). No site name is hardcoded.
+- [x] The configured cluster name appears in the website, Grafana folder and dashboards, and Slurm, with fixed install paths and stable dashboard links; an old empty Grafana folder is removed after upgrade. See [DONE.md](md/DONE.md).
 - [x] Prometheus collects machine and GPU metrics from every machine over mutually authenticated TLS.
 - [x] Daily summaries are kept for 5 years (the history Prometheus).
 - [x] The daily summaries are shown in the long-term history in Grafana.
@@ -124,14 +124,14 @@ flowchart LR
 - [x] Grafana dashboards (queue, queue history, GPU usage, machines, long-term history) work for any number of nodes, GPU and CPU-only.
 - [x] The status collector writes the website snapshot every 30 seconds.
 - [x] The website shows machine status, queue, GPU usage, and current policies for any cluster, read-only.
-- [ ] Reduce the size of things on the website's Overview page so they fit without scrolling.
+- [x] The website's Overview page fits a 1440 × 900 desktop without page scrolling, including the footer. See [DONE.md](md/DONE.md).
 - [x] Overview has a smaller header, cards, job lists, and footer update time. See [DONE.md](md/DONE.md).
 - [x] The Overview Machines card shows the Cluster Map by default and has buttons to switch between that map and the current machine table inside the card, remembering its choice separately from the Machines page. See [DONE.md](md/DONE.md).
 - [x] The Cluster Map uses smaller layout buttons and simple branching pipes in the Partitions view on the Overview and Machines pages. See [DONE.md](md/DONE.md).
 - [x] Overview job tables show each job's booked time limit, including partition defaults and jobs without a limit. See [DONE.md](md/DONE.md).
 - [x] The Users page places GPU usage history beside a compact user ranking on wide screens, with whole GPU-hours and two-decimal fair-share values. See [DONE.md](md/DONE.md).
 - [x] Accounts marked `test_account: true` stay in jobs and totals but are absent from user lists, per-user metrics, and historical per-user Grafana panels. See [DONE.md](md/DONE.md).
-- [ ] The Machines tab's Machines card has a `Node type` column showing each machine's configured role, including front, compute, and storage nodes.
+- [x] The Machines tab's Machines card has a `Node type` column showing each machine's configured role, including front, compute, and storage nodes. See [DONE.md](md/DONE.md).
 - [x] In the public demo, the front node shows `1 Gb/s` Link Speed in the Machines tab's machine table, matching the compute nodes. See [DONE.md](md/DONE.md).
 - [x] Cluster name, logo, login address, and the user guide on the website come from the configuration.
 - [x] The website is served by its own nginx over HTTPS, with a Let's Encrypt certificate or the administrator's own certificate.
@@ -140,13 +140,18 @@ flowchart LR
 - [x] Anyone can read the website by default (no login); `cluster.yml` can limit it to listed networks.
 - [x] The website ships prebuilt in the nanoHPC package; `cluster.yml` can choose to build it on the front node instead.
 - [x] Let's Encrypt certificates are requested and renewed on the simulated cluster, against Pebble (Let's Encrypt's test server).
-- [ ] The Machines page shows a minimal retro-style animated diagram of the cluster architecture, which users can turn on and off with a button.
+- [x] The Machines page shows the retro-style animated Cluster Map of the cluster architecture, with a button to show or hide it. See [DONE.md](md/DONE.md).
+- [x] The machines Grafana dashboard uses fresh real readings, with gaps for outages, stale GPU data, and CPU counter resets. See [DONE.md](md/DONE.md).
+- [x] Deployed Slurm and monitor sites have a multi-select Machine filter for every machine metric panel, with All by default and repeatable `?machine=` links. See [DONE.md](md/DONE.md).
+- [x] The deployed Machines dashboard has a Total power panel summing fresh IPMI power-supply input readings from the machines chosen in the Machine dropdown; unsupported machines are omitted. See [DONE.md](md/DONE.md).
+- [x] On the Cluster Map, Offline and Unknown machines have transparent stacks, labels, and pipes, including while hovered or while the snapshot is stale. See [DONE.md](md/DONE.md).
 
-- [ ] Above the soft limit (`home.quota_soft_gb` in `cluster.yml`, e.g. 300 GB) users only get a notice; writing never stops (today the soft limit becomes a hard stop after `quota_grace`).
-- [ ] No hard limit for writing to `/home`; the hard limit (`home.quota_hard_gb`) applies to running jobs instead: a user above it cannot start jobs until they clean up, which is more flexible (today the filesystem stops writes at the hard limit).
-- [ ] Machines boot normally when the machine serving `/home` is down: `/home` is mounted with `hard,nofail,x-systemd.automount,x-systemd.mount-timeout=90` (plus `nosuid,nodev`), so the boot never waits on it, SSH comes up, and `/home` connects by itself on first use once the server answers (as in the source deployment, commit 7b76d31, roles/nfs_client). Checked on the simulated cluster by rebooting a compute node with the home server down. Agreed for later (2026-10-02); no live remount handling needed before v0.1, since no real cluster runs nanoHPC yet.
+- [x] Above `home.quota_soft_gb` (300 GB by default), users see a private notice on interactive login and can keep writing. See [DONE.md](md/DONE.md).
+- [x] Above `home.quota_hard_gb` (400 GB by default), new Slurm jobs wait until home usage falls; running jobs and writes continue. See [DONE.md](md/DONE.md).
+- [x] Machines keep root SSH when the `/home` server is down and reconnect shared `/home` on first use after it returns. See [DONE.md](md/DONE.md).
+- [x] After an NFS `/home` outage, Ubuntu auxiliary services such as `polkit` and `systemd-timedated` recover from failed starts when storage returns. See [DONE.md](md/DONE.md).
 - [x] A push to the configuration repository during a manual deploy's real run cannot start an overlapping automatic deploy through the GitHub webhook. See [DONE.md](md/DONE.md).
-- [ ] Website follow-ups: the printed forwarding rules are tried with real nginx, Apache, and Caddy (with `forwarded_by`); switching between certificate types, hostnames, paths, and build modes is checked on the simulated cluster; nginx starts on machines with IPv6 turned off.
+- [x] Website forwarding, certificate and build switches, and IPv4-only nginx startup are checked on the simulated cluster. See [DONE.md](md/DONE.md).
 
 ### Backup, alerts, and auto-deploy
 
@@ -161,7 +166,7 @@ flowchart LR
 
 ### Commands
 
-- [ ] `nanohpc` is installed with `uv tool install` and runs from any machine with SSH access to the cluster.
+- [x] `nanohpc` installs with `uv tool install` and runs from an SSH-capable administrator machine. See [DONE.md](md/DONE.md).
 - [x] Every deploy runs a read-only dry run first (Ansible check mode on every machine; it changes nothing except refreshing apt's package lists) and continues to the real run on its own. Machines whose dry run failed are left out of the real run, unchanged, and listed at the end with what failed; the deploy then exits with an error, so an automatic deploy records a failure and alerts. If the front node or the home machine fails its dry run, nothing is deployed. Every role works in check mode (a first deploy of a new machine can only be partly previewed).
 - [x] `nanohpc init` is a full-screen terminal wizard (Textual) that writes a whole `cluster.yml` with simple defaults, or opens an existing one to change it, and probes the machines over SSH for CPUs, memory, GPU type and count, disks, and Ubuntu version. Its steps: machines, storage, users, partitions and policy, website, extras, review.
 - [x] `SETUP-for-AGENTS.md` lists the setup steps for agents, matching the wizard's (agents write `cluster.yml` from the examples); PROJECT.md links to it, and the wizard's footer points to it for an installation by an AI agent.
@@ -169,15 +174,16 @@ flowchart LR
 - [x] The wizard and the docs explain the three kinds of storage (home: small, safe, backed up; shared scratch: large, fast, cleaned by age; local scratch: per machine, per job), recommend a faster network (10 GbE or more) before adding shared storage, and suggest moving `/home` off the front node to its own storage machine (or a NAS) as the cluster grows.
 - [x] The wizard asks for the website's hostname, path, HTTPS choice, and who can open it, and recommends (says it is not required) a private network such as WireGuard or Tailscale for security and simpler administrator access.
 - [x] While probing the machines, the wizard finds users whose UID differs between machines (or from `cluster.yml`) and guides the administrator to harmonise them before the first deploy, using `nanohpc fix-uid` (built in M7: after the administrator confirms and a read-only check, it renumbers that user on that machine). The deploy's stop on a UID conflict stays as a safety net.
-- [ ] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below.
-- [ ] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster.
+- [x] `nanohpc deploy` sets up a new cluster on fresh machines from `cluster.yml`, and runs every part below. See [DONE.md](md/DONE.md).
+- [x] Rerunning `nanohpc deploy` after a configuration change applies only that change and does not break a running cluster. See [DONE.md](md/DONE.md).
 - [x] Partial deploys instead of separate commands (agreed 2026-10-03): `nanohpc deploy --only users|policy|partitions` or `--only node NAME`, with the same checks and dry run (see [DONE.md](md/DONE.md)).
 - [x] `nanohpc check` reports, without changing anything, every machine against `cluster.yml`: problems first, non-zero exit code on problems (see [DONE.md](md/DONE.md)).
 
 ### Release
 
 - [x] The static demo build lets visitors browse every frontend page with fictional cluster data and interactive sample charts, without using the REAL lab deployment (see [DONE.md](md/DONE.md)).
-- [x] The public demo uses the nanoHPC name and subtitle, the requested sample machines and users, a working help pop-up, a current-time refresh display, and smoother sample GPU history; the website offers only the default and coral/sand themes (see [DONE.md](md/DONE.md)).
+- [x] The public demo uses the nanoHPC name, the requested sample machines and users, a working help pop-up, a current-time refresh display, and smoother sample GPU history; the website offers only the default and coral/sand themes (see [DONE.md](md/DONE.md)).
+- [x] The public demo header shows a framed mark and nanoHPC wordmark in the style of SLURM-REAL, without a subtitle, at desktop and phone widths; deployed sites keep their configured cluster name and logo. See [DONE.md](md/DONE.md).
 - [x] The demo How to and Cluster policy pages show the useful layout and generic guidance from the reference deployment with fictional values and no REAL or ITU details (see [DONE.md](md/DONE.md)).
 - [x] The How to guide omits the pictured terminal section, uses the reference site's section spacing and heading size, and shows Jobs examples first (see [DONE.md](md/DONE.md)).
 - [x] The website has a Settings option with a read-only message, and a footer linking to nanoHPC, with generic wording in the public demo (see [DONE.md](md/DONE.md)).
@@ -202,12 +208,13 @@ flowchart LR
   - [x] The Tech stack no longer displays the Python, Ubuntu, React, Playwright, Vite, TypeScript, and uv badges (`README.md`).
   - [x] The README feature list is concise and plain, with no bold lead-ins (`README.md`).
   - [ ] The README has monitor-only setup instructions (`README.md` currently says TBA).
-- [ ] Before the release, the real-VM tests pass on Ubuntu 22.04 and 26.04 too (during development they run on 24.04 only).
+- [x] Before the release, the core deploy VM tests pass on Ubuntu 22.04 and 26.04, alongside focused VM regressions on 24.04. See [DONE.md](md/DONE.md).
 - [ ] Once nanoHPC is released and development slows down, bring the split-out real-VM tests (`SimRedeployTest`, `SimAlertsTest`, and the ones run only when relevant) back into every run, so users get proper tests when deploying on their systems.
-- [ ] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website.
-- [ ] A full setup is tested on real x86 machines, and once on a real GPU machine for the NVIDIA driver and CUDA.
-- [ ] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option.
-- [ ] The repository is published under the MIT license.
+- [x] A full setup is tested on the simulated cluster, from an empty state to a job running on a compute node and visible on the website. See [DONE.md](md/DONE.md).
+- [x] A full setup is tested on x86 Lima VMs on a Linux host, from an empty state to a running compute job visible on the website. See [DONE.md](md/DONE.md).
+- [ ] A setup is tested once on a real GPU machine for the NVIDIA driver and CUDA.
+- [x] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option. See [administrator-guide.md](md/administrator-guide.md).
+- [x] The repository is published under the MIT license. See [DONE.md](md/DONE.md).
 - [ ] Once released: a "Buy me a coffee" link in the repository, for people who find nanoHPC useful.
 - [ ] A nice retro-style and/or ASCII animation of the project exists, to use as promo on LinkedIn when sharing the project in the open.
 
@@ -222,7 +229,7 @@ flowchart LR
 - [ ] Test nanoHPC on non-Ubuntu machines.
 - [ ] Move the REAL cluster from SLURM-REAL to nanoHPC (maybe, not planned).
 - [ ] Optional user-writable shared scratch on a separate storage machine (not the front node), seen by every compute node: a fast NFS server with NVMe or SSD disks first, BeeGFS later. Files unused for N days (30 to 90) are deleted by a daily cleanup. Needs a fast network. This is separate from the read-only datasets area used by `stage-dataset --shared`.
-- [ ] A general "Welcome to <cluster name>" login banner (with a small "powered by nanoHPC") and some general info. Below it, notifications for that user only: when they are above the soft limit of their home usage (as defined in `cluster.yml`, the same for all users), they are told to clean up, with a summary of where most of their space is (for example a certain repository or certain worktrees).
+- [ ] A general "Welcome to <cluster name>" login banner (with a small "powered by nanoHPC") and some general info. Expand the existing private home usage box with a summary of where most of the user's space is (for example a repository or worktrees).
 - [ ] See how the terminal login banner looks in SLURM-REAL and use it as inspiration for the login banner above. There it is `roles/job_modes/files/real-hpc` (big block-letter title with a short animation and time-of-day colours, then the user's jobs, the cluster's jobs, the 7-day waiting time, GPU-hours and ranking, an impact estimate, and home space with the largest folders), `roles/home_space` (each user's usage, readable only by them), and `roles/login_notice` (shown on interactive logins); tests in `tests/test_real_hpc.py`. In nanoHPC the title is the cluster name from `cluster.yml` and the links point to the cluster's own website; the impact estimate is kept as in SLURM-REAL (same fixed assumptions), to make configurable later (agreed 2026-10-03; the banner stays in Later).
 - [ ] See how SLURM-REAL implements Slack notifications when a job ends and do the same: a private message to the job's user when their batch job ends, through a Slack app's bot token (job ID and name, how it ended with the exit code, run time, machine). Planned there on 2026-10-03 in `md/plan-slack.md` (commit 234223c); check whether it is built before porting.
 - [ ] Deploy only the cluster monitoring tools (metrics, alerts, status snapshot, Grafana, website) on a cluster that already has Slurm installed, without replacing its Slurm setup.

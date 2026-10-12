@@ -306,5 +306,78 @@ class FrontUpdateCommandTest(unittest.TestCase):
         self.assertFalse(any("state=resume" in call for call in self.calls()))
 
 
+class StorageUpdateCommandTest(unittest.TestCase):
+    """A backup machine uses the confirmed update path and pauses new jobs during installation."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.folder = Path(temporary.name)
+        bin_folder = self.folder / "bin"
+        bin_folder.mkdir()
+        fake = FAKE_FRONT_SSH.replace(
+            "'192.168.104.13' if target == 'cpu1' else '192.168.104.10'",
+            "'192.168.104.13' if target == 'cpu1' else '192.168.104.20' if target == 'store' else '192.168.104.10'",
+        )
+        write_command(bin_folder, "ssh", fake)
+        self.log = self.folder / "ssh.log"
+        self.state = self.folder / "machine.json"
+        self.state.write_text(json.dumps({"nodes": {"cpu1": "IDLE", "gpu4": "IDLE", "gpu2": "DRAIN", "gpu4i": "IDLE"}}))
+        machine_facts = self.folder / "facts.json"
+        machine_facts.write_text(json.dumps(facts()))
+        self.environment = {
+            **os.environ,
+            "PATH": f"{bin_folder}:{os.environ['PATH']}",
+            "UPDATE_SSH_LOG": str(self.log),
+            "UPDATE_FAKE_STATE": str(self.state),
+            "UPDATE_FAKE_FACTS": str(machine_facts),
+            "XDG_STATE_HOME": str(self.folder / "state"),
+        }
+
+    def calls(self) -> list[str]:
+        """Read the fake SSH commands in order."""
+        return [json.loads(line)[1] for line in self.log.read_text().splitlines()]
+
+    def command(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        """Run the public command against the configured backup machine."""
+        return subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from nanohpc.cli import main; main()",
+                "update",
+                str(ROOT / "examples/cluster.yml"),
+                "store",
+                *arguments,
+            ],
+            capture_output=True,
+            text=True,
+            env=self.environment,
+            check=False,
+        )
+
+    def test_backup_update_pauses_and_restores_scheduling(self) -> None:
+        """Only available nodes are drained, then resumed after the backup machine passes checks."""
+        preview = self.command("--dry-run")
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        applied = self.command("--confirm", "store")
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        calls = self.calls()
+        self.assertTrue(any("state=drain" in call for call in calls))
+        self.assertTrue(any("apt-get install" in call for call in calls))
+        self.assertTrue(any("state=resume" in call for call in calls))
+
+    def test_bad_backup_access_leaves_nodes_drained(self) -> None:
+        """The backup machine stays isolated when its fresh root login fails after an update."""
+        self.assertEqual(self.command("--dry-run").returncode, 0)
+        self.environment["UPDATE_FAKE_FAIL_LOGIN"] = "root"
+        applied = self.command("--confirm", "store")
+        self.assertNotEqual(applied.returncode, 0)
+        self.assertIn("root login", applied.stderr)
+        nodes = json.loads(self.state.read_text())["nodes"]
+        self.assertEqual(nodes["cpu1"], "DRAIN")
+        self.assertFalse(any("state=resume" in call for call in self.calls()))
+
+
 if __name__ == "__main__":
     unittest.main()

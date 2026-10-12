@@ -4,6 +4,7 @@
 In Slurm mode, read scheduler commands and optional Prometheus measurements. In monitor mode, read
 Prometheus alone. Never execute visitor-supplied queries. Write:
 - status.json for the website (`--output`, and a copy at `--mirror-output`);
+- a private home-policy status with every configured user, including test accounts (`--home-policy-output`);
 - machines.md, a Markdown table of the compute machines (`--machine-markdown-output`, and a copy at
   `--machine-markdown-mirror-output`);
 - cluster.prom, snapshot and mode-specific figures for node_exporter's textfile collector (`--metrics`).
@@ -13,6 +14,7 @@ Arguments (all set by the operator, never from the website):
   --mode slurm|monitor      Slurm is the default for existing deployments.
   --output PATH              status.json to write.
   --mirror-output PATH       optional second copy of status.json.
+  --home-policy-output PATH  Slurm mode: private status for home usage policy; excludes no users.
   --machine-markdown-output PATH         machines.md to write.
   --machine-markdown-mirror-output PATH  optional second copy of machines.md.
   --metrics PATH             cluster.prom to write.
@@ -117,6 +119,17 @@ def atomic_write(path: Path, content: str) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     temporary.chmod(0o644)
+    temporary.replace(path)
+
+
+def atomic_private_write(path: Path, content: str) -> None:
+    """Replace the private home policy input with data readable only by its owner."""
+    temporary = path.with_name("." + path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.chmod(0o600)
     temporary.replace(path)
 
 
@@ -761,6 +774,7 @@ def main() -> None:
     parser.add_argument("--mode", choices=("slurm", "monitor"), default="slurm")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mirror-output", type=Path)
+    parser.add_argument("--home-policy-output", type=Path)
     parser.add_argument("--machine-markdown-output", type=Path, required=True)
     parser.add_argument("--machine-markdown-mirror-output", type=Path)
     parser.add_argument("--metrics", type=Path, required=True)
@@ -776,6 +790,8 @@ def main() -> None:
     if args.refresh_seconds < 5:
         parser.error("refresh interval must be at least five seconds")
     if args.mode == "monitor":
+        if args.home_policy_output:
+            parser.error("--home-policy-output applies only to Slurm mode")
         if not args.prometheus_url:
             parser.error("--prometheus-url is required in monitor mode")
         result, metrics = collect_monitor(
@@ -801,6 +817,14 @@ def main() -> None:
             set(args.exclude_users or []),
         )
         machine_document = machines_markdown(result, args.cluster_name)
+        if args.home_policy_output:
+            now = datetime.fromisoformat(result["generated_at"])
+            quotas = home_quotas(args.prometheus_url, int(now.timestamp()) // 60 * 60, now)
+            policy = {
+                "generated_at": result["generated_at"],
+                "users": [{"user": user, "home": quotas.get(user)} for user in sorted(set(args.users))],
+            }
+            atomic_private_write(args.home_policy_output, json.dumps(policy, indent=2) + "\n")
     atomic_write(args.metrics, metrics)
     atomic_write(args.output, json.dumps(result, indent=2) + "\n")
     atomic_write(args.machine_markdown_output, machine_document)

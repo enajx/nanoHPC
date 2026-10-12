@@ -31,8 +31,8 @@ class HomeQuotaTests(unittest.TestCase):
                 "#!/bin/sh\n"
                 f"echo \"$@\" > '{called}'\n"
                 f"printf '{HEADER}\\n'\n"
-                "printf 'alice,ok,ok,307200,307200,409600,,12,0,0,\\n'\n"
-                "printf 'bob,ok,ok,1024,307200,307200,,8,0,0,\\n'\n"
+                "printf 'alice,ok,ok,307200,0,0,,12,0,0,\\n'\n"
+                "printf 'bob,ok,ok,1024,0,0,,8,0,0,\\n'\n"
                 "printf 'root,ok,ok,999,0,0,,1,0,0,\\n'\n"
             )
             command.chmod(0o700)
@@ -45,19 +45,23 @@ class HomeQuotaTests(unittest.TestCase):
                 str(command),
                 "--filesystem",
                 "/",
+                "--soft-bytes",
+                str(307200 * 1024),
+                "--hard-bytes",
+                str(409600 * 1024),
                 "--users",
                 "alice",
                 "bob",
             ]
             completed = subprocess.run(args, capture_output=True, text=True, check=False)
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(called.read_text().split(), ["-u", "-O", "csv", "/"])
+            self.assertEqual(called.read_text().split(), ["-u", "-v", "-O", "csv", "/"])
             lines = output.read_text().splitlines()
             values = {line.rsplit(" ", 1)[0]: line.rsplit(" ", 1)[1] for line in lines if not line.startswith("#")}
             self.assertEqual(values['cluster_home_quota_used_bytes{user="alice"}'], str(307200 * 1024))
             self.assertEqual(values['cluster_home_quota_soft_bytes{user="alice"}'], str(307200 * 1024))
             self.assertEqual(values['cluster_home_quota_hard_bytes{user="alice"}'], str(409600 * 1024))
-            self.assertEqual(values['cluster_home_quota_hard_bytes{user="bob"}'], str(307200 * 1024))
+            self.assertEqual(values['cluster_home_quota_hard_bytes{user="bob"}'], str(409600 * 1024))
             self.assertLess(abs(float(values["cluster_home_quota_collected_timestamp_seconds"]) - time.time()), 60)
             self.assertEqual(len(values), 7)
             for name in ("used_bytes", "soft_bytes", "hard_bytes", "collected_timestamp_seconds"):
@@ -66,6 +70,15 @@ class HomeQuotaTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o644)
             self.assertNotIn("root", output.read_text())
             before = output.read_bytes()
+            for used in ("", "-1", "broken", "1.5"):
+                with self.subTest(used=used):
+                    command.write_text(
+                        f"#!/bin/sh\nprintf '{HEADER}\\nalice,ok,ok,{used},0,0,,1,0,0,\\nbob,ok,ok,0,0,0,,1,0,0,\\n'\n"
+                    )
+                    failed = subprocess.run(args, capture_output=True, text=True, check=False)
+                    self.assertNotEqual(failed.returncode, 0)
+                    self.assertIn("Invalid quota usage", failed.stderr)
+                    self.assertEqual(output.read_bytes(), before)
             command.write_text("#!/bin/sh\nexit 1\n")
             failed = subprocess.run(args, capture_output=True, text=True, check=False)
             self.assertNotEqual(failed.returncode, 0)
@@ -87,6 +100,10 @@ class HomeQuotaTests(unittest.TestCase):
                 str(command),
                 "--filesystem",
                 "/home",
+                "--soft-bytes",
+                str(307200 * 1024),
+                "--hard-bytes",
+                str(409600 * 1024),
                 "--users",
                 "alice",
                 "bob",

@@ -1,0 +1,114 @@
+# A failed probe must not prevent clusters without IPMI sensors from deploying.
+# Only valid power-supply input readings are used; there is no estimated draw.
+- name: Install the management-chip reader
+  ansible.builtin.apt:
+    name: ipmitool
+    state: present
+    install_recommends: false
+  when: not ansible_check_mode
+
+- name: Explain wall-power detection in the dry run
+  ansible.builtin.debug:
+    msg: >-
+      Wall power will be checked during the real deploy, after APT lists are available.
+      A readable IPMI power-supply input sensor enables the collector on this machine.
+  when: ansible_check_mode
+
+- name: Install the wall-power collector
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-power-metrics"
+    dest: /usr/local/bin/cluster-power-metrics
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Look for a collector already scheduled on this machine
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-power-metrics.timer
+  register: old_power_timer
+  when: not ansible_check_mode
+
+- name: Read wall power once to check this machine's support
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/cluster-power-metrics
+      - --output
+      - /var/lib/nanohpc/metrics-textfile/power.prom
+  register: power_probe
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+
+- name: Install the wall-power collector service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nanohpc-power-metrics.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Read wall power from the management chip (nanoHPC)
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/cluster-power-metrics --output /var/lib/nanohpc/metrics-textfile/power.prom
+      TimeoutStartSec=30s
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      ProtectKernelTunables=true
+      ProtectKernelModules=true
+      ProtectControlGroups=true
+      ReadWritePaths=/var/lib/nanohpc/metrics-textfile
+  register: power_service
+  when: power_probe.rc | default(1) == 0
+
+- name: Install the wall-power collector timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nanohpc-power-metrics.timer
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Read wall power every 30 seconds (nanoHPC)
+
+      [Timer]
+      OnBootSec=30s
+      OnUnitActiveSec=30s
+      AccuracySec=1s
+      Unit=nanohpc-power-metrics.service
+
+      [Install]
+      WantedBy=timers.target
+  register: power_timer
+  when: power_probe.rc | default(1) == 0
+
+- name: Schedule wall-power collection
+  ansible.builtin.systemd_service:
+    name: nanohpc-power-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ power_service.changed or power_timer.changed }}"
+  when: power_probe.rc | default(1) == 0
+
+- name: Remove old readings from a machine without a scheduled collector
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/nanohpc-power-metrics.timer
+    - /etc/systemd/system/nanohpc-power-metrics.service
+    - /var/lib/nanohpc/metrics-textfile/power.prom
+  when: not ansible_check_mode and power_probe.rc != 0 and not old_power_timer.stat.exists
+
+- name: Report why this machine has no wall-power readings
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} has no readable IPMI power-supply input sensor right now;
+      it is excluded from Total power once its last reading ages out.
+      {% if old_power_timer.stat.exists %}The existing collector stays scheduled so it can recover.{% endif %}
+      Collector error:
+      {{ power_probe.stderr | trim | regex_replace('^.*\n', '') }}
+  when: not ansible_check_mode and power_probe.rc != 0

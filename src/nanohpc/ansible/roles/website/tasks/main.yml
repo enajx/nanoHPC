@@ -10,7 +10,20 @@
     name: nginx
     state: present
     install_recommends: false
+    # The packaged default site has an IPv6 listener. Start nginx only after that site is removed.
+    policy_rc_d: 101
   register: nginx_package
+
+- name: Check whether nginx can listen on IPv6
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import socket; sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM); sock.bind(('::', 0)); sock.close()"
+  register: website_ipv6_available
+  changed_when: false
+  failed_when: false
+  check_mode: false
 
 - name: Remove nginx's default site
   ansible.builtin.file:
@@ -179,6 +192,7 @@
               '--logs-dir', '/var/log/nanohpc-certbot'] + certbot_server }}
       environment: "{{ certbot_environment }}"
       when: letsencrypt_current.stdout != 'ok'
+      register: issued_certificate
 
     - name: Use the new certificate
       ansible.builtin.set_fact:
@@ -187,6 +201,13 @@
 
     - name: Install and load the nginx site with HTTPS
       ansible.builtin.include_tasks: nginx_site.yml
+
+    # The site still names the same certificate paths when the hostname changes. nginx must load the new files.
+    - name: Reload nginx after a new certificate
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+      when: issued_certificate is changed
 
     - name: Install the renewal service and timer
       ansible.builtin.copy:

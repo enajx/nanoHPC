@@ -1,17 +1,98 @@
 # Official non-setuid Apptainer packages are available for Ubuntu on amd64 and arm64.
-- name: Install the Ubuntu PPA tools for Apptainer
+# The bundled PPA key has fingerprint F6B0F5193D4F3301EF491FF0AFE36534FC6218AE.
+- name: Install the HTTPS certificates for Apptainer's repository
   ansible.builtin.apt:
-    name: [software-properties-common, python3-launchpadlib, ca-certificates]
+    name: ca-certificates
     state: present
     install_recommends: false
 
+- name: Create the directory for Apptainer's signing key
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Apptainer's PPA signing key
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/apptainer-ppa.asc"
+    dest: /etc/apt/keyrings/nanohpc-apptainer.asc
+    owner: root
+    group: root
+    mode: "0644"
+  register: apptainer_key
+
+- name: Check for the previous Apptainer PPA source entry
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/nanohpc-apptainer.list
+  register: apptainer_old_source
+
+- name: Check for the previous global APT keyring
+  ansible.builtin.stat:
+    path: /etc/apt/trusted.gpg
+  register: apptainer_old_keyring
+  when: apptainer_old_source.stat.exists
+
+- name: Find the previous globally trusted Apptainer PPA key
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --batch
+      - --no-options
+      - --list-packets
+      - /etc/apt/trusted.gpg
+  register: apptainer_old_keys
+  environment:
+    GNUPGHOME: /nonexistent
+  changed_when: false
+  check_mode: false
+  # With no GPG home, GPG may return 2 even after reading the public key packets.
+  failed_when: >-
+    apptainer_old_keys.rc != 0
+    and 'issuer fpr v4 F6B0F5193D4F3301EF491FF0AFE36534FC6218AE' not in apptainer_old_keys.stdout
+  when: apptainer_old_source.stat.exists and apptainer_old_keyring.stat.exists | default(false)
+
+- name: Remove the previous Apptainer PPA source entry
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/nanohpc-apptainer.list
+    state: absent
+  register: apptainer_legacy_source
+
+- name: Remove the previous Apptainer key from global APT trust
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --batch
+      - --yes
+      - --no-default-keyring
+      - --keyring
+      - /etc/apt/trusted.gpg
+      - --delete-key
+      - F6B0F5193D4F3301EF491FF0AFE36534FC6218AE
+  when: >-
+    not ansible_check_mode
+    and apptainer_old_source.stat.exists
+    and 'issuer fpr v4 F6B0F5193D4F3301EF491FF0AFE36534FC6218AE' in apptainer_old_keys.stdout | default('')
+
 - name: Add Apptainer's official Ubuntu repository
-  ansible.builtin.apt_repository:
-    repo: ppa:apptainer/ppa
-    filename: nanohpc-apptainer
-    state: present
-    update_cache: true
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nanohpc-apptainer.sources
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Types: deb
+      URIs: https://ppa.launchpadcontent.net/apptainer/ppa/ubuntu/
+      Suites: {{ ansible_distribution_release }}
+      Components: main
+      Signed-By: /etc/apt/keyrings/nanohpc-apptainer.asc
   register: apptainer_repository
+
+- name: Refresh package lists after changing Apptainer's repository
+  ansible.builtin.apt:
+    update_cache: true
+  when: not ansible_check_mode and (apptainer_key.changed or apptainer_repository.changed or apptainer_legacy_source.changed)
 
 - name: Install Apptainer without setuid mode
   ansible.builtin.apt:
@@ -19,7 +100,7 @@
     state: present
     install_recommends: false
   register: apptainer_package
-  when: not (ansible_check_mode and apptainer_repository.changed)
+  when: not (ansible_check_mode and (apptainer_key.changed or apptainer_repository.changed or apptainer_legacy_source.changed))
 
 - name: Check the installed Apptainer command
   ansible.builtin.command: /usr/bin/apptainer --version
@@ -27,4 +108,4 @@
   changed_when: false
   check_mode: false
   failed_when: not apptainer_version.stdout.startswith('apptainer version ')
-  when: not (ansible_check_mode and (apptainer_repository.changed or apptainer_package.changed | default(false)))
+  when: not (ansible_check_mode and (apptainer_key.changed or apptainer_repository.changed or apptainer_legacy_source.changed or apptainer_package.changed | default(false)))

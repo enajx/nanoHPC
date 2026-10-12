@@ -43,7 +43,9 @@ limit_conn_zone $binary_remote_addr zone=nanohpc_connections:10m;
 
 server {
     listen 80 default_server;
+{% if website_ipv6_available.rc == 0 %}
     listen [::]:80 default_server;
+{% endif %}
     server_name _;
     server_tokens off;
 
@@ -62,7 +64,9 @@ server {
 {% if tls_certificate is not none %}
 server {
     listen 443 ssl default_server;
+{% if website_ipv6_available.rc == 0 %}
     listen [::]:443 ssl default_server;
+{% endif %}
     server_name {{ website.hostname }};
     server_tokens off;
     absolute_redirect off;
@@ -154,6 +158,12 @@ server {
 
         location ~ ^{{ escaped }}grafana/apis/dashboard\.grafana\.app/((v2/namespaces/default/dashboards/({{ dashboards }})/dto)?)$ {
 {{ grafana_access }}            limit_except GET { deny all; }
+{{ grafana }}        }
+
+        # The Machine dropdown reads this one Prometheus label list through Grafana.
+        location = {{ prefix }}grafana/api/datasources/uid/cluster-detail/resources/api/v1/label/machine/values {
+{{ grafana_access }}            limit_except GET { deny all; }
+            limit_req zone=nanohpc_queries burst=20 nodelay;
 {{ grafana }}        }
 
         location = {{ prefix }}grafana/api/ds/query {

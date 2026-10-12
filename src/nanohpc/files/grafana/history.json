@@ -1,5 +1,5 @@
 {
-  "uid": "nanohpc-history", "title": "Daily cluster history", "schemaVersion": 39,
+  "uid": "nanohpc-history", "title": "[% nanohpc.cluster_name %]: Daily cluster history", "schemaVersion": 39,
   "editable": false, "refresh": "30s", "time": {"from": "now-5y", "to": "now"},
   "description": "One sample per day of rolling 24-hour summaries. Coverage shows partial days and collection gaps. GPU-hours are cumulative allocation totals, not usage during that day.",
   "panels": [

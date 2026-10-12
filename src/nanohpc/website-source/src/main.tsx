@@ -14,6 +14,7 @@ import { FontButton, storedFont } from './font-button'
 import { ClusterMap, MapToggle, machinesMapKey, overviewMapKey, rememberMapShown, storedMapShown } from './cluster-map'
 import { DemoDashboard } from './demo-dashboard'
 import { AboutButton } from './about-button'
+import { BrandLogo } from './brand-logo'
 import { SettingsButton } from './settings-button'
 import { MonitorApp } from './monitor'
 import { PartitionBox } from './partition-box'
@@ -152,12 +153,12 @@ function Dashboard({ name, path }: { name: string; path: string }) {
 /** Reuse the same observed machine states on Overview and Machines. */
 function MachineTable({ data, stale, link, demo, embedded }: { data: Snapshot | null; stale: boolean; link: string | null; demo: boolean; embedded: boolean }) {
   const content = <>
-    <div className="table-scroll"><table><thead><tr><th>Machine</th><th>Health</th><th>State</th><th>{demo ? 'Link Speed' : 'Speed /home | Internet'}</th><th>GPUs</th></tr></thead>
+    <div className="table-scroll"><table><thead><tr><th>Machine</th>{!embedded && <th>Node type</th>}<th>Health</th><th>State</th><th className="speed-column">{demo ? 'Link Speed' : 'Speed /home | Internet'}</th><th>GPUs</th></tr></thead>
       <tbody>{data?.nodes.filter(node => !link || node.role === 'Compute').map((node) => {
         const health = stale ? 'Unknown' : node.health ?? 'Unknown'
         const state = stale ? 'Unknown' : node.role === 'Front node' ? 'Active' : node.role !== 'Compute' ? '—' : node.fpga_usage_percent != null ? `FPGA ${node.fpga_usage_percent}%` : node.total_gpus === 0 ? 'Idle' : node.gpu_usage ?? 'Unknown'
         const available = stale ? 'Unknown' : node.role !== 'Compute' || node.total_gpus === 0 ? '—' : node.available_gpus != null && node.total_gpus != null ? `${node.available_gpus}/${node.total_gpus}` : 'Unknown'
-        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a>{!link && <span className="pill state-neutral role-tag">{node.role}</span>}</th><td><MachineLabel node={node} topic="health" stale={stale} demo={demo} className={`state-${health.toLowerCase()}`} label={healthText(health)}>{healthText(health)}</MachineLabel></td><td><span className={`pill ${state.startsWith('FPGA') && !stale ? 'state-active' : `state-${state.toLowerCase()}`}`}>{state}</span></td><td><SpeedBoxes node={node} stale={stale} demo={demo} named={false}/></td><td><span className="pill state-neutral">{available}</span></td></tr>
+        return <tr key={node.name}><th><a className="machine-link" href={`#machines?machine=${encodeURIComponent(node.name)}`} onClick={() => document.getElementById(`machine-${node.name}`)?.scrollIntoView({ block: 'start' })}>{node.name}</a></th>{!embedded && <td><span className="pill state-neutral">{node.role}</span></td>}<td><MachineLabel node={node} topic="health" stale={stale} demo={demo} className={`state-${health.toLowerCase()}`} label={healthText(health)}>{healthText(health)}</MachineLabel></td><td><span className={`pill ${state.startsWith('FPGA') && !stale ? 'state-active' : `state-${state.toLowerCase()}`}`}>{state}</span></td><td><SpeedBoxes node={node} stale={stale} demo={demo} named={false}/></td><td><span className="pill state-neutral">{available}</span></td></tr>
       })}</tbody></table></div>
     {!data && <p role="status">Machine status unavailable.</p>}
   </>
@@ -179,7 +180,7 @@ function OverviewMachines({ data, stale, refreshSeconds, demo }: { data: Snapsho
       <a className="panel-link panel-link-arrow" href="#machines" aria-hidden="true" tabIndex={-1}>→</a>
     </div>
     {mapShown
-      ? <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale} refreshSeconds={refreshSeconds} demo={demo} maxHeight={340}/>
+      ? <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale} refreshSeconds={refreshSeconds} demo={demo} maxHeight={310}/>
       : <MachineTable data={data} stale={stale} link="#machines" demo={demo} embedded={true}/>}
   </section>
 }
@@ -225,6 +226,9 @@ function App({ site }: { site: SiteSettings }) {
   const requestedState = new URLSearchParams(queueState).get('state')
   const queueFilter = requestedState === 'RUNNING' || requestedState === 'PENDING' ? requestedState : 'RUNNING|PENDING'
   const requestedMachine = new URLSearchParams(queueState).get('machine')
+  const metricsMachineParams = new URLSearchParams(queueState).getAll('machine')
+    .filter(machine => machine.length > 0)
+    .map(machine => `&var-machine=${encodeURIComponent(machine)}`).join('')
   const requestedUser = new URLSearchParams(queueState).get('user')
   const hasData = data !== null
   useEffect(() => {
@@ -236,7 +240,9 @@ function App({ site }: { site: SiteSettings }) {
   const freshness = <div className={`freshness ${failed || stale ? 'warning' : ''}`}><span className="status-dot"/>{demo ? 'Updates every 30s' : failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{(demo || data) && <small>Last update {new Date(demo ? demoUpdatedAt : data!.generated_at).toLocaleTimeString()}</small>}</div>
   return <>
     <a className="skip" href="#main" onClick={(event) => { event.preventDefault(); document.getElementById('main')?.focus() }}>Skip to content</a>
-    <header className="topbar"><a href="#overview" className="brand">{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <GenericMark/>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">{demo ? 'lightweight Slurm cluster and monitoring tool' : 'Slurm cluster monitor'}</span></span></a>
+    <header className={demo ? 'topbar demo-topbar' : 'topbar'}><a href="#overview" className={demo ? 'brand demo-brand' : 'brand'}>{demo
+      ? <><img className="brand-mark" src="nanohpc-mark.png" alt="nanoHPC mark"/><BrandLogo/></>
+      : <>{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <GenericMark/>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">Slurm cluster monitor</span></span></>}</a>
       <div className="header-buttons"><AboutButton/><FontButton/><AccentButton/></div>
     </header>
     <div className="layout"><aside className="sidebar">
@@ -263,7 +269,7 @@ function App({ site }: { site: SiteSettings }) {
         </div>
         <UserCards users={data?.users ?? []} stale={stale || failed}/>
       </>}
-      {page === 'usage' && dashboard('Machine and GPU metrics', 'machines', `${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0`)}
+      {page === 'usage' && dashboard('Machine and GPU metrics', 'machines', `${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0${metricsMachineParams}`)}
       {isGuide && <HowToUse values={siteValues(site)} partitions={data?.partitions ?? null}/>}
       {page === 'policy' && <>
         <h2 className="section-heading">Partition policy</h2>

@@ -246,9 +246,9 @@ if has home; then
     note "the last /home backup run worked" test "${last_exit:-0}" = 0
   fi
 elif ! has backup; then
-  check "/home is the shared NFS mount" sh -c 'findmnt -n -o FSTYPE --mountpoint /home | grep -qx nfs4'
   # A hung NFS server makes /home hang rather than fail; the timeout turns that into a failure.
   check "/home answers within 10 seconds" timeout 10 stat -t /home/.
+  check "/home is the shared NFS mount" sh -c 'findmnt -n -t nfs4 -o FSTYPE --mountpoint /home | grep -qx nfs4'
 fi
 
 if has shared; then
@@ -306,6 +306,10 @@ if has front; then
   check "the status collector's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-monitor-snapshot.service'
   check "the status snapshot is fresh (under 2 minutes old)" \
     test "$(( $(date +%s) - $(stat -c %Y /var/lib/nanohpc/monitor/status.json 2>/dev/null || echo 0) ))" -lt 120
+  if test -f /etc/systemd/system/nanohpc-home-job-policy.timer; then
+    check "home job policy timer" systemctl is-active --quiet nanohpc-home-job-policy.timer
+    check "the home job policy's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-home-job-policy.service'
+  fi
   # Ask the front node's Prometheus which machines have a metrics problem. If Prometheus does not answer,
   # say so rather than reporting no problems.
   problem_machines() {

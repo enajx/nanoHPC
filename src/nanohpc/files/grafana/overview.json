@@ -1,5 +1,5 @@
 {
-  "uid": "nanohpc-overview", "title": "Cluster overview", "schemaVersion": 39,
+  "uid": "nanohpc-overview", "title": "[% nanohpc.cluster_name %]: Cluster overview", "schemaVersion": 39,
   "editable": false, "refresh": "30s", "time": {"from": "now-6h", "to": "now"},
   "panels": [
     {"id": 1, "title": "Allocated GPUs", "type": "timeseries", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "cluster-detail"}, "targets": [{"refId": "A", "expr": "cluster_allocated_gpus and on() (time() - cluster_snapshot_timestamp_seconds < 90)", "legendFormat": "Allocated"}]},

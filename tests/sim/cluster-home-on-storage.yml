@@ -91,7 +91,6 @@ policy:
 home:
   quota_soft_gb: 300
   quota_hard_gb: 400
-  quota_grace: 7days
 
 scratch:
   cleanup_days: 14

@@ -295,26 +295,17 @@ def monitor_inventory(config: dict[str, Any], node: str | None) -> dict[str, Any
 
 
 def home_variables(config: dict[str, Any]) -> dict[str, Any]:
-    """Return where /home is served, who mounts it, and each user's quota in setquota's 1 KiB blocks."""
+    """Return where /home is served, who mounts it, and users whose filesystem write limits must be cleared."""
     server = home_server(config)
-    home = config["home"]
-    seconds = {"days": 86400, "hours": 3600, "minutes": 60}  # the units the validator accepts
-    unit = next(unit for unit in seconds if home["quota_grace"].endswith(unit))
-    grace = int(home["quota_grace"].removesuffix(unit)) * seconds[unit]
     return {
         "server": server,
         "server_address": config["machines"][server]["address"],
         "device": config["machines"][server]["home"]["device"],
         "clients": home_clients(config),
-        "quotas": [
-            {
-                "name": user["name"],
-                "soft_kib": home["quota_soft_gb"] * 1024 * 1024,
-                "hard_kib": home["quota_hard_gb"] * 1024 * 1024,
-            }
-            for user in config["users"]
-        ],
-        "grace_seconds": grace,
+        "quotas": [{"name": user["name"]} for user in config["users"]],
+        "policy_user_args": " ".join(f"--user {user['name']}:{user['uid']}" for user in config["users"]),
+        "soft_bytes": config["home"]["quota_soft_gb"] * 1024**3,
+        "hard_bytes": config["home"]["quota_hard_gb"] * 1024**3,
     }
 
 

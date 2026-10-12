@@ -231,13 +231,14 @@ class ForwardingRulesTest(unittest.TestCase):
         # Apache and Caddy.
         self.assertIn("ProxyPass /cluster/ https://cluster.example.org/cluster/", rules)
         self.assertIn("SSLProxyEngine on", rules)
+        self.assertIn("SSLProxyVerifyDepth 3", rules)
         self.assertIn("handle /cluster/* {", rules)
         self.assertIn("reverse_proxy https://cluster.example.org", rules)
         self.assertIn("SSLProxyCACertificateFile /etc/ssl/certs/ca-certificates.crt", rules)
         # The path without its slash goes to the path.
         self.assertIn("location = /cluster { return 301 /cluster/; }", rules)
         self.assertIn("RedirectMatch 301 ^/cluster$ /cluster/", rules)
-        self.assertIn("redir /cluster /cluster/", rules)
+        self.assertIn("redir /cluster /cluster/ 301", rules)
         # The front node needs the visitors' addresses (rate limits per visitor, and `allow`).
         self.assertIn("forwarded_by: <the lab web server's address>", rules)
 
