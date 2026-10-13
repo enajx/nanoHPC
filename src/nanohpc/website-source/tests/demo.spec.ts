@@ -106,6 +106,7 @@ test('Overview map updates its sample measurements after demo data loads', async
 test('demo header and Overview use reference website spacing on desktop', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('main.compact .stat-grid')).toBeVisible()
   const sizes = await page.evaluate(() => ({
     mark: parseFloat(getComputedStyle(document.querySelector('header .brand-mark')!).width),
     logo: parseFloat(getComputedStyle(document.querySelector('header .brand-logo')!).height),
