@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-13: Running Cluster Map animation
+
+- Captured the current public demo Cluster Map directly from its animated canvas, showing the demo machines and moving traffic without page controls. The nine-second MP4 is 1240 × 548 H.264; the looping GIF is 960 × 423 at 15 frames per second. Both files decoded successfully, and frames from the start, middle, and end were checked.
+- Files: `assets/cluster-running.mp4`, `assets/cluster-running.gif`.
+
 ## 2026-10-13: Compact Machines list
 
 - The Machines list uses the narrow column padding from SLURM-REAL and keeps nanoHPC’s Node type column. At 1000 px and below, each machine becomes labeled rows, so the demo and deployed Slurm site need no horizontal table scrolling. Browser checks covered 1100, 1024, 1000, 800, and 320 px; all 35 demo and deployed-site browser tests passed. The website build checks passed.

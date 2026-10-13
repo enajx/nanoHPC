@@ -235,7 +235,7 @@ flowchart LR
 - [x] The repository is published under the MIT license. See [DONE.md](md/DONE.md).
 - [x] The README shows core Python check, public demo deployment, and license badges below the nanoHPC image, each linked to its source. Core Python checks run automatically on relevant pushes and pull requests. See [DONE.md](md/DONE.md).
 - [ ] Once released: a "Buy me a coffee" link in the repository, for people who find nanoHPC useful.
-- [ ] A nice retro-style and/or ASCII animation of the project exists, to use as promo on LinkedIn when sharing the project in the open.
+- [x] A retro-style animation of the running cluster exists as MP4 and GIF for project promotion. See [DONE.md](md/DONE.md).
 
 ### Later
 
