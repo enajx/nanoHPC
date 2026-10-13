@@ -103,7 +103,7 @@ test('Overview map updates its sample measurements after demo data loads', async
   await expect(map).not.toHaveAttribute('aria-label', /GPU busy unknown/)
 })
 
-test('demo header and Overview use the reference site's spacing on desktop', async ({ page }) => {
+test('demo header and Overview use reference website spacing on desktop', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto(`${origin}${prefix}`)
   const sizes = await page.evaluate(() => ({
