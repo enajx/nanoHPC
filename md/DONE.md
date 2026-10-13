@@ -4,7 +4,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-13: Running Cluster Map animation
 
-- Captured the current public demo Cluster Map directly from its animated canvas, showing the demo machines and moving traffic without page controls. The nine-second MP4 is 1240 × 548 H.264; the looping GIF is 960 × 423 at 15 frames per second. Both files decoded successfully, and frames from the start, middle, and end were checked.
+- Captured the current public demo Cluster Map directly from its animated canvas, showing the demo machines and moving traffic without page controls on a plain white background. The nine-second MP4 is 2480 × 1094 H.264 at 30 frames per second; the looping GIF is 1920 × 847 at 15 frames per second. Both files decoded successfully, and frames from the start, middle, and end were checked.
 - Files: `assets/cluster-running.mp4`, `assets/cluster-running.gif`.
 
 ## 2026-10-13: Compact Machines list
