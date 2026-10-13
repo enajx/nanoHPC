@@ -55,11 +55,6 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 - **Triage `Uncategorized`:** these are unsorted items. First sort each with the user into `Implementation` as a functional bullet (or `PROJECT.md`, or drop it), then plan it like any item before implementing. Don't implement straight from an unsorted capture.
 - **"Address the next TODOs" ⇒ batch, don't bottleneck.** When the user asks to tackle the next TODO(s), default to picking a *handful* of orthogonal items and parallelizing them across subagents (worktree-isolated, one branch/PR each). Confirm *which* items with the user. **Each subagent marks its own item `[~]` on claim and `[x]` once done and verified**, so `TODO.md` stays an accurate live view of what is being worked on.
 
-## Plan diagrams
-
-- Each plan carries a standing `mermaid` diagram, kept high level: the project plan (phases/milestones) and the architecture (main components) in `PROJECT.md`, the implementation roadmap in `TODO.md`, drawn and maintained per [`DIAGRAMS.md`](md/instructions/DIAGRAMS.md).
-- Keep the diagrams, like `TODO.md`, up to date: update a diagram in the same edit as the plan/status text it reflects, so diagrams and text never drift apart.
-
 ## Testing
 
 - **Follow test-driven development (TDD): red → green → refactor.** Translate the agreed behaviour and "done" check into the smallest meaningful test, confirm it fails for the expected reason, write only enough code to make it pass, then refactor while keeping it green. A test never seen red is not known to catch anything.
