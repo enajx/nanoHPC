@@ -518,6 +518,18 @@ test('Machines lists every configured machine with its role while Overview stays
   await expect(page.locator('.machine-spec')).toHaveCount(4)
 })
 
+test('deployed Machines list fits without horizontal scrolling', async ({ page }) => {
+  await mockGrafana(page)
+  for (const width of [1100, 1024, 1000, 800, 320]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto(`${origin}${prefix}#machines`)
+    const table = page.locator('.machine-list .table-scroll')
+    await expect(table.locator('tbody tr')).toHaveCount(4)
+    const size = await table.evaluate(element => ({ visible: element.clientWidth, content: element.scrollWidth }))
+    expect(size.content, `Machines table at ${width}px`).toBeLessThanOrEqual(size.visible)
+  }
+})
+
 test('a machine card explains its GPU capacity limit', async ({ page }) => {
   await mockGrafana(page)
   const data = snapshot() as { nodes: { name: string; gpu_limit?: { gpus: number; fitted: number; reason: string } }[] }

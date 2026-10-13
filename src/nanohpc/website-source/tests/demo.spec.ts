@@ -64,6 +64,21 @@ test('Machines table shows machine states, demo link speeds, and GPU availabilit
   await expect(table.getByRole('link', { name: 'B200', exact: true })).toHaveCount(1)
 })
 
+test('Machines list fits without horizontal scrolling', async ({ page }) => {
+  for (const width of [1100, 1024, 1000, 800, 320]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto(`${origin}${prefix}#machines`)
+    const table = page.locator('.machine-list .table-scroll')
+    await expect(table.locator('tbody tr')).toHaveCount(6)
+    const size = await table.evaluate(element => ({ visible: element.clientWidth, content: element.scrollWidth }))
+    expect(size.content, `Machines table at ${width}px`).toBeLessThanOrEqual(size.visible)
+    if (width === 320) {
+      const labels = await table.locator('tbody tr').first().locator('td').evaluateAll(cells => cells.map(cell => getComputedStyle(cell, '::before').content))
+      for (const label of ['Node type', 'Health', 'State', 'Link Speed', 'GPUs']) expect(labels).toContain(`"${label}"`)
+    }
+  }
+})
+
 test('demo GPU history changes with the selected time range', async ({ page }) => {
   await page.goto(`${origin}${prefix}`)
   const chart = page.locator('.gpu-allocation-chart')

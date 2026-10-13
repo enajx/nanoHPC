@@ -151,7 +151,18 @@ footer a { text-decoration: underline; }
 .skip { position: absolute; left: 10px; top: -100px; z-index: 10; background: white; padding: 10px; border: 2px solid; }.skip:focus { top: 10px; }
 .stat { display: block; }
 .stat:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #172322; }
-.machine-list th, .machine-list td { padding: 16px 22px; }
+.machine-list .machine-status-table { min-width: 0; }
+.machine-list .machine-status-table th, .machine-list .machine-status-table td { padding: 16px 4px; white-space: nowrap; }
+.machine-list .machine-status-table th:first-child, .machine-list .machine-status-table td:first-child { padding-left: 16px; }
+.machine-list .machine-status-table thead th { white-space: normal; }
+@media (max-width: 1000px) {
+  .machine-list .machine-status-table thead { display: none; }
+  .machine-list .machine-status-table, .machine-list .machine-status-table tbody, .machine-list .machine-status-table tr, .machine-list .machine-status-table th, .machine-list .machine-status-table td { display: block; }
+  .machine-list .machine-status-table tr { padding: 12px; border-bottom: 1px solid #deded8; }
+  .machine-list .machine-status-table tbody th, .machine-list .machine-status-table tbody th:first-child, .machine-list .machine-status-table tbody td { padding: 4px 0; border-bottom: 0; }
+  .machine-list .machine-status-table td { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 8px; white-space: normal; }
+  .machine-list .machine-status-table td::before { content: attr(data-label); font-weight: 700; margin-right: auto; }
+}
 .overview-machine-charts .machine-link { white-space: nowrap; }
 .overview-machine-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 24px; margin-bottom: 24px; }
 .overview-machine-charts > .panel { min-width: 0; margin-bottom: 0; }

@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-13: Compact Machines list
+
+- The Machines list uses the narrow column padding from SLURM-REAL and keeps nanoHPC’s Node type column. At 1000 px and below, each machine becomes labeled rows, so the demo and deployed Slurm site need no horizontal table scrolling. Browser checks covered 1100, 1024, 1000, 800, and 320 px; all 35 demo and deployed-site browser tests passed. The website build checks passed.
+- Files: `src/nanohpc/website-source/src/{main.tsx,style.css}`, `src/nanohpc/website-source/tests/{demo,website}.spec.ts`, `src/nanohpc/website/`.
+
 ## 2026-10-13: Public demo header and Overview spacing
 
 - The demo mark and nanoHPC wordmark now use the REAL website’s 36 px desktop height. The Overview uses REAL’s card and footer spacing instead of the demo-only tighter desktop rules. The built demo still fits a 1440 × 900 screen without scrolling, and the header fits a 320 px phone. All 33 demo and deployed-site browser tests passed.
