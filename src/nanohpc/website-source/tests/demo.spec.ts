@@ -103,6 +103,21 @@ test('Overview map updates its sample measurements after demo data loads', async
   await expect(map).not.toHaveAttribute('aria-label', /GPU busy unknown/)
 })
 
+test('demo header and Overview use the reference site's spacing on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${origin}${prefix}`)
+  const sizes = await page.evaluate(() => ({
+    mark: parseFloat(getComputedStyle(document.querySelector('header .brand-mark')!).width),
+    logo: parseFloat(getComputedStyle(document.querySelector('header .brand-logo')!).height),
+    top: parseFloat(getComputedStyle(document.querySelector('main.compact')!).paddingTop),
+    cards: parseFloat(getComputedStyle(document.querySelector('main.compact .stat-grid')!).marginBottom),
+  }))
+  expect(sizes.mark).toBeCloseTo(36, 0)
+  expect(sizes.logo).toBeCloseTo(36, 0)
+  expect(sizes.top).toBeCloseTo(28, 0)
+  expect(sizes.cards).toBeCloseTo(20, 0)
+})
+
 test('Overview fits on a 1440 by 900 desktop with its content visible', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto(`${origin}${prefix}`)

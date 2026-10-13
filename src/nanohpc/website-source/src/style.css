@@ -282,9 +282,7 @@ footer a { text-decoration: underline; }
 
 .topbar { height: 64px; }
 .brand-mark { width: 36px; height: 36px; }
-.demo-brand .brand-mark { width: 48px; height: 48px; flex: none; }
-.brand-logo { height: 48px; width: auto; flex: none; display: block; background: white; border: 2px solid #172322; box-shadow: 3px 3px 0 #172322; }
-@media (max-width: 720px) { .demo-brand .brand-mark, .brand-logo { height: 36px; } .demo-brand .brand-mark { width: 36px; } }
+.brand-logo { height: 36px; width: auto; flex: none; display: block; background: white; border: 2px solid #172322; box-shadow: 3px 3px 0 #172322; }
 @media (max-width: 360px) { .demo-topbar { padding: 0 10px; } .demo-brand { gap: 8px; } .demo-brand .brand-mark, .brand-logo { height: 32px; } .demo-brand .brand-mark { width: 32px; } .demo-topbar .header-buttons { gap: 6px; } }
 .layout { min-height: calc(100vh - 64px); }
 @media (min-width: 1332px) and (max-width: 1479px) { .layout { min-height: calc(100vh / 0.9 - 64px); } .machine-dialog { max-height: calc(80vh / 0.9); } }
@@ -309,16 +307,6 @@ main.compact .overview-job-groups h3 { padding: 6px 10px; }
 main.compact .overview-job-list th, main.compact .overview-job-list td { padding: 5px 10px; }
 main.compact .overview-job-list { max-height: 232px; }
 main.compact .gpu-chart-body { min-height: 0; }
-@media (min-width: 1360px) {
-  main.compact { padding-top: 16px; padding-bottom: 8px; }
-  main.compact .stat-grid { margin-bottom: 12px; }
-  main.compact .stat { padding-top: 9px; padding-bottom: 9px; }
-  main.compact .stat strong { margin-top: 4px; margin-bottom: 4px; }
-  main.compact .overview-machine-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 12px; }
-  main.compact .overview-job-groups { padding-top: 8px; padding-bottom: 8px; }
-  main.compact .overview-job-list th, main.compact .overview-job-list td { padding-top: 4px; padding-bottom: 4px; }
-  main.compact footer { margin-top: 12px; padding-top: 8px; }
-}
 @media (min-width: 1332px) and (max-width: 1359px) {
   main.compact .overview-machine-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

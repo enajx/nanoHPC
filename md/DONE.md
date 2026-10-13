@@ -2,6 +2,11 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-13: Public demo header and Overview spacing
+
+- The demo mark and nanoHPC wordmark now use the REAL website’s 36 px desktop height. The Overview uses REAL’s card and footer spacing instead of the demo-only tighter desktop rules. The built demo still fits a 1440 × 900 screen without scrolling, and the header fits a 320 px phone. All 33 demo and deployed-site browser tests passed.
+- Files: `src/nanohpc/website-source/src/style.css`, `src/nanohpc/website-source/tests/demo.spec.ts`, `src/nanohpc/website/`.
+
 ## 2026-10-13: README status badges
 
 - The README shows linked badges for Core Python checks, Public demo deployment, and the MIT license below the nanoHPC image. A GitHub workflow runs a focused Python check set on relevant pushes to `main` and pull requests; the existing demo workflow supplies its own deployment status. The full Python suite and Lima VM run stay manual. The exact 131 core checks passed locally on Python 3.12 and 3.13. The two full-suite test expectations changed by the REAL port were fixed; the full Python 3.12 suite then passed (550 tests, 43 skipped). GitHub will report a badge result once the workflow is merged and run on `main`.

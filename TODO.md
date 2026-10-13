@@ -121,6 +121,7 @@ flowchart LR
 
 ### Monitoring and website
 
+- [x] The public demo matches the REAL website’s smaller header logo and more open Overview spacing, while fitting desktop and phone screens. See [DONE.md](md/DONE.md).
 - [x] The chosen SLURM-REAL website improvements and demo updates work in the built site; live measurements, guide, Apptainer, and notebook helper are included. See [DONE.md](md/DONE.md).
 - [x] The real Machines page colors `/home` speed from its shown many-small-files write speed. See [DONE.md](md/DONE.md).
 - [x] Deploy only monitoring tools on machines without Slurm, with a monitor-mode `cluster.yml`, wizard, dry run, check, and node deploy (see [DONE.md](md/DONE.md)).
