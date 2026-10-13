@@ -6,6 +6,10 @@ How nanoHPC is tested without touching a real cluster. Agreed with the user on 2
 
 nanoHPC only reaches machines over SSH, through Ansible. The tests do the same: they take a list of SSH machines and a `cluster.yml` that describes them. Where the machines come from does not matter. By default they are Lima VMs made by `nanohpc sim up`, but cloud VMs or spare lab machines work too. Never the production cluster.
 
+## GitHub status badges
+
+The README's Core Python checks badge reads `.github/workflows/python-tests.yml`. On relevant pushes to `main` and pull requests, it runs 131 config, render, deploy, status, alert, job-cancel, and built-website checks without installing system packages. It does not represent the full Python suite or a VM deploy. The full suite and x86 Lima deployment remain in the manually started `sim-linux.yml` workflow. The Public demo badge reads `public-demo.yml`, which builds and tests the demo before publishing it on relevant pushes to `main`.
+
 ## Simulated cluster: Lima
 
 [Lima](https://lima-vm.io) makes Linux VMs with the same commands on macOS (Apple Virtualization) and Linux (QEMU with KVM). It must work on both:

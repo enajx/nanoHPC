@@ -26,8 +26,8 @@ The wizard probes machines without changing them. It records their roles, addres
 Check these values before the first deploy:
 
 1. `cluster.admins` names users whose keys can administer every machine. Each user has the same UID on every machine. The wizard shows UID conflicts; `nanohpc fix-uid cluster.yml USER MACHINE` lists the local files it would change without changing them. Review that list before using `--apply`.
-2. `machines` gives one machine the `front` role, at least one the `compute` role, and one machine the `home` role. The front node can also be the home server. Add a `backup` role or an outside SSH backup destination if wanted. For each GPU compute node, set its type and count to match `nvidia-smi`.
-3. `home` sets usage notice and new-job threshold values. `scratch` sets cleanup and kept-job retention. `partitions` and `policy` set where and how jobs run. The example comments show the available fields.
+2. `machines` gives one machine the `front` role, at least one the `compute` role, and one machine the `home` role. The front node can also be the home server. Add a `backup` role or an outside SSH backup destination if wanted. For each GPU compute node, set its type and count to match `nvidia-smi`. To offer fewer than the fitted GPUs to Slurm, set `gpu.limit` and `gpu.limit_reason`; the site shows both counts.
+3. `home` sets usage notice and new-job threshold values. `scratch` sets cleanup and kept-job retention. `partitions` and `policy` set where and how jobs run. Set `max_time_on_interactive_machines` on a batch partition to keep longer jobs off machines shared with an interactive partition. The example comments show the available fields.
 4. `cluster.website` sets the hostname, path, HTTPS choice, and optional network allow list. If you use your own certificate, its files must be available on the machine running nanoHPC.
 5. Keep tokens and webhook secrets in `.env` next to `cluster.yml`; do not commit that file. Optional automatic deploys need a configuration repository and a pinned `nanohpc_version`.
 
@@ -45,9 +45,15 @@ nanohpc check cluster.yml
 
 The dry run checks every machine before applying changes. It may refresh APT package lists, but it does not apply the setup. The normal deploy performs its own dry run first. If the front node or home server fails that check, nothing is deployed. If another machine fails, it is left unchanged and listed at the end. A failure after a successful dry run may leave some machines partly changed; read the reported machine and task before trying again.
 
+A changed Slurm node definition or GPU setup can stop jobs on that machine. Deploy refuses the change while those jobs run and names them. Drain the machine and wait for its jobs to finish, or use `cluster-cancel` below, then run deploy again.
+
 nanoHPC connects using your normal `ssh MACHINE` account and adds no passwordless sudo rule. On a new machine, that account needs its existing sudo access. If sudo needs a password, nanoHPC asks once in an interactive terminal and keeps it only for that run. Without a terminal, it stops before changing anything and explains how to run the command yourself.
 
 After setup, an administrator's loaded SSH key can unlock sudo through the forwarded agent. Administrators in `cluster.yml` also get key-only root login on every machine for recovery, with their keys stored locally so root can log in even if `/home` or the front node is down. With automatic deploys enabled, the front node gets its own root key, accepted only from the front node's address. Ordinary users log in to the front node; they do not get direct compute-node login.
+
+On the front node, ordinary users can forward local SSH connections only to compute machines listed in `cluster.yml`. Remote, X11, and socket forwarding are off for them. Desktop VS Code Remote-SSH cannot connect to the front node. The website's interactive notebook helper uses an allowed tunnel to a compute machine for Jupyter or browser-based VS Code inside a Slurm job. Administrators and root keep unrestricted forwarding.
+
+The front node ignores a short press of its power, reboot, sleep, or hibernate key after a full deploy. The deploy checks the live power-key setting. Holding a physical power button still cuts power through the machine hardware.
 
 If `ssh-add -c` is enabled for your key, approve each requested use during a deploy. If you cannot answer the prompts, load a key without that option for this run.
 
@@ -63,6 +69,8 @@ nanohpc check cluster.yml
 ```
 
 `--only node NAME` sets up one new or changed compute node and updates the shared configuration on the other machines. For a new or changed front, home, or backup machine, or changed machine roles, use a full `nanohpc deploy cluster.yml`. For changes only to users, policy, or partitions, `--only users`, `--only policy`, and `--only partitions` are available. Each deploy runs its checks first.
+
+To stop running jobs for maintenance, run `sudo cluster-cancel --reason "to fix an issue with power" JOBID...` on the front node. Give array tasks one by one, such as `1083_0`. The command puts a job back in the queue when Slurm allows it; otherwise it cancels the job. It sends each owner a private Slack message with the next action. It reports an error if an owner has no `slack_id` in `cluster.yml` or Slack refuses a message. This command needs the Slack bot token in the deploy's `.env` file.
 
 ## Common problems
 

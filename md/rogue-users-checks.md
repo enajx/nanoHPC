@@ -114,8 +114,8 @@ nothing is posted.
 
 ## 4. SSH forwarding on the front node
 
-**What a user can do.** With OpenSSH defaults (`AllowTcpForwarding yes`, `PermitOpen any`), a user
-can turn the front node into a proxy (`ssh -D`) into the institution's network from anywhere.
+**Before the restriction.** With OpenSSH defaults (`AllowTcpForwarding yes`, `PermitOpen any`), a user
+could turn the front node into a proxy (`ssh -D`) into the institution's network from anywhere.
 
 **Fair use.** `ssh -L` to a Jupyter or TensorBoard inside a job (on a compute node's cluster
 address), and agent forwarding (`ssh -A`) for `git` with the laptop's key; agent forwarding is a
@@ -124,20 +124,19 @@ uses forwarding (to the front node's own `localhost`, through `-D` by default), 
 `localhost` stops it; that fits a guide that says not to run VS Code sessions on the front node.
 X11 is rarely needed.
 
-**Default (decided 2026-10-05, live in the source deployment): only what users need.** `PermitOpen` limited to the compute
-nodes' cluster addresses (this also limits `-D`), no `-R` (`PermitListen none`), no X11, agent
-forwarding kept. Administrators are exempt (a `Match` block), so a mistake never cuts off admin SSH,
-and the regular check reports when an administrator does something users may not. It changes SSH
-settings, so it goes the careful route. Put the `Match` block in the last file of
-`sshd_config.d`: seen on OpenSSH 8.9, it then applies to users only and does not change the main
-`sshd_config`'s later lines. List each compute node's address and every name users may type
-(`PermitOpen` matches the name as given, without resolving it).
+**Implemented in nanoHPC (2026-10-12).** Ordinary front-node users get local SSH forwarding only to
+configured compute addresses and names. Remote, X11, and socket forwarding are off; agent
+forwarding stays on. Administrators and root are exempt. The managed file sorts first so its
+`Match` rules take precedence, and deploy checks the effective destinations before reloading SSH.
+`PermitOpen` matches the name as given, without resolving it. The notebook helper uses the
+configured Slurm node name, including when the machine's operating-system hostname differs.
 
 Notebooks never need to run on the front node: Jupyter runs inside an interactive job, and the
 laptop reaches it with `ssh -L` through the front node. VS Code users can open the same link as an
 "Existing Jupyter server", without a tunnel.
 
-**Test.** `ssh -L` to a port on a compute node works; `ssh -D` to an outside host is refused.
+**Tested.** On Ubuntu 24.04 VMs, a user's SSH forwarding to the compute address and name worked,
+forwarding to the front node was refused, and an administrator kept unrestricted forwarding.
 
 ## 5. Shared disk space without a quota
 

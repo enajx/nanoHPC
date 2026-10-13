@@ -332,6 +332,22 @@ class LastingFindingsTest(unittest.TestCase):
         self.assertNotIn("9999", ports[0])
         self.assertTrue(self.machine.alive("left python"), "lasting findings are only reported")
 
+    def test_port_finding_names_program_without_command_secrets(self) -> None:
+        """A port notice names the command and port without copying option values into metrics or Slack."""
+        self.machine.process(
+            "codex login",
+            2000,
+            "/home/test-user1/.local/bin/codex",
+            ["codex", "login", "--token", "secret-value"],
+            "/user.slice/user-2000.slice/session-5.scope",
+        )
+        self.machine.listen("codex login", 1455, 555)
+        run_check(self.machine, self.out, self.state, "2026-10-05T16:00:00+02:00", role="front")
+        port = next(line for line in self.lines() if 'kind="port"' in line)
+        self.assertIn("codex login", port)
+        self.assertIn("1455", port)
+        self.assertNotIn("secret-value", port)
+
     def test_outside_job_detail_does_not_publish_arguments_or_slack_mentions(self) -> None:
         """Arguments can include passwords, tokens, and text that Slack would interpret as a mention."""
         self.machine.process(
@@ -453,6 +469,7 @@ class LastingFindingsTest(unittest.TestCase):
 
     def test_front_node_reports_vscode_servers_of_everyone_and_not_processes_outside_jobs(self) -> None:
         """On the front node users work outside jobs; a VS Code server is reported, admins included."""
+        self.machine.listen("noah vscode", 1456, 556)
         run_check(self.machine, self.out, self.state, "2026-10-05T16:00:00+02:00", role="front")
         self.assertEqual([line for line in self.lines() if 'kind="outside-job"' in line], [])
         vscode = sorted(line for line in self.lines() if 'kind="vscode-server"' in line)
@@ -462,6 +479,7 @@ class LastingFindingsTest(unittest.TestCase):
         ports = [line for line in self.lines() if 'kind="port"' in line]
         self.assertEqual(len(ports), 1, "test-user1's 6006 and 8888; the admin's 9999 is not reported")
         self.assertIn("8888", ports[0])
+        self.assertNotIn("1456", ports[0], "VS Code server ports belong to the single VS Code finding")
 
     def test_other_machine_reports_user_ports_without_compute_job_rule(self) -> None:
         """Storage and backup nodes have no Slurm jobs, but a user listener still needs a report."""

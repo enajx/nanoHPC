@@ -40,7 +40,7 @@ elif name=='scontrol' and 'partition' in args:
  print('PartitionName=interactive State=' + state + ' Default=NO Nodes=gpu1 MaxTime=08:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
  print('PartitionName=main State=' + state + ' Default=YES Nodes=gpu1,cpu1 MaxTime=1-00:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
 elif name=='scontrol':
- print('PriorityWeightFairshare = 10000\\nPriorityWeightAge = 1000\\nPriorityDecayHalfLife = 7-00:00:00\\nPriorityMaxAge = 7-00:00:00')
+ print('PriorityFlags = NO_FAIR_TREE\\nPriorityWeightFairshare = 40000\\nPriorityWeightAge = 1000\\nPriorityDecayHalfLife = 45-00:00:00\\nPriorityMaxAge = 7-00:00:00')
 elif name=='squeue' and '--json' in args:
  print(json.dumps({'jobs':[{'job_id':1,'name':'test \\"job\\"','user_name':'alice','job_state':['RUNNING'],'state_reason':'None','nodes':'gpu1','tres_req_str':'cpu=4,mem=32G,node=1,gres/gpu=1','start_time':{'number':100,'set':True},'submit_time':{'number':90,'set':True},'priority':{'number':2500,'set':True},'time_limit':{'set':True,'infinite':False,'number':1430}}, {'job_id':2,'name':'cpu\\tjob','user_name':'bob','job_state':['PENDING'],'state_reason':'Dependency','tres_req_str':'cpu=2,mem=128M,node=1','start_time':{'number':9999999999,'set':True},'submit_time':{'number':90,'set':True},'priority':{'number':100,'set':True},'time_limit':{'set':False,'infinite':True,'number':0}}]}))
 elif name=='squeue': print('1|alice|RUNNING\\n2|bob|PENDING')
@@ -220,7 +220,11 @@ class SnapshotTests(unittest.TestCase):
             machines = root / "machines.md"
             machines_mirror = root / "public-machines.md"
             machine_file = root / "machines.json"
-            machine_file.write_text(json.dumps(MACHINES))
+            limited_machines = {
+                **MACHINES,
+                "gpu1": {**MACHINES["gpu1"], "gpu_limit": {"fitted": 8, "reason": "power limit"}},
+            }
+            machine_file.write_text(json.dumps(limited_machines))
             env = fake_slurm(root)
             args = [
                 sys.executable,
@@ -289,8 +293,10 @@ class SnapshotTests(unittest.TestCase):
             self.assertGreater(data["jobs"][0]["seconds"], 0)
             self.assertEqual(data["jobs"][1]["priority"], 100)
             self.assertEqual([job["time_limit_minutes"] for job in data["jobs"]], [1430, None])
-            self.assertEqual((data["total_gpus"], data["allocated_gpus"]), (4, 2))
+            self.assertEqual((data["total_gpus"], data["allocated_gpus"]), (0, 0))
             self.assertEqual(data["nodes"][1]["available_gpus"], 2)
+            self.assertEqual(data["nodes"][1]["gpu_limit"], {"gpus": 4, "fitted": 8, "reason": "power limit"})
+            self.assertEqual(data["nodes"][1]["total_gpus"], 4)
             self.assertEqual((data["nodes"][2]["available_gpus"], data["nodes"][2]["total_gpus"]), (0, 0))
             self.assertNotIn("available_gpus", data["nodes"][3])
             users = {item["user"]: item for item in data["ranking"]}
@@ -306,6 +312,9 @@ class SnapshotTests(unittest.TestCase):
             self.assertNotIn("root", [item["user"] for item in data["users"]])
             self.assertNotIn("root", [item["user"] for item in data["ranking"]])
             self.assertEqual(data["priorities"][0]["fairshare"], 5000)
+            self.assertIn({"name": "PriorityFlags", "value": "NO_FAIR_TREE"}, data["policies"])
+            self.assertIn({"name": "PriorityWeightFairShare", "value": "40000"}, data["policies"])
+            self.assertIn({"name": "PriorityDecayHalfLife", "value": "45-00:00:00"}, data["policies"])
             self.assertIn("30", " ".join(item["value"] for item in data["policies"]))
             self.assertIn({"name": "main: GPUs per job (most)", "value": "gres/gpu=4"}, data["policies"])
             self.assertEqual(
@@ -552,6 +561,28 @@ class SnapshotTests(unittest.TestCase):
             self.assertIn("| gpu1 | Healthy | Idle |", markdown.read_text())
             self.assertNotIn("Available GPUs", markdown.read_text())
             self.assertNotIn("Slurm", markdown.read_text())
+
+
+class GpuTotalTests(unittest.TestCase):
+    """The Overview GPU card counts only machines with known presence."""
+
+    def test_offline_and_unknown_machines_are_left_out(self) -> None:
+        """Leave out Offline and Unknown, while retaining Warning and Maintenance."""
+        import runpy
+
+        sys.path.insert(0, str(COLLECTOR.parent))
+        counted = runpy.run_path(str(COLLECTOR))["counted_gpus"]
+        nodes = [
+            {"CfgTRES": "cpu=32,gres/gpu=4", "AllocTRES": "gres/gpu=4"},
+            {"CfgTRES": "cpu=256,gres/gpu=8", "AllocTRES": "gres/gpu=0"},
+            {"CfgTRES": "cpu=256,gres/gpu=8", "AllocTRES": "gres/gpu=7"},
+            {"CfgTRES": "cpu=256,gres/gpu=8", "AllocTRES": "gres/gpu=7"},
+            {"CfgTRES": "cpu=128,gres/gpu=4", "AllocTRES": "gres/gpu=4"},
+        ]
+        statuses = [{"health": health} for health in ("Healthy", "Offline", "Warning", "Maintenance", "Healthy")]
+        self.assertEqual(counted(nodes, statuses), (24, 22))
+        statuses[2]["health"] = "Unknown"
+        self.assertEqual(counted(nodes, statuses), (16, 15))
 
 
 if __name__ == "__main__":

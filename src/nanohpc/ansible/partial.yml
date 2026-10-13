@@ -23,6 +23,35 @@
 #   The front node also takes part in the Munge and metrics certificate steps, which read its key and its
 #   certificate authority (nothing changes there).
 
+# Policy, partition, and node deploys can change Slurm node definitions or gres.conf.
+# Check every affected machine before changing anything, even in check mode.
+- name: Refuse Slurm changes that would stop running jobs
+  hosts: role_slurm
+  become: true
+  any_errors_fatal: true
+  gather_facts: false
+  tags: [policy, partitions, node]
+  tasks:
+    - name: Check changed Slurm node definitions on the front node
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/files/slurm-change-check --squeue /usr/bin/squeue --kind slurm.conf
+          --current /etc/slurm/slurm.conf --node {{ inventory_hostname }}
+          --new {{ lookup('ansible.builtin.file', nanohpc.files ~ '/slurm.conf', rstrip=False) | quote }}
+      when: "'front' in nanohpc.machines[inventory_hostname].roles and inventory_hostname not in nanohpc_left_out"
+      check_mode: false
+      changed_when: false
+
+    - name: Check changed GPU setup on each compute machine
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/files/slurm-change-check --squeue /usr/bin/squeue --kind gres.conf
+          --current /etc/slurm/gres.conf --node {{ inventory_hostname }}
+          --new {{ lookup('ansible.builtin.file', nanohpc.files ~ '/gres/' ~ inventory_hostname ~ '.conf', rstrip=False) | quote }}
+      when: "'compute' in nanohpc.machines[inventory_hostname].roles and inventory_hostname not in nanohpc_left_out"
+      check_mode: false
+      changed_when: false
+
 - name: Check every machine before changing anything
   hosts: all
   become: true

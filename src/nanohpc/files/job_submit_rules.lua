@@ -1,5 +1,6 @@
 -- Shared rules. The tables above this line are generated per cluster:
--- submit_limit, default_partition, job_types (batch | interactive | any), walls (minutes), gpu_limits.
+-- submit_limit, default_partition, job_types (batch | interactive | any), walls (minutes), gpu_limits,
+-- interactive_machine_limits (minutes), interactive_machines (shared nodes by batch partition).
 local jobs_snapshot = nil
 local unconfirmed_submissions = {}
 
@@ -30,6 +31,68 @@ local function gpu_count(value)
         end
     end
     return count
+end
+
+-- Split a Slurm hostlist at commas outside brackets (gpu[3-4,6],cpu1).
+local function hostlist_tokens(nodes)
+    local tokens, depth, start = {}, 0, 1
+    nodes = nodes or ""
+    for index = 1, #nodes do
+        local char = nodes:sub(index, index)
+        if char == "[" then depth = depth + 1 end
+        if char == "]" then depth = depth - 1 end
+        if char == "," and depth == 0 then
+            if index > start then table.insert(tokens, nodes:sub(start, index - 1)) end
+            start = index + 1
+        end
+    end
+    if start <= #nodes then table.insert(tokens, nodes:sub(start)) end
+    return tokens
+end
+
+-- True when one hostlist item names a machine, including a numeric range.
+local function token_names_machine(token, machine)
+    if token == machine then return true end
+    local prefix, numbers, suffix = token:match("^(.-)%[([^%]]+)%](.*)$")
+    if not prefix or machine:sub(1, #prefix) ~= prefix then return false end
+    if suffix ~= "" and machine:sub(-#suffix) ~= suffix then return false end
+    local middle = machine:sub(#prefix + 1, #machine - #suffix)
+    if not middle:match("^%d+$") then return false end
+    for part in numbers:gmatch("[^,]+") do
+        if middle == part then return true end
+        local first, last = part:match("^(%d+)%-(%d+)$")
+        if first and (#first == #middle or first:sub(1, 1) ~= "0")
+            and tonumber(middle) >= tonumber(first) and tonumber(middle) <= tonumber(last) then return true end
+    end
+    return false
+end
+
+-- True when a Slurm hostlist names this machine.
+local function lists_machine(nodes, machine)
+    for _, token in ipairs(hostlist_tokens(nodes)) do
+        if token_names_machine(token, machine) then return true end
+    end
+    return false
+end
+
+-- Keep long batch jobs off machines shared with an interactive partition.
+local function keep_off_interactive_machines(job_desc, partition, time_limit)
+    local limit = interactive_machine_limits[partition]
+    if not limit or time_limit <= limit then return slurm.SUCCESS end
+    local machines = interactive_machines[partition]
+    for _, machine in ipairs(machines) do
+        if lists_machine(job_desc.req_nodes, machine) then
+            slurm.log_user("Rejected: %s jobs may run at most %g hours on %s, kept free for interactive shells. Request a shorter time or leave out --nodelist.", partition, limit / 60, table.concat(machines, ", "))
+            return slurm.ERROR
+        end
+    end
+    local excluded = {}
+    for _, name in ipairs(hostlist_tokens(job_desc.exc_nodes)) do table.insert(excluded, name) end
+    for _, machine in ipairs(machines) do
+        if not lists_machine(job_desc.exc_nodes, machine) then table.insert(excluded, machine) end
+    end
+    job_desc.exc_nodes = table.concat(excluded, ",")
+    return slurm.SUCCESS
 end
 
 -- The interactive shell is one documented Bash login shell, not a background command.
@@ -76,6 +139,11 @@ function slurm_job_submit(job_desc, part_list, submit_uid)
             slurm.log_user("Rejected: %s allows at most %d minutes per job. Request a shorter time or choose another partition.", partition, wall)
             return slurm.ERROR
         end
+        local time_limit = job_desc.time_limit
+        if time_limit == nil or time_limit == slurm.NO_VAL then time_limit = wall end
+        if keep_off_interactive_machines(job_desc, partition, time_limit) ~= slurm.SUCCESS then
+            return slurm.ERROR
+        end
         local requested = math.max(gpu_count(job_desc.tres_per_job), gpu_count(job_desc.tres_per_node), gpu_count(job_desc.tres_per_socket), gpu_count(job_desc.tres_per_task))
         if gpu_limits[partition] and requested > gpu_limits[partition] then
             slurm.log_user("Rejected: %s allows at most %d GPUs for one user at a time. Request fewer GPUs or choose another partition.", partition, gpu_limits[partition])
@@ -96,6 +164,20 @@ function slurm_job_modify(job_desc, job_rec, part_list, modify_uid)
     if modify_uid ~= 0 and job_desc.partition ~= nil and job_desc.partition ~= job_rec.partition then
         slurm.log_user("Rejected: a job cannot change partition after submission. Cancel and resubmit it to the intended partition.")
         return slurm.ERROR
+    end
+    -- A user's update cannot remove this exclusion, including by lengthening the job's time limit.
+    if modify_uid ~= 0 and (job_desc.exc_nodes ~= nil or job_desc.req_nodes ~= nil or job_desc.time_limit ~= nil) then
+        local time_limit = job_desc.time_limit
+        if time_limit == nil or time_limit == slurm.NO_VAL then time_limit = job_rec.time_limit end
+        if job_desc.exc_nodes == nil then job_desc.exc_nodes = job_rec.exc_nodes end
+        if job_desc.req_nodes == nil then job_desc.req_nodes = job_rec.req_nodes end
+        for partition in job_rec.partition:gmatch("[^,]+") do
+            local effective_time = time_limit
+            if effective_time == nil or effective_time == slurm.NO_VAL then effective_time = walls[partition] end
+            if keep_off_interactive_machines(job_desc, partition, effective_time) ~= slurm.SUCCESS then
+                return slurm.ERROR
+            end
+        end
     end
     return slurm.SUCCESS
 end

@@ -83,7 +83,14 @@ class WebsiteBuildTest(unittest.TestCase):
         docs = (BUILT / "docs.md").read_text(encoding="utf-8")
         for placeholder in ("cluster_name", "login_address", "home_quota_soft_gb", "home_quota_hard_gb"):
             self.assertIn("{{" + placeholder + "}}", docs)
-        allowed = {"cluster_name", "login_address", "home_quota_soft_gb", "home_quota_hard_gb", "scratch_cleanup_days"}
+        allowed = {
+            "cluster_name",
+            "login_address",
+            "home_quota_soft_gb",
+            "home_quota_hard_gb",
+            "scratch_cleanup_days",
+            "interactive_machine_rule",
+        }
         for name in ("docs.md", "policy.md"):
             used = set(re.findall(r"\{\{(\w+)\}\}", (BUILT / name).read_text(encoding="utf-8")))
             self.assertLessEqual(used, allowed, f"{name} uses unknown placeholders")

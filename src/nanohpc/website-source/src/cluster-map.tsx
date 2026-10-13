@@ -91,11 +91,13 @@ function storedLayout(): LayoutName {
 }
 
 /** Turn the snapshot's machines and jobs into what the map draws. */
-function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, measured: Measured | null, mode: 'slurm' | 'monitor'): MapMachine[] {
+function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, measured: Measured | null, mode: 'slurm' | 'monitor', stale: boolean): MapMachine[] {
   return nodes.map(node => {
     const running = jobs.filter(job => job.state === 'RUNNING' && job.node === node.name).sort((a, b) => a.id.localeCompare(b.id))
     const total = node.total_gpus ?? 0
-    const allocated = node.available_gpus != null ? total - node.available_gpus : running.reduce((sum, job) => sum + job.gpus, 0)
+    // Slurm counts an offline machine's GPUs as unavailable, so its allocation count is unknown.
+    const allocated = stale || node.gpu_usage === 'Unknown' ? null
+      : node.available_gpus != null ? total - node.available_gpus : running.reduce((sum, job) => sum + job.gpus, 0)
     // Slurm does not say which GPU index a job has, so allocated lights take users in job order.
     const users = running.flatMap(job => Array(job.gpus).fill(job.user) as string[])
     const busy = measured?.busy.get(node.name)
@@ -114,7 +116,7 @@ function mapMachines(nodes: Machine[], jobs: OverviewJob[], pending: number, mea
       allocatedGpus: allocated,
       runningJobs: running.length, pendingJobs: node.role === 'Front node' ? pending : 0,
       nfsRequests: measured?.nfs.get(node.name) ?? null, nfsWrites: measured?.nfs.has(node.name) ? measured.writes.get(node.name) ?? 0 : null,
-      gpus: Array.from({ length: total }, (_, i) => ({ user: i < allocated ? users[i] ?? '' : null, busy: busy?.[i] ?? null })),
+      gpus: Array.from({ length: total }, (_, i) => ({ user: allocated !== null && i < allocated ? users[i] ?? '' : null, busy: busy?.[i] ?? null })),
     }
   })
 }
@@ -126,7 +128,7 @@ function describe(machines: MapMachine[], layout: LayoutName): string {
     ? `${m.name}: ${m.front ? 'monitor host' : 'machine'}, health ${m.health}, GPU activity ${m.gpus.length ? m.gpus.map((gpu, i) => `GPU ${i} ${gpu.busy === null ? 'unknown' : `${Math.round(gpu.busy)}%`}`).join(', ') : 'not applicable'}`
     : m.front
     ? `${m.name}: front node, ${m.pendingJobs} pending job${m.pendingJobs === 1 ? '' : 's'}`
-    : `${m.name}: ${m.fpgaUsagePercent !== null ? `FPGA usage ${m.fpgaUsagePercent}%` : `${m.allocatedGpus} of ${m.totalGpus} GPUs allocated`}, ${m.runningJobs} running job${m.runningJobs === 1 ? '' : 's'}, ${
+    : `${m.name}: ${m.fpgaUsagePercent !== null ? `FPGA usage ${m.fpgaUsagePercent}%` : m.allocatedGpus === null ? 'GPU use unknown' : `${m.allocatedGpus} of ${m.totalGpus} GPUs allocated`}, ${m.runningJobs} running job${m.runningJobs === 1 ? '' : 's'}, ${
       m.nfsRequests === null ? 'shared home traffic unknown' : `shared home ${Math.round(m.nfsRequests)} requests per second (${Math.round(m.nfsWrites ?? 0)} writes)`}${
       !m.gpus.length ? '' : m.gpus.some(gpu => gpu.busy === null) ? ', GPU busy unknown' : `, GPUs busy ${m.gpus.map(gpu => `${Math.round(gpu.busy!)}%`).join(', ')}`}`).join('; ')}`
 }
@@ -137,7 +139,7 @@ export function ClusterMap({ nodes, jobs, pendingJobs, stale, refreshSeconds, de
   const sketch = useRef<Sketch | null>(null)
   const [layout, setLayout] = useState<LayoutName>(storedLayout)
   const [measured, setMeasured] = useState<Measured | null>(null)
-  const machines = mapMachines(nodes, jobs, pendingJobs, measured, mode ?? 'slurm')
+  const machines = mapMachines(nodes, jobs, pendingJobs, measured, mode ?? 'slurm', stale)
   const demoNodeKey = demo ? nodes.map(node => `${node.name}:${node.total_gpus ?? 0}`).join('|') : ''
 
   // Measurements refresh with the snapshot; a failed query means no traffic is shown, not zero.

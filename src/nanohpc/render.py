@@ -46,8 +46,13 @@ def front_machine(config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 
 def gpu_count(machine: dict[str, Any]) -> int:
-    """Return a machine's GPU count, 0 for CPU-only machines."""
+    """Return fitted GPUs, 0 for CPU-only machines."""
     return machine["gpu"]["count"] if machine.get("gpu") else 0
+
+
+def slurm_gpu_count(machine: dict[str, Any]) -> int:
+    """Return GPUs Slurm can hand out on a compute machine."""
+    return machine["gpu"].get("limit", gpu_count(machine)) if machine.get("gpu") else 0
 
 
 def partition_members(config: dict[str, Any], partition: str) -> list[str]:
@@ -55,9 +60,26 @@ def partition_members(config: dict[str, Any], partition: str) -> list[str]:
     return [name for name, machine in compute_machines(config).items() if partition in machine["partitions"]]
 
 
+def interactive_machine_limits(config: dict[str, Any]) -> dict[str, tuple[int, list[str]]]:
+    """Return each batch partition's time limit and shared interactive machines."""
+    interactive = {name for name, part in config["partitions"].items() if part["jobs"] == "interactive"}
+    return {
+        name: (
+            minutes(part["max_time_on_interactive_machines"]),
+            [
+                machine_name
+                for machine_name, machine in compute_machines(config).items()
+                if name in machine["partitions"] and interactive.intersection(machine["partitions"])
+            ],
+        )
+        for name, part in config["partitions"].items()
+        if "max_time_on_interactive_machines" in part
+    }
+
+
 def partition_gpu_limit(config: dict[str, Any], partition: str) -> int:
     """Return the most GPUs one user can hold in a partition: its limits and its capacity, whichever is smallest."""
-    limits = [sum(gpu_count(config["machines"][name]) for name in partition_members(config, partition))]
+    limits = [sum(slurm_gpu_count(config["machines"][name]) for name in partition_members(config, partition))]
     for limit in (config["partitions"][partition]["max_gpus_per_user"], config["policy"]["max_gpus_per_user"]):
         if limit != "unlimited":
             limits.append(limit)
@@ -102,6 +124,7 @@ def render_slurm_conf(config: dict[str, Any], hostnames: dict[str, str], simulat
         "ReturnToService=1",
         "SchedulerType=sched/backfill",
         "PriorityType=priority/multifactor",
+        "PriorityFlags=NO_FAIR_TREE",
         f"PriorityWeightFairshare={policy['fairshare_weight']}",
         f"PriorityWeightAge={policy['age_weight']}",
         f"PriorityDecayHalfLife={policy['fairshare_half_life']}",
@@ -128,7 +151,7 @@ def render_slurm_conf(config: dict[str, Any], hostnames: dict[str, str], simulat
     for name, machine in compute_machines(config).items():
         cpu = machine["cpu"]
         cpus = cpu["sockets"] * cpu["cores_per_socket"] * cpu["threads_per_core"]
-        gres = f" Gres=gpu:{machine['gpu']['type']}:{machine['gpu']['count']}" if machine.get("gpu") else ""
+        gres = f" Gres=gpu:{machine['gpu']['type']}:{slurm_gpu_count(machine)}" if machine.get("gpu") else ""
         lines.append(
             f"NodeName={name} NodeHostname={hostnames[name]} NodeAddr={machine['address']} CPUs={cpus} Boards=1 SocketsPerBoard={cpu['sockets']} "
             f"CoresPerSocket={cpu['cores_per_socket']} ThreadsPerCore={cpu['threads_per_core']} "
@@ -150,8 +173,10 @@ def render_gres_conf(machine: dict[str, Any]) -> str:
     gpu = machine.get("gpu")
     if not gpu:
         return ""
-    devices = "/dev/nvidia0" if gpu["count"] == 1 else f"/dev/nvidia[0-{gpu['count'] - 1}]"
-    return f"Name=gpu Type={gpu['type']} File={devices}\n"
+    count = slurm_gpu_count(machine)
+    devices = "/dev/nvidia0" if count == 1 else f"/dev/nvidia[0-{count - 1}]"
+    autodetect = "AutoDetect=off\n" if count < gpu["count"] else ""
+    return f"{autodetect}Name=gpu Type={gpu['type']} File={devices}\n"
 
 
 def lua_table(values: dict[str, Any]) -> str:
@@ -162,6 +187,7 @@ def lua_table(values: dict[str, Any]) -> str:
 def render_job_submit(config: dict[str, Any]) -> str:
     """Return job_submit.lua: the partition tables followed by the shared rules."""
     partitions = config["partitions"]
+    limits = interactive_machine_limits(config)
     default = next(name for name, partition in partitions.items() if partition["default"])
     header = "\n".join(
         [
@@ -171,6 +197,13 @@ def render_job_submit(config: dict[str, Any]) -> str:
             f"local job_types = {lua_table({name: p['jobs'] for name, p in partitions.items()})}",
             f"local walls = {lua_table({name: minutes(p['max_time']) for name, p in partitions.items()})}",
             f"local gpu_limits = {lua_table({name: partition_gpu_limit(config, name) for name in partitions})}",
+            f"local interactive_machine_limits = {lua_table({name: wall for name, (wall, _) in limits.items()})}",
+            "local interactive_machines = { "
+            + ", ".join(
+                f"[{json.dumps(name)}] = {{ {', '.join(json.dumps(machine) for machine in machines)} }}"
+                for name, (_, machines) in limits.items()
+            )
+            + " }",
         ]
     )
     rules = resources.files("nanohpc").joinpath("files", "job_submit_rules.lua").read_text()
