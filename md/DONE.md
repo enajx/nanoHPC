@@ -2,6 +2,18 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-13: README status badges
+
+- The README shows linked badges for Core Python checks, Public demo deployment, and the MIT license below the nanoHPC image. A GitHub workflow runs a focused Python check set on relevant pushes to `main` and pull requests; the existing demo workflow supplies its own deployment status. The full Python suite and Lima VM run stay manual. The exact 131 core checks passed locally on Python 3.12 and 3.13. The two full-suite test expectations changed by the REAL port were fixed; the full Python 3.12 suite then passed (550 tests, 43 skipped). GitHub will report a badge result once the workflow is merged and run on `main`.
+- Files: `.github/workflows/python-tests.yml`, `README.md`, `tests/{test_root_login,test_website_build}.py`, `md/testing.md`.
+
+## 2026-10-12: REAL cluster feature ports
+
+- Slurm now uses classic fair share with a configurable 40,000 weight and 45-day half-life. A first deploy check refuses node or GPU definition changes that would stop running jobs. An optional batch partition time limit keeps long jobs off machines shared with interactive partitions, including after user job updates. A configured GPU limit can offer fewer GPUs to Slurm than are fitted while keeping health checks on all fitted GPUs. Administrators can use `cluster-cancel --reason` to stop running jobs, with a private Slack notice about requeue or cancellation for each owner.
+- Backup alerts retain first failure and recovery notices and add a Monday reminder for unresolved failures. The front node can ignore its power, reboot, sleep, and hibernate keys. The cluster map hides unknown GPU allocation counts, the Overview GPU total leaves out Offline and Unknown machines, and the website retains its paired desktop cards at 1332–1479 px.
+- The focused Python suite passed (133 tests), as did all 32 browser tests, the website and demo build, Ruff, Ansible syntax checks, and a full dry-run deploy on two existing x86 Lima VMs. The dry run applied nothing; tests for Slack and collector behavior used local fake services. Live Slurm placement, GPU hardware limits, and Slack delivery were not checked on a production cluster. An independent agent reviewed the ports and its findings were fixed.
+- Files: `src/nanohpc/{config,deploy,render}.py`, `src/nanohpc/ansible/{site,partial}.yml`, `src/nanohpc/ansible/roles/{alerts,power_button}/`, `src/nanohpc/ansible/files/slurm-change-check`, `src/nanohpc/files/{cluster-cancel,nanohpc-backup-alert-weekly,job_submit_rules.lua,cluster-monitor-snapshot,cluster_machine_status.py}`, `src/nanohpc/website-source/`, `src/nanohpc/website/`, `examples/cluster.yml`, `tests/`, `md/administrator-guide.md`.
+
 ## 2026-10-11: MIT license
 
 - Added the MIT license with a project-level `nanoHPC contributors` copyright notice. The source distribution and wheel both include the complete license; the wheel records it in package metadata. Files: `LICENSE`, `pyproject.toml`.

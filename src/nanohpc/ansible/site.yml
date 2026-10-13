@@ -14,6 +14,34 @@
 # Variables from nanohpc deploy: nanohpc_left_out (machines left out of this run) and nanohpc_dry_run (per
 # machine, the nanohpc_dry_run_* facts the dry run read, for the real run to compare).
 
+# A changed Slurm node definition or gres.conf can stop every running job on that machine.
+# Check all Slurm machines before any deploy task, including during the dry run.
+- name: Refuse Slurm changes that would stop running jobs
+  hosts: role_slurm
+  become: true
+  any_errors_fatal: true
+  gather_facts: false
+  tasks:
+    - name: Check changed Slurm node definitions on the front node
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/files/slurm-change-check --squeue /usr/bin/squeue --kind slurm.conf
+          --current /etc/slurm/slurm.conf --node {{ inventory_hostname }}
+          --new {{ lookup('ansible.builtin.file', nanohpc.files ~ '/slurm.conf', rstrip=False) | quote }}
+      when: "'front' in nanohpc.machines[inventory_hostname].roles and inventory_hostname not in nanohpc_left_out"
+      check_mode: false
+      changed_when: false
+
+    - name: Check changed GPU setup on each compute machine
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/files/slurm-change-check --squeue /usr/bin/squeue --kind gres.conf
+          --current /etc/slurm/gres.conf --node {{ inventory_hostname }}
+          --new {{ lookup('ansible.builtin.file', nanohpc.files ~ '/gres/' ~ inventory_hostname ~ '.conf', rstrip=False) | quote }}
+      when: "'compute' in nanohpc.machines[inventory_hostname].roles and inventory_hostname not in nanohpc_left_out"
+      check_mode: false
+      changed_when: false
+
 - name: Check every machine before changing anything
   hosts: all
   become: true
@@ -134,6 +162,11 @@
   hosts: all
   become: true
   roles: [base, accounts]
+
+- name: Keep the front node running after a short power-key press
+  hosts: role_front
+  become: true
+  roles: [power_button]
 
 - name: /home with quotas on the home machine
   hosts: role_home

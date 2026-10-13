@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Refuse a Slurm definition change that would stop running jobs.
+
+Slurm can stop every job on a machine when its NodeName line or gres.conf changes,
+including jobs on GPUs the machine keeps. Deploy runs this check on every Slurm
+machine before changing anything, during the dry run and the real run.
+"""
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+
+def node_lines(text: str) -> dict[str, str]:
+    """Return each machine's NodeName line by machine name."""
+    return {
+        line.split()[0].split("=", 1)[1]: line.strip() for line in text.splitlines() if line.startswith("NodeName=")
+    }
+
+
+def changed_machines(kind: str, current: str, new: str, node: str) -> list[str]:
+    """Find machines with a changed Slurm definition or local GPU setup."""
+    if kind == "slurm.conf":
+        installed, fresh = node_lines(current), node_lines(new)
+        return [name for name, line in installed.items() if fresh.get(name) != line]
+    return [node] if current != new else []
+
+
+def main() -> None:
+    """Check affected machines for active jobs and refuse a disruptive change."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--squeue", required=True)
+    parser.add_argument("--kind", required=True, choices=["slurm.conf", "gres.conf"])
+    parser.add_argument("--current", type=Path, required=True)
+    parser.add_argument("--node", required=True)
+    parser.add_argument("--new", required=True)
+    args = parser.parse_args()
+    if not args.current.is_file():
+        print(f"slurm-change-check: no {args.current} yet, so no jobs run with it")
+        return
+    machines = changed_machines(args.kind, args.current.read_text(), args.new, args.node)
+    if not machines:
+        return
+    jobs = subprocess.run(
+        [
+            args.squeue,
+            "-h",
+            "-w",
+            ",".join(machines),
+            "-t",
+            "RUNNING,COMPLETING,CONFIGURING,SUSPENDED",
+            "-o",
+            "%i %u %N",
+        ],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    if jobs:
+        sys.exit(
+            f"slurm-change-check: refused: {args.kind} changes {', '.join(machines)}, and Slurm would stop these running jobs:\n"
+            f"{jobs}\nDrain the machine and wait for its jobs to end, or stop them with "
+            'sudo cluster-cancel --reason "..." JOBID... so their owners are told; then run again.'
+        )
+    print(f"slurm-change-check: {args.kind} changes {', '.join(machines)}; no jobs run there")
+
+
+if __name__ == "__main__":
+    main()

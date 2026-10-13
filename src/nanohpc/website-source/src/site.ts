@@ -11,6 +11,7 @@
  *     "home_quota_soft_gb": int,    // per-user /home notice threshold
  *     "home_quota_hard_gb": int,
  *     "scratch_cleanup_days": int   // staged scratch data unused this long is deleted
+ *     "interactive_machine_rule": str // configured placement rule, empty when unset
  *     "demo": bool                    // optional; generated sample site only
  *   }
  *
@@ -25,6 +26,7 @@ export type SiteSettings = {
   home_quota_soft_gb: number
   home_quota_hard_gb: number
   scratch_cleanup_days: number
+  interactive_machine_rule?: string
   demo?: boolean
 }
 
@@ -38,8 +40,8 @@ export type MonitorSiteSettings = {
 
 export type LoadedSiteSettings = SiteSettings | MonitorSiteSettings
 
-const settingNames = ['cluster_name', 'logo', 'login_address', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'demo']
-const requiredNames = settingNames.filter(name => name !== 'demo')
+const settingNames = ['cluster_name', 'logo', 'login_address', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'interactive_machine_rule', 'demo']
+const requiredNames = settingNames.filter(name => name !== 'demo' && name !== 'interactive_machine_rule')
 
 /** Check site.json's content against the contract above and name the first problem. */
 export function checkSiteSettings(value: unknown): LoadedSiteSettings {
@@ -71,6 +73,7 @@ export function checkSiteSettings(value: unknown): LoadedSiteSettings {
   for (const name of ['home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days']) {
     if (!Number.isInteger(settings[name])) throw new Error(`site.json: ${name} must be a whole number`)
   }
+  if (settings.interactive_machine_rule !== undefined && typeof settings.interactive_machine_rule !== 'string') throw new Error('site.json: interactive_machine_rule must be text')
   if (settings.demo !== undefined && typeof settings.demo !== 'boolean') throw new Error('site.json: demo must be a boolean')
   const logo = settings.logo
   // A relative URL keeps the logo under the site's own path.

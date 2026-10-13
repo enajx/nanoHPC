@@ -17,7 +17,14 @@ import os
 import re
 from pathlib import Path
 
-PLACEHOLDERS = ("cluster_name", "login_address", "home_quota_soft_gb", "home_quota_hard_gb", "scratch_cleanup_days")
+PLACEHOLDERS = (
+    "cluster_name",
+    "login_address",
+    "home_quota_soft_gb",
+    "home_quota_hard_gb",
+    "scratch_cleanup_days",
+    "interactive_machine_rule",
+)
 
 
 def fill(template: str, site: dict) -> str:

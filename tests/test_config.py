@@ -24,6 +24,30 @@ def example() -> dict[str, Any]:
     return copy.deepcopy(yaml.safe_load(EXAMPLE.read_text()))
 
 
+class MachineGpuLimitTest(unittest.TestCase):
+    """A machine can expose fewer GPUs to Slurm than it has fitted."""
+
+    def test_limit_requires_a_reason_and_cannot_exceed_fitted_count(self) -> None:
+        raw = example()
+        gpu = raw["machines"]["gpu4"]["gpu"]
+        gpu.update(limit=2, limit_reason="power limit")
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["machines"]["gpu4"]["gpu"], gpu)
+        for limit, reason in [(5, "power limit"), (0, "power limit"), ("two", "power limit"), (2, None)]:
+            changed = example()
+            changed["machines"]["gpu4"]["gpu"]["limit"] = limit
+            if reason is not None:
+                changed["machines"]["gpu4"]["gpu"]["limit_reason"] = reason
+            _, errors = check_config(changed)
+            self.assertTrue(any("machines.gpu4.gpu" in error for error in errors), errors)
+        capacity = example()
+        capacity["machines"]["gpu4"]["gpu"].update(limit=2, limit_reason="power limit")
+        capacity["policy"]["max_gpus_per_user"] = 9
+        _, errors = check_config(capacity)
+        self.assertTrue(any("policy.max_gpus_per_user 9 is more than the 8 GPUs" in error for error in errors), errors)
+
+
 class MonitorConfigTest(unittest.TestCase):
     """Monitor configs describe machines and names, without Slurm or managed accounts."""
 
@@ -248,7 +272,7 @@ class HeterogeneousClusterTest(unittest.TestCase):
     def test_minimal_gets_defaults(self) -> None:
         config, errors = check_config(yaml.safe_load(MINIMAL.read_text()))
         self.assertEqual(errors, [])
-        self.assertEqual(config["policy"]["fairshare_weight"], 10000)
+        self.assertEqual(config["policy"]["fairshare_weight"], 40000)
         self.assertEqual(config["policy"]["max_gpus_per_user"], "unlimited")
         self.assertEqual(config["home"], {"quota_soft_gb": 300, "quota_hard_gb": 400})
         self.assertEqual(config["scratch"], {"cleanup_days": 14, "job_retention_days": 7})

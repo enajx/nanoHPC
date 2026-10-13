@@ -25,7 +25,8 @@ Arguments (all set by the operator, never from the website):
                                {"NAME": {"role": "front" | "compute" | "storage",
                                          "units": ["slurmd.service", ...],
                                          "mounts": ["/", "/home", "/scratch", ...],
-                                         "building": "optional area name"}}
+                                         "building": "optional area name",
+                                         "gpu_limit": {"fitted": 8, "reason": "power limit"}}}
                              In monitor mode, roles are "monitor" and "machine", and exactly the controller
                              machine has the monitor role. `building` applies to Slurm mode only. `units` are
                              the systemd units that must be active and `mounts` the mount points that must be
@@ -94,6 +95,17 @@ def gpu_count(tres: str) -> int:
     if "gres/gpu" in resources:
         return int(resources["gres/gpu"])
     return sum(int(value) for name, value in resources.items() if name.startswith("gres/gpu:"))
+
+
+def counted_gpus(nodes: list[dict[str, str]], statuses: list[dict[str, Any]]) -> tuple[int, int]:
+    """Count total and allocated GPUs only on machines with known presence."""
+    present = [
+        node for node, status in zip(nodes, statuses, strict=True) if status["health"] not in ("Offline", "Unknown")
+    ]
+    return (
+        sum(gpu_count(node.get("CfgTRES", "")) for node in present),
+        sum(gpu_count(node.get("AllocTRES", "")) for node in present),
+    )
 
 
 def slurm_available_gpus(node: dict[str, str]) -> int:
@@ -250,9 +262,20 @@ def read_machines(path: Path) -> dict[str, dict[str, Any]]:
     for name, machine in machines.items():
         valid = (
             isinstance(machine, dict)
-            and {"role", "units", "mounts"} <= set(machine) <= {"role", "units", "mounts", "building"}
+            and {"role", "units", "mounts"} <= set(machine) <= {"role", "units", "mounts", "building", "gpu_limit"}
             and machine["role"] in ROLE_NAMES
             and ("building" not in machine or isinstance(machine["building"], str) and bool(machine["building"]))
+            and (
+                "gpu_limit" not in machine
+                or machine["role"] == "compute"
+                and isinstance(machine["gpu_limit"], dict)
+                and set(machine["gpu_limit"]) == {"fitted", "reason"}
+                and isinstance(machine["gpu_limit"]["fitted"], int)
+                and not isinstance(machine["gpu_limit"]["fitted"], bool)
+                and machine["gpu_limit"]["fitted"] > 0
+                and isinstance(machine["gpu_limit"]["reason"], str)
+                and bool(machine["gpu_limit"]["reason"])
+            )
             and all(
                 isinstance(machine[key], list) and all(isinstance(item, str) and item for item in machine[key])
                 for key in ("units", "mounts")
@@ -260,7 +283,7 @@ def read_machines(path: Path) -> dict[str, dict[str, Any]]:
         )
         if not valid:
             raise ValueError(
-                f"{path}: machine {name} needs role (front, compute, or storage), units, mounts, and optional building"
+                f"{path}: machine {name} needs role (front, compute, or storage), units, mounts, and optional building or gpu_limit"
             )
     return machines
 
@@ -605,7 +628,13 @@ def collect(
             policies.append({"name": f"{name}: simultaneous resources per user", "value": tres})
         if per_job:
             policies.append({"name": f"{name}: GPUs per job (most)", "value": per_job})
-    for key in ("PriorityWeightFairShare", "PriorityWeightAge", "PriorityDecayHalfLife", "PriorityMaxAge"):
+    for key in (
+        "PriorityFlags",
+        "PriorityWeightFairShare",
+        "PriorityWeightAge",
+        "PriorityDecayHalfLife",
+        "PriorityMaxAge",
+    ):
         # Slurm uses a capital S; the comparison tolerates version-specific capitalization.
         value = next((value for name, value in config.items() if name.lower() == key.lower()), "Unavailable")
         policies.append({"name": key, "value": value})
@@ -636,9 +665,12 @@ def collect(
     def status(name: str, slurm_state: str, gpus: int) -> dict[str, Any]:
         machine = machines[name]
         role = ROLE_NAMES[machine["role"]]
+        fitted = machine["gpu_limit"]["fitted"] if "gpu_limit" in machine else gpus
         result = machine_status(
-            name, role, slurm_state, gpus, machine["units"], machine["mounts"], health, history, sample_end
+            name, role, slurm_state, fitted, gpus, machine["units"], machine["mounts"], health, history, sample_end
         )
+        if "gpu_limit" in machine and gpus < fitted:
+            result["gpu_limit"] = {"gpus": gpus, "fitted": fitted, "reason": machine["gpu_limit"]["reason"]}
         result["building"] = machine.get("building")
         return result
 
@@ -654,6 +686,7 @@ def collect(
             apply_maintenance(compute, reason)
         compute_nodes.append(compute)
     storage_nodes = [status(name, "", 0) for name, machine in machines.items() if machine["role"] == "storage"]
+    total_gpus, allocated_gpus = counted_gpus(nodes, compute_nodes)
     result = {
         "generated_at": now.isoformat(),
         "refresh_seconds": refresh,
@@ -663,8 +696,8 @@ def collect(
         "average_wait_seconds_1d": average_wait_seconds(waiting_records, now, 1),
         "average_wait_seconds_7d": average_wait_seconds(waiting_records, now, 7),
         "average_wait_seconds_30d": average_wait_seconds(waiting_records, now, 30),
-        "total_gpus": sum(gpu_count(node.get("CfgTRES", "")) for node in nodes),
-        "allocated_gpus": sum(gpu_count(node.get("AllocTRES", "")) for node in nodes),
+        "total_gpus": total_gpus,
+        "allocated_gpus": allocated_gpus,
         "queue_paused": queue_paused,
         "jobs": overview_jobs(queue["jobs"], int(now.timestamp())),
         "nodes": [status(controller, "", 0)] + compute_nodes + storage_nodes,

@@ -543,8 +543,9 @@ class RootKeysStopWhereTest(unittest.TestCase):
         block = blocks[0]
         self.assertIn("user=root", json.dumps(block["block"]))
         partial = yaml.safe_load((ROLES.parent / "partial.yml").read_text())
-        self.assertEqual(partial[0]["roles"], ["preflight"])
-        self.assertEqual(partial[0]["tags"], ["always"])
+        preflight_plays = [play for play in partial if play.get("roles") == ["preflight"]]
+        self.assertEqual(len(preflight_plays), 1)
+        self.assertEqual(preflight_plays[0]["tags"], ["always"])
         play = {
             "hosts": "all",
             "gather_facts": False,

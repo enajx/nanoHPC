@@ -44,6 +44,8 @@ A job script asks Slurm for resources, then runs your commands. A job goes to th
 
 The partitions, their time limits, and their machines are live values: see them on the [Cluster policy page](./#policy).
 
+{{interactive_machine_rule}}
+
 ### job.sh: save this file in your project
 
 ```bash

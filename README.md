@@ -13,6 +13,12 @@
   <img src="assets/nanohpc-title.svg" alt="nanoHPC" width="380">
 </p>
 
+<p align="center">
+  <a href="https://github.com/enajx/nanoHPC/actions/workflows/python-tests.yml"><img src="https://github.com/enajx/nanoHPC/actions/workflows/python-tests.yml/badge.svg?branch=main" alt="Core Python checks status" height="18"></a>
+  <a href="https://github.com/enajx/nanoHPC/actions/workflows/public-demo.yml"><img src="https://github.com/enajx/nanoHPC/actions/workflows/public-demo.yml/badge.svg?branch=main" alt="Public demo deployment status" height="18"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/enajx/nanoHPC" alt="MIT license" height="18"></a>
+</p>
+
 `nanoHPC` is a lightweight Slurm cluster and monitoring tool for small computational labs.
 
 The whole cluster is defined in a single file, `cluster.yml` (the machines, the users, the partitions, and the queue

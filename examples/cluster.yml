@@ -82,6 +82,7 @@ partitions:
     default: true
     jobs: batch                 # batch | interactive | any (default any)
     max_time: "24:00:00"
+    max_time_on_interactive_machines: "04:00:00" # longer main jobs avoid machines shared with interactive
   interactive:
     jobs: interactive           # only the shell: srun --partition=interactive --pty bash -l
     max_time: "08:00:00"
@@ -92,8 +93,8 @@ policy:
   max_gpus_per_user: unlimited
   default_cpus_per_gpu: 4
   default_memory_mb_per_cpu: 1024
-  fairshare_weight: 10000       # recent GPU usage
-  fairshare_half_life: "7-00:00:00"
+  fairshare_weight: 40000       # recent GPU usage, classic fair share
+  fairshare_half_life: "45-00:00:00"
   age_weight: 1000              # waiting time
   age_max: "7-00:00:00"
 

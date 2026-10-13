@@ -190,6 +190,90 @@
   delay: 2
   when: not ansible_check_mode  # checks this deploy's result
 
+# Alertmanager already sends the first BackupFailed/BackupOld notification and its recovery.
+# The weekly timer adds REAL's reminder of backup problems that have not recovered.
+- name: Install the weekly backup alert reminder
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-backup-alert-weekly"
+    dest: /usr/local/bin/nanohpc-backup-alert-weekly
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the weekly backup alert reminder service and timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/nanohpc-backup-alert-weekly.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if item == 'service' %}
+      [Unit]
+      Description=Remind Slack of active backup alerts (nanoHPC)
+      After=network-online.target nanohpc-alertmanager.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      User=cluster-alertmanager
+      Group=cluster-alertmanager
+      ExecStart=/usr/local/bin/nanohpc-backup-alert-weekly --alertmanager http://127.0.0.1:9093 --webhook-file /etc/nanohpc/alertmanager/slack-webhook --cluster {{ nanohpc.cluster_name | quote }}
+      Restart=on-failure
+      RestartSec=1min
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      PrivateDevices=true
+      ProtectKernelTunables=true
+      ProtectKernelModules=true
+      ProtectControlGroups=true
+      CapabilityBoundingSet=
+      RestrictSUIDSGID=true
+      MemoryMax=128M
+      {% else %}
+      [Unit]
+      Description=Remind Slack of active backup alerts each Monday (nanoHPC)
+
+      [Timer]
+      OnCalendar=Mon *-*-* 09:00:00
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+      {% endif %}
+  loop: [service, timer]
+  register: backup_alert_weekly_units
+
+- name: Run the weekly backup alert reminder timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-backup-alert-weekly.timer
+    enabled: "{{ nanohpc.alerts.slack and nanohpc.backup is not none }}"
+    state: "{{ 'started' if nanohpc.alerts.slack and nanohpc.backup is not none else 'stopped' }}"
+    daemon_reload: "{{ backup_alert_weekly_units.changed }}"
+  when: not (ansible_check_mode and backup_alert_weekly_units is changed)
+
+- name: Install the cluster-cancel job stopper
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-cancel"
+    dest: /usr/local/bin/nanohpc-cluster-cancel
+    owner: root
+    group: root
+    mode: "0755"
+  when: nanohpc.mode | default('slurm') == 'slurm'
+
+- name: Install cluster-cancel
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cluster-cancel
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      # Stop running jobs with a reason and tell each owner privately on Slack.
+      exec /usr/local/bin/nanohpc-cluster-cancel --bot-token-file /etc/nanohpc/alertmanager/slack-bot-token --slack-api https://slack.com/api --scontrol /usr/bin/scontrol --scancel /usr/bin/scancel {% for user in nanohpc.users %}--user {{ (user.name ~ ':' ~ (user.slack_id | default(''))) | quote }} {% endfor %}"$@"
+  when: nanohpc.mode | default('slurm') == 'slurm'
+
 # The user check publishes findings as Prometheus metrics. This timer sends
 # channel notices through the existing Slack webhook and optional private
 # messages through a bot token. It is off in monitor

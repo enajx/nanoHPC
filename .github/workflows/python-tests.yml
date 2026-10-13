@@ -1,0 +1,43 @@
+name: Core Python checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/python-tests.yml
+      - src/**
+      - tests/**
+      - examples/**
+      - pyproject.toml
+      - uv.lock
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/python-tests.yml
+      - src/**
+      - tests/**
+      - examples/**
+      - pyproject.toml
+      - uv.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - name: Run core Python checks
+        run: >-
+          uv run --locked python -m unittest
+          tests.test_config tests.test_render tests.test_deploy
+          tests.test_machine_status tests.test_monitor_snapshot
+          tests.test_slurm_change_check tests.test_backup_alert_weekly
+          tests.test_cluster_cancel tests.test_website_build

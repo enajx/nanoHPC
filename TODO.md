@@ -28,7 +28,8 @@ flowchart LR
   DEMO --> DP[Publish demo]:::done
   DP --> WF[Selected website follow-ups]:::done
   WF --> NW[REAL website updates]:::done
-  NW --> R[Release v0.1]:::queued
+  NW --> RF[REAL cluster feature ports]:::done
+  RF --> R[Release v0.1]:::queued
   BK --> R
   BK --> UC[User-process alerts]:::done
   UC --> UA[Tunnel exceptions and private notices]:::done
@@ -86,6 +87,11 @@ flowchart LR
 - [x] `/home` is shared from the front node, or from a separate storage machine, to all machines, with the per-user quotas from the configuration.
 - [x] Each compute node has local scratch (a disk, or an image file nanoHPC creates), and staged scratch data unused for `scratch.cleanup_days` is cleaned up daily. Per-user caches in `/scratch/<user>` are not cleaned.
 - [x] Partitions work with the GPU fair-share priority and per-user limits from the configuration.
+- [x] Slurm policy uses REAL's classic fair-share calculation and longer usage history, with configurable values. See [DONE.md](md/DONE.md).
+- [x] A deploy refuses Slurm node changes that would stop running jobs. See [DONE.md](md/DONE.md).
+- [x] Long jobs in the default batch partition avoid machines also reserved for interactive work, with a configurable time cutoff. See [DONE.md](md/DONE.md).
+- [x] A compute machine can offer fewer GPUs to Slurm than it has fitted, and the site explains the limit. See [DONE.md](md/DONE.md).
+- [x] An administrator can stop running jobs with a reason, with private Slack notices about requeue or cancellation. See [DONE.md](md/DONE.md).
 - [x] `cluster-submit` runs a job on a private scratch copy of the project and copies declared outputs back.
 - [x] uv is available to users on the front node and the compute machines.
 - [x] `stage-dataset --private` stages a user's data on a compute machine's scratch for reuse across jobs.
@@ -147,6 +153,8 @@ flowchart LR
 - [x] Deployed Slurm and monitor sites have a multi-select Machine filter for every machine metric panel, with All by default and repeatable `?machine=` links. See [DONE.md](md/DONE.md).
 - [x] The deployed Machines dashboard has a Total power panel summing fresh IPMI power-supply input readings from the machines chosen in the Machine dropdown; unsupported machines are omitted. See [DONE.md](md/DONE.md).
 - [x] On the Cluster Map, Offline and Unknown machines have transparent stacks, labels, and pipes, including while hovered or while the snapshot is stale. See [DONE.md](md/DONE.md).
+- [x] Unknown GPU use shows no allocation count on the Cluster Map, and Offline or Unknown machines do not count in the GPUs allocated card. See [DONE.md](md/DONE.md).
+- [x] The Overview and Users page keep their two-column layout at 1332–1479 px while filling the window height. See [DONE.md](md/DONE.md).
 
 - [x] Above `home.quota_soft_gb` (300 GB by default), users see a private notice on interactive login and can keep writing. See [DONE.md](md/DONE.md).
 - [x] Above `home.quota_hard_gb` (400 GB by default), new Slurm jobs wait until home usage falls; running jobs and writes continue. See [DONE.md](md/DONE.md).
@@ -158,6 +166,7 @@ flowchart LR
 ### Backup, alerts, and auto-deploy
 
 - [x] `/home` is copied every night with rsync to the backup machine in the cluster or to an outside SSH server, as one mirror of `/home` (files deleted from `/home` are deleted from the copy). A failed backup is reported.
+- [x] Backup failures produce one alert, recovery is reported, and unresolved failures appear in a weekly summary. See [DONE.md](md/DONE.md).
 - [x] Every machine runs its health checks every few minutes; the front node sends Slack alerts (off by default) when a check starts failing or warning and when it recovers, not on every run, plus failed backups and failed automatic deploys. The Slack webhook is in a `.env` file next to `cluster.yml` (never committed), copied to the front node by the deploy.
 - [x] Every configured machine in Slurm mode runs the user-process check, reports the agreed findings, stops unallowed user tunnels, and leaves system processes alone. See [DONE.md](md/DONE.md).
 - [x] User-process checks exclude systemd temporary `DynamicUser` accounts (UID 61184–65519). See [DONE.md](md/DONE.md).
@@ -168,6 +177,7 @@ flowchart LR
 - [x] User-check port posts name the program safely, include one user mention and a friendly word, and link to this cluster's guide. See [DONE.md](md/DONE.md).
 - [x] Front-node VS Code servers produce one finding and notices that explain Remote-SSH and link to the guide. See [DONE.md](md/DONE.md).
 - [x] The user guide and notebook helper explain why Remote-SSH to the front node fails and how to use VS Code or Jupyter inside a job. See [DONE.md](md/DONE.md).
+- [x] Administrators can keep a front node running when its power, reboot, sleep, or hibernate key is pressed. See [DONE.md](md/DONE.md).
 - [x] The front node can redeploy the whole cluster automatically from the administrator's configuration repository (off by default): it checks a branch every 10 minutes (set in `cluster.yml`; `main` by default, a stable or release branch suggested), pulls it with a read-only key, and deploys every machine itself with no one logging in and no password. A GitHub webhook can trigger it right after a push instead of waiting. The front node gets root SSH access to every machine for this (agreed 2026-10-02). The configuration repository pins the nanoHPC version the front node uses. `nanohpc deploy` from the administrator's machine stays. Each one runs the dry run first and applies only where it passed (machines whose dry run failed are left out; nothing is applied when the front node or the home machine fails), and alerts on any failure.
 
 ### Commands
@@ -221,6 +231,7 @@ flowchart LR
 - [ ] A setup is tested once on a real GPU machine for the NVIDIA driver and CUDA.
 - [x] Administrator documentation covers requirements, configuration, setup, adding nodes, and common problems, including root access for deploys (first setup, forwarded keys) and `ssh-add -c` as an option. See [administrator-guide.md](md/administrator-guide.md).
 - [x] The repository is published under the MIT license. See [DONE.md](md/DONE.md).
+- [x] The README shows core Python check, public demo deployment, and license badges below the nanoHPC image, each linked to its source. Core Python checks run automatically on relevant pushes and pull requests. See [DONE.md](md/DONE.md).
 - [ ] Once released: a "Buy me a coffee" link in the repository, for people who find nanoHPC useful.
 - [ ] A nice retro-style and/or ASCII animation of the project exists, to use as promo on LinkedIn when sharing the project in the open.
 
