@@ -5,7 +5,6 @@
 ```
 src/          # code
 md/           # durable reference knowledge (second brain)
-md/instructions/  # standing instruction docs (DIAGRAMS.md)
 md/DONE.md    # archive of completed TODO items
 tests/        # tests (optional)
 AGENTS.md PROJECT.md TODO.md   # top-level md
@@ -17,7 +16,6 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 - **Before every non-trivial commit, make sure the following are current:**
   - `TODO.md`: keep it lean. When a feature is done, move a concise record of what was built (outcome plus key files touched) to `md/DONE.md` and leave a one-liner marked `[x]` in `TODO.md`.
   - `PROJECT.md`: keep status, technical specifications, and project direction up to date; keep it lean, don't bloat it (detail goes into a specific `md/` file, cross-referenced here). If unsure whether it needs an update, ask the user.
-  - Plan diagrams: verify the `mermaid` diagrams in `PROJECT.md` and `TODO.md` still match the text and status of their files (see [`DIAGRAMS.md`](md/instructions/DIAGRAMS.md)).
   - `md/`: any doc this change makes stale is updated or deleted in the same commit.
 - Unless explicitly told, do not create a `README.md`, whatever is worth preserving across sessions should go in `PROJECT.md` or in the markdowns in md/
 
