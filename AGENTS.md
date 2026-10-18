@@ -30,7 +30,7 @@ AGENTS.md PROJECT.md TODO.md   # top-level md
 
 - **Build only what was asked / what's in the plan. No feature creep.** If something unspecified seems necessary or useful, check with the user rather than just adding it.
 - **Don't make assumptions: when anything is ambiguous or underspecified, check in with the user**. Don't be shy to **ask clarifying questions** to identify ambiguities, edge cases, underspecified behaviors, design preferences, and performance needs.
-  - **"Godspeed"**: the keyword for an overnight/over-weekend run where the user can't reply. The plan is already agreed; lean towards working things out yourself within its scope rather than blocking on a question, keep a record of the decisions you take, and surface them when the user comes back.
+  - **"Godspeed"**: the keyword for an overnight/over-weekend run where the user can't reply. The plan is already agreed; lean towards working things out yourself within its scope rather than blocking on a question, keep a record of the decisions you take, and when done write the summary with the `overnight-summary` skill.
 - If a task in progress is blocked on me (a decision, or information only I have), put the question at the end, after a horizontal rule, starting with `> 🟡 NEED FROM YOU —`, so it doesn't get lost in the chat. If there are several, number them. When there are clear options, ask with your multiple-choice question tool if you have one (AskUserQuestion, request_user_input). Don't use the marker to ask whether to go ahead with a proposal or a finished task, and don't repeat what the reply already says.
 - **Avoid over-engineering solutions; value simplicity and modularity.**
 - **Be extra careful to avoid silent failures.**
