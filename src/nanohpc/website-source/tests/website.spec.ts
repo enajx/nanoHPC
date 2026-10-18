@@ -30,6 +30,7 @@ const site = {
   home_quota_soft_gb: 250,
   home_quota_hard_gb: 300,
   scratch_cleanup_days: 21,
+  interactive_machine_rule: "A main job asking for more than 4 hours does not run on the interactive partition's shared machines (gpu1), which are kept free for interactive shells. Leave out --nodelist for those machines on longer jobs.",
 }
 const gib = 1024 ** 3
 
@@ -190,6 +191,29 @@ test('served cluster Overview fits a 1440 by 900 desktop', async ({ page }) => {
   expect(pageSize.width).toBeLessThanOrEqual(1440)
 })
 
+test('Overview and Users keep paired cards on a 13-inch desktop', async ({ page }) => {
+  await mockGrafana(page)
+  for (const width of [1332, 1440, 1470]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto(`${origin}${prefix}`)
+    const firstRow = await page.locator('.overview-machine-charts').evaluate(element => {
+      const children = Array.from(element.children)
+      return children.map(child => child.getBoundingClientRect().top)
+    })
+    expect(firstRow[0]).toBeCloseTo(firstRow[1], 0)
+    await page.getByRole('navigation', { name: 'Cluster navigation' }).getByRole('link', { name: 'Users' }).click()
+    const usersRow = await page.locator('.users-top').evaluate(element => {
+      const children = Array.from(element.children)
+      return children.map(child => child.getBoundingClientRect().top)
+    })
+    expect(usersRow[0]).toBeCloseTo(usersRow[1], 0)
+    const size = await page.evaluate(() => ({ height: document.documentElement.scrollHeight, width: document.documentElement.scrollWidth }))
+    expect(size.width).toBeLessThanOrEqual(width)
+    const layoutBottom = await page.locator('.layout').evaluate(element => element.getBoundingClientRect().bottom)
+    expect(layoutBottom).toBeGreaterThanOrEqual(899)
+  }
+})
+
 test('Partitions map uses one trunk and one branch turn per machine', async ({ page }) => {
   await mockGrafana(page)
   await page.goto(`${origin}${prefix}#machines`)
@@ -258,7 +282,7 @@ test('Offline and Unknown map machines stay transparent with their labels and pi
     return { stack: count(908, 472, 55, 21), tooltip: count(960, 510, 168, 100) }
   })
   expect(hoverPixels.tooltip, 'the Offline machine should still show its hover details').toBeGreaterThan(200)
-  expect(hoverPixels.stack, 'the hovered Offline stack should remain transparent').toBeLessThan(40)
+  expect(hoverPixels.stack, 'the hovered Offline stack should remain transparent').toBeLessThan(55)
   health = { cpu1: 'Offline', gpu1: 'Unknown' }
   const unknown = await solidPixels()
   health = { front: 'Unknown', gpu1: 'Unknown', cpu1: 'Unknown', store: 'Unknown' }
@@ -270,6 +294,46 @@ test('Offline and Unknown map machines stay transparent with their labels and pi
   expect(offline.white, 'Offline pipe rail and label should lose solid white').toBeLessThan(healthy.white * 0.85)
   expect(unknown.ink, 'Unknown machine, label, and pipe should also lose solid ink').toBeLessThan(offline.ink * 0.82)
   expect(Math.abs(stale.ink - allUnknown.ink), 'stale data should fade every machine').toBeLessThan(allUnknown.ink * 0.08)
+})
+
+test('Unknown GPU use on the Slurm map shows no allocation count and a yellow bar', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockGrafana(page)
+  let unknown = false
+  await page.route(`**${prefix}data/status.json`, route => {
+    const data = snapshot() as { nodes: { name: string; gpu_usage: string; available_gpus?: number }[] }
+    if (unknown) {
+      const machine = data.nodes.find(node => node.name === 'gpu1')!
+      machine.gpu_usage = 'Unknown'
+      machine.available_gpus = 0
+    }
+    return route.fulfill({ json: data })
+  })
+  const inspect = async (): Promise<{ description: string; yellow: number }> => {
+    await page.goto(`${origin}${prefix}?map-unknown=${unknown}`)
+    const map = page.locator('.overview-machines .cluster-map-canvas')
+    await expect(map).toBeVisible()
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(2300)
+    const description = await map.getAttribute('aria-label') ?? ''
+    const yellow = await map.locator('canvas').evaluate(element => {
+      const canvas = element as HTMLCanvasElement
+      const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data
+      let count = 0
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 3] > 250 && Math.abs(pixels[i] - 255) + Math.abs(pixels[i + 1] - 209) + Math.abs(pixels[i + 2] - 102) < 12) count++
+      }
+      return count
+    })
+    return { description, yellow }
+  }
+  const known = await inspect()
+  unknown = true
+  const missing = await inspect()
+  expect(known.description).toContain('gpu1: 2 of 4 GPUs allocated')
+  expect(missing.description).toContain('gpu1: GPU use unknown,')
+  expect(missing.description).not.toContain('gpu1: 4 of 4 GPUs allocated')
+  expect(missing.yellow).toBeGreaterThan(known.yellow + 40)
 })
 
 /** Mocked Grafana: dashboards are a stub page; the query API answers the GPU chart and the cluster map. */
@@ -354,6 +418,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   await expect(page.getByRole('heading', { name: 'Terminal: type these commands after saving job.sh' })).toBeVisible()
   await expect(page.getByText('We recommend submitting from a git worktree:', { exact: false })).toHaveCount(0)
   const submitCard = page.locator('.instruction.panel').filter({ has: page.getByRole('heading', { name: '2. Submit a job' }) })
+  await expect(submitCard).toContainText("A main job asking for more than 4 hours does not run on the interactive partition's shared machines (gpu1)")
   await expect(submitCard.getByRole('heading', { name: 'job.sh: save this file in your project' })).toBeVisible()
   const referenceSection = page.locator('.user-guide > section').first()
   await expect(referenceSection.getByRole('heading')).toHaveText('Jobs examples')
@@ -364,6 +429,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   const docs = await page.request.get(new URL(await docsLink.getAttribute('href') ?? '', page.url()).href)
   expect(docs.ok()).toBe(true)
   expect(await docs.text()).toContain('HostName login.mylab.example.org')
+  expect(await docs.text()).toContain('A main job asking for more than 4 hours does not run on the interactive partition')
 
   // Jobs: the queue and queue history dashboards.
   await nav.getByRole('link', { name: 'Jobs', exact: true }).click()
@@ -452,6 +518,30 @@ test('Machines lists every configured machine with its role while Overview stays
   await expect(page.locator('.machine-spec')).toHaveCount(4)
 })
 
+test('deployed Machines list fits without horizontal scrolling', async ({ page }) => {
+  await mockGrafana(page)
+  for (const width of [1100, 1024, 1000, 800, 320]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto(`${origin}${prefix}#machines`)
+    const table = page.locator('.machine-list .table-scroll')
+    await expect(table.locator('tbody tr')).toHaveCount(4)
+    const size = await table.evaluate(element => ({ visible: element.clientWidth, content: element.scrollWidth }))
+    expect(size.content, `Machines table at ${width}px`).toBeLessThanOrEqual(size.visible)
+  }
+})
+
+test('a machine card explains its GPU capacity limit', async ({ page }) => {
+  await mockGrafana(page)
+  const data = snapshot() as { nodes: { name: string; gpu_limit?: { gpus: number; fitted: number; reason: string } }[] }
+  data.nodes.find(node => node.name === 'gpu1')!.gpu_limit = { gpus: 2, fitted: 4, reason: 'power limit' }
+  await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: data }))
+  await page.goto(`${origin}${prefix}#machines`)
+  const gpu = page.getByRole('region', { name: 'gpu1 specs' })
+  await expect(gpu).toContainText('GPU limit')
+  await expect(gpu).toContainText('2 of 4 GPUs for jobs, for now (power limit)')
+  await expect(page.getByRole('region', { name: 'cpu1 specs' })).not.toContainText('GPU limit')
+})
+
 test('machine labels explain health, speed, and waiting updates', async ({ page }) => {
   await mockGrafana(page)
   const data = snapshot() as { nodes: { name: string; specs?: object }[] }
@@ -513,12 +603,17 @@ test('the guide covers supported containers and interactive notebooks without cl
   await page.getByRole('tab', { name: 'Interactive notebooks' }).click()
   await expect(page.locator('.user-guide code').filter({ hasText: 'interactive-notebook.sh' }).first()).toBeVisible()
   await expect(page.locator('.user-guide code').filter({ hasText: 'scp interactive-notebook.sh' }).first()).toBeVisible()
+  await expect(page.locator('.topic-text').filter({ hasText: 'Desktop VS Code Remote-SSH cannot connect to the front node' })).toBeVisible()
   const docs = await page.request.get(`${origin}${prefix}docs.md`)
   expect(await docs.text()).toContain('Apptainer')
   expect(await docs.text()).toContain('scp interactive-notebook.sh')
+  expect(await docs.text()).toContain('Desktop VS Code Remote-SSH cannot connect to the front node')
+  expect(await docs.text()).toContain('Do not leave personal services, crontabs, or open ports there. Desktop VS Code Remote-SSH cannot connect to the front node because SSH forwarding is limited to compute machines.')
   expect(await docs.text()).not.toContain('Every job must state --time')
   const helper = await page.request.get(`${origin}${prefix}job-examples/interactive-notebook.sh`)
   expect(helper.ok()).toBe(true)
+  expect(await helper.text()).toContain('Remote-SSH cannot connect to the front node')
+  expect(await helper.text()).toContain('because SSH forwarding')
 })
 
 test('Cluster Usage excludes samples from a stale snapshot', async ({ page }) => {

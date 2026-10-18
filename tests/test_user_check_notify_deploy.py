@@ -34,7 +34,10 @@ class UserCheckNotifierDeployTest(unittest.TestCase):
         self.assertEqual(task["loop"], ["service", "timer"])
         unit = Template(task["ansible.builtin.copy"]["content"]).render(
             item="service",
-            nanohpc={"users": [{"name": "alice", "slack_id": "U123"}, {"name": "bob"}]},
+            nanohpc={
+                "users": [{"name": "alice", "slack_id": "U123"}, {"name": "bob"}],
+                "website": {"hostname": "cluster.example.org", "path": "/hpc/"},
+            },
             nanohpc_secrets={"slack_bot_token": "xoxb-test-token"},
         )
         for line in (
@@ -44,6 +47,7 @@ class UserCheckNotifierDeployTest(unittest.TestCase):
             "--webhook-file /etc/nanohpc/alertmanager/slack-webhook",
             "--state /var/lib/nanohpc/alertmanager/user-check.json",
             "--now now",
+            "--guide-url https://cluster.example.org/hpc/#docs",
             "ReadWritePaths=/var/lib/nanohpc/alertmanager",
         ):
             self.assertIn(line, unit)
@@ -62,7 +66,9 @@ class UserCheckNotifierDeployTest(unittest.TestCase):
     def test_without_token_service_keeps_channel_only(self) -> None:
         task = self.task("Install the user check channel notifier service and timer")
         unit = Template(task["ansible.builtin.copy"]["content"]).render(
-            item="service", nanohpc={"users": [{"name": "alice"}]}, nanohpc_secrets={"slack_bot_token": None}
+            item="service",
+            nanohpc={"users": [{"name": "alice"}], "website": {"hostname": "cluster.example.org", "path": "/"}},
+            nanohpc_secrets={"slack_bot_token": None},
         )
         self.assertIn("--user alice:", unit)
         self.assertNotIn("--bot-token-file", unit)
@@ -70,7 +76,13 @@ class UserCheckNotifierDeployTest(unittest.TestCase):
     def test_monitor_mode_does_not_render_slurm_user_args(self) -> None:
         task = self.task("Install the user check channel notifier service and timer")
         unit = Template(task["ansible.builtin.copy"]["content"]).render(
-            item="service", nanohpc={"mode": "monitor", "users": ["alice"]}, nanohpc_secrets={"slack_bot_token": None}
+            item="service",
+            nanohpc={
+                "mode": "monitor",
+                "users": ["alice"],
+                "website": {"hostname": "cluster.example.org", "path": "/"},
+            },
+            nanohpc_secrets={"slack_bot_token": None},
         )
         self.assertNotIn("--user", unit)
 

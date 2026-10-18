@@ -76,7 +76,9 @@ class MachineStatusTests(unittest.TestCase):
         units = ["slurmd.service"]
 
         def specs(state: str) -> dict[str, Any]:
-            return module.machine_status("gpu1", "Compute", state, 1, units, COMPUTE_MOUNTS, readings, [], END)["specs"]
+            return module.machine_status("gpu1", "Compute", state, 1, 1, units, COMPUTE_MOUNTS, readings, [], END)[
+                "specs"
+            ]
 
         result = specs("IDLE")
         self.assertEqual(result["cpu_cores"], 16)
@@ -105,7 +107,9 @@ class MachineStatusTests(unittest.TestCase):
         )
 
         def speeds() -> dict[str, Any]:
-            return module.machine_status("gpu1", "Compute", "IDLE", 0, [], COMPUTE_MOUNTS, readings, [], END)["specs"]
+            return module.machine_status("gpu1", "Compute", "IDLE", 0, 0, [], COMPUTE_MOUNTS, readings, [], END)[
+                "specs"
+            ]
 
         self.assertEqual(speeds()["speeds"], dict(zip(tests, range(120, 125))))
         self.assertEqual(speeds()["speeds_measured_at"], END - 3600)
@@ -119,7 +123,7 @@ class MachineStatusTests(unittest.TestCase):
             sample("front", "cluster_machine_speed_timestamp_seconds", END - 60, {}),
             sample("front", "cluster_machine_speed_mb_per_second", 80, {"test": "internet_download"}),
         ]
-        result = module.machine_status("front", "Front node", "", 0, [], ["/"], front, [], END)["specs"]
+        result = module.machine_status("front", "Front node", "", 0, 0, [], ["/"], front, [], END)["specs"]
         self.assertEqual(result["speeds"], {"internet_download": 80})
 
     def test_health_and_usage_states(self) -> None:
@@ -132,7 +136,7 @@ class MachineStatusTests(unittest.TestCase):
         ]
 
         def status(state: str) -> dict[str, Any]:
-            return module.machine_status("gpu1", "Compute", state, 4, units, COMPUTE_MOUNTS, health, history, END)
+            return module.machine_status("gpu1", "Compute", state, 4, 4, units, COMPUTE_MOUNTS, health, history, END)
 
         for usage, active_minutes in [("Idle", 0), ("Active", 30), ("Full", 31)]:
             for series in history:
@@ -146,10 +150,10 @@ class MachineStatusTests(unittest.TestCase):
         health[0]["value"][1] = "0"
         self.assertEqual(status("DOWN+NOT_RESPONDING")["health"], "Offline")
         self.assertEqual(
-            module.machine_status("gpu1", "Compute", "IDLE", 4, units, COMPUTE_MOUNTS, [], [], END)["health"],
+            module.machine_status("gpu1", "Compute", "IDLE", 4, 4, units, COMPUTE_MOUNTS, [], [], END)["health"],
             "Unknown",
         )
-        front = module.machine_status("front", "Front node", "", 0, ["slurmctld.service"], ["/"], [], [], END)
+        front = module.machine_status("front", "Front node", "", 0, 0, ["slurmctld.service"], ["/"], [], [], END)
         self.assertEqual(front["gpu_usage"], "Not applicable")
         self.assertIn("specs", front)
         health[0]["value"][1] = "1"
@@ -159,18 +163,34 @@ class MachineStatusTests(unittest.TestCase):
         health[2]["value"][1] = "1"
         self.assertEqual(status("IDLE")["health"], "Warning")
 
+    def test_gpu_limit_keeps_fitted_gpu_health_and_uses_limited_full_count(self) -> None:
+        """Four fitted GPUs need four readings, but two busy GPUs fill a two-GPU limit."""
+        module = load()
+        units = ["slurmd.service"]
+        readings = healthy("gpu1", units, COMPUTE_MOUNTS, True)
+        history = [
+            {"metric": {"machine": "gpu1", "uuid": str(gpu)}, "values": [[t, "10" if gpu < 2 else "0"] for t in TIMES]}
+            for gpu in range(4)
+        ]
+        limited = module.machine_status("gpu1", "Compute", "IDLE", 4, 2, units, COMPUTE_MOUNTS, readings, history, END)
+        self.assertEqual((limited["health"], limited["gpu_usage"]), ("Healthy", "Full"))
+        incomplete = module.machine_status(
+            "gpu1", "Compute", "IDLE", 4, 2, units, COMPUTE_MOUNTS, readings, history[:2], END
+        )
+        self.assertEqual(incomplete["health"], "Unknown")
+
     def test_cpu_only_machine(self) -> None:
         """A compute machine without GPUs can be Healthy, its GPU use is Not applicable, and Slurm is checked."""
         module = load()
         units = ["slurmd.service"]
         health = healthy("cpu1", units, COMPUTE_MOUNTS, False)
-        result = module.machine_status("cpu1", "Compute", "IDLE", 0, units, COMPUTE_MOUNTS, health, [], END)
+        result = module.machine_status("cpu1", "Compute", "IDLE", 0, 0, units, COMPUTE_MOUNTS, health, [], END)
         self.assertEqual(
             (result["role"], result["health"], result["gpu_usage"]), ("Compute", "Healthy", "Not applicable")
         )
         self.assertEqual(result["health_details"], [])
         self.assertIn("specs", result)
-        drained = module.machine_status("cpu1", "Compute", "IDLE+DRAIN", 0, units, COMPUTE_MOUNTS, health, [], END)
+        drained = module.machine_status("cpu1", "Compute", "IDLE+DRAIN", 0, 0, units, COMPUTE_MOUNTS, health, [], END)
         self.assertEqual(drained["health"], "Warning")
         self.assertEqual(drained["health_details"], ["Slurm state: IDLE+DRAIN"])
 
@@ -180,20 +200,20 @@ class MachineStatusTests(unittest.TestCase):
         units = ["nfs-server.service"]
         mounts = ["/", "/home"]
         health = healthy("store", units, mounts, False)
-        result = module.machine_status("store", "Storage", "", 0, units, mounts, health, [], END)
+        result = module.machine_status("store", "Storage", "", 0, 0, units, mounts, health, [], END)
         self.assertEqual(
             (result["role"], result["health"], result["gpu_usage"]), ("Storage", "Healthy", "Not applicable")
         )
         self.assertEqual(result["health_details"], [])
         self.assertIn("specs", result)
         health[-1]["value"][1] = "0"
-        stopped = module.machine_status("store", "Storage", "", 0, units, mounts, health, [], END)
+        stopped = module.machine_status("store", "Storage", "", 0, 0, units, mounts, health, [], END)
         self.assertEqual((stopped["health"], stopped["health_details"]), ("Warning", ["nfs-server.service: inactive"]))
-        missing = module.machine_status("store", "Storage", "", 0, units, ["/", "/home", "/srv"], health, [], END)
+        missing = module.machine_status("store", "Storage", "", 0, 0, units, ["/", "/home", "/srv"], health, [], END)
         self.assertIn("/srv: missing readonly", missing["health_details"])
         self.assertFalse(any("Slurm" in detail for detail in missing["health_details"]))
         with self.assertRaises(ValueError):
-            module.machine_status("store", "Backup", "", 0, units, mounts, health, [], END)
+            module.machine_status("store", "Backup", "", 0, 0, units, mounts, health, [], END)
 
     def test_maintenance_does_not_hide_machine_faults(self) -> None:
         """A paused queue is maintenance only when no independent machine check has failed."""
@@ -202,14 +222,14 @@ class MachineStatusTests(unittest.TestCase):
         health = healthy("cpu1", units, COMPUTE_MOUNTS, False)
         reason = "The queue is paused (partitions down)"
 
-        planned = module.machine_status("cpu1", "Compute", "IDLE+MAINT", 0, units, COMPUTE_MOUNTS, health, [], END)
+        planned = module.machine_status("cpu1", "Compute", "IDLE+MAINT", 0, 0, units, COMPUTE_MOUNTS, health, [], END)
         module.apply_maintenance(planned, reason)
         self.assertEqual(planned["health"], "Maintenance")
         self.assertEqual(planned["health_details"], [reason])
 
         health[-1]["value"][1] = "0"
         stopped_service = module.machine_status(
-            "cpu1", "Compute", "IDLE+MAINT", 0, units, COMPUTE_MOUNTS, health, [], END
+            "cpu1", "Compute", "IDLE+MAINT", 0, 0, units, COMPUTE_MOUNTS, health, [], END
         )
         module.apply_maintenance(stopped_service, reason)
         self.assertEqual(stopped_service["health"], "Warning")
@@ -218,7 +238,7 @@ class MachineStatusTests(unittest.TestCase):
 
         health[0]["value"][1] = "0"
         unreachable = module.machine_status(
-            "cpu1", "Compute", "DOWN+NOT_RESPONDING+MAINT", 0, units, COMPUTE_MOUNTS, health, [], END
+            "cpu1", "Compute", "DOWN+NOT_RESPONDING+MAINT", 0, 0, units, COMPUTE_MOUNTS, health, [], END
         )
         module.apply_maintenance(unreachable, reason)
         self.assertEqual(unreachable["health"], "Offline")

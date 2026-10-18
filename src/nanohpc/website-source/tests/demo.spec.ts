@@ -64,6 +64,21 @@ test('Machines table shows machine states, demo link speeds, and GPU availabilit
   await expect(table.getByRole('link', { name: 'B200', exact: true })).toHaveCount(1)
 })
 
+test('Machines list fits without horizontal scrolling', async ({ page }) => {
+  for (const width of [1100, 1024, 1000, 800, 320]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto(`${origin}${prefix}#machines`)
+    const table = page.locator('.machine-list .table-scroll')
+    await expect(table.locator('tbody tr')).toHaveCount(6)
+    const size = await table.evaluate(element => ({ visible: element.clientWidth, content: element.scrollWidth }))
+    expect(size.content, `Machines table at ${width}px`).toBeLessThanOrEqual(size.visible)
+    if (width === 320) {
+      const labels = await table.locator('tbody tr').first().locator('td').evaluateAll(cells => cells.map(cell => getComputedStyle(cell, '::before').content))
+      for (const label of ['Node type', 'Health', 'State', 'Link Speed', 'GPUs']) expect(labels).toContain(`"${label}"`)
+    }
+  }
+})
+
 test('demo GPU history changes with the selected time range', async ({ page }) => {
   await page.goto(`${origin}${prefix}`)
   const chart = page.locator('.gpu-allocation-chart')
@@ -101,6 +116,22 @@ test('Overview map updates its sample measurements after demo data loads', async
   const map = page.locator('.overview-machines .cluster-map-canvas')
   await expect(map).toHaveAttribute('aria-label', /H100: 3 of 4 GPUs allocated.*shared home \d+ requests per second/)
   await expect(map).not.toHaveAttribute('aria-label', /GPU busy unknown/)
+})
+
+test('demo header and Overview use reference website spacing on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${origin}${prefix}`)
+  await expect(page.locator('main.compact .stat-grid')).toBeVisible()
+  const sizes = await page.evaluate(() => ({
+    mark: parseFloat(getComputedStyle(document.querySelector('header .brand-mark')!).width),
+    logo: parseFloat(getComputedStyle(document.querySelector('header .brand-logo')!).height),
+    top: parseFloat(getComputedStyle(document.querySelector('main.compact')!).paddingTop),
+    cards: parseFloat(getComputedStyle(document.querySelector('main.compact .stat-grid')!).marginBottom),
+  }))
+  expect(sizes.mark).toBeCloseTo(36, 0)
+  expect(sizes.logo).toBeCloseTo(36, 0)
+  expect(sizes.top).toBeCloseTo(28, 0)
+  expect(sizes.cards).toBeCloseTo(20, 0)
 })
 
 test('Overview fits on a 1440 by 900 desktop with its content visible', async ({ page }) => {

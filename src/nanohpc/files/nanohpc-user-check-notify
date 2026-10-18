@@ -10,6 +10,7 @@ and user Slack ID enable private messages for lasting user findings.
 import argparse
 import json
 import os
+import random
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -27,6 +28,7 @@ LASTING = {
     ),
     "vscode-server": ("a VS Code server running", "VS Code belongs inside a job: see the interactive notebook guide."),
 }
+ENDEARMENTS = ("friend", "dear", "darling")
 
 
 def findings(prometheus: str) -> list[dict[str, str]]:
@@ -51,10 +53,10 @@ def findings(prometheus: str) -> list[dict[str, str]]:
 
 def mention(user: str, slack_ids: dict[str, str]) -> str:
     """Show a Slack mention when an account has a configured member ID."""
-    return f"<@{slack_ids[user]}> ({user})" if slack_ids.get(user) else f"*{user}*"
+    return f"<@{slack_ids[user]}>" if slack_ids.get(user) else f"*{user}*"
 
 
-def message(item: dict[str, str], slack_ids: dict[str, str], reminder: bool) -> str:
+def message(item: dict[str, str], slack_ids: dict[str, str], reminder: bool, guide_url: str) -> str:
     """Describe one finding in the channel with the matching cluster rule."""
     where = item["machine"] + (f" (job {item['job']})" if item["job"] else "")
     if item["action"] == "stopped":
@@ -72,6 +74,20 @@ def message(item: dict[str, str], slack_ids: dict[str, str], reminder: bool) -> 
     again = "Reminder: " if reminder else ""
     if item["kind"] == "disk":
         return f":floppy_disk: {again}*{item['machine']}*: {item['detail']}."
+    if item["kind"] == "port":
+        return (
+            f":mag: {again}{mention(item['user'], slack_ids)}, {random.choice(ENDEARMENTS)}: "
+            f"a program you started on {where} listens on a network port: {item['detail']}. "
+            "Programs that listen on a port, such as Jupyter, TensorBoard, or a web app, "
+            f"must run inside a Slurm job, protected by a token or password. How to run them in a job: {guide_url}"
+        )
+    if item["kind"] == "vscode-server":
+        return (
+            f":mag: {again}{mention(item['user'], slack_ids)}, {random.choice(ENDEARMENTS)}: "
+            f"a VS Code server is running on {where}. Desktop VS Code Remote-SSH cannot connect to "
+            "the front node because SSH forwarding is limited to compute nodes. "
+            f"Run VS Code in a Slurm job in your browser, or connect desktop VS Code to an Existing Jupyter Server. Guide: {guide_url}"
+        )
     what, rule = LASTING[item["kind"]]
     detail = f": {item['detail']}" if item["detail"] else ""
     return f":mag: {again}{mention(item['user'], slack_ids)} has {what} on {where}{detail}. {rule}"
@@ -91,8 +107,21 @@ def post(webhook_file: Path, body: str) -> None:
             raise RuntimeError(f"Slack answered {response.status}: {answer}")
 
 
-def private_message(item: dict[str, str]) -> str:
+def private_message(item: dict[str, str], guide_url: str) -> str:
     """Explain a lasting user finding in a private message."""
+    if item["kind"] == "vscode-server":
+        return (
+            f"Hi {item['user']}! :wave: A VS Code server is running on {item['machine']}. "
+            "Desktop VS Code Remote-SSH cannot connect to the front node because SSH forwarding is limited "
+            "to compute nodes. Run VS Code in a Slurm job in your browser, or connect desktop VS Code to "
+            f"an Existing Jupyter Server. Guide: {guide_url}"
+        )
+    if item["kind"] == "port":
+        return (
+            f"Hi {item['user']}! :wave: A program you started on {item['machine']} listens on a network "
+            f"port: {item['detail']}. Programs that listen on a port must run inside a Slurm job, protected "
+            f"by a token or password. How to run them in a job: {guide_url}"
+        )
     what, rule = LASTING[item["kind"]]
     detail = f" ({item['detail']})" if item["detail"] else ""
     return (
@@ -132,6 +161,7 @@ def notify(
     slack_ids: dict[str, str],
     token_file: Path | None,
     slack_api: str,
+    guide_url: str,
 ) -> None:
     """Post channel and optional private notices, tracking each delivery separately."""
     active = findings(prometheus)
@@ -144,7 +174,7 @@ def notify(
         present.add(identity)
         last = posted.get(identity)
         if last is None or (item["action"] == "lasting" and now - datetime.fromisoformat(last) >= timedelta(days=1)):
-            post(webhook_file, message(item, slack_ids, last is not None))
+            post(webhook_file, message(item, slack_ids, last is not None, guide_url))
             posted[identity] = now.isoformat()
             save(state_file, state)
         user = item["user"]
@@ -153,7 +183,7 @@ def notify(
         private_last = private_posted.get(identity)
         if private_last is not None and now - datetime.fromisoformat(private_last) < timedelta(days=1):
             continue
-        send_private(slack_api, token_file.read_text().strip(), slack_ids[user], private_message(item))
+        send_private(slack_api, token_file.read_text().strip(), slack_ids[user], private_message(item, guide_url))
         private_posted[identity] = now.isoformat()
         save(state_file, state)
     # Once absent for a day, a later recurrence is a new finding.
@@ -178,6 +208,7 @@ def main() -> None:
     parser.add_argument("--bot-token-file", type=Path, help="optional Slack bot token for private messages")
     parser.add_argument("--slack-api", default="https://slack.com/api")
     parser.add_argument("--now", required=True, help="ISO timestamp or 'now'")
+    parser.add_argument("--guide-url", required=True, help="URL of this cluster's user guide")
     parser.add_argument(
         "--user",
         action="append",
@@ -190,7 +221,16 @@ def main() -> None:
     now = datetime.now(timezone.utc) if args.now == "now" else datetime.fromisoformat(args.now)  # noqa: UP017 (Python 3.10)
     if now.tzinfo is None:
         parser.error("--now needs a timezone")
-    notify(args.prometheus, args.webhook_file, args.state, now, slack_ids, args.bot_token_file, args.slack_api)
+    notify(
+        args.prometheus,
+        args.webhook_file,
+        args.state,
+        now,
+        slack_ids,
+        args.bot_token_file,
+        args.slack_api,
+        args.guide_url,
+    )
 
 
 if __name__ == "__main__":

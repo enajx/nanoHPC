@@ -28,7 +28,15 @@ from typing import Any
 import yaml
 
 from nanohpc import maintenance_lock
-from nanohpc.render import compute_machines, front_machine, home_clients, home_server, render, render_prometheus
+from nanohpc.render import (
+    compute_machines,
+    front_machine,
+    home_clients,
+    home_server,
+    interactive_machine_limits,
+    render,
+    render_prometheus,
+)
 
 SLURM: dict[str, Any] = {
     "version": "26.05.4",
@@ -544,6 +552,14 @@ def site_data(config: dict[str, Any]) -> dict[str, Any]:
             "login_address": website["login_address"],
             "users": config["users"],
         }
+    rules = []
+    for name, (wall, machines) in interactive_machine_limits(config).items():
+        hours = f"{wall / 60:g}"
+        rules.append(
+            f"A {name} job asking for more than {hours} hours does not run on the interactive partition's "
+            f"shared machines ({', '.join(machines)}), which are kept free for interactive shells. "
+            "Leave out --nodelist for those machines on longer jobs."
+        )
     return {
         "cluster_name": config["cluster"]["name"],
         "logo": None if website["logo"] is None else "logo" + Path(website["logo"]).suffix.lower(),
@@ -551,6 +567,7 @@ def site_data(config: dict[str, Any]) -> dict[str, Any]:
         "home_quota_soft_gb": config["home"]["quota_soft_gb"],
         "home_quota_hard_gb": config["home"]["quota_hard_gb"],
         "scratch_cleanup_days": config["scratch"]["cleanup_days"],
+        "interactive_machine_rule": " ".join(rules),
     }
 
 
@@ -600,6 +617,9 @@ def monitor_machines(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         elif "compute" in roles:
             units = ["slurmd.service", "munge.service"]
             result[name] = {"role": "compute", "units": units, "mounts": ["/", *home, "/scratch", *shared_mount]}
+            gpu = machine.get("gpu")
+            if gpu and "limit" in gpu:
+                result[name]["gpu_limit"] = {"fitted": gpu["count"], "reason": gpu["limit_reason"]}
         else:
             result[name] = {"role": "storage", "units": nfs, "mounts": ["/", *home, *shared_mount]}
     return result
@@ -1060,6 +1080,11 @@ def check_then_apply(
             f"Dry run failed (ansible-playbook exit code {code}): nothing was deployed, and nothing was changed.",
             file=sys.stderr,
         )
+        return DRY_RUN_FAILED
+    # The first play's Slurm guard is fatal for the whole deploy, including machines whose own dry run passed.
+    # Otherwise the normal partial-failure flow would apply changes on those other machines.
+    if any("slurm-change-check: refused" in text for text in record["failed"].values()):
+        print("Dry run refused a Slurm change that would stop running jobs: nothing was deployed.", file=sys.stderr)
         return DRY_RUN_FAILED
     blocking = [f"{machine} ({needed[machine]})" for machine in failed if machine in needed]
     if blocking:

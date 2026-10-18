@@ -20,7 +20,7 @@ export type MachineSpecs = {
   speeds?: { home_large_read?: number | null; home_large_write?: number | null; home_small_read?: number | null; home_small_write?: number | null; internet_download?: number | null } | null
   speeds_measured_at?: number | null
 }
-export type Machine = { name: string; role: string; building?: string | null; partitions?: string[]; health?: string; health_details?: string[]; gpu_usage?: string; fpga_usage_percent?: number; total_gpus?: number; available_gpus?: number | null; specs?: MachineSpecs }
+export type Machine = { name: string; role: string; building?: string | null; partitions?: string[]; health?: string; health_details?: string[]; gpu_usage?: string; fpga_usage_percent?: number; total_gpus?: number; available_gpus?: number | null; gpu_limit?: { gpus: number; fitted: number; reason: string }; specs?: MachineSpecs }
 
 /** Show both measured speeds on a real cluster. The demo keeps its fictional Link Speed. */
 export function SpeedBoxes({ node, stale, demo, named }: { node: Machine; stale: boolean; demo: boolean; named: boolean }) {
@@ -113,6 +113,7 @@ export function MachineCards({ nodes, stale, roles, demo }: { nodes: Machine[]; 
         </dl></section>
         <section><h3>Hardware</h3><dl>
           <Detail label="GPUs" value={models}/>{s?.unified_memory_gb != null ? <Detail label="Unified memory" value={`${s.unified_memory_gb} GB`}/> : <Detail label="GPU memory" value={memory}/>}
+          {node.gpu_limit && <Detail label="GPU limit" value={`${node.gpu_limit.gpus} of ${node.gpu_limit.fitted} GPUs for jobs, for now (${node.gpu_limit.reason})`}/>}
           <Detail label="CPU cores" value={s?.cpu_cores}/><Detail label="RAM" value={wholeGib(s?.ram_bytes)}/>
         </dl></section>
         <section><h3>Software</h3><dl>

@@ -37,8 +37,8 @@ POLICY_DEFAULTS: dict[str, Any] = {
     "max_gpus_per_user": "unlimited",
     "default_cpus_per_gpu": 4,
     "default_memory_mb_per_cpu": 8192,
-    "fairshare_weight": 10000,
-    "fairshare_half_life": "7-00:00:00",
+    "fairshare_weight": 40000,
+    "fairshare_half_life": "45-00:00:00",
     "age_weight": 1000,
     "age_max": "7-00:00:00",
 }
@@ -108,6 +108,15 @@ GPU_TYPE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 SLURM_TIME = re.compile(r"(\d+-\d{1,2}|\d{1,3}):[0-5]\d:[0-5]\d")
 CLOCK_TIME = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 DEVICE = re.compile(r"/dev/[a-zA-Z0-9_./-]+")
+
+
+def slurm_time_minutes(value: str) -> int:
+    """Return whole minutes for a validated Slurm time."""
+    days, _, clock = value.rpartition("-")
+    hours, minutes, _ = (int(part) for part in clock.split(":"))
+    return int(days or 0) * 1440 + hours * 60 + minutes
+
+
 ABSOLUTE_PATH = re.compile(r"/[a-zA-Z0-9_./-]*")
 SSH_KEY = re.compile(
     r"(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com)"
@@ -484,7 +493,9 @@ def check_partitions(checker: Checker, value: Any) -> dict[str, dict[str, Any]]:
         if name == "normal":
             checker.fail(f"{path}:", "the name normal is reserved by Slurm")
             continue
-        partition = checker.mapping(item, path, ("max_time",), ("default", "jobs", "max_gpus_per_user"))
+        partition = checker.mapping(
+            item, path, ("max_time",), ("default", "jobs", "max_gpus_per_user", "max_time_on_interactive_machines")
+        )
         if partition is None:
             continue
         if "max_time" in partition:
@@ -497,6 +508,15 @@ def check_partitions(checker: Checker, value: Any) -> dict[str, dict[str, Any]]:
         partition.setdefault("jobs", "any")
         if partition["jobs"] not in JOB_TYPES:
             checker.fail(f"{path}.jobs", "must be batch, interactive, or any")
+        if "max_time_on_interactive_machines" in partition:
+            checker.matches(
+                partition["max_time_on_interactive_machines"],
+                SLURM_TIME,
+                f"{path}.max_time_on_interactive_machines",
+                'a Slurm time in quotes, like "04:00:00"',
+            )
+            if partition["jobs"] == "interactive":
+                checker.fail(f"{path}.max_time_on_interactive_machines", "requires a partition that permits batch jobs")
         partition.setdefault("default", False)
         checker.boolean(partition["default"], f"{path}.default")
         partition.setdefault("max_gpus_per_user", "unlimited")
@@ -524,7 +544,7 @@ def check_compute(checker: Checker, name: str, machine: dict[str, Any], partitio
         checker.positive(machine["memory_mb"], f"{path}.memory_mb")
     machine.setdefault("gpu", None)
     if machine["gpu"] is not None:
-        gpu = checker.mapping(machine["gpu"], f"{path}.gpu", ("type", "count"), ())
+        gpu = checker.mapping(machine["gpu"], f"{path}.gpu", ("type", "count"), ("limit", "limit_reason"))
         if gpu is not None:
             if "type" in gpu:
                 checker.matches(
@@ -532,6 +552,18 @@ def check_compute(checker: Checker, name: str, machine: dict[str, Any], partitio
                 )
             if "count" in gpu:
                 checker.positive(gpu["count"], f"{path}.gpu.count")
+            if "limit" in gpu:
+                limit = checker.positive(gpu["limit"], f"{path}.gpu.limit")
+                if limit is not None and isinstance(gpu.get("count"), int) and limit > gpu["count"]:
+                    checker.fail(f"{path}.gpu.limit", "must be at most gpu.count")
+                checker.matches(
+                    gpu.get("limit_reason"),
+                    re.compile(r"[A-Za-z0-9][A-Za-z0-9 ,.-]*"),
+                    f"{path}.gpu.limit_reason",
+                    "a reason with letters, digits, spaces, commas, dots, or hyphens",
+                )
+            elif "limit_reason" in gpu:
+                checker.fail(f"{path}.gpu.limit_reason", "requires gpu.limit")
     if "partitions" in machine:
         names = machine["partitions"]
         if not isinstance(names, list) or not names:
@@ -715,7 +747,10 @@ def check_capacity(
 
     def gpus(machine: dict[str, Any]) -> int:
         gpu = machine.get("gpu")
-        return gpu["count"] if isinstance(gpu, dict) and whole(gpu.get("count")) else 0
+        if not isinstance(gpu, dict) or not whole(gpu.get("count")):
+            return 0
+        limit = gpu.get("limit")
+        return limit if whole(limit) and limit > 0 else gpu["count"]
 
     for name, partition in partitions.items():
         limit = partition["max_gpus_per_user"]
@@ -805,6 +840,37 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
     users = check_users(checker, top.get("users"))
     partitions = check_partitions(checker, top.get("partitions"))
     machines = check_machines(checker, top.get("machines"), partitions)
+    interactive_names = {name for name, partition in partitions.items() if partition.get("jobs") == "interactive"}
+    for name, partition in partitions.items():
+        if "max_time_on_interactive_machines" not in partition:
+            continue
+        shared = any(
+            name in machine.get("partitions", []) and interactive_names.intersection(machine.get("partitions", []))
+            for machine in machines.values()
+        )
+        if not shared:
+            checker.fail(
+                f"partitions.{name}.max_time_on_interactive_machines",
+                "requires a machine also in an interactive partition",
+            )
+        unshared = any(
+            name in machine.get("partitions", []) and not interactive_names.intersection(machine.get("partitions", []))
+            for machine in machines.values()
+        )
+        limit = partition["max_time_on_interactive_machines"]
+        max_time = partition.get("max_time")
+        if (
+            not unshared
+            and isinstance(limit, str)
+            and SLURM_TIME.fullmatch(limit)
+            and isinstance(max_time, str)
+            and SLURM_TIME.fullmatch(max_time)
+            and slurm_time_minutes(max_time) > slurm_time_minutes(limit)
+        ):
+            checker.fail(
+                f"partitions.{name}.max_time_on_interactive_machines",
+                "would exclude every machine for jobs longer than this time",
+            )
     config: dict[str, Any] = {
         "cluster": check_cluster(
             checker, top.get("cluster"), {user["name"] for user in users if isinstance(user.get("name"), str)}, "slurm"

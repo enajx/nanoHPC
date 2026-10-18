@@ -13,7 +13,8 @@ Health: Offline when a monitor-mode exporter is down, or a Slurm-mode exporter i
 responding; Warning when a check failed; Unknown when a reading is missing or stale; Healthy otherwise.
 
 GPU use over the last hour (one-minute samples, machines with GPUs only): Idle when no GPU was busy, Full when
-all GPUs were busy in more than half of the samples, Active otherwise, and Unknown when samples are missing.
+at least the number Slurm hands out were busy in more than half of the samples, Active otherwise, and Unknown
+when samples are missing. Health still requires readings from all fitted GPUs.
 Machines with a measured zero GPUs report "Not applicable". Missing monitor-mode inventory reports "Unknown".
 """
 
@@ -124,18 +125,20 @@ def machine_status(
     role: str,
     slurm_state: str,
     gpu_count: int,
+    usable_gpus: int,
     units: list[str],
     mounts: list[str],
     health: list[dict[str, Any]],
     history: list[dict[str, Any]],
     end: int,
 ) -> dict[str, Any]:
-    """Report only checked health; Full requires all GPUs busy for a majority of samples.
+    """Report only checked health; Full requires usable GPUs busy for a majority of samples.
 
     name: the machine's name, as in Prometheus's `machine` label (and Slurm's node name for compute machines).
     role: "Front node", "Compute", "Storage", "Monitor", or "Machine". Only compute checks Slurm state.
     slurm_state: the Slurm node state (for example "MIXED" or "IDLE+DRAIN"); "" for other machines.
-    gpu_count: configured GPUs in Slurm mode, measured GPUs in monitor mode; 0 for machines without GPUs.
+    gpu_count: fitted GPUs in Slurm mode, measured GPUs in monitor mode; 0 for machines without GPUs.
+    usable_gpus: GPUs handed out by Slurm, or measured GPUs in monitor mode.
     units: the systemd units that must be active (for example "slurmd.service").
     mounts: the mount points that must be present and writable, with free space and inodes.
     health: instant readings from HEALTH_QUERY; history: GPU_QUERY over the hour ending at `end`.
@@ -205,7 +208,7 @@ def machine_status(
         )
         if gpu_fresh and complete:
             busy = [sum(gpu[t] > 0 for gpu in samples) for t in expected]
-            full = sum(count == gpu_count for count in busy) > len(busy) / 2
+            full = sum(count >= usable_gpus for count in busy) > len(busy) / 2
             gpu_usage = "Idle" if max(busy) == 0 else "Full" if full else "Active"
         elif not series or len(series) != gpu_count:
             missing.append("GPU measurements incomplete")
@@ -266,7 +269,7 @@ def monitor_machine_status(
     specs = machine_specs(current, end, role)
     measured = specs["gpu_count"]
     count = int(measured) if measured is not None and measured >= 0 and float(measured).is_integer() else None
-    result = machine_status(name, role, "", count or 0, units, mounts, health, history, end)
+    result = machine_status(name, role, "", count or 0, count or 0, units, mounts, health, history, end)
     result["total_gpus"] = count
     if count is None:
         result["gpu_usage"] = "Unknown"

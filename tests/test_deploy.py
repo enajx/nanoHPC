@@ -1,6 +1,7 @@
 """Tests for what `nanohpc deploy` prepares before running Ansible (inventory, variables, files)."""
 
 import contextlib
+import copy
 import io
 import json
 import os
@@ -181,6 +182,7 @@ class PrepareTest(unittest.TestCase):
                 "home_quota_soft_gb": 300,
                 "home_quota_hard_gb": 400,
                 "scratch_cleanup_days": 14,
+                "interactive_machine_rule": "A main job asking for more than 4 hours does not run on the interactive partition's shared machines (gpu4), which are kept free for interactive shells. Leave out --nodelist for those machines on longer jobs.",
             },
         )
 
@@ -356,6 +358,14 @@ class PrepareTest(unittest.TestCase):
         front = next(name for name, machine in machines.items() if machine["role"] == "front")
         self.assertNotIn("nfs-server.service", machines[front]["units"])
         self.assertEqual(machines[front]["mounts"], ["/", "/home"])
+
+    def test_limited_gpu_metadata_reaches_collector_inputs(self) -> None:
+        """The prepared machine map carries fitted GPUs and the reason to the collector."""
+        config = copy.deepcopy(self.config)
+        config["machines"]["gpu4"]["gpu"].update(limit=2, limit_reason="power limit")
+        machines = monitor_machines(config)
+        self.assertEqual(machines["gpu4"]["gpu_limit"], {"fitted": 4, "reason": "power limit"})
+        self.assertNotIn("gpu_limit", machines["gpu2"])
 
     def test_files_are_written(self) -> None:
         prepare(self.config, self.hostnames, None, True, ["gpu4", "gpu2", "gpu4i"], False, None, self.work)

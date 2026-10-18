@@ -63,8 +63,8 @@ policy:
   max_gpus_per_user: unlimited
   default_cpus_per_gpu: 4
   default_memory_mb_per_cpu: 1024
-  fairshare_weight: 10000
-  fairshare_half_life: 7-00:00:00
+  fairshare_weight: 40000
+  fairshare_half_life: 45-00:00:00
   age_weight: 1000
   age_max: 7-00:00:00
 home:

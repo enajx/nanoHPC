@@ -14,6 +14,8 @@
 :root { font-family: var(--font); font-size: 16px; color: #172322; background: #faf9f6; font-synthesis: none; font-weight: 400; }
 * { box-sizing: border-box; }
 body { margin: 0; }
+/* Draw the wide layout at 90% on 13-inch desktop screens. */
+@media (min-width: 1332px) and (max-width: 1479px) { html { zoom: 0.9; } }
 a { color: inherit; text-decoration: none; }
 button, a, iframe { -webkit-tap-highlight-color: transparent; }
 a:focus-visible, button:focus-visible { outline: 3px solid #b34176; outline-offset: 5px; }
@@ -149,7 +151,18 @@ footer a { text-decoration: underline; }
 .skip { position: absolute; left: 10px; top: -100px; z-index: 10; background: white; padding: 10px; border: 2px solid; }.skip:focus { top: 10px; }
 .stat { display: block; }
 .stat:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #172322; }
-.machine-list th, .machine-list td { padding: 16px 22px; }
+.machine-list .machine-status-table { min-width: 0; }
+.machine-list .machine-status-table th, .machine-list .machine-status-table td { padding: 16px 4px; white-space: nowrap; }
+.machine-list .machine-status-table th:first-child, .machine-list .machine-status-table td:first-child { padding-left: 16px; }
+.machine-list .machine-status-table thead th { white-space: normal; }
+@media (max-width: 1000px) {
+  .machine-list .machine-status-table thead { display: none; }
+  .machine-list .machine-status-table, .machine-list .machine-status-table tbody, .machine-list .machine-status-table tr, .machine-list .machine-status-table th, .machine-list .machine-status-table td { display: block; }
+  .machine-list .machine-status-table tr { padding: 12px; border-bottom: 1px solid #deded8; }
+  .machine-list .machine-status-table tbody th, .machine-list .machine-status-table tbody th:first-child, .machine-list .machine-status-table tbody td { padding: 4px 0; border-bottom: 0; }
+  .machine-list .machine-status-table td { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 8px; white-space: normal; }
+  .machine-list .machine-status-table td::before { content: attr(data-label); font-weight: 700; margin-right: auto; }
+}
 .overview-machine-charts .machine-link { white-space: nowrap; }
 .overview-machine-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 24px; margin-bottom: 24px; }
 .overview-machine-charts > .panel { min-width: 0; margin-bottom: 0; }
@@ -167,7 +180,7 @@ footer a { text-decoration: underline; }
 .gpu-chart-body > p { align-self: center; margin: auto; }
 .gpu-chart-plot { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 195px; overflow: hidden; background: #fff; }
 .gpu-chart-svg { flex: 1; min-height: 165px; }
-@media (max-width: 1479px) { .overview-machine-charts { grid-template-columns: 1fr; } }
+@media (max-width: 1331px) { .overview-machine-charts { grid-template-columns: 1fr; } }
 .panel-link { color: inherit; text-decoration: none; }
 .panel-link-arrow { font-size: 22px; font-weight: 700; line-height: 1; }
 .panel:has(> .panel-link:hover), .panel:has(> .panel-heading > .panel-link:hover) { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #172322; }
@@ -270,7 +283,7 @@ footer a { text-decoration: underline; }
 
 .users-top { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); gap: 20px; align-items: stretch; margin-bottom: 24px; }
 .users-top > .panel { margin-bottom: 0; min-width: 0; }
-@media (max-width: 1479px) { .users-top { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1331px) { .users-top { grid-template-columns: minmax(0, 1fr); } }
 .user-ranking .panel-heading { padding: 10px 16px; }
 .user-ranking table { font-size: 13px; }
 .user-ranking th, .user-ranking td { padding: 6px 5px; white-space: nowrap; }
@@ -280,11 +293,10 @@ footer a { text-decoration: underline; }
 
 .topbar { height: 64px; }
 .brand-mark { width: 36px; height: 36px; }
-.demo-brand .brand-mark { width: 48px; height: 48px; flex: none; }
-.brand-logo { height: 48px; width: auto; flex: none; display: block; background: white; border: 2px solid #172322; box-shadow: 3px 3px 0 #172322; }
-@media (max-width: 720px) { .demo-brand .brand-mark, .brand-logo { height: 36px; } .demo-brand .brand-mark { width: 36px; } }
+.brand-logo { height: 36px; width: auto; flex: none; display: block; background: white; border: 2px solid #172322; box-shadow: 3px 3px 0 #172322; }
 @media (max-width: 360px) { .demo-topbar { padding: 0 10px; } .demo-brand { gap: 8px; } .demo-brand .brand-mark, .brand-logo { height: 32px; } .demo-brand .brand-mark { width: 32px; } .demo-topbar .header-buttons { gap: 6px; } }
 .layout { min-height: calc(100vh - 64px); }
+@media (min-width: 1332px) and (max-width: 1479px) { .layout { min-height: calc(100vh / 0.9 - 64px); } .machine-dialog { max-height: calc(80vh / 0.9); } }
 main.compact { padding-top: 28px; }
 main.compact .page-heading { margin: 0; }
 main.compact .page-heading h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; margin: 0; }
@@ -306,14 +318,7 @@ main.compact .overview-job-groups h3 { padding: 6px 10px; }
 main.compact .overview-job-list th, main.compact .overview-job-list td { padding: 5px 10px; }
 main.compact .overview-job-list { max-height: 232px; }
 main.compact .gpu-chart-body { min-height: 0; }
-@media (min-width: 1360px) {
-  main.compact { padding-top: 16px; padding-bottom: 8px; }
-  main.compact .stat-grid { margin-bottom: 12px; }
-  main.compact .stat { padding-top: 9px; padding-bottom: 9px; }
-  main.compact .stat strong { margin-top: 4px; margin-bottom: 4px; }
-  main.compact .overview-machine-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 12px; }
-  main.compact .overview-job-groups { padding-top: 8px; padding-bottom: 8px; }
-  main.compact .overview-job-list th, main.compact .overview-job-list td { padding-top: 4px; padding-bottom: 4px; }
-  main.compact footer { margin-top: 12px; padding-top: 8px; }
+@media (min-width: 1332px) and (max-width: 1359px) {
+  main.compact .overview-machine-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) { .topbar { height: 60px; } main.compact { padding-top: 12px; } main.compact .stat-grid { gap: 10px; } footer .freshness { max-width: none; } }

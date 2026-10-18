@@ -17,7 +17,8 @@ export type MapMachine = {
   gpuModel: string | null
   fpgaUsagePercent: number | null
   totalGpus: number
-  allocatedGpus: number
+  /** null when Slurm GPU use is unknown, including stale data. */
+  allocatedGpus: number | null
   runningJobs: number
   pendingJobs: number
   /** Measured shared-home requests per second, and the writes among them; null when not measured. */
@@ -422,7 +423,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
     for (const n of nodes) {
       const target = n.fpgaUsagePercent !== null ? n.fpgaUsagePercent / 100 : n.front || !n.totalGpus ? 0 : n.mode === 'monitor'
         ? n.gpus.reduce((sum, gpu) => sum + (gpu.busy ?? 0), 0) / n.totalGpus / 100
-        : n.allocatedGpus / n.totalGpus
+        : (n.allocatedGpus ?? 0) / n.totalGpus
       n.load += (target - n.load) * Math.min(1, dt * 2)
     }
   }
@@ -656,7 +657,7 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
     ? n.front ? 'Monitor' : `${n.totalGpus} GPUs`
     : n.front
     ? `${n.pendingJobs} pending`
-    : n.fpgaUsagePercent !== null ? `FPGA ${Math.round(n.fpgaUsagePercent)}%` : n.totalGpus ? `${n.allocatedGpus}/${n.totalGpus} GPUs` : 'CPU'
+    : n.fpgaUsagePercent !== null ? `FPGA ${Math.round(n.fpgaUsagePercent)}%` : n.totalGpus ? n.allocatedGpus === null ? '' : `${n.allocatedGpus}/${n.totalGpus} GPUs` : 'CPU'
 
   /** Return a machine's name box in map coordinates, before its hard shadow. */
   function labelBox(n: Node, tx: number, ty: number) {
@@ -695,10 +696,11 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
       p.stroke(23, 35, 34, alpha)
       p.strokeWeight(1.5)
       p.rect(x + 11, y + 27, bw, 7)
-      const bar = p.color(accent)
+      const unknownGpus = n.mode !== 'monitor' && n.fpgaUsagePercent === null && n.allocatedGpus === null
+      const bar = p.color(unknownGpus ? healthColors.yellow : accent)
       bar.setAlpha(alpha)
       p.fill(bar)
-      p.rect(x + 11, y + 27, bw * n.load, 7)
+      p.rect(x + 11, y + 27, unknownGpus ? bw : bw * n.load, 7)
     }
     p.noStroke()
     p.textFont(MONO)
@@ -734,9 +736,9 @@ export function createClusterMap(container: HTMLElement, layout: LayoutName, max
       : n.front
       ? ['Front node', `Health: ${n.health}`, `Serves the shared home to ${n.out} machine${n.out === 1 ? '' : 's'}`, `Pending jobs: ${n.pendingJobs}`]
       : ['Compute', `Health: ${n.health}`, n.fpgaUsagePercent !== null ? `FPGA usage: ${Math.round(n.fpgaUsagePercent)}%` : n.gpuModel ? `${n.totalGpus} × ${n.gpuModel}` : n.totalGpus ? `${n.totalGpus} GPUs` : 'CPU only',
-        ...(n.totalGpus ? [`GPUs allocated: ${n.allocatedGpus} of ${n.totalGpus}`] : []), `Running jobs: ${n.runningJobs}`,
+        ...(n.totalGpus ? [n.allocatedGpus === null ? 'GPUs allocated: Unknown' : `GPUs allocated: ${n.allocatedGpus} of ${n.totalGpus}`] : []), `Running jobs: ${n.runningJobs}`,
         n.nfsRequests === null ? 'Shared home: not measured' : `Shared home: ${Math.round(n.nfsRequests)} requests/s (${Math.round(n.nfsWrites ?? 0)} writes)`,
-        ...n.gpus.map((gpu, i) => `GPU ${i}: ${gpu.user === null ? 'free' : gpu.user || 'allocated'}, busy ${gpu.busy === null ? 'unknown' : `${Math.round(gpu.busy)}%`}`)]
+        ...n.gpus.map((gpu, i) => `GPU ${i}: ${n.allocatedGpus === null ? 'unknown' : gpu.user === null ? 'free' : gpu.user || 'allocated'}, busy ${gpu.busy === null ? 'unknown' : `${Math.round(gpu.busy)}%`}`)]
     p.textFont(font)
     p.textStyle(p.NORMAL)
     p.textSize(12)

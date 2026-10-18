@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Stop running Slurm jobs for maintenance and tell each owner privately on Slack."""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+
+def job_fields(scontrol: str, job: str) -> dict[str, str]:
+    """Read one Slurm job, including names with spaces and individual array tasks."""
+    lines = (
+        subprocess.run([scontrol, "show", "job", "-o", job], text=True, capture_output=True, check=True)
+        .stdout.strip()
+        .splitlines()
+    )
+    if len(lines) != 1:
+        raise ValueError(f"job {job} is {len(lines)} jobs; give array tasks one by one, as 1083_0")
+    parts = re.split(r"(?:^| )([A-Za-z][A-Za-z0-9:/_]*)=", lines[0])[1:]
+    return dict(zip(parts[::2], parts[1::2]))
+
+
+def send_private(api: str, token: str, slack_id: str, body: str) -> None:
+    """Send one private Slack message and fail if Slack refuses it."""
+    request = Request(
+        f"{api.rstrip('/')}/chat.postMessage",
+        data=json.dumps({"channel": slack_id, "text": body}).encode(),
+        headers={"Content-Type": "application/json; charset=utf-8", "Authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    with urlopen(request, timeout=20) as response:
+        answer = json.load(response)
+    if not answer.get("ok"):
+        raise RuntimeError(f"Slack refused the private message: {answer.get('error')}")
+
+
+def cancel(
+    scontrol: str,
+    scancel: str,
+    jobs: list[str],
+    reason: str,
+    slack_ids: dict[str, str],
+    token_file: Path,
+    api: str,
+) -> list[str]:
+    """Stop all named running jobs; return owners who need a manual notice."""
+    found = {job: job_fields(scontrol, job) for job in jobs}
+    for job, fields in found.items():
+        if fields["JobState"] != "RUNNING":
+            raise ValueError(f"job {job} is {fields['JobState']}, not running; nothing was stopped")
+    token = token_file.read_text().strip()
+    errors: list[str] = []
+    for fields in found.values():
+        job = f"{fields['ArrayJobId']}_{fields['ArrayTaskId']}" if "ArrayTaskId" in fields else fields["JobId"]
+        user = fields["UserId"].split("(")[0]
+        mail = fields.get("MailType", "NONE")
+        if mail != "NONE":
+            subprocess.run([scontrol, "update", f"JobId={job}", "MailType=NONE"], check=True)
+        stopped = (
+            f'Sorry, we had to stop your job {job} "{fields["JobName"]}" on {fields["NodeList"]} because {reason}.'
+        )
+        requeued = (
+            fields["Requeue"] == "1"
+            and fields["BatchFlag"] == "1"
+            and subprocess.run([scontrol, "requeue", job], check=False).returncode == 0
+        )
+        if requeued:
+            if mail != "NONE":
+                subprocess.run([scontrol, "update", f"JobId={job}", f"MailType={mail}"], check=True)
+            body = (
+                f"[No action required] {stopped} It is back in the queue as job {job} "
+                "and will start again on its own, from the beginning."
+            )
+            print(f"cluster-cancel: job {job} ({user}) is back in the queue")
+        else:
+            subprocess.run([scancel, job], check=True)
+            body = f"[Action required] {stopped} It could not be put back in the queue, so please submit it again."
+            print(f"cluster-cancel: job {job} ({user}) is cancelled")
+        if not slack_ids.get(user):
+            errors.append(f"no Slack ID for {user}: tell them about job {job} yourself")
+            continue
+        send_private(api, token, slack_ids[user], body)
+    return errors
+
+
+def main() -> None:
+    """Read administrator options and run the stop action."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bot-token-file", type=Path, required=True)
+    parser.add_argument("--slack-api", required=True)
+    parser.add_argument("--scontrol", required=True)
+    parser.add_argument("--scancel", required=True)
+    parser.add_argument("--user", action="append", required=True, help="user:SlackMemberID")
+    parser.add_argument("--reason", required=True, help="why these jobs must stop")
+    parser.add_argument("jobs", nargs="+", help="running job IDs; array tasks as 1083_0")
+    args = parser.parse_args()
+    if not args.reason.strip():
+        parser.error("--reason must say why the jobs must stop")
+    slack_ids = dict(user.split(":", 1) for user in args.user)
+    errors = cancel(
+        args.scontrol, args.scancel, args.jobs, args.reason.strip(), slack_ids, args.bot_token_file, args.slack_api
+    )
+    for error in errors:
+        print(f"cluster-cancel: {error}", file=sys.stderr)
+    sys.exit(1 if errors else 0)
+
+
+if __name__ == "__main__":
+    main()

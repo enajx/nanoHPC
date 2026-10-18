@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 from nanohpc.config import check_config
-from nanohpc.render import render, render_forwarding_rules
+from nanohpc.render import gpu_count, render, render_forwarding_rules
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,8 +65,9 @@ class SlurmConfTest(unittest.TestCase):
 
     def test_fair_share_policy(self) -> None:
         conf = render(config_of(), names(config_of()), False).slurm_conf
-        for line in ("PriorityType=priority/multifactor", "PriorityWeightFairshare=10000", "PriorityWeightAge=1000",
-                     "PriorityDecayHalfLife=7-00:00:00", "PriorityMaxAge=7-00:00:00", "JobSubmitPlugins=lua"):  # fmt: skip
+        for line in ("PriorityType=priority/multifactor", "PriorityFlags=NO_FAIR_TREE",
+                     "PriorityWeightFairshare=40000", "PriorityWeightAge=1000",
+                     "PriorityDecayHalfLife=45-00:00:00", "PriorityMaxAge=7-00:00:00", "JobSubmitPlugins=lua"):  # fmt: skip
             self.assertIn(line + "\n", conf)
         self.assertIn("TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1", conf)
 
@@ -90,6 +91,17 @@ class GresConfTest(unittest.TestCase):
         self.assertEqual(
             render(config, names(config), False).gres_conf["gpu2"], "Name=gpu Type=rtx6000ada File=/dev/nvidia0\n"
         )
+
+    def test_machine_gpu_capacity_limit(self) -> None:
+        """Slurm hands out only the first limited GPUs while retaining the fitted count."""
+        config = config_of(lambda raw: raw["machines"]["gpu4"]["gpu"].update(limit=2, limit_reason="power limit"))
+        files = render(config, names(config), False)
+        self.assertEqual(gpu_count(config["machines"]["gpu4"]), 4)
+        self.assertIn("NodeName=gpu4 ", files.slurm_conf)
+        self.assertIn("Gres=gpu:a6000:2 State=UNKNOWN", files.slurm_conf)
+        self.assertEqual(files.gres_conf["gpu4"], "AutoDetect=off\nName=gpu Type=a6000 File=/dev/nvidia[0-1]\n")
+        main = next(item for item in files.qos if item["name"] == "main")
+        self.assertEqual(main["max_gpus_per_job"], 4)
 
 
 class QosTest(unittest.TestCase):

@@ -15,6 +15,7 @@ SITE = {
     "home_quota_soft_gb": 300,
     "home_quota_hard_gb": 400,
     "scratch_cleanup_days": 14,
+    "interactive_machine_rule": "A main job asking for more than 4 hours avoids gpu4.",
 }
 
 
@@ -34,13 +35,15 @@ class WebsiteDocsTest(unittest.TestCase):
             (folder / "site.json").write_text(json.dumps(SITE))
             (folder / "docs.md.template").write_text(
                 "# {{cluster_name}}\nssh you@{{login_address}}\n{{home_quota_soft_gb}}/{{home_quota_hard_gb}} GB, "
-                "{{scratch_cleanup_days}} days\n"
+                "{{scratch_cleanup_days}} days\n{{interactive_machine_rule}}\n"
             )
             first = self.run_script(folder)
             self.assertEqual(first.returncode, 0, first.stderr)
             self.assertEqual(first.stdout.strip(), "changed")
             self.assertEqual(
-                (folder / "docs.md").read_text(), "# labcluster\nssh you@login.example.org\n300/400 GB, 14 days\n"
+                (folder / "docs.md").read_text(),
+                "# labcluster\nssh you@login.example.org\n300/400 GB, 14 days\n"
+                "A main job asking for more than 4 hours avoids gpu4.\n",
             )
             self.assertEqual(oct((folder / "docs.md").stat().st_mode & 0o777), oct(0o644))
             second = self.run_script(folder)
