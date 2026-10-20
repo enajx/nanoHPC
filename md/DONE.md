@@ -6,7 +6,8 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 - The README shows `assets/nanohpc-login-and-cluster-dark.gif` at full width in place of the still `assets/cluster.png`. Left: a real `ssh front-node` login on the simulated cluster with the nanoHPC banner (the recording leaves out the 7-day waiting time and the `docs.md` link to stay narrow). Right: the README cluster layout (front node, three 4-GPU H100 machines, FPGA, turquoise pipes) with moving traffic, at 75% of the terminal's height, on the same dark background as the terminal. 2400 × 1210, 9 s at 15 fps, looping; the cluster half loops exactly.
 - `assets/nanohpc-login-and-cluster-white.gif` is the same GIF with the cluster half on white, kept as an alternative. The cluster was captured from a temporary copy of the website code; the website itself was not changed.
-- Files: `README.md`, `assets/nanohpc-login-and-cluster-{white,dark}.gif`.
+- Trying out: the README shows the two halves as separate GIFs side by side with a small gap (`assets/nanohpc-login.gif` at 42% and `assets/nanohpc-cluster-dark.gif` at 55%, both 1210 px tall, 9 s at 15 fps so they loop in step). `assets/nanohpc-cluster-white.gif` is the white cluster half.
+- Files: `README.md`, `assets/nanohpc-login-and-cluster-{white,dark}.gif`, `assets/nanohpc-login.gif`, `assets/nanohpc-cluster-{dark,white}.gif`.
 
 ## 2026-10-20: Login banner from SLURM-REAL
 
