@@ -4,7 +4,7 @@ Archive of completed `TODO.md` items: what was built and the key files touched.
 
 ## 2026-10-20: README login and cluster animation
 
-- The README shows `assets/nanohpc-login-and-cluster-white.gif` at full width in place of the still `assets/cluster.png`. Left: a real `ssh front-node` login on the simulated cluster with the nanoHPC banner (the recording leaves out the 7-day waiting time and the `docs.md` link to stay narrow). Right: the README cluster layout (front node, three 4-GPU H100 machines, FPGA, turquoise pipes) with moving traffic, at 75% of the terminal's height, on white. 2400 × 1210, 9 s at 15 fps, looping; the cluster half loops exactly.
+- The README shows `assets/nanohpc-login-and-cluster-white.gif` at full width in place of the still `assets/cluster.png`. Left: a real `ssh front-node` login on the simulated cluster with the nanoHPC banner (the recording leaves out the 7-day waiting time and the `docs.md` link to stay narrow). Right: the README cluster layout (front node, three 4-GPU H100 machines, FPGA, turquoise pipes) with moving traffic, on white. The two halves have the same width; the cluster is fitted to its half. 2400 × 1396, 9 s at 15 fps, looping; the cluster half loops exactly.
 - `assets/nanohpc-login-and-cluster-dark.gif` is the same GIF with a dark cluster half, kept as an alternative. Two separate GIFs side by side were tried and dropped: GitHub wraps each image in its own link. The cluster was captured from a temporary copy of the website code; the website itself was not changed.
 - Files: `README.md`, `assets/nanohpc-login-and-cluster-{white,dark}.gif`.
 
