@@ -97,6 +97,37 @@ def gpu_count(tres: str) -> int:
     return sum(int(value) for name, value in resources.items() if name.startswith("gres/gpu:"))
 
 
+def maintenance_windows(reply: dict, now: float) -> list[dict[str, Any]]:
+    """Return the Slurm maintenance reservations (`scontrol show reservation --json`) that have not ended."""
+
+    def seconds(value: dict | int) -> float:
+        return float(value["number"] if isinstance(value, dict) else value)
+
+    windows = []
+    for reservation in reply["reservations"]:
+        if not {"MAINT", "MAINTENANCE"} & set(reservation.get("flags", [])):
+            continue
+        end = seconds(reservation["end_time"])
+        if end > now:
+            windows.append(
+                {
+                    "name": reservation["name"],
+                    "start": seconds(reservation["start_time"]),
+                    "end": end,
+                    "nodes_text": reservation.get("node_list", ""),
+                    "comment": reservation.get("comment") or "",
+                }
+            )
+    return windows
+
+
+def reservation_comment(text: str) -> str:
+    """Return a reservation's comment from `scontrol show reservation NAME --oneliner`, where it is the last field.
+    Some Slurm versions leave it out of the JSON. An empty string when there is none."""
+    comment = text.partition(" Comment=")[2].strip()
+    return "" if comment == "(null)" else comment
+
+
 def counted_gpus(nodes: list[dict[str, str]], statuses: list[dict[str, Any]]) -> tuple[int, int]:
     """Count total and allocated GPUs only on machines with known presence."""
     present = [
@@ -567,6 +598,21 @@ def collect(
     partitions = [fields(line) for line in read(["scontrol", "show", "partition", "--oneliner"]).splitlines()]
     down = {partition["PartitionName"] for partition in partitions if partition.get("State", "UP") != "UP"}
     queue_paused = bool(partitions) and len(down) == len(partitions)
+    windows = maintenance_windows(
+        json.loads(read(["scontrol", "show", "reservation", "--json"])), datetime.now(UTC).timestamp()
+    )
+    maintenance = [
+        {
+            "start": window["start"],
+            "end": window["end"],
+            "nodes": read(["scontrol", "show", "hostnames", window["nodes_text"]]).split()
+            if window["nodes_text"]
+            else [],
+            "comment": window["comment"]
+            or reservation_comment(read(["scontrol", "show", "reservation", window["name"], "--oneliner"])),
+        }
+        for window in windows
+    ]
     qos = [
         line.split("|")
         for line in read(
@@ -691,6 +737,7 @@ def collect(
         "generated_at": now.isoformat(),
         "refresh_seconds": refresh,
         "accounting_start": accounting_start,
+        "maintenance": maintenance,
         "running_jobs": sum(row[2] == "RUNNING" for row in jobs),
         "pending_jobs": sum(row[2] == "PENDING" for row in jobs),
         "average_wait_seconds_1d": average_wait_seconds(waiting_records, now, 1),
