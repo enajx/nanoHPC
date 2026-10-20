@@ -242,6 +242,7 @@ flowchart LR
 - [x] The README shows core Python check, public demo deployment, and license badges below the nanoHPC image, each linked to its source. Core Python checks run automatically on relevant pushes and pull requests. See [DONE.md](md/DONE.md).
 - [ ] Once released: a "Buy me a coffee" link in the repository, for people who find nanoHPC useful.
 - [x] A retro-style animation of the running cluster exists as MP4 and GIF for project promotion. See [DONE.md](md/DONE.md).
+- [x] The README shows one GIF at full width in place of the still cluster image: the front node login on the left, the cluster map with moving traffic on the right. See [DONE.md](md/DONE.md).
 
 ### Later
 

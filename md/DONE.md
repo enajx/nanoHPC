@@ -2,6 +2,12 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-20: README login and cluster animation
+
+- The README shows `assets/nanohpc-login-and-cluster-white.gif` at full width in place of the still `assets/cluster.png`. Left: a real `ssh front-node` login on the simulated cluster with the nanoHPC banner (the recording leaves out the 7-day waiting time and the `docs.md` link to stay narrow). Right: the README cluster layout (front node, three 4-GPU H100 machines, FPGA, turquoise pipes) with moving traffic, at 75% of the terminal's height, on white. 2400 × 1210, 9 s at 15 fps, looping; the cluster half loops exactly.
+- `assets/nanohpc-login-and-cluster-dark.gif` is the same GIF with a dark cluster half, kept as an alternative. The cluster was captured from a temporary copy of the website code; the website itself was not changed.
+- Files: `README.md`, `assets/nanohpc-login-and-cluster-{white,dark}.gif`.
+
 ## 2026-10-20: Login banner from SLURM-REAL
 
 - Interactive front-node logins in Slurm mode run `nanohpc-hello`, ported from SLURM-REAL's `real-hpc`. It shows animated "nanoHPC" block-letter art with a lowercase "nano" (plain ASCII art without UTF-8) and time-of-day colours. Below the art: a greeting with the cluster name, the user's and the cluster's running jobs, the 7-day waiting time, GPU-hours over 30 days and the ranking in the cluster, the private home usage box, and Cluster status and Cluster guide links to the cluster's website. Agreed changes from SLURM-REAL: no impact line, no backup link, nanoHPC's own usage box. It runs in bash, sh, and zsh logins, only in a terminal, capped at 10 seconds; Ctrl+C skips it. It replaces the plain usage box at login.
