@@ -133,3 +133,17 @@
   ansible.builtin.file:
     path: /etc/update-motd.d/50-landscape-sysinfo
     state: absent
+
+# Ubuntu's bash prints a hint about sudo to administrators until they first use sudo.
+- name: Stop the sudo hint in interactive bash shells
+  ansible.builtin.replace:
+    path: /etc/bash.bashrc
+    regexp: '(?ms)^# sudo hint\n.*?^fi\n'
+    replace: "# sudo hint: turned off by nanoHPC, so the login banner is the first thing a login shows.\n"
+    validate: /bin/bash -n %s
+
+# Ubuntu's pam_motd shows /etc/legal once to each user. A deleted configuration file stays deleted on upgrades.
+- name: Stop the free-software notice at a user's first login
+  ansible.builtin.file:
+    path: /etc/legal
+    state: absent

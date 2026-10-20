@@ -361,6 +361,9 @@ class LoginBannerRoleTests(unittest.TestCase):
             'mode: "0400"',
             "/etc/update-motd.d/",
             "/etc/update-motd.d/50-landscape-sysinfo",
+            "/etc/bash.bashrc",
+            "# sudo hint",
+            "/etc/legal",
         ):
             self.assertIn(text, tasks)
         # The plain usage box at login is replaced by the banner, which shows it.

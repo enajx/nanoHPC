@@ -5,6 +5,11 @@ AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys/%u
 PermitRootLogin prohibit-password
 AllowUsers {{ ssh_allowed | join(' ') }} root
 
+{% if inventory_hostname in groups['role_front'] %}
+# The login banner is the first thing a front node login shows.
+PrintLastLog no
+{% endif %}
+
 # Ordinary users may tunnel from the front node only to configured compute machines.
 # Administrators and root retain unrestricted forwarding. Agent forwarding stays on.
 {% if inventory_hostname in groups['role_front'] %}

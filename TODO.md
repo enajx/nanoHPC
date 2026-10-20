@@ -202,6 +202,7 @@ flowchart LR
 - [x] Interactive logins to the front node in Slurm mode show the login banner (`nanohpc-hello`) from SLURM-REAL, with nanoHPC art, the cluster name, the user's summary, the usage box, and website links. See [DONE.md](md/DONE.md).
 - [x] Ubuntu's own login messages no longer show on the front node, as in SLURM-REAL. See [DONE.md](md/DONE.md).
 - [x] The banner ends with an Announcements box: Slurm maintenance reservations and an `announcements` list in `cluster.yml`. See [DONE.md](md/DONE.md).
+- [x] Nothing shows above the banner's art on a front-node login: no "Last login" line, no sudo hint, no Ubuntu free-software notice. See [DONE.md](md/DONE.md).
 
 ### Release
 

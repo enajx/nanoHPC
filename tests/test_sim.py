@@ -3208,9 +3208,19 @@ class SimHomeJobPolicyTest(SimUsersBase):
 
         shown = alice_login()
         self.assertIn("Home usage:", shown)
-        # The login banner replaces Ubuntu's login messages.
-        for ubuntu in ("Welcome to Ubuntu", "System information", "Documentation:"):
+        # The login banner replaces Ubuntu's login messages, and nothing shows above its art (the "exit" typed
+        # ahead may be echoed first).
+        for ubuntu in (
+            "Welcome to Ubuntu",
+            "System information",
+            "Documentation:",
+            "Last login",
+            "sudo_root",
+            "free software",
+        ):
             self.assertNotIn(ubuntu, shown)
+        art = shown.index("██") if "██" in shown else shown.index(" _ __")
+        self.assertEqual(shown[:art].replace("exit", "").strip(), "", shown[:art])
         self.assertRegex(shown, r"(Welcome to labcluster|Hello again|Hello|Welcome back), alice!")
         self.assertIn("Cluster is running 0 jobs", shown)
         website = config["cluster"]["website"]
