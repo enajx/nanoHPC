@@ -2,6 +2,14 @@
 
 Archive of completed `TODO.md` items: what was built and the key files touched.
 
+## 2026-10-20: Login banner from SLURM-REAL
+
+- Interactive front-node logins in Slurm mode run `nanohpc-hello`, ported from SLURM-REAL's `real-hpc`. It shows animated "nanoHPC" block-letter art with a lowercase "nano" (plain ASCII art without UTF-8) and time-of-day colours. Below the art: a greeting with the cluster name, the user's and the cluster's running jobs, the 7-day waiting time, GPU-hours over 30 days and the ranking in the cluster, the private home usage box, and Cluster status and Cluster guide links to the cluster's website. Agreed changes from SLURM-REAL: no impact line, no backup link, nanoHPC's own usage box. It runs in bash, sh, and zsh logins, only in a terminal, capped at 10 seconds; Ctrl+C skips it. It replaces the plain usage box at login.
+- Ubuntu's login messages are off on the front node: the `/etc/update-motd.d` scripts SLURM-REAL turns off are made non-executable, and the `50-landscape-sysinfo` link is removed (SLURM-REAL's front node has no such script).
+- The banner ends with an Announcements box: Slurm maintenance reservations (`Flags=MAINT`, a new `maintenance` list in the status snapshot) and an optional `announcements` list in `cluster.yml` (message, show_from, until, optional users for a personal message only they can read). Impossible dates are reported as field errors, quoted or not.
+- The ported banner tests, config, deploy, snapshot, and playbook tests passed, as did the full Python suite (572 tests, 43 skipped). `SimHomeJobPolicyTest` passed on Ubuntu 24.04 VMs with a real login, a personal message hidden from other users, and a real Slurm maintenance reservation. An independent agent reviewed the port; its findings were fixed. A terminal recording of a real login on the simulated front node was made for the README.
+- Files: `src/nanohpc/files/{nanohpc-hello,nanohpc-login.sh,cluster-monitor-snapshot}`, `src/nanohpc/ansible/roles/login_banner/`, `src/nanohpc/ansible/{site.yml,roles/monitoring/tasks/main.yml}`, `src/nanohpc/{config,deploy}.py`, `examples/cluster.yml`, `tests/{test_nanohpc_hello,test_config,test_deploy,test_monitor_snapshot,test_sim}.py`, `md/{administrator-guide,testing}.md`. Removed: `src/nanohpc/files/nanohpc-home-notice.sh`.
+
 ## 2026-10-13: Running Cluster Map animation
 
 - Captured the current public demo Cluster Map directly from its animated canvas, showing the demo machines and moving traffic without page controls on a plain white background. The nine-second MP4 is 2480 × 1094 H.264 at 30 frames per second; the looping GIF is 1920 × 847 at 15 frames per second. Both files decoded successfully, and frames from the start, middle, and end were checked.

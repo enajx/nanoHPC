@@ -197,6 +197,12 @@ flowchart LR
 - [x] Partial deploys instead of separate commands (agreed 2026-10-03): `nanohpc deploy --only users|policy|partitions` or `--only node NAME`, with the same checks and dry run (see [DONE.md](md/DONE.md)).
 - [x] `nanohpc check` reports, without changing anything, every machine against `cluster.yml`: problems first, non-zero exit code on problems (see [DONE.md](md/DONE.md)).
 
+### Login banner
+
+- [x] Interactive logins to the front node in Slurm mode show the login banner (`nanohpc-hello`) from SLURM-REAL, with nanoHPC art, the cluster name, the user's summary, the usage box, and website links. See [DONE.md](md/DONE.md).
+- [x] Ubuntu's own login messages no longer show on the front node, as in SLURM-REAL. See [DONE.md](md/DONE.md).
+- [x] The banner ends with an Announcements box: Slurm maintenance reservations and an `announcements` list in `cluster.yml`. See [DONE.md](md/DONE.md).
+
 ### Release
 
 - [x] The static demo build lets visitors browse every frontend page with fictional cluster data and interactive sample charts, without using the REAL lab deployment (see [DONE.md](md/DONE.md)).
@@ -248,8 +254,7 @@ flowchart LR
 - [ ] Test nanoHPC on non-Ubuntu machines.
 - [ ] Move the REAL cluster from SLURM-REAL to nanoHPC (maybe, not planned).
 - [ ] Optional user-writable shared scratch on a separate storage machine (not the front node), seen by every compute node: a fast NFS server with NVMe or SSD disks first, BeeGFS later. Files unused for N days (30 to 90) are deleted by a daily cleanup. Needs a fast network. This is separate from the read-only datasets area used by `stage-dataset --shared`.
-- [ ] A general "Welcome to <cluster name>" login banner (with a small "powered by nanoHPC") and some general info. Expand the existing private home usage box with a summary of where most of the user's space is (for example a repository or worktrees).
-- [ ] See how the terminal login banner looks in SLURM-REAL and use it as inspiration for the login banner above. There it is `roles/job_modes/files/real-hpc` (big block-letter title with a short animation and time-of-day colours, then the user's jobs, the cluster's jobs, the 7-day waiting time, GPU-hours and ranking, an impact estimate, and home space with the largest folders), `roles/home_space` (each user's usage, readable only by them), and `roles/login_notice` (shown on interactive logins); tests in `tests/test_real_hpc.py`. In nanoHPC the title is the cluster name from `cluster.yml` and the links point to the cluster's own website; the impact estimate is kept as in SLURM-REAL (same fixed assumptions), to make configurable later (agreed 2026-10-03; the banner stays in Later).
+- [ ] Expand the private home usage box with a summary of where most of the user's space is (for example a repository or worktrees), as SLURM-REAL's largest folders.
 - [ ] See how SLURM-REAL implements Slack notifications when a job ends and do the same: a private message to the job's user when their batch job ends, through a Slack app's bot token (job ID and name, how it ended with the exit code, run time, machine). Planned there on 2026-10-03 in `md/plan-slack.md` (commit 234223c); check whether it is built before porting.
 - [ ] Deploy only the cluster monitoring tools (metrics, alerts, status snapshot, Grafana, website) on a cluster that already has Slurm installed, without replacing its Slurm setup.
 - [ ] A webapp to manage the admin/configuration part of the cluster from the webapp itself, separate from the normal cluster monitoring app to avoid security risks.
