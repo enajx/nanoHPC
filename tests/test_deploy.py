@@ -91,6 +91,15 @@ class PrepareTest(unittest.TestCase):
         variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
         self.assertEqual(variables["user_check"], self.config["user_check"])
 
+    def test_announcements_reach_ansible(self) -> None:
+        """Validated login banner messages reach the role that writes them for the front node."""
+        self.config["announcements"] = [
+            {"message": "Hello", "show_from": "2026-10-20", "until": "2026-10-21", "users": ["bob"]}
+        ]
+        prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
+        variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
+        self.assertEqual(variables["announcements"], self.config["announcements"])
+
     def test_home_and_scratch_variables(self) -> None:
         prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
         variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]

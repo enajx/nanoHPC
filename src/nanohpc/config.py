@@ -4,6 +4,8 @@
 administrator can fix them all in one pass. Nothing is changed on any machine here.
 """
 
+import calendar
+import datetime
 import ipaddress
 import re
 import subprocess
@@ -30,6 +32,7 @@ TOP_FIELDS = (
     "user_check",
     "auto_deploy",
     "nanohpc_version",
+    "announcements",
 )
 
 POLICY_DEFAULTS: dict[str, Any] = {
@@ -162,6 +165,12 @@ TOP_SECTIONS = "the file must be a mapping with the sections cluster, machines, 
 SSH_TARGET = re.compile(r"[a-z_][a-z0-9_-]*@[a-zA-Z0-9][a-zA-Z0-9_.-]*:/[a-zA-Z0-9_./-]*")
 
 
+def real_day(text: str) -> bool:
+    """Whether YYYY-MM-DD (or YAML's YYYY-M-D) names a day that exists; 2026-02-30 does not."""
+    year, month, day = (int(part) for part in text.split("-"))
+    return year >= 1 and 1 <= month <= 12 and 1 <= day <= calendar.monthrange(year, month)[1]
+
+
 class UniqueKeyLoader(yaml.SafeLoader):
     """A YAML loader that records duplicate keys instead of letting the last one silently win."""
 
@@ -179,6 +188,18 @@ class UniqueKeyLoader(yaml.SafeLoader):
                     self.duplicates.append(f"line {key_node.start_mark.line + 1}: duplicate key {key}")
                 seen.add(key)
         return super().construct_mapping(node, deep=deep)
+
+
+def keep_impossible_dates(loader: UniqueKeyLoader, node: yaml.ScalarNode) -> Any:
+    """Read a YAML date as usual, but keep a day that does not exist as text, so validation reports its field
+    instead of the YAML reader failing."""
+    text = str(loader.construct_scalar(node))
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", text) and not real_day(text):
+        return text
+    return loader.construct_yaml_timestamp(node)
+
+
+UniqueKeyLoader.add_constructor("tag:yaml.org,2002:timestamp", keep_impossible_dates)
 
 
 class Checker:
@@ -886,6 +907,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "user_check": check_user_check(checker, top.get("user_check"), users, machines),
         "auto_deploy": with_defaults(checker, top.get("auto_deploy"), "auto_deploy", AUTO_DEPLOY_DEFAULTS),
         "nanohpc_version": top.get("nanohpc_version"),
+        "announcements": check_announcements(checker, top.get("announcements"), users),
     }
     check_capacity(checker, machines, partitions, config["policy"])
     home = config["home"]
@@ -940,6 +962,47 @@ def check_user_check(
                 seen.add(machine)
         allowed.append(entry)
     return {"allowed_tunnels": allowed}
+
+
+def check_announcements(checker: Checker, value: Any, users: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate the login banner's messages: text, first and last day shown (both included), and optional users
+    who alone see it. Dates become YYYY-MM-DD text, whether YAML read them as dates or as text."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        checker.fail("announcements", "must be a list")
+        return []
+    known_users = {user["name"] for user in users if isinstance(user.get("name"), str)}
+    announcements: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        path = f"announcements[{index}]"
+        entry = checker.mapping(item, path, ("message", "show_from", "until"), ("users",))
+        if entry is None:
+            continue
+        if not isinstance(entry.get("message"), str) or not entry["message"].strip():
+            checker.fail(f"{path}.message", "must be non-empty text")
+        days: dict[str, datetime.date] = {}
+        for key in ("show_from", "until"):
+            day = entry.get(key)
+            if isinstance(day, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) and real_day(day):
+                day = datetime.date.fromisoformat(day)
+            if isinstance(day, datetime.date) and not isinstance(day, datetime.datetime):
+                days[key] = day
+                entry[key] = day.isoformat()
+            elif key in entry:
+                checker.fail(f"{path}.{key}", "must be a date as YYYY-MM-DD")
+        if len(days) == 2 and days["show_from"] > days["until"]:
+            checker.fail(f"{path}.show_from", "must not be after until")
+        if "users" in entry:
+            names = entry["users"]
+            if not isinstance(names, list) or not names:
+                checker.fail(f"{path}.users", "must be a non-empty list of configured user names")
+            else:
+                for user_index, name in enumerate(names):
+                    if not isinstance(name, str) or name not in known_users:
+                        checker.fail(f"{path}.users[{user_index}]", "must name a configured user")
+        announcements.append(entry)
+    return announcements
 
 
 def check_auto_deploy(checker: Checker, config: dict[str, Any]) -> None:

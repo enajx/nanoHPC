@@ -384,6 +384,7 @@ def variables(
             "automatic": automatic,
             "alerts": {"slack": config["alerts"]["slack"]},
             "user_check": config["user_check"],
+            "announcements": config["announcements"],
             "metrics": {
                 **METRICS,
                 "front_address": front_values["address"],
