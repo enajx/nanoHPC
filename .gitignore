@@ -61,3 +61,7 @@ src/nanohpc/website-source/node_modules/
 src/nanohpc/website-source/test-results/
 src/nanohpc/website-source/playwright-report/
 src/nanohpc/website-demo/
+
+# Local shared Markdown links
+/AGENTS.md
+/CLAUDE.md
