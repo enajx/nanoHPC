@@ -193,6 +193,82 @@ class UserCheckConfigTest(unittest.TestCase):
                 self.assertTrue(any(error.startswith(field) for error in errors), errors)
 
 
+class AnnouncementsConfigTest(unittest.TestCase):
+    """Messages for the login banner: dates written either way in YAML, optional users, errors per field."""
+
+    def test_default_and_valid_entries(self) -> None:
+        config, errors = check_config(example())
+        self.assertEqual(errors, [])
+        self.assertEqual(config["announcements"], [])
+
+        raw = example()
+        # Unquoted dates come from YAML as dates; quoted ones as text. Both are kept as YYYY-MM-DD text.
+        raw["announcements"] = yaml.safe_load(
+            "- {message: New CUDA toolkit, show_from: 2026-10-20, until: '2026-10-22'}\n"
+            "- {message: Please clean your home, show_from: '2026-10-20', until: 2026-10-20, users: [alice]}\n"
+        )
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            config["announcements"],
+            [
+                {"message": "New CUDA toolkit", "show_from": "2026-10-20", "until": "2026-10-22"},
+                {
+                    "message": "Please clean your home",
+                    "show_from": "2026-10-20",
+                    "until": "2026-10-20",
+                    "users": ["alice"],
+                },
+            ],
+        )
+
+    def test_bad_entries_report_their_fields(self) -> None:
+        raw = example()
+        raw["announcements"] = [
+            {"show_from": "2026-10-20", "until": "2026-10-22"},
+            {"message": "", "show_from": "2026-10-20", "until": "2026-10-22"},
+            {"message": "x", "show_from": "20 Oct", "until": "2026-10-22"},
+            {"message": "x", "show_from": "2026-10-23", "until": "2026-10-22"},
+            {"message": "x", "show_from": "2026-10-20", "until": "2026-10-22", "users": ["nobody"]},
+            {"message": "x", "show_from": "2026-10-20", "until": "2026-10-22", "users": "alice"},
+            {"message": "x", "show_from": "2026-10-20", "until": "2026-10-22", "extra": 1},
+            "a message",
+            {"message": "x", "show_from": "2026-02-30", "until": "2026-03-01"},
+        ]
+        _, errors = check_config(raw)
+        for field in (
+            "announcements[0].message is required",
+            "announcements[1].message",
+            "announcements[2].show_from",
+            "announcements[3].show_from",
+            "announcements[4].users[0]",
+            "announcements[5].users",
+            "announcements[6].extra",
+            "announcements[7]",
+            "announcements[8].show_from",
+        ):
+            self.assertTrue(any(error.startswith(field) for error in errors), (field, errors))
+        raw["announcements"] = {"message": "x"}
+        self.assertIn("announcements must be a list", check_config(raw)[1])
+
+    def test_impossible_unquoted_date_is_reported(self) -> None:
+        """YAML would fail to read 2026-02-30 as a date; validation names the field instead."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cluster.yml"
+            text = EXAMPLE.read_text().replace(
+                "announcements: []", "announcements: [{message: x, show_from: 2026-02-30, until: 2026-03-01}]"
+            )
+            path.write_text(text)
+            _, errors = load_config(path, False, False)
+        self.assertTrue(any(error.startswith("announcements[0].show_from") for error in errors), errors)
+
+    def test_monitor_mode_has_no_announcements(self) -> None:
+        raw = yaml.safe_load(MONITOR.read_text())
+        raw["announcements"] = []
+        _, errors = check_config(raw)
+        self.assertTrue(any("announcements" in error for error in errors), errors)
+
+
 class HeterogeneousClusterTest(unittest.TestCase):
     """Valid heterogeneous setups: CPU-only nodes, admin-defined partitions, separate storage machines."""
 

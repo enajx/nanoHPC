@@ -254,31 +254,6 @@
         group: root
         mode: "0711"
 
-    - name: Show each user's private home usage box on interactive shell login
-      ansible.builtin.copy:
-        src: "{{ nanohpc.package_files }}/nanohpc-home-notice.sh"
-        dest: /etc/profile.d/nanohpc-home-notice.sh
-        owner: root
-        group: root
-        mode: "0644"
-        validate: /bin/sh -n %s
-
-    - name: Check whether zsh login profile exists
-      ansible.builtin.stat:
-        path: /etc/zsh/zprofile
-      register: zsh_login_profile
-
-    - name: Show the private home usage box in interactive zsh logins
-      ansible.builtin.blockinfile:
-        path: /etc/zsh/zprofile
-        marker: "# {mark} nanoHPC home usage at login"
-        block: |
-          if [ -r /etc/profile.d/nanohpc-home-notice.sh ]; then
-            . /etc/profile.d/nanohpc-home-notice.sh
-          fi
-        validate: /usr/bin/zsh -n %s
-      when: zsh_login_profile.stat.exists
-
     - name: Install the home job policy service and timer
       ansible.builtin.copy:
         dest: "/etc/systemd/system/nanohpc-home-job-policy.{{ item }}"

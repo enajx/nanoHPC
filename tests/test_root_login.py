@@ -110,6 +110,13 @@ class RootKeysTest(unittest.TestCase):
         self.assertIn("    AllowTcpForwarding local", lines)
         self.assertIn("    PermitOpen 10.0.0.11:* cpu1:*", lines)
 
+    def test_front_login_shows_no_last_login_line(self) -> None:
+        """The login banner is the first thing on a front node login; other machines keep sshd's last login line."""
+        lines = front_sshd_settings().splitlines()
+        first_match = next(index for index, line in enumerate(lines) if line.startswith("Match "))
+        self.assertIn("PrintLastLog no", lines[:first_match], "a global setting, before any Match block")
+        self.assertNotIn("PrintLastLog", sshd_settings(["alice"]))
+
     def test_removed_administrator_loses_root(self) -> None:
         lines = key_lines(root_keys(["carol"], None))
         self.assertEqual(lines, ["ssh-ed25519 AAAAcarol carol@laptop"])

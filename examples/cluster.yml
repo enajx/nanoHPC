@@ -120,6 +120,10 @@ user_check:
                                 # known programs: tailscale, tailscaled, cloudflared, ngrok, frpc,
                                 # zrok, bore, chisel, sshuttle, autossh, code tunnel, ssh -R, ssh -w
 
+announcements: []               # messages in the front node's login banner, shown from show_from to until (both
+                                # included): [{message: "New CUDA toolkit", show_from: 2026-10-20, until: 2026-10-22}]
+                                # add users: [alice] for a message only those users see
+
 auto_deploy:
   enabled: false                # true: the front node deploys this file's repository by itself
   repository: null              # git@github.com:lab/cluster-config.git (this cluster.yml at its root)

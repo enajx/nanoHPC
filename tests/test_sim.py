@@ -3180,19 +3180,67 @@ class SimHomeJobPolicyTest(SimUsersBase):
         super().setUp()
 
     def test_new_jobs_wait_then_resume(self) -> None:
-        """Check the deployed policy command against real Slurm accounting and scheduling."""
-        _, config, _ = self.up_and_deploy()
+        """Check the deployed policy command against real Slurm accounting and scheduling, and the login banner
+        that shows the usage box."""
+        cluster, config, _ = self.up_with_test_key()
+        # The front node's local day, which the banner compares the dates with.
+        today = self.on_front("date +%F").strip()
+        config["announcements"] = [
+            {"message": "BANNER MESSAGE FOR EVERYONE", "show_from": today, "until": today},
+            {"message": "BANNER MESSAGE FOR BOB", "show_from": today, "until": today, "users": ["bob"]},
+        ]
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
         self.assertIn("alice", self.on_front("sudo repquota -u -v -O csv /home"))
         private_status = "/var/lib/nanohpc/home-policy/status.json"
         self.assertEqual(self.on_front(f"sudo stat -c %a {private_status}").strip(), "600")
         policy_users = json.loads(self.on_front(f"sudo cat {private_status}"))["users"]
         self.assertEqual({row["user"] for row in policy_users}, {user["name"] for user in config["users"]})
         alice_ssh = self.ssh_config_for("alice")
-        login = self.run_command(
-            "ssh", "-tt", "-F", str(alice_ssh), "-o", "BatchMode=yes", "front", stdin="exit\n", agent=True
+
+        def alice_login() -> str:
+            login = self.run_command(
+                "ssh", "-tt", "-F", str(alice_ssh), "-o", "BatchMode=yes", "front", stdin="exit\n", agent=True
+            )
+            self.assertEqual(login.returncode, 0, login.stdout + login.stderr)
+            return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", login.stdout)
+
+        shown = alice_login()
+        self.assertIn("Home usage:", shown)
+        # The login banner replaces Ubuntu's login messages, and nothing shows above its art (the "exit" typed
+        # ahead may be echoed first).
+        for ubuntu in (
+            "Welcome to Ubuntu",
+            "System information",
+            "Documentation:",
+            "Last login",
+            "sudo_root",
+            "free software",
+        ):
+            self.assertNotIn(ubuntu, shown)
+        art = shown.index("██") if "██" in shown else shown.index(" _ __")
+        self.assertEqual(shown[:art].replace("exit", "").strip(), "", shown[:art])
+        self.assertRegex(shown, r"(Welcome to labcluster|Hello again|Hello|Welcome back), alice!")
+        self.assertIn("Cluster is running 0 jobs", shown)
+        website = config["cluster"]["website"]
+        site = website["hostname"] + website.get("path", "/cluster/").rstrip("/") + "/"
+        self.assertIn(f"Cluster status: {site}#overview", shown)
+        self.assertIn("BANNER MESSAGE FOR EVERYONE", shown)
+        self.assertNotIn("BANNER MESSAGE FOR BOB", shown)
+        private = self.ssh("front", "sudo -u alice cat /var/lib/nanohpc/announcements/users/bob.json")
+        self.assertNotEqual(private.returncode, 0)
+        # A Slurm maintenance reservation reaches the banner through the status snapshot.
+        self.on_front(
+            "sudo scontrol create reservation ReservationName=nanohpc-banner-test StartTime=now+1day "
+            "Duration=60 Nodes=gpu4 Users=root Flags=MAINT Comment='Moving racks'"
         )
-        self.assertEqual(login.returncode, 0, login.stdout + login.stderr)
-        self.assertIn("Home usage:", login.stdout)
+        self.addCleanup(self.ssh, "front", "sudo scontrol delete ReservationName=nanohpc-banner-test")
+        self.on_front("sudo systemctl start nanohpc-monitor-snapshot.service")
+        shown = alice_login()
+        self.assertRegex(shown, r"From \w{3} \d{2} \w{3} \d{2}:\d{2}: gpu4")
+        self.assertIn("Moving racks", shown)
+        self.on_front("sudo scontrol delete ReservationName=nanohpc-banner-test")
         running = (
             self.on_front(
                 "sudo -u alice sbatch --parsable --partition=main --chdir=/home/alice "

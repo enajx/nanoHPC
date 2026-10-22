@@ -39,6 +39,16 @@ elif name=='scontrol' and 'partition' in args:
  state='DOWN' if os.environ.get('TEST_PARTITIONS_DOWN') else 'UP'
  print('PartitionName=interactive State=' + state + ' Default=NO Nodes=gpu1 MaxTime=08:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
  print('PartitionName=main State=' + state + ' Default=YES Nodes=gpu1,cpu1 MaxTime=1-00:00:00 DefMemPerCPU=8192 JobDefaults=DefCpuPerGPU=4 TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1')
+elif name=='scontrol' and 'reservation' in args and '--json' in args:
+ future=int((now+timedelta(days=2)).timestamp())
+ print(json.dumps({'reservations':[
+  {'name':'move','flags':['MAINT','SPEC_NODES'],'start_time':{'number':hour,'set':True},'end_time':{'number':future,'set':True},'node_list':'gpu1,cpu1'},
+  {'name':'done','flags':['MAINT'],'start_time':{'number':old_start,'set':True},'end_time':{'number':old_end,'set':True},'node_list':'gpu1'},
+  {'name':'course','flags':['SPEC_NODES'],'start_time':{'number':hour,'set':True},'end_time':{'number':future,'set':True},'node_list':'cpu1'}]}))
+elif name=='scontrol' and 'reservation' in args:
+ print('ReservationName=move StartTime=now Nodes=gpu1,cpu1 Comment=Moving racks')
+elif name=='scontrol' and 'hostnames' in args:
+ print('\\n'.join(sys.argv[-1].split(',')))
 elif name=='scontrol':
  print('PriorityFlags = NO_FAIR_TREE\\nPriorityWeightFairshare = 40000\\nPriorityWeightAge = 1000\\nPriorityDecayHalfLife = 45-00:00:00\\nPriorityMaxAge = 7-00:00:00')
 elif name=='squeue' and '--json' in args:
@@ -275,6 +285,12 @@ class SnapshotTests(unittest.TestCase):
             self.assertNotIn("| store |", machine_text)
             self.assertNotIn("backup", data)
             self.assertEqual(data["accounting_start"], "2025-09-01T12:00:00")
+            # Slurm maintenance reservations that have not ended, for the login banner's Announcements box.
+            self.assertEqual(
+                [(window["nodes"], window["comment"]) for window in data["maintenance"]],
+                [(["gpu1", "cpu1"], "Moving racks")],
+            )
+            self.assertLess(data["maintenance"][0]["start"], data["maintenance"][0]["end"])
             self.assertEqual(
                 [(node["name"], node["role"]) for node in data["nodes"]],
                 [("front", "Front node"), ("gpu1", "Compute"), ("cpu1", "Compute"), ("store", "Storage")],

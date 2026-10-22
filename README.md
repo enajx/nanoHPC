@@ -32,7 +32,8 @@ machine. Monitor mode also uses a `cluster.yml` to set up monitoring without Slu
 - Isometric visualisation of the cluster topology in real time:
 
 <div align="center">
-  <img src="assets/cluster.png" alt="Cluster map with Threadripper, three 4-GPU H100 machines, and FPGA, connected by turquoise pipes" width="520">
+  <br>
+  <img src="assets/nanohpc-login-and-cluster-white.gif" alt="An SSH login to the front node showing the nanoHPC banner, next to the cluster map with three 4-GPU H100 machines and FPGA, with traffic moving along turquoise pipes" width="100%">
 </div>
 
 See a [demo of nanoHPC](https://najarro.science/nanoHPC/).
