@@ -1,29 +1,57 @@
-# Alerts of the front node's Prometheus, sent to Alertmanager when they start and when they resolve.
+# Alerts of the front node's Prometheus. Slack gets each problem once, when it starts (Alertmanager posts no end and
+# no repeat). Every alert keeps firing for 7 days after its condition ends, so a problem that comes back within
+# those 7 days is the same alert and posts nothing; after 7 days it ends, and a later one is new.
 # cluster-health runs every 5 minutes on every machine and writes each check's state as metrics
 # (cluster_health_check_state: 0 ok, 1 warning, 2 failing). A state is kept 5 minutes until the next run,
 # so `for: 7m` skips a single bad run and alerts on the second one, about 7 minutes after the first.
+# A machine under maintenance (a Slurm maintenance reservation, drained with a reason starting "maintenance", or a
+# paused queue), also when it is off, gets no alert at all; an offline machine gets only MachineMetricsMissing,
+# since its own metrics stop and the front node's checks leave out machines that are offline or under maintenance.
 groups:
   - name: cluster-alerts
     rules:
+      # Before the alerts, so they see this evaluation's value. The snapshot on the front node writes the metric
+      # with the machine in `node`; here it becomes `machine`, as on every alert.
+      - record: cluster_machine_maintenance
+        expr: label_replace(cluster_node_maintenance == 1, "machine", "$1", "node", "(.*)")
+
       - alert: HealthCheckFailing
-        expr: cluster_health_check_state == 2
+        expr: (cluster_health_check_state == 2) unless on(machine) cluster_machine_maintenance
         for: 7m
+        keep_firing_for: 7d
         labels:
           severity: critical
         annotations:
           summary: 'The check "{{ $labels.check }}" is failing on {{ $labels.machine }}.'
 
       - alert: HealthCheckWarning
-        expr: cluster_health_check_state == 1
+        expr: (cluster_health_check_state == 1 unless on(machine, check) cluster_health_machine_check_state) unless on(machine) cluster_machine_maintenance
         for: 7m
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
           summary: 'The check "{{ $labels.check }}" has a warning on {{ $labels.machine }}.'
 
+      # A front node check that names other machines (metrics arrive, Slurm nodes down or drained, ...): one alert
+      # per named machine, as that machine, so each machine's problem is posted on its own. HealthCheckWarning
+      # leaves out the front node's own line for such a check.
+      - alert: MachineCheckWarning
+        expr: label_replace(cluster_health_machine_check_state == 1, "machine", "$1", "about", "(.*)") unless on(machine) cluster_machine_maintenance
+        for: 7m
+        keep_firing_for: 7d
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The front node''s check "{{ $labels.check }}" has a warning about {{ $labels.machine }}.'
+
       # The textfile keeps the last finish time when the checks stop running; 15 minutes is three missed runs.
+      # `for: 10m` covers a machine back from a long outage: its old file is read until its checks run, 2 minutes
+      # after boot.
       - alert: HealthChecksNotRunning
-        expr: time() - cluster_health_timestamp_seconds > 900
+        expr: (time() - cluster_health_timestamp_seconds > 900) unless on(machine) cluster_machine_maintenance
+        for: 10m
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
@@ -31,8 +59,9 @@ groups:
 
       # A machine that answers but has never reported its health checks (its timer never ran).
       - alert: HealthChecksMissing
-        expr: up{job=~"node|node-.+"} == 1 unless on(machine) cluster_health_timestamp_seconds
+        expr: (up{job=~"node|node-.+"} == 1 unless on(machine) cluster_health_timestamp_seconds) unless on(machine) cluster_machine_maintenance
         for: 15m
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
@@ -40,8 +69,9 @@ groups:
 
       # A machine that is down stops reporting its health checks, so their alerts would look resolved.
       - alert: MachineMetricsMissing
-        expr: up{job=~"node|node-.+"} == 0
+        expr: (up{job=~"node|node-.+"} == 0) unless on(machine) cluster_machine_maintenance
         for: 5m
+        keep_firing_for: 7d
         labels:
           severity: critical
         annotations:
@@ -49,7 +79,8 @@ groups:
 
       # The backup writes its last exit code after each run; it stays until a later run works.
       - alert: BackupFailed
-        expr: cluster_backup_last_exit_code != 0
+        expr: (cluster_backup_last_exit_code != 0) unless on(machine) cluster_machine_maintenance
+        keep_firing_for: 7d
         labels:
           severity: critical
         annotations:
@@ -58,7 +89,8 @@ groups:
       # Only once the backup has succeeded at least once (the time is above 0): before that there is no series,
       # or a time of 0, and a run that failed is reported by BackupFailed.
       - alert: BackupOld
-        expr: time() - cluster_backup_last_success_timestamp_seconds > 26 * 3600 and cluster_backup_last_success_timestamp_seconds > 0
+        expr: (time() - cluster_backup_last_success_timestamp_seconds > 26 * 3600 and cluster_backup_last_success_timestamp_seconds > 0) unless on(machine) cluster_machine_maintenance
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
@@ -68,7 +100,8 @@ groups:
       # the dry run failed on some machines, which were left out, unchanged. 4: the real run failed, so machines
       # may be partly changed.
       - alert: AutoDeployFailed
-        expr: cluster_auto_deploy_last_exit_code != 0
+        expr: (cluster_auto_deploy_last_exit_code != 0) unless on(machine) cluster_machine_maintenance
+        keep_firing_for: 7d
         labels:
           severity: critical
         annotations:

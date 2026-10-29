@@ -1,0 +1,40 @@
+# The time zone from cluster.yml (time_zone). Imported only when it is set; otherwise the machine keeps its own.
+- name: Read the machine's time zone
+  ansible.builtin.command: timedatectl show -p Timezone --value
+  register: time_zone_current
+  changed_when: false
+  check_mode: false
+
+- name: Read the time zones this machine knows
+  ansible.builtin.command: timedatectl list-timezones
+  register: time_zone_known
+  changed_when: false
+  check_mode: false
+
+- name: Stop unless this machine knows the time zone
+  ansible.builtin.assert:
+    that: nanohpc.time_zone in time_zone_known.stdout_lines
+    fail_msg: >-
+      {{ inventory_hostname }} does not know the time zone {{ nanohpc.time_zone }} (time_zone in cluster.yml):
+      it is not in timedatectl list-timezones. Update the machine's tzdata package, or choose another zone.
+    quiet: true
+
+- name: Set the time zone from cluster.yml
+  ansible.builtin.command: timedatectl set-timezone {{ nanohpc.time_zone | quote }}
+  register: time_zone_set
+  when: time_zone_current.stdout | trim != nanohpc.time_zone
+
+# cron reads the time zone only when it starts.
+- name: Restart cron so its jobs follow the new time zone
+  ansible.builtin.systemd:
+    name: cron
+    state: restarted
+  when: time_zone_set is changed
+
+- name: Check the machine's time zone
+  ansible.builtin.command: timedatectl show -p Timezone --value
+  register: time_zone_now
+  changed_when: false
+  failed_when: time_zone_now.stdout | trim != nanohpc.time_zone
+  # A dry run sets nothing, so the machine still has its old zone.
+  when: not ansible_check_mode

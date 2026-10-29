@@ -70,6 +70,8 @@ For each machine the administrator names (a hostname, an address, or a host from
 - `alerts.slack: true` with `NANOHPC_SLACK_WEBHOOK` in a `.env` next to `cluster.yml` (never commit `.env`).
 - `auto_deploy` (repository over SSH, branch, minutes) and `nanohpc_version` when the administrator wants the
   front node to deploy from their configuration repository by itself.
+- `time_zone` (optional): one time zone for every machine, such as `Europe/Berlin` or `UTC`. Leave it empty to
+  keep each machine's own zone.
 
 ## 7. Review and deploy
 

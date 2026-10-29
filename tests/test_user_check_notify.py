@@ -97,7 +97,7 @@ class FakeHTTP:
 
 
 class UserCheckNotifyTest(unittest.TestCase):
-    """Channel posts are sent once or daily and failed posts stay retryable."""
+    """Each finding is posted once and failed posts stay retryable."""
 
     def setUp(self) -> None:
         self.folder = Path(tempfile.mkdtemp(prefix="nanohpc-user-check-notify-"))
@@ -185,7 +185,8 @@ class UserCheckNotifyTest(unittest.TestCase):
         self.assertTrue(any("`codex login` (port 1455)" in message for message in messages))
         self.assertTrue(any("Remote-SSH cannot connect" in message for message in messages))
 
-    def test_lasting_finding_posts_first_and_daily_with_empty_labels(self) -> None:
+    def test_lasting_finding_posts_once_with_empty_labels(self) -> None:
+        """A lasting finding is posted when first seen and not again while it lasts, not even a day later."""
         self.http.series = [
             finding("compute-1-outside-alice", "alice", "outside-job", "lasting", "python serve.py"),
             finding("compute-1-disk", "", "disk", "lasting", "/ is 93% full"),
@@ -193,14 +194,46 @@ class UserCheckNotifyTest(unittest.TestCase):
         for now in (
             "2026-10-05T12:00:00+00:00",
             "2026-10-05T13:00:00+00:00",
-            "2026-10-06T11:59:00+00:00",
             "2026-10-06T12:00:00+00:00",
+            "2026-10-09T12:00:00+00:00",
         ):
             self.assertEqual(self.run_notify(now).returncode, 0)
+        self.assertEqual(len(self.http.messages), 2)
+        self.assertEqual(sum("python serve.py" in message for message in self.http.messages), 1)
+        self.assertEqual(sum("93% full" in message for message in self.http.messages), 1)
+        self.assertFalse(any("Reminder" in message for message in self.http.messages))
+
+    def test_finding_seen_every_day_for_weeks_is_not_posted_again(self) -> None:
+        """A finding that lasts longer than 7 days is still the same finding."""
+        self.http.series = [finding("a", "alice", "outside-job", "lasting", "python")]
+        for day in range(5, 25):
+            self.assertEqual(self.run_notify(f"2026-10-{day:02d}T12:00:00+00:00", private=True).returncode, 0)
+        self.assertEqual(len(self.http.messages), 1)
+        self.assertEqual(len(self.http.private_messages), 1)
+
+    def test_finding_back_within_7_days_posts_nothing(self) -> None:
+        """A finding that ends and comes back within 7 days of ending is not posted again; after 7 days it is."""
+        lasting = finding("a", "alice", "outside-job", "lasting", "python")
+        tunnel = finding("t", "alice", "tunnel", "stopped", "")
+        self.http.series = [lasting, tunnel]
+        self.assertEqual(self.run_notify("2026-10-05T12:00:00+00:00", private=True).returncode, 0)
+        self.assertEqual(len(self.http.messages), 2)
+        self.assertEqual(len(self.http.private_messages), 1)
+        # Gone for six days, then back: nothing is posted, in the channel or privately.
+        self.http.series = []
+        self.assertEqual(self.run_notify("2026-10-05T12:01:00+00:00", private=True).returncode, 0)
+        self.http.series = [lasting, tunnel]
+        self.assertEqual(self.run_notify("2026-10-11T12:00:00+00:00", private=True).returncode, 0)
+        self.assertEqual(len(self.http.messages), 2)
+        self.assertEqual(len(self.http.private_messages), 1)
+        # Gone for 7 days from its last sighting: it is new again.
+        self.http.series = []
+        self.assertEqual(self.run_notify("2026-10-11T12:01:00+00:00", private=True).returncode, 0)
+        self.assertEqual(self.run_notify("2026-10-18T12:00:00+00:00", private=True).returncode, 0)
+        self.http.series = [lasting, tunnel]
+        self.assertEqual(self.run_notify("2026-10-18T12:01:00+00:00", private=True).returncode, 0)
         self.assertEqual(len(self.http.messages), 4)
-        self.assertEqual(sum("python serve.py" in message for message in self.http.messages), 2)
-        self.assertEqual(sum("93% full" in message for message in self.http.messages), 2)
-        self.assertTrue(any("Reminder" in message for message in self.http.messages[2:]))
+        self.assertEqual(len(self.http.private_messages), 2)
 
     def test_rejected_webhook_does_not_mark_finding_posted(self) -> None:
         self.http.series = [finding("compute-1-42", "alice", "tunnel", "stopped", "")]
@@ -233,16 +266,16 @@ class UserCheckNotifyTest(unittest.TestCase):
         self.assertEqual(self.http.messages, [])
         self.assertFalse(self.state.exists())
 
-    def test_lasting_finding_private_message_first_and_daily(self) -> None:
+    def test_lasting_finding_private_message_once(self) -> None:
         self.http.series = [
             finding("a", "alice", "outside-job", "lasting", "python"),
             finding("disk", "", "disk", "lasting", "/ is 93% full"),
         ]
         for now in ("2026-10-05T12:00:00+00:00", "2026-10-05T13:00:00+00:00", "2026-10-06T12:00:00+00:00"):
             self.assertEqual(self.run_notify(now, private=True).returncode, 0)
-        self.assertEqual(len(self.http.messages), 4)
-        self.assertEqual(len(self.http.private_messages), 2)
-        self.assertEqual(self.http.private_authorizations, ["Bearer xoxb-test-token"] * 2)
+        self.assertEqual(len(self.http.messages), 2)
+        self.assertEqual(len(self.http.private_messages), 1)
+        self.assertEqual(self.http.private_authorizations, ["Bearer xoxb-test-token"])
         self.assertEqual({body["channel"] for body in self.http.private_messages}, {"U123"})
         self.assertTrue(all("Hi alice" in body["text"] for body in self.http.private_messages))
 

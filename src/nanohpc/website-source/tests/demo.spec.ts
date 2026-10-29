@@ -230,7 +230,7 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '24h' }).click()
   await expect(page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '24h' })).toHaveAttribute('aria-pressed', 'true')
   const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
-  for (const name of ['How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy']) {
+  for (const name of ['How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy', 'FAQ']) {
     await nav.getByRole('link', { name, exact: true }).click()
     await expect(page.getByRole('heading', { name, exact: true }).first()).toBeVisible()
   }
@@ -254,6 +254,8 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   }
   await expect(page.locator('.partition-summary')).toContainText('DGX')
   await expect(page.locator('.partition-summary')).not.toContainText('FPGA')
+  await nav.getByRole('link', { name: 'FAQ', exact: true }).click()
+  await expect(page.locator('.faq summary')).toContainText(['Can I use a specific version of CMake?', 'Who do I ask for a larger home quota?'])
   await nav.getByRole('link', { name: 'Jobs', exact: true }).click()
   await expect(page.locator('iframe[title="Running Jobs and Queue"]')).toBeVisible()
   await expect(page.locator('iframe[title="Queue history"]')).toBeVisible()

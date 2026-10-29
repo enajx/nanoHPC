@@ -1353,6 +1353,82 @@ class SimUserCheckTest(SimUsersBase):
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimMachineSetupTest(SimUsersBase):
+    """The time zone from cluster.yml on every machine (none: each keeps its own), and su only for the sudo group,
+    on two Ubuntu 24.04 VMs."""
+
+    sim = SIM / "machine-setup.yml"
+    state = ROOT / ".nanohpc-sim" / "machine-setup"
+
+    def su_as(self, user: str) -> str:
+        """Log in to the front node as `user` with a terminal, as a person does, and run su with no input to give
+        (the terminal gets an end of input); return what it printed."""
+        config = self.ssh_config_for(user)
+        result = self.run_command(
+            "ssh", "-tt", "-F", str(config), "-o", "BatchMode=yes", "front", "timeout 20 su root -c true", stdin=""
+        )  # fmt: skip
+        return result.stdout + result.stderr
+
+    def test_time_zone_and_su(self) -> None:
+        cluster, config, public_key = self.up_with_test_key()
+        machines = list(config["machines"])
+        config["users"].append({"name": "bob", "uid": 2001, "ssh_keys": [public_key]})
+        zone = "America/Sao_Paulo"
+        config["time_zone"] = zone
+        cluster.write_text(yaml.safe_dump(config))
+        zones = {
+            machine: self.ssh(machine, "timedatectl show -p Timezone --value").stdout.strip() for machine in machines
+        }
+        self.assertNotIn(zone, zones.values())
+        pam = {machine: self.ssh(machine, "sha256sum /etc/pam.d/su").stdout for machine in machines}
+
+        with self.subTest("the dry run names both changes and changes nothing"):
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim), "--dry-run")
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            for machine in machines:
+                line = next(line for line in result.stdout.splitlines() if line.startswith(f"Dry run: {machine} "))
+                self.assertIn("Set the time zone from cluster.yml", line)
+                self.assertIn("Allow su only for the sudo group", line)
+                self.assertEqual(
+                    self.ssh(machine, "timedatectl show -p Timezone --value").stdout.strip(), zones[machine]
+                )
+                self.assertEqual(self.ssh(machine, "sha256sum /etc/pam.d/su").stdout, pam[machine])
+
+        before = {machine: int(self.ssh(machine, "date +%s").stdout) for machine in machines}
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+
+        with self.subTest("every machine has the time zone, and cron was restarted to read it"):
+            for machine in machines:
+                self.assertEqual(self.ssh(machine, "timedatectl show -p Timezone --value").stdout.strip(), zone)
+                started = self.ssh(machine, 'date -d "$(systemctl show -p ActiveEnterTimestamp --value cron)" +%s')
+                self.assertGreater(int(started.stdout), before[machine], machine)
+
+        with self.subTest("su refuses a user outside the sudo group and asks an administrator for the password"):
+            refused = self.su_as("bob")
+            self.assertIn("su: Permission denied", refused)
+            self.assertNotIn("Password:", refused)
+            self.assertIn("Password:", self.su_as("alice"))
+            for machine in machines:
+                self.assertIn("pam_wheel.so group=sudo", self.ssh(machine, "grep -v '^#' /etc/pam.d/su").stdout)
+                self.assertEqual(self.ssh(machine, "sudo su -s /bin/sh -c true bob").returncode, 0, machine)
+                saved = self.ssh(machine, "sudo cat /root/pam-su.before-nanohpc").stdout
+                self.assertIn("# auth       required   pam_wheel.so\n", saved, machine)
+                self.assertNotIn("group=sudo", saved, machine)
+
+        with self.subTest("without time_zone, each machine keeps its own"):
+            del config["time_zone"]
+            cluster.write_text(yaml.safe_dump(config))
+            self.assertEqual(self.ssh("cpu1", "sudo timedatectl set-timezone Asia/Tokyo").returncode, 0)
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            self.assertIn("Dry run: front has nothing to change", result.stdout)
+            self.assertIn("Dry run: cpu1 has nothing to change", result.stdout)
+            self.assertEqual(self.ssh("front", "timedatectl show -p Timezone --value").stdout.strip(), zone)
+            self.assertEqual(self.ssh("cpu1", "timedatectl show -p Timezone --value").stdout.strip(), "Asia/Tokyo")
+
+
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimDeployTest(SimUsersBase):
     """End to end: `nanohpc sim deploy` sets up Slurm, users, SSH access, sudo, and Munge on the everyday
     cluster. Real Lima VMs. The first run builds Slurm on the front VM (tens of minutes); later runs use the
@@ -1933,12 +2009,11 @@ class SimRedeployTest(SimUsersBase):
             self.assertEqual(self.ssh("gpu2", "test -s /etc/nanohpc/metrics-tls/node.crt").returncode, 0)
 
         with self.subTest("a drained node is a warning in the health report, not a failed deploy"):
-            self.on_front("sudo scontrol update nodename=cpu1 state=drain reason=maintenance-test")
+            # Not a maintenance reason: a node drained for maintenance is left out of the report.
+            self.on_front("sudo scontrol update nodename=cpu1 state=drain reason=disk-test")
             result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
             self.assertEqual(result.returncode, 0, self.failure(result))
-            self.assertIn(
-                "WARN  no Slurm node is down, drained, not responding, or in maintenance (cpu1", result.stdout
-            )
+            self.assertIn("WARN  no Slurm node is down, drained, or not responding (cpu1", result.stdout)
             self.on_front("sudo scontrol update nodename=cpu1 state=resume")
 
         with self.subTest("a later deploy by an administrator through the forwarded key, without a password"):
@@ -2185,12 +2260,11 @@ class SimPartialDeployTest(SimUsersBase):
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimAlertsTest(SimUsersBase):
-    """The slow alert checks, on the everyday cluster: stale GPU readings, and Slack alerts with a stand-in Slack
-    server (a failing check, then its recovery; up to half an hour of waiting). Run when alerts or metrics
-    change, and before the release. Real Lima VMs."""
+    """The slow alert check on the everyday cluster: stale GPU readings. The Slack checks are in SimSlackTest.
+    Run when alerts or metrics change, and before the release. Real Lima VMs."""
 
     def test_alerts(self) -> None:
-        cluster, _, _ = self.up_and_deploy()
+        self.up_and_deploy()
 
         with self.subTest("GPU readings that stop arriving are reported as stale"):
             self.assertEqual(self.ssh("gpu2", "sudo systemctl stop nanohpc-gpu-metrics.timer").returncode, 0)
@@ -2199,73 +2273,190 @@ class SimAlertsTest(SimUsersBase):
             self.assertIn("WARN  GPU readings are fresh (under 2 minutes old) (gpu2)", report, report)
             self.assertEqual(self.ssh("gpu2", "sudo systemctl start nanohpc-gpu-metrics.timer").returncode, 0)
 
-        with self.subTest("Slack alerts from the front node: a failing check on a machine, and its recovery"):
-            # A stand-in for Slack on the front node records what Alertmanager posts.
-            receiver = textwrap.dedent("""
-                import http.server
-                class Hook(http.server.BaseHTTPRequestHandler):
-                    def do_POST(self):
-                        body = self.rfile.read(int(self.headers["Content-Length"]))
-                        with open("/tmp/slack.log", "ab") as log:
-                            log.write(body + b"\\n")
-                        # Like Slack's incoming webhooks: 200 with the body "ok".
-                        self.send_response(200)
-                        self.send_header("Content-Type", "text/plain")
-                        self.send_header("Content-Length", "2")
-                        self.end_headers()
-                        self.wfile.write(b"ok")
-                http.server.HTTPServer(("127.0.0.1", 18080), Hook).serve_forever()
-            """)
-            self.assertEqual(self.ssh("front", "cat > /tmp/slack.py", stdin=receiver).returncode, 0)
-            self.on_front("rm -f /tmp/slack.log; (nohup python3 /tmp/slack.py >/dev/null 2>&1 &)")
-            self.addCleanup(self.ssh, "front", "pkill -f /tmp/slack.py")
-            with_slack = yaml.safe_load(cluster.read_text())
-            with_slack["alerts"]["slack"] = True
-            cluster.write_text(yaml.safe_dump(with_slack))
-            (cluster.parent / ".env").write_text("NANOHPC_SLACK_WEBHOOK=http://127.0.0.1:18080/slack\n")
-            result = self.deploy(self.state / "ssh_config", agent=False)
-            self.assertEqual(result.returncode, 0, self.failure(result))
-            # The webhook is a secret: not in the deploy's output, its variables, or a file left behind.
-            self.assertNotIn("18080", result.stdout + result.stderr)
-            work = Path.home() / ".cache/nanohpc/clusters/labcluster"
-            self.assertNotIn("18080", (work / "vars.json").read_text())
-            self.assertFalse((work / "secrets.json").exists())
 
-            def posted(*texts: str) -> bool:
-                """Whether one message posted to the stand-in Slack contains all these texts."""
-                messages = self.ssh("front", "cat /tmp/slack.log 2>/dev/null").stdout.splitlines()
-                return any(all(text in message for text in texts) for message in messages)
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
+class SimSlackTest(SimUsersBase):
+    """Slack on three Ubuntu 24.04 VMs (sim file slack.yml), with a stand-in Slack on the front node for the
+    channel webhook and the private message API: private job-end messages for --mail-user=slack; a failing check
+    posted once, not its end or its return; no post about a machine under maintenance and only the offline post
+    for a machine that is off. About 40 minutes, mostly waiting for alert rules. Real Lima VMs."""
 
-            # A check starts failing on cpu1: one problem message.
-            self.assertEqual(
-                self.ssh(
-                    "cpu1",
-                    "sudo systemctl stop nanohpc-scratch-cleanup.timer && sudo systemctl start nanohpc-health.service",
-                ).returncode,
-                0,
+    def setUp(self) -> None:
+        self.sim = SIM / "slack.yml"
+        self.state = ROOT / ".nanohpc-sim" / "slack"
+        super().setUp()
+
+    def posts(self) -> list[str]:
+        """Every request body the stand-in Slack received, each prefixed with its path."""
+        return self.ssh("front", "cat /tmp/slack.log 2>/dev/null").stdout.splitlines()
+
+    def channel(self, *texts: str) -> list[str]:
+        """The channel posts that contain all these texts."""
+        return [post for post in self.posts() if post.startswith("/slack ") and all(text in post for text in texts)]
+
+    def health(self, machine: str, command: str) -> None:
+        """Run a command on a machine, then its health checks at once."""
+        result = self.ssh(machine, f"{command} && sudo systemctl start nanohpc-health.service")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def kept_firing(self, check: str) -> bool:
+        """Whether Prometheus keeps the alert for this check firing after it works again (keepFiringSince)."""
+        answer = json.loads(self.on_front("curl -sf http://127.0.0.1:9090/api/v1/alerts"))
+        return any(
+            check in alert["labels"].get("check", "") and alert.get("keepFiringSince")
+            for alert in answer["data"]["alerts"]
+        )
+
+    def maintenance_machines(self) -> list[str]:
+        """The machines Prometheus records as under maintenance."""
+        answer = json.loads(
+            self.on_front(
+                "curl -sfG http://127.0.0.1:9090/api/v1/query --data-urlencode query=cluster_machine_maintenance"
             )
+        )
+        return [series["metric"]["machine"] for series in answer["data"]["result"]]
+
+    def test_slack(self) -> None:
+        cluster, config, _ = self.up_with_test_key()
+        # A stand-in for Slack on the front node: the webhook answers "ok", the private message API {"ok": true}.
+        receiver = textwrap.dedent("""
+            import http.server
+            class Hook(http.server.BaseHTTPRequestHandler):
+                def do_POST(self):
+                    body = self.rfile.read(int(self.headers["Content-Length"]))
+                    with open("/tmp/slack.log", "ab") as log:
+                        log.write(self.path.encode() + b" " + body + b"\\n")
+                    answer = b'{"ok": true}' if self.path.endswith("chat.postMessage") else b"ok"
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(answer)))
+                    self.end_headers()
+                    self.wfile.write(answer)
+            http.server.HTTPServer(("127.0.0.1", 18080), Hook).serve_forever()
+        """)
+        self.assertEqual(self.ssh("front", "cat > /tmp/slack.py", stdin=receiver).returncode, 0)
+        self.on_front("rm -f /tmp/slack.log; (nohup python3 /tmp/slack.py >/dev/null 2>&1 &)")
+        self.addCleanup(self.ssh, "front", "pkill -f /tmp/slack.py")
+        config["alerts"]["slack"] = True
+        # Its own cluster name, so its deploy files do not mix with another test cluster's run at the same time.
+        config["cluster"]["name"] = "slacktest"
+        for user in config["users"]:
+            if user["name"] == "alice":
+                user["slack_id"] = "U111"
+        cluster.write_text(yaml.safe_dump(config))
+        (cluster.parent / ".env").write_text(
+            "NANOHPC_SLACK_WEBHOOK=http://127.0.0.1:18080/slack\nNANOHPC_SLACK_BOT_TOKEN=xoxb-test\n"
+        )
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        # Private messages go to the stand-in instead of slack.com.
+        self.on_front(
+            "sudo sed -i 's#https://slack.com/api#http://127.0.0.1:18080/api#' "
+            "/etc/systemd/system/nanohpc-job-end-notify.service && sudo systemctl daemon-reload"
+        )
+
+        with self.subTest("a batch job with --mail-user=slack gets one private message when it ends; no email"):
+            script = (
+                "#!/bin/bash\n#SBATCH --job-name=slack-test\n#SBATCH --mail-type=END\n"
+                "#SBATCH --mail-user={recipient}\nsleep 5\nexit 3\n"
+            )
+            jobs = {}
+            for user, recipient in (("alice", "slack"), ("bob", "slack"), ("alice", "alice@example.org")):
+                job_script = shlex.quote(script.format(recipient=recipient))
+                submitted = self.as_user(
+                    user, "front", f"cd ~ && printf %s {job_script} > job.sh && sbatch --parsable job.sh", agent=False
+                )
+                self.assertEqual(submitted.returncode, 0, submitted.stdout + submitted.stderr)
+                jobs[(user, recipient)] = submitted.stdout.strip()
+            alice = jobs[("alice", "slack")]
+            for _ in range(36):
+                if any(alice in post and "chat.postMessage" in post for post in self.posts()):
+                    break
+                time.sleep(5)
+            private = [post for post in self.posts() if "chat.postMessage" in post]
+            self.assertEqual(len(private), 1, private)
+            message = json.loads(private[0].split(" ", 1)[1])
+            self.assertEqual(message["channel"], "U111")
+            self.assertIn(f'Your job {alice} "slack-test" finished: Failed (exit code 3)', message["text"])
+            self.assertRegex(message["text"], r"ran \d+ sec on (gpu4|cpu1)")
+            time.sleep(40)
+            journal = self.on_front("sudo journalctl -u nanohpc-job-end-notify --no-pager -o cat")
+            self.assertIn(f"no message for job {jobs[('bob', 'slack')]} (bob, main)", journal)
+            # Nothing left queued, and mail for another recipient was never queued: no email, no message.
+            self.assertEqual(self.on_front("sudo ls -A /var/spool/nanohpc-slack-jobs").strip(), "")
+            self.assertEqual(len([post for post in self.posts() if "chat.postMessage" in post]), 1)
+
+        with self.subTest("a failing check is posted once; its end and its return within 7 days post nothing"):
+            self.health("cpu1", "sudo systemctl stop nanohpc-scratch-cleanup.timer")
             for _ in range(90):
-                if posted("Problem", "scratch cleanup timer", "cpu1"):
+                if self.channel("Problem", "scratch cleanup timer", "cpu1"):
+                    break
+                time.sleep(10)
+            self.assertEqual(len(self.channel("Problem", "scratch cleanup timer", "cpu1")), 1, self.posts())
+            self.health("cpu1", "sudo systemctl start nanohpc-scratch-cleanup.timer")
+            for _ in range(30):
+                if self.kept_firing("scratch cleanup timer"):
                     break
                 time.sleep(10)
             self.assertTrue(
-                posted("Problem", "scratch cleanup timer", "cpu1"), self.ssh("front", "cat /tmp/slack.log").stdout
+                self.kept_firing("scratch cleanup timer"), self.on_front("curl -s http://127.0.0.1:9090/api/v1/alerts")
             )
-            # It recovers: one resolved message.
-            self.assertEqual(
-                self.ssh(
-                    "cpu1",
-                    "sudo systemctl start nanohpc-scratch-cleanup.timer && sudo systemctl start nanohpc-health.service",
-                ).returncode,
-                0,
-            )
-            for _ in range(90):
-                if posted("Resolved", "scratch cleanup timer", "cpu1"):
+            # Past Alertmanager's group interval (5 minutes), so a resolved alert would have been sent by now.
+            time.sleep(330)
+            # It fails again, past the rule's 7 minutes and Alertmanager's wait: still nothing new.
+            self.health("cpu1", "sudo systemctl stop nanohpc-scratch-cleanup.timer")
+            time.sleep(600)
+            self.assertEqual(len(self.channel("Problem", "scratch cleanup timer", "cpu1")), 1, self.posts())
+            self.assertEqual(self.channel("Resolved"), [])
+            self.health("cpu1", "sudo systemctl start nanohpc-scratch-cleanup.timer")
+
+        with self.subTest("the alert rules pass their promtool tests on the front node's promtool"):
+            for relative in ("src/nanohpc/files/prometheus-alert-rules.yml", "tests/prometheus_alert_rules_test.yml"):
+                copied = self.ssh("front", f"mkdir -p /tmp/rules/$(dirname {relative}) && cat > /tmp/rules/{relative}",
+                                  stdin=(ROOT / relative).read_text())  # fmt: skip
+                self.assertEqual(copied.returncode, 0, copied.stderr)
+            promtool = self.on_front("ls -d /opt/nanohpc-metrics/prometheus-*/promtool").strip()
+            rules = self.ssh("front", f"cd /tmp/rules/tests && {promtool} test rules prometheus_alert_rules_test.yml")
+            self.assertEqual(rules.returncode, 0, rules.stdout + rules.stderr)
+
+        with self.subTest("nothing about a machine under maintenance, and only the offline post for one that is off"):
+            before = len(self.channel())
+            self.on_front("sudo scontrol update nodename=cpu1 state=drain reason=maintenance-test")
+            for _ in range(30):
+                if self.maintenance_machines() == ["cpu1"]:
                     break
                 time.sleep(10)
-            self.assertTrue(
-                posted("Resolved", "scratch cleanup timer", "cpu1"), self.ssh("front", "cat /tmp/slack.log").stdout
-            )
+            self.assertEqual(self.maintenance_machines(), ["cpu1"])
+            # Under maintenance, cpu1's own check fails and Slurm marks it down; gpu4's metrics stop (offline).
+            self.health("cpu1", "sudo systemctl stop slurmd")
+            self.assertEqual(self.ssh("gpu4", "sudo systemctl stop nanohpc-node-exporter").returncode, 0)
+            self.health("front", "true")
+            time.sleep(330)
+            self.health("front", "true")
+            self.health("cpu1", "true")
+            time.sleep(330)
+            new = self.channel()[before:]
+            self.assertEqual(len(new), 1, new)
+            self.assertIn("cannot read the metrics of gpu4", new[0])
+            # gpu4 stays offline for the restart check below.
+            self.health("cpu1", "sudo systemctl start slurmd")
+            self.on_front("sudo scontrol update nodename=cpu1 state=resume")
+
+        with self.subTest("after a Prometheus reload and a restart, nothing already posted is posted again"):
+            # A deploy reloads Prometheus when its configuration or rules change, and restarts it when its unit
+            # changes. gpu4 is still offline (its alert still firing), and cpu1's scratch cleanup check ended and
+            # is kept firing; it now fails again.
+            before = len(self.channel())
+            self.on_front("sudo systemctl reload nanohpc-prometheus")
+            time.sleep(60)
+            self.on_front("sudo systemctl restart nanohpc-prometheus")
+            self.health("cpu1", "sudo systemctl stop nanohpc-scratch-cleanup.timer")
+            time.sleep(330)
+            self.health("cpu1", "true")
+            time.sleep(330)
+            new = self.channel()[before:]
+            self.assertEqual(new, [], new)
+            self.assertEqual(self.ssh("gpu4", "sudo systemctl start nanohpc-node-exporter").returncode, 0)
+            self.health("cpu1", "sudo systemctl start nanohpc-scratch-cleanup.timer")
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
@@ -3175,8 +3366,10 @@ class SimHomeJobPolicyTest(SimUsersBase):
     """A home threshold holds new Slurm jobs without stopping one already running."""
 
     def setUp(self) -> None:
-        self.sim = SIM / "kernel-quota.yml"
-        self.state = ROOT / ".nanohpc-sim" / "kernel-quota"
+        # NANOHPC_SIM_FILE: a copy of kernel-quota.yml under another name, so its VMs do not clash with another run's.
+        name = os.environ.get("NANOHPC_SIM_FILE", "kernel-quota")
+        self.sim = SIM / f"{name}.yml"
+        self.state = ROOT / ".nanohpc-sim" / name
         super().setUp()
 
     def test_new_jobs_wait_then_resume(self) -> None:
@@ -3206,8 +3399,15 @@ class SimHomeJobPolicyTest(SimUsersBase):
             self.assertEqual(login.returncode, 0, login.stdout + login.stderr)
             return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", login.stdout)
 
+        # The largest folders, measured on the home machine, are private to each user and shown in the usage box.
+        self.on_front("sudo systemctl start nanohpc-home-folders.service")
+        folders = "/home/.nanohpc-home-folders/alice"
+        self.assertEqual(self.on_front(f"sudo stat -c '%U %a' {folders}").strip(), "alice 400")
+        self.assertNotEqual(self.ssh("front", f"sudo -u bob cat {folders}").returncode, 0)
         shown = alice_login()
         self.assertIn("Home usage:", shown)
+        self.assertIn("Largest folders (", shown)
+        self.assertIn("No single folder uses 10 GB or more.", shown)
         # The login banner replaces Ubuntu's login messages, and nothing shows above its art (the "exit" typed
         # ahead may be echoed first).
         for ubuntu in (
@@ -3221,7 +3421,7 @@ class SimHomeJobPolicyTest(SimUsersBase):
             self.assertNotIn(ubuntu, shown)
         art = shown.index("██") if "██" in shown else shown.index(" _ __")
         self.assertEqual(shown[:art].replace("exit", "").strip(), "", shown[:art])
-        self.assertRegex(shown, r"(Welcome to labcluster|Hello again|Hello|Welcome back), alice!")
+        self.assertRegex(shown, rf"(Welcome to {config['cluster']['name']}|Hello again|Hello|Welcome back), alice!")
         self.assertIn("Cluster is running 0 jobs", shown)
         website = config["cluster"]["website"]
         site = website["hostname"] + website.get("path", "/cluster/").rstrip("/") + "/"
@@ -4032,8 +4232,10 @@ class SimHomeOnStorageTest(SimUsersBase):
     """/home served by the storage machine instead of the front node. Real Lima VMs."""
 
     def setUp(self) -> None:
-        self.sim = SIM / "home-on-storage.yml"
-        self.state = ROOT / ".nanohpc-sim" / "home-on-storage"
+        # NANOHPC_SIM_FILE: a copy of home-on-storage.yml under another name, so its VMs do not clash with another run's.
+        name = os.environ.get("NANOHPC_SIM_FILE", "home-on-storage")
+        self.sim = SIM / f"{name}.yml"
+        self.state = ROOT / ".nanohpc-sim" / name
         super().setUp()
 
     def test_nfs_option_change_waits_for_compute_job(self) -> None:
@@ -4323,6 +4525,10 @@ exec /usr/bin/mount "$@"
         self.assertIsNotNone(alice["home"], status["users"])
         self.assertGreater(alice["home"]["soft_bytes"], 0)
         self.assertEqual({node["name"]: node["role"] for node in status["nodes"]}["store"], "Storage")
+        # The largest folders are measured on the storage machine and read by the user on the front node.
+        started = self.ssh("store", "sudo systemctl start nanohpc-home-folders.service")
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertIn("Largest folders (", self.on_front("sudo -u alice cat /home/.nanohpc-home-folders/alice"))
 
 
 if __name__ == "__main__":

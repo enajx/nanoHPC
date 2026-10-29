@@ -1,4 +1,4 @@
-"""Steps 4 to 6: partitions and policy, the website, and the extras (backup, alerts, automatic deploys)."""
+"""Steps 4 to 6: partitions and policy, the website, and the extras (backup, alerts, automatic deploys, time zone)."""
 
 import importlib.metadata
 from typing import ClassVar
@@ -214,7 +214,7 @@ class WebsiteStep(Step):
 
 
 class ExtrasStep(Step):
-    """6 Extras: the backup, Slack alerts, automatic deploys, and the pinned nanoHPC version."""
+    """6 Extras: the backup, Slack alerts, automatic deploys, the pinned nanoHPC version, and the time zone."""
 
     def compose(self) -> ComposeResult:
         """Show the extras' fields."""
@@ -267,6 +267,10 @@ class ExtrasStep(Step):
             BoundInput(state, ["nanohpc_version"], "text", importlib.metadata.version("nanohpc"), "nanohpc-version"),
         )
         yield Static("The version the front node installs; needed for automatic deploys.", classes="hint")
+        yield field("time zone", BoundInput(state, ["time_zone"], "optional", "Europe/Berlin", "time-zone"))
+        yield Static(
+            "Every machine's time zone, such as Europe/Berlin or UTC; empty: each keeps its own.", classes="hint"
+        )
 
     @on(Input.Changed, "#backup-to")
     def backup_changed(self, event: Input.Changed) -> None:

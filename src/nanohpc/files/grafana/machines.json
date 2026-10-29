@@ -189,6 +189,7 @@
     {
       "id": 6,
       "title": "GPU memory used",
+      "description": "Memory used, as % of each GPU's memory. Per machine: the mean of its GPUs in use, meaning holding over 1 GiB, so idle GPUs do not pull it down. No line while none is in use.",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
@@ -202,19 +203,21 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes"
+          "unit": "percent",
+          "min": 0,
+          "max": 100
         },
         "overrides": []
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "(cluster_gpu_memory_used_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
+          "expr": "(100 * cluster_gpu_memory_used_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} / cluster_gpu_memory_total_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 1)",
           "legendFormat": "{{machine}} GPU {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "sum by (machine) (cluster_gpu_memory_used_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
+          "expr": "avg by (machine) (100 * cluster_gpu_memory_used_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} / cluster_gpu_memory_total_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} and cluster_gpu_memory_used_bytes{job=~\"node|node-.+\",machine=~\"$machine\"} > 1073741824 and on(machine) (time() - cluster_gpu_collection_timestamp_seconds{job=~\"node|node-.+\",machine=~\"$machine\"} < 75) and on(machine) (up{job=~\"node|node-.+\",machine=~\"$machine\"} == 1 and (time() - timestamp(up{job=~\"node|node-.+\",machine=~\"$machine\"})) < 45)) and on() (vector(${gpu_group:raw}) == 0)",
           "legendFormat": "{{machine}}"
         }
       ]

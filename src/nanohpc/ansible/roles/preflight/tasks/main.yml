@@ -215,10 +215,10 @@
   register: deploy_accounts_now
   when: home_will_mount | bool and deploy_accounts_file.stat.exists
 
-- name: Name the home folders that may stay hidden (the deploy accounts', whose keys are kept)
+- name: Name the home folders that may stay hidden (the deploy accounts', whose keys are kept, and the largest-folders lists, measured again every hour)
   ansible.builtin.set_fact:
     hideable_homes: >-
-      {{ ['lost+found']
+      {{ ['lost+found', '.nanohpc-home-folders']
          + ((((deploy_accounts_now.content | default('') | b64decode).split() + [nanohpc_login_user]) | unique)
             | reject('in', nanohpc.users | map(attribute='name'))
             | select('in', ansible_facts.getent_passwd)

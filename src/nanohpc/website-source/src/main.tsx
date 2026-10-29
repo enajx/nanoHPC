@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Activity, BookOpen, ChartNoAxesColumnIncreasing, ListOrdered, ScrollText, Server, UsersRound } from 'lucide-react'
+import { Activity, BookOpen, ChartNoAxesColumnIncreasing, CircleHelp, ListOrdered, ScrollText, Server, UsersRound } from 'lucide-react'
 import { HowToUse, type Partition } from './guide'
+import { Faq } from './faq'
 import { GpuAllocationChart } from './gpu-allocation-chart'
 import { healthText, MachineCards, SpeedBoxes, type Machine } from './machines'
 import { MachineLabel } from './machine-dialog'
@@ -20,7 +21,7 @@ import { MonitorApp } from './monitor'
 import { PartitionBox } from './partition-box'
 import './style.css'
 
-type Page = 'overview' | 'queue' | 'machines' | 'users' | 'usage' | 'docs' | 'policy'
+type Page = 'overview' | 'queue' | 'machines' | 'users' | 'usage' | 'docs' | 'policy' | 'faq'
 type Snapshot = {
   generated_at: string
   refresh_seconds: number
@@ -48,6 +49,7 @@ const pages = [
   { id: 'users', title: 'Users', icon: UsersRound },
   { id: 'usage', title: 'Cluster usage', icon: ChartNoAxesColumnIncreasing },
   { id: 'policy', title: 'Cluster policy', icon: ScrollText },
+  { id: 'faq', title: 'FAQ', icon: CircleHelp },
 ] as const
 
 /** Show a short human-readable duration in the Overview card. */
@@ -236,6 +238,8 @@ function App({ site }: { site: SiteSettings }) {
     if (page === 'users' && requestedUser) document.getElementById(`user-${requestedUser}`)?.scrollIntoView({ block: 'start' })
   }, [page, requestedMachine, requestedUser, hasData])
   const isGuide = page === 'docs'
+  // The How to and FAQ pages are static text: no data notice and no update time.
+  const isStatic = isGuide || page === 'faq'
   const markdownPage = isGuide ? 'docs' : page === 'machines' ? 'machines' : page === 'policy' ? 'policy' : null
   const freshness = <div className={`freshness ${failed || stale ? 'warning' : ''}`}><span className="status-dot"/>{demo ? 'Updates every 30s' : failed ? 'Data unavailable' : stale ? 'Data is stale' : data ? `Updates every ${refresh}s` : 'Connecting…'}{(demo || data) && <small>Last update {new Date(demo ? demoUpdatedAt : data!.generated_at).toLocaleTimeString()}</small>}</div>
   return <>
@@ -251,7 +255,7 @@ function App({ site }: { site: SiteSettings }) {
     </aside>
     <main id="main" tabIndex={-1} className={page === 'overview' ? 'compact' : undefined}>
       <div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}{markdownPage && <a className="markdown-link" href={`${markdownPage}.md`} aria-label={`Open ${selected.title} in Markdown`}>MD</a>}</div></div>
-      {!isGuide && (failed || stale) && <div role="alert" className="notice">{data ? 'Showing stale data.' : 'Monitoring data unavailable.'}</div>}
+      {!isStatic && (failed || stale) && <div role="alert" className="notice">{data ? 'Showing stale data.' : 'Monitoring data unavailable.'}</div>}
       {page === 'overview' && <>
         <section aria-label="Cluster summary" className="stat-grid">
           {[['Running jobs', data?.running_jobs, '#queue?state=RUNNING'], ['Pending jobs', data?.pending_jobs, '#queue?state=PENDING'], ['GPUs allocated', data ? (data.queue_paused ? '0 / 0' : `${data.allocated_gpus} / ${data.total_gpus}`) : undefined, '#machines']].map(([label, value, href]) => <a key={label} className={`stat panel${label === 'GPUs allocated' && data?.queue_paused ? ' paused' : ''}`} href={String(href)}><span>{label}</span><strong>{value ?? '—'}</strong></a>)}
@@ -278,7 +282,8 @@ function App({ site }: { site: SiteSettings }) {
           {data && <PartitionBox partitions={data.partitions ?? []} nodes={data.nodes} policies={data.policies}/>}
         </div>
       </>}
-      <footer>{!isGuide && freshness}<p>{demo ? 'This demo' : site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
+      {page === 'faq' && <Faq own={site.faq ?? []}/>}
+      <footer>{!isStatic && freshness}<p>{demo ? 'This demo' : site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
     </main></div>
   </>
 }

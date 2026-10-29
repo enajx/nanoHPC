@@ -33,6 +33,10 @@ GPU_PANELS = {
     "GPU temperature": ("temperature_celsius", 60),
     "GPU power": ("power_watts", 200),
 }
+GIB = 2**30
+# GPU memory (used, total): GPUs 0 and 1 hold jobs (25% and 50%); GPU 2 is idle, with only the display server's
+# 20 MiB, and is left out of the machine's mean (in use means over 1 GiB).
+GPU_MEMORY = {"0": (12 * GIB, 48 * GIB), "1": (24 * GIB, 48 * GIB), "2": (20 * 2**20, 48 * GIB)}
 
 
 def times() -> list[int]:
@@ -121,12 +125,22 @@ def input_series() -> list[dict[str, str]]:
             }
         )
         for metric, value in GPU_PANELS.values():
+            if metric == "memory_used_bytes":
+                continue
             rows.append(
                 {
                     "series": f'cluster_gpu_{metric}{{{labels},gpu="0"}}',
                     "values": reading(machine, constant(value), False),
                 }
             )
+        for gpu, (used, total) in GPU_MEMORY.items():
+            for metric, value in (("memory_used_bytes", used), ("memory_total_bytes", total)):
+                rows.append(
+                    {
+                        "series": f'cluster_gpu_{metric}{{{labels},gpu="{gpu}"}}',
+                        "values": reading(machine, constant(value), False),
+                    }
+                )
         rows.append(
             {
                 "series": f"cluster_gpu_collection_timestamp_seconds{{{labels}}}",
@@ -148,27 +162,35 @@ def input_series() -> list[dict[str, str]]:
     return rows
 
 
-def expected(panel: str, ref: str, machine: str) -> dict[str, str | int]:
-    """Describe one real reading returned by a dashboard query."""
+def expected(panel: str, ref: str, machine: str) -> list[dict[str, str | float]]:
+    """Describe the real readings returned by a dashboard query for one machine."""
     job = "node" if machine == "front" else "node-gpu1"
     labels = f'job="{job}",machine="{machine}"'
     if panel == "CPU in use":
-        return {"labels": f'{{machine="{machine}"}}', "value": 50}
+        return [{"labels": f'{{machine="{machine}"}}', "value": 50}]
     if panel == "Available memory":
-        return {"labels": f"node_memory_MemAvailable_bytes{{{labels}}}", "value": 100}
+        return [{"labels": f"node_memory_MemAvailable_bytes{{{labels}}}", "value": 100}]
     if panel == "Available filesystem space":
-        return {"labels": f'node_filesystem_avail_bytes{{{labels},fstype="ext4",mountpoint="/"}}', "value": 50}
+        return [{"labels": f'node_filesystem_avail_bytes{{{labels},fstype="ext4",mountpoint="/"}}', "value": 50}]
+    if panel == "GPU memory used":
+        # Per GPU: each GPU's %; per machine: the mean % of its GPUs in use, (25 + 50) / 2.
+        if ref == "A":
+            return [
+                {"labels": f'{{{labels},gpu="{gpu}"}}', "value": 100 * used / total}
+                for gpu, (used, total) in GPU_MEMORY.items()
+            ]
+        return [{"labels": f'{{machine="{machine}"}}', "value": 37.5}]
     metric, value = GPU_PANELS[panel]
     if ref == "A":
-        return {"labels": f'cluster_gpu_{metric}{{{labels},gpu="0"}}', "value": value}
-    return {"labels": f'{{machine="{machine}"}}', "value": value}
+        return [{"labels": f'cluster_gpu_{metric}{{{labels},gpu="0"}}', "value": value}]
+    return [{"labels": f'{{machine="{machine}"}}', "value": value}]
 
 
-def samples(panel: str, ref: str, machines: tuple[str, ...]) -> list[dict[str, str | int]]:
+def samples(panel: str, ref: str, machines: tuple[str, ...]) -> list[dict[str, str | float]]:
     """Return a total power point only when at least one machine reports."""
     if panel == "Total power":
         return [{"labels": "{}", "value": sum(POWER_WATTS[machine] for machine in machines)}] if machines else []
-    return [expected(panel, ref, machine) for machine in machines]
+    return [sample for machine in machines for sample in expected(panel, ref, machine)]
 
 
 def queries(machine: str) -> list[tuple[str, str, str]]:
@@ -185,6 +207,18 @@ def queries(machine: str) -> list[tuple[str, str, str]]:
         for panel in dashboard["panels"]
         for target in panel["targets"]
     ]
+
+
+class MachineDashboardPanelTest(unittest.TestCase):
+    """Panel settings that need no query engine."""
+
+    def test_gpu_memory_panel_unit(self) -> None:
+        """GPU memory used is drawn in % of each GPU's memory, from 0 to 100."""
+        dashboard = json.loads(DASHBOARD.read_text())
+        panel = next(panel for panel in dashboard["panels"] if panel["title"] == "GPU memory used")
+        defaults = panel["fieldConfig"]["defaults"]
+        self.assertEqual((defaults["unit"], defaults["min"], defaults["max"]), ("percent", 0, 100))
+        self.assertIn("1 GiB", panel["description"])
 
 
 @unittest.skipUnless(os.environ.get("PROMTOOL") or shutil.which("promtool"), "promtool is unavailable")

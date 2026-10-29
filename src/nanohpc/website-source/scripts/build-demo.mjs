@@ -7,6 +7,7 @@ const gib = 1024 ** 3
 const site = {
   cluster_name: 'nanoHPC', logo: null, login_address: 'login.demo.example.org',
   home_quota_soft_gb: 250, home_quota_hard_gb: 300, scratch_cleanup_days: 21, demo: true,
+  faq: [{ question: 'Who do I ask for a larger home quota?', answer: 'Write to the cluster administrators. Say how much space you need and for how long.' }],
 }
 const disks = [{ mount: '/', total_bytes: 500 * gib, used_bytes: 120 * gib, available_bytes: 380 * gib },
   { mount: '/scratch', total_bytes: 2000 * gib, used_bytes: 720 * gib, available_bytes: 1280 * gib }]

@@ -26,6 +26,8 @@ from pathlib import Path
 SETTINGS = Path("/etc/nanohpc/login-banner.json")
 SNAPSHOT = Path("/var/lib/nanohpc/monitor/status.json")
 USAGE_DIR = Path("/var/lib/nanohpc-home-notices")
+# The user's largest folders, measured every hour on the home machine; readable only by that user.
+FOLDERS_DIR = Path("/home/.nanohpc-home-folders")
 # Messages from cluster.yml: everyone.json, and users/<user>.json readable only by that user.
 ANNOUNCEMENTS = Path("/var/lib/nanohpc/announcements")
 # Warm yellow for the Announcements box.
@@ -192,11 +194,28 @@ def gpu_line(user: str, cluster: str, data: dict | None, value: Callable[[str], 
     return f"GPU-hours (last 30 days): {value(hours(used))}  |  Ranking: {ranking}"
 
 
+def with_folders(box: list[str], folders: Path) -> list[str]:
+    """Redraw the usage box (+---+ borders, | line | rows) with the user's largest folders added at its end."""
+    inner = [line[2:-2].rstrip() for line in box[1:-1]]
+    if folders.is_file():
+        # The user owns this file: keep only its printable text, so it cannot send control codes to the terminal.
+        added = [
+            "".join(char for char in line if char.isprintable())
+            for line in ESCAPE.sub("", folders.read_text()).splitlines()
+        ]
+    else:
+        added = ["Largest folders: not measured yet; they are measured every hour."]
+    lines = [*inner, "", *added]
+    width = max(len(line) for line in lines)
+    border = "+" + "-" * (width + 2) + "+"
+    return [border, *["| " + line.ljust(width) + " |" for line in lines], border]
+
+
 def disk_lines(user: str, colors: list[int] | None) -> list[str]:
     """The user's latest home usage box in a calm tone, or why it is missing."""
     box = USAGE_DIR / user
     if box.is_file():
-        plain = ESCAPE.sub("", box.read_text().strip("\n")).splitlines()
+        plain = with_folders(ESCAPE.sub("", box.read_text().strip("\n")).splitlines(), FOLDERS_DIR / user)
         if colors is None:
             return plain
         tone = box_tone(colors, any("New jobs wait" in line for line in plain))

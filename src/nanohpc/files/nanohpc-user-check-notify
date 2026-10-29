@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Post cluster-user-check findings to Slack from Prometheus.
 
-Tunnel events are posted once. Findings that persist are posted when first seen
-and once a day thereafter. State is saved after each accepted post so a later
-failure does not repeat an accepted channel post or private message. A bot token
-and user Slack ID enable private messages for lasting user findings.
+Each finding is posted once, when first seen, and not again while it lasts; its
+end is not posted. A finding that comes back within 7 days of when it was last
+seen posts nothing; after 7 days away it is new. State is saved after each
+accepted post so a later failure does not repeat an accepted channel post or
+private message. A bot token and user Slack ID enable private messages for
+lasting user findings.
 """
 
 import argparse
@@ -29,6 +31,8 @@ LASTING = {
     "vscode-server": ("a VS Code server running", "VS Code belongs inside a job: see the interactive notebook guide."),
 }
 ENDEARMENTS = ("friend", "dear", "darling")
+# A finding seen again within this time of its last sighting is the same finding: nothing is posted.
+QUIET = timedelta(days=7)
 
 
 def findings(prometheus: str) -> list[dict[str, str]]:
@@ -56,7 +60,7 @@ def mention(user: str, slack_ids: dict[str, str]) -> str:
     return f"<@{slack_ids[user]}>" if slack_ids.get(user) else f"*{user}*"
 
 
-def message(item: dict[str, str], slack_ids: dict[str, str], reminder: bool, guide_url: str) -> str:
+def message(item: dict[str, str], slack_ids: dict[str, str], guide_url: str) -> str:
     """Describe one finding in the channel with the matching cluster rule."""
     where = item["machine"] + (f" (job {item['job']})" if item["job"] else "")
     if item["action"] == "stopped":
@@ -71,26 +75,25 @@ def message(item: dict[str, str], slack_ids: dict[str, str], reminder: bool, gui
         )
     if item["action"] != "lasting":
         raise ValueError(f"unknown finding action: {item['action']}")
-    again = "Reminder: " if reminder else ""
     if item["kind"] == "disk":
-        return f":floppy_disk: {again}*{item['machine']}*: {item['detail']}."
+        return f":floppy_disk: *{item['machine']}*: {item['detail']}."
     if item["kind"] == "port":
         return (
-            f":mag: {again}{mention(item['user'], slack_ids)}, {random.choice(ENDEARMENTS)}: "
+            f":mag: {mention(item['user'], slack_ids)}, {random.choice(ENDEARMENTS)}: "
             f"a program you started on {where} listens on a network port: {item['detail']}. "
             "Programs that listen on a port, such as Jupyter, TensorBoard, or a web app, "
             f"must run inside a Slurm job, protected by a token or password. How to run them in a job: {guide_url}"
         )
     if item["kind"] == "vscode-server":
         return (
-            f":mag: {again}{mention(item['user'], slack_ids)}, {random.choice(ENDEARMENTS)}: "
+            f":mag: {mention(item['user'], slack_ids)}, {random.choice(ENDEARMENTS)}: "
             f"a VS Code server is running on {where}. Desktop VS Code Remote-SSH cannot connect to "
             "the front node because SSH forwarding is limited to compute nodes. "
             f"Run VS Code in a Slurm job in your browser, or connect desktop VS Code to an Existing Jupyter Server. Guide: {guide_url}"
         )
     what, rule = LASTING[item["kind"]]
     detail = f": {item['detail']}" if item["detail"] else ""
-    return f":mag: {again}{mention(item['user'], slack_ids)} has {what} on {where}{detail}. {rule}"
+    return f":mag: {mention(item['user'], slack_ids)} has {what} on {where}{detail}. {rule}"
 
 
 def post(webhook_file: Path, body: str) -> None:
@@ -168,35 +171,29 @@ def notify(
     state = json.loads(state_file.read_text()) if state_file.is_file() else {"posted": {}}
     posted = state.setdefault("posted", {})
     private_posted = state.setdefault("private_posted", {})
-    present: set[str] = set()
     for item in active:
         identity = item["id"]
-        present.add(identity)
         last = posted.get(identity)
-        if last is None or (item["action"] == "lasting" and now - datetime.fromisoformat(last) >= timedelta(days=1)):
-            post(webhook_file, message(item, slack_ids, last is not None, guide_url))
-            posted[identity] = now.isoformat()
+        posted[identity] = now.isoformat()
+        if last is None or now - datetime.fromisoformat(last) >= QUIET:
+            post(webhook_file, message(item, slack_ids, guide_url))
             save(state_file, state)
         user = item["user"]
         if item["action"] != "lasting" or item["kind"] == "disk" or not slack_ids.get(user) or token_file is None:
             continue
         private_last = private_posted.get(identity)
-        if private_last is not None and now - datetime.fromisoformat(private_last) < timedelta(days=1):
-            continue
-        send_private(slack_api, token_file.read_text().strip(), slack_ids[user], private_message(item, guide_url))
-        private_posted[identity] = now.isoformat()
-        save(state_file, state)
-    # Once absent for a day, a later recurrence is a new finding.
-    retained = {}
+        if private_last is None or now - datetime.fromisoformat(private_last) >= QUIET:
+            send_private(slack_api, token_file.read_text().strip(), slack_ids[user], private_message(item, guide_url))
+            private_posted[identity] = now.isoformat()
+            save(state_file, state)
+        else:
+            private_posted[identity] = now.isoformat()
+    # Each entry holds when the finding was last seen; 7 days after that, a recurrence is a new finding.
     for kind in ("posted", "private_posted"):
-        retained[kind] = {
-            identity: when
-            for identity, when in state[kind].items()
-            if identity in present or now - datetime.fromisoformat(when) < timedelta(days=1)
+        state[kind] = {
+            identity: when for identity, when in state[kind].items() if now - datetime.fromisoformat(when) < QUIET
         }
-    if retained["posted"] != posted or retained["private_posted"] != private_posted:
-        state.update(retained)
-        save(state_file, state)
+    save(state_file, state)
 
 
 def main() -> None:

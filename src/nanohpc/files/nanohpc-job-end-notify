@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Send one private Slack message per ended job that asked for one with --mail-user=slack.
+
+nanohpc-slack-mail (Slurm's mail program) queues SPOOL/JOB-TYPE files. Each run reads every queued job
+from sacct, waits until Slurm has recorded its end, and sends its owner a private message from the
+cluster's Slack app: the job ID and name, how it ended with the exit code, the run time, and the machine.
+An array or heterogeneous job gets one message for all its tasks: how many there were, how many completed,
+and the machines when there are few. No message for users without a Slack ID or for jobs in partitions
+that only take the interactive shell. A job is sent once: the state keeps the jobs sent, saved after each
+message. A message Slack refuses is logged, not tried again, and fails the run; other jobs are still sent.
+A queued job whose end is still not recorded a day after it was queued is dropped, with a log line.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+# How each final job state is said in the message; any other final state is said by its name.
+ENDINGS = {
+    "COMPLETED": ("✅", "Completed"),
+    "FAILED": ("❌", "Failed"),
+    "TIMEOUT": ("⏰", "Time limit reached"),
+    "OUT_OF_MEMORY": ("💥", "Out of memory"),
+    "CANCELLED": ("🛑", "Cancelled"),
+    "NODE_FAIL": ("⚠️", "Machine failure"),
+    "PREEMPTED": ("⏸️", "Preempted"),
+    "BOOT_FAIL": ("⚠️", "Machine failed to start"),
+    "DEADLINE": ("⏰", "Deadline reached"),
+}
+# States of a job that has not ended yet.
+NOT_ENDED = {
+    "PENDING",
+    "RUNNING",
+    "SUSPENDED",
+    "REQUEUED",
+    "REQUEUE_FED",
+    "REQUEUE_HOLD",
+    "RESIZING",
+    "COMPLETING",
+    "CONFIGURING",
+    "STAGE_OUT",
+    "SIGNALING",
+}
+FIELDS = "JobID,JobName,User,State,ExitCode,Elapsed,NodeList,Partition,Submit"
+KEEP_SENT = 1000
+DROP_AFTER_SECONDS = 24 * 3600
+# An array or heterogeneous job names its machines only up to this many.
+MAX_MACHINES = 3
+
+
+def seconds(elapsed: str) -> int:
+    """Slurm's [D-]HH:MM:SS (or MM:SS) as seconds."""
+    days, _, clock = elapsed.rpartition("-")
+    parts = [int(part) for part in clock.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    return int(days or 0) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def run_time(total: int) -> str:
+    """A run time in words: 40 sec, 5 min, 2 hr 13 min."""
+    if total < 60:
+        return f"{total} sec"
+    return f"{total // 60} min" if total < 3600 else f"{total // 3600} hr {total % 3600 // 60} min"
+
+
+def task_count(job_id: str) -> int:
+    """How many tasks one sacct line stands for: 1, or the size of a pending range like 50_[2-4,7]."""
+    match = re.search(r"_\[([^\]]+)\]$", job_id)
+    if match is None:
+        return 1
+    count = 0
+    for part in match.group(1).split("%")[0].split(","):
+        first, _, last = part.partition("-")
+        count += int(last or first) - int(first) + 1
+    return count
+
+
+def records(job: str, output: str) -> list[dict[str, str]]:
+    """The sacct lines of this job (its tasks or parts), only those of its newest submission: Slurm's job
+    IDs can start again, and sacct then also lists an older job with the same ID."""
+    rows = []
+    for line in output.splitlines():
+        job_id, rest = line.split("|", 1)
+        name, user, state, exit_code, elapsed, node, partition, submit = rest.rsplit("|", 7)
+        if re.split(r"[_+]", job_id)[0] != job:
+            continue
+        rows.append(
+            {
+                "id": job_id,
+                "name": name,
+                "user": user,
+                "state": state.split()[0],
+                "exit_code": exit_code,
+                "elapsed": elapsed,
+                "node": node,
+                "partition": partition,
+                "submit": submit,
+            }
+        )
+    newest = max((row["submit"] for row in rows), default="")
+    return [row for row in rows if row["submit"] == newest]
+
+
+def ending(row: dict[str, str]) -> tuple[str, str]:
+    """The icon and words for a final state."""
+    return ENDINGS.get(row["state"], ("⚠️", row["state"].replace("_", " ").capitalize()))
+
+
+def job_message(job: str, rows: list[dict[str, str]]) -> str:
+    """The message for an ended job: one job, or a summary of an array's or heterogeneous job's tasks."""
+    first = rows[0]
+    if len(rows) == 1 and task_count(first["id"]) == 1:
+        icon, word = ending(first)
+        # sacct's ExitCode is CODE:SIGNAL; a job stopped by a signal (time limit, cancel) also names the signal.
+        code, _, signal = first["exit_code"].partition(":")
+        how = f"exit code {code}" + (f", signal {signal}" if signal not in ("", "0") else "")
+        return (
+            f'{icon} Your job {job} "{first["name"]}" finished: {word} ({how})\n'
+            f"   ran {run_time(seconds(first['elapsed']))} on {first['node']}"
+        )
+    tasks = sum(task_count(row["id"]) for row in rows)
+    completed = sum(task_count(row["id"]) for row in rows if row["state"] == "COMPLETED")
+    icon = "✅" if completed == tasks else "❌"
+    text = f'{icon} Your job {job} "{first["name"]}" finished: {tasks} tasks, {completed} completed'
+    if completed < tasks:
+        text += f", {tasks - completed} did not complete"
+    machines = sorted({row["node"] for row in rows if row["node"] not in ("", "None assigned")})
+    if machines and len(machines) <= MAX_MACHINES:
+        text += f"\n   ran on {', '.join(machines)}"
+    return text
+
+
+def send_private(api: str, token: str, slack_id: str, text: str) -> str | None:
+    """Send a private message from the app to one person; return Slack's error when it refuses."""
+    request = Request(
+        f"{api.rstrip('/')}/chat.postMessage",
+        data=json.dumps({"channel": slack_id, "text": text}).encode(),
+        headers={"Content-Type": "application/json; charset=utf-8", "Authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    with urlopen(request, timeout=20) as response:
+        answer = json.load(response)
+    return None if answer.get("ok") else str(answer.get("error"))
+
+
+def save(state_file: Path, state: dict[str, list[str]]) -> None:
+    """Write the state in one step."""
+    temporary = state_file.with_name(state_file.name + ".tmp")
+    temporary.write_text(json.dumps(state, indent=1) + "\n")
+    os.replace(temporary, state_file)
+
+
+def notify(
+    spool: Path,
+    state_file: Path,
+    sacct: str,
+    token_file: Path,
+    api: str,
+    slack_ids: dict[str, str],
+    interactive: set[str],
+) -> bool:
+    """Send the queued jobs whose end is recorded, then remove their queue files; False if Slack refused one."""
+    state = json.loads(state_file.read_text()) if state_file.is_file() else {"sent": []}
+    sent = state["sent"]
+    queued: dict[str, list[Path]] = {}
+    for path in sorted(spool.iterdir()):
+        queued.setdefault(path.name.split("-")[0], []).append(path)
+    all_sent = True
+    for job, paths in queued.items():
+        if job not in sent:
+            output = subprocess.run(
+                [sacct, "-X", "--noheader", "--parsable2", "-j", job, f"--format={FIELDS}"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            rows = records(job, output)
+            if not rows or any(row["state"] in NOT_ENDED for row in rows):
+                queued_at = min(path.stat().st_mtime for path in paths)
+                if time.time() - queued_at < DROP_AFTER_SECONDS:
+                    continue
+                print(f"nanohpc-job-end-notify: dropped job {job}: its end is not recorded in sacct a day later")
+            else:
+                user, partition = rows[0]["user"], rows[0]["partition"]
+                if partition in interactive or not slack_ids.get(user):
+                    print(f"nanohpc-job-end-notify: no message for job {job} ({user}, {partition})")
+                else:
+                    error = send_private(api, token_file.read_text().strip(), slack_ids[user], job_message(job, rows))
+                    if error is not None:
+                        print(f"nanohpc-job-end-notify: Slack refused the message for job {job} ({user}): {error}",
+                              file=sys.stderr)  # fmt: skip
+                        all_sent = False
+                    else:
+                        # Saved after each message, so a later failure never sends this one twice.
+                        sent.append(job)
+                        del sent[:-KEEP_SENT]
+                        save(state_file, state)
+        for path in paths:
+            path.unlink()
+    return all_sent
+
+
+def main() -> None:
+    """Parse the timer's command line and run one pass; exit 1 if Slack refused a message."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--spool", type=Path, required=True)
+    parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--sacct", required=True)
+    parser.add_argument("--bot-token-file", type=Path, required=True)
+    parser.add_argument("--slack-api", required=True)
+    parser.add_argument("--user", action="append", default=[], metavar="NAME:SLACK_ID")
+    parser.add_argument("--interactive-partition", action="append", default=[], metavar="NAME")
+    args = parser.parse_args()
+    slack_ids = dict(user.split(":", 1) for user in args.user)
+    if not notify(
+        args.spool,
+        args.state,
+        args.sacct,
+        args.bot_token_file,
+        args.slack_api,
+        slack_ids,
+        set(args.interactive_partition),
+    ):
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

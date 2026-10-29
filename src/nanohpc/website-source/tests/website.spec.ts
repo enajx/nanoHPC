@@ -31,6 +31,7 @@ const site = {
   home_quota_hard_gb: 300,
   scratch_cleanup_days: 21,
   interactive_machine_rule: "A main job asking for more than 4 hours does not run on the interactive partition's shared machines (gpu1), which are kept free for interactive shells. Leave out --nodelist for those machines on longer jobs.",
+  faq: [{ question: 'Who do I ask for a larger home quota?', answer: 'Write to the mylab admins.\n\nSay how much space you need and for how long.' }],
 }
 const gib = 1024 ** 3
 
@@ -408,7 +409,7 @@ test('the site renders every tab from the fixture data under a non-root path', a
   await expect(page.getByRole('table', { name: 'Top of queue' })).toContainText('bob')
 
   const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
-  expect(await nav.getByRole('link').allInnerTexts()).toEqual(['Overview', 'How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy'])
+  expect(await nav.getByRole('link').allInnerTexts()).toEqual(['Overview', 'How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy', 'FAQ'])
 
   // How to: the cluster's own values and live partitions.
   await nav.getByRole('link', { name: 'How to', exact: true }).click()
@@ -487,6 +488,48 @@ test('Cluster usage links select one or several machines in the embedded dashboa
     expect(source.searchParams.getAll('var-machine')).toEqual(selected)
     expect(source.searchParams.get('var-gpu_group')).toBe('0')
   }
+})
+
+test('FAQ shows the generic and the administrator questions, closed until clicked, with a search box', async ({ page }) => {
+  await mockGrafana(page)
+  const seen = watch(page)
+  await page.goto(`${origin}${prefix}#faq`)
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('FAQ')
+  const cards = page.locator('.faq details')
+  const questions = await cards.locator('summary').allInnerTexts()
+  expect(questions.length).toBeGreaterThan(1)
+  expect(questions).toContain('Can I use a specific version of CMake?')
+  expect(questions.at(-1)).toBe('Who do I ask for a larger home quota?')
+  // Closed until clicked; the administrator's blank line starts a new paragraph.
+  const own = cards.filter({ hasText: 'larger home quota' })
+  await expect(own.getByText('Write to the mylab admins.')).toBeHidden()
+  await own.locator('summary').click()
+  await expect(own.locator('.faq-answer p')).toHaveText(['Write to the mylab admins.', 'Say how much space you need and for how long.'])
+  // A QOS reason is a per-user limit of a partition or of the whole cluster (GPUs per user is cluster-wide).
+  const pending = cards.filter({ hasText: 'Why is my job still pending?' })
+  await pending.locator('summary').click()
+  await expect(pending.locator('.faq-answer')).toContainText('a per-user limit of that partition or of the whole cluster')
+  // Search keeps the questions that contain every typed word, in the question, answer, or command.
+  const search = page.getByRole('searchbox', { name: 'Search questions' })
+  await search.fill('uv cmake')
+  await expect(cards.locator('summary')).toHaveText(['Can I use a specific version of CMake?'])
+  await search.fill('quota  ADMINS')
+  await expect(cards.locator('summary')).toHaveText(['Who do I ask for a larger home quota?'])
+  await search.fill('no such words here')
+  await expect(cards).toHaveCount(0)
+  await expect(page.getByText('No question matches')).toBeVisible()
+  // A static page: no update time and no Markdown copy.
+  await expect(page.locator('main footer .freshness')).toHaveCount(0)
+  await expect(page.locator('.markdown-link')).toHaveCount(0)
+  expectInsidePrefix(seen.requests)
+  expect(seen.errors).toEqual([])
+})
+
+test('FAQ shows only the generic questions when cluster.yml has none', async ({ page }) => {
+  await page.route(`**${prefix}site.json`, route => route.fulfill({ json: { ...site, faq: [] } }))
+  await page.goto(`${origin}${prefix}#faq`)
+  await expect(page.locator('.faq details summary').first()).toBeVisible()
+  await expect(page.locator('.faq details').filter({ hasText: 'larger home quota' })).toHaveCount(0)
 })
 
 test('Overview waiting time switches between the three measured periods', async ({ page }) => {
@@ -600,6 +643,8 @@ test('the guide covers supported containers and interactive notebooks without cl
   await expect(page.getByRole('tab', { name: 'Containers' })).toBeVisible()
   await page.getByRole('tab', { name: 'Containers' }).click()
   await expect(page.getByText('apptainer exec --nv', { exact: false })).toBeVisible()
+  await page.getByRole('tab', { name: 'Slack notifications' }).click()
+  await expect(page.locator('.user-guide code').filter({ hasText: '#SBATCH --mail-user=slack' }).first()).toBeVisible()
   await page.getByRole('tab', { name: 'Interactive notebooks' }).click()
   await expect(page.locator('.user-guide code').filter({ hasText: 'interactive-notebook.sh' }).first()).toBeVisible()
   await expect(page.locator('.user-guide code').filter({ hasText: 'scp interactive-notebook.sh' }).first()).toBeVisible()

@@ -219,7 +219,7 @@ def error_step(error: str, mode: str = "slurm") -> int:
         return PARTITIONS
     if section in ("home", "scratch"):
         return STORAGE
-    if section in ("backup", "alerts", "auto_deploy", "nanohpc_version"):
+    if section in ("backup", "alerts", "auto_deploy", "nanohpc_version", "time_zone"):
         return EXTRAS
     return REVIEW
 

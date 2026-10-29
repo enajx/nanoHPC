@@ -193,6 +193,45 @@ class UserCheckConfigTest(unittest.TestCase):
                 self.assertTrue(any(error.startswith(field) for error in errors), errors)
 
 
+class FaqConfigTest(unittest.TestCase):
+    """The administrator's own website FAQ entries: a question and an answer each, errors per field."""
+
+    def test_default_and_valid_entries(self) -> None:
+        config, errors = check_config(example())
+        self.assertEqual(errors, [])
+        self.assertEqual(config["faq"], [])
+
+        raw = example()
+        raw["faq"] = [{"question": "Who do I ask for an account?", "answer": "Write to the cluster admin."}]
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["faq"], raw["faq"])
+
+    def test_bad_entries_report_their_fields(self) -> None:
+        raw = example()
+        raw["faq"] = [
+            {"answer": "x"},
+            {"question": "x"},
+            {"question": " ", "answer": "x"},
+            {"question": "x", "answer": 3},
+            {"question": "x", "answer": "x", "extra": 1},
+            "a question",
+        ]
+        _, errors = check_config(raw)
+        for field in (
+            "faq[0].question is required",
+            "faq[1].answer is required",
+            "faq[2].question must be non-empty text",
+            "faq[3].answer must be non-empty text",
+            "faq[4].extra is not a known field",
+            "faq[5] must be a mapping",
+        ):
+            self.assertIn(field, errors)
+        raw["faq"] = {"question": "x", "answer": "x"}
+        _, errors = check_config(raw)
+        self.assertIn("faq must be a list", errors)
+
+
 class AnnouncementsConfigTest(unittest.TestCase):
     """Messages for the login banner: dates written either way in YAML, optional users, errors per field."""
 
@@ -267,6 +306,32 @@ class AnnouncementsConfigTest(unittest.TestCase):
         raw["announcements"] = []
         _, errors = check_config(raw)
         self.assertTrue(any("announcements" in error for error in errors), errors)
+
+
+class TimeZoneConfigTest(unittest.TestCase):
+    """An optional time zone for every machine; without it, machines keep their own."""
+
+    def test_absent_valid_and_unknown_zones(self) -> None:
+        raw = example()
+        raw.pop("time_zone", None)
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertIsNone(config["time_zone"])
+        for zone in ("Europe/Berlin", "America/New_York", "UTC", None):
+            raw["time_zone"] = zone
+            config, errors = check_config(raw)
+            self.assertEqual(errors, [], zone)
+            self.assertEqual(config["time_zone"], zone)
+        for zone in ("Mars/Olympus", "europe/berlin", "", 1, ["UTC"]):
+            raw["time_zone"] = zone
+            _, errors = check_config(raw)
+            self.assertTrue(any(error.startswith("time_zone ") for error in errors), (zone, errors))
+
+    def test_monitor_mode_has_no_time_zone(self) -> None:
+        raw = yaml.safe_load(MONITOR.read_text())
+        raw["time_zone"] = "UTC"
+        _, errors = check_config(raw)
+        self.assertIn("time_zone is not a known field", errors)
 
 
 class HeterogeneousClusterTest(unittest.TestCase):

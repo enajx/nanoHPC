@@ -358,6 +358,10 @@ def variables(
                 for u in config["users"]
             ],
             "admins": config["cluster"]["admins"],
+            # Partitions that take only the interactive shell: their jobs get no job-end Slack message.
+            "interactive_partitions": [
+                name for name, partition in config["partitions"].items() if partition["jobs"] == "interactive"
+            ],
             "machines": {
                 name: {"address": m["address"], "roles": m["roles"]} for name, m in config["machines"].items()
             },
@@ -385,6 +389,8 @@ def variables(
             "alerts": {"slack": config["alerts"]["slack"]},
             "user_check": config["user_check"],
             "announcements": config["announcements"],
+            # None: every machine keeps its own time zone.
+            "time_zone": config["time_zone"],
             "metrics": {
                 **METRICS,
                 "front_address": front_values["address"],
@@ -569,6 +575,7 @@ def site_data(config: dict[str, Any]) -> dict[str, Any]:
         "home_quota_hard_gb": config["home"]["quota_hard_gb"],
         "scratch_cleanup_days": config["scratch"]["cleanup_days"],
         "interactive_machine_rule": " ".join(rules),
+        "faq": config["faq"],
     }
 
 

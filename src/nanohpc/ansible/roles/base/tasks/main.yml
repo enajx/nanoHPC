@@ -47,6 +47,10 @@
   changed_when: false
   check_mode: false
 
+- name: Set the time zone from cluster.yml (without time_zone, the machine keeps its own)
+  ansible.builtin.import_tasks: time_zone.yml
+  when: nanohpc.time_zone is not none
+
 - name: Require synchronized time (Munge refuses credentials across clock differences)
   ansible.builtin.command: timedatectl show -p NTPSynchronized --value
   register: clock_sync

@@ -133,6 +133,8 @@ def render_slurm_conf(config: dict[str, Any], hostnames: dict[str, str], simulat
         "PreemptType=preempt/none",
         "EnforcePartLimits=ALL",
         "JobSubmitPlugins=lua",
+        # Job mail goes only to nanoHPC's mail program: --mail-user=slack queues a private Slack message, no email.
+        "MailProg=/usr/local/bin/nanohpc-slack-mail",
         "AuthType=auth/munge",
         "SelectType=select/cons_tres",
         "SelectTypeParameters=CR_Core_Memory",

@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Slurm's mail program (MailProg): queue a private Slack message for jobs that ask for one.
+
+Slurm calls it as `MAILPROG -s SUBJECT RECIPIENT`, with the job in environment variables; the deployed
+wrapper adds --spool. A job asks with `#SBATCH --mail-type=END` and `#SBATCH --mail-user=slack`. Only the
+"slack" recipient and job endings are queued; anything else is ignored, because the cluster sends no email.
+Without the queue folder (job messages off) nothing is queued. It only writes a small file and returns at
+once; nanohpc-job-end-notify sends the messages.
+"""
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+# Slurm names the mail type in words. Only job endings count; "Began" and the "Reached N% of time limit"
+# warnings do not. A failed job may send both; one message is sent.
+ENDINGS = ("Ended", "Failed")
+
+
+def main() -> None:
+    """Queue SPOOL/JOB-TYPE for a job ending sent to "slack"; ignore everything else."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--spool", type=Path, required=True)
+    parser.add_argument("-s", dest="subject", required=True)
+    parser.add_argument("recipient")
+    args = parser.parse_args()
+    job = os.environ["SLURM_JOB_ID"]
+    mail_type = os.environ["SLURM_JOB_MAIL_TYPE"]
+    if args.recipient != "slack" or mail_type not in ENDINGS:
+        print(f"nanohpc-slack-mail: ignored job {job} {mail_type} for {args.recipient}", file=sys.stderr)
+        return
+    if not args.spool.is_dir():
+        print(f"nanohpc-slack-mail: Slack job messages are off; ignored job {job}", file=sys.stderr)
+        return
+    if not job.isdigit():
+        raise ValueError(f"unexpected job {job!r}")
+    path = args.spool / f"{job}-{mail_type}"
+    path.touch()
+    # Readable and removable by the group that sends the messages.
+    path.chmod(0o660)
+
+
+if __name__ == "__main__":
+    main()

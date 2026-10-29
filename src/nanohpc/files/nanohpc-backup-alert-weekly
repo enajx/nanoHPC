@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Remind Slack of backup alerts that remain active at the weekly check."""
+"""Remind Slack of backup alerts that remain active at the weekly check.
+
+Prometheus keeps an alert firing for 7 days after its problem ends (so a problem that comes back posts
+nothing); those alerts are not reminded.
+"""
 
 import argparse
 import json
@@ -24,6 +28,15 @@ def active_backup_alerts(alertmanager: str) -> list[dict]:
         ),
         key=lambda alert: (alert["labels"].get("machine", ""), alert["labels"]["alertname"]),
     )
+
+
+def ended_alerts(prometheus: str) -> set[frozenset[tuple[str, str]]]:
+    """Label sets of the alerts Prometheus keeps firing only because their problem ended less than 7 days ago."""
+    with urlopen(f"{prometheus.rstrip('/')}/api/v1/alerts", timeout=20) as response:
+        answer = json.loads(response.read().decode())
+    if answer["status"] != "success":
+        raise RuntimeError(f"Prometheus answered {answer}")
+    return {frozenset(alert["labels"].items()) for alert in answer["data"]["alerts"] if alert.get("keepFiringSince")}
 
 
 def reminder(cluster: str, alerts: list[dict]) -> str:
@@ -53,10 +66,14 @@ def main() -> None:
     """Post one weekly reminder when at least one backup alert is active."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--alertmanager", required=True)
+    parser.add_argument("--prometheus", required=True)
     parser.add_argument("--webhook-file", type=Path, required=True)
     parser.add_argument("--cluster", required=True)
     args = parser.parse_args()
-    alerts = active_backup_alerts(args.alertmanager)
+    ended = ended_alerts(args.prometheus)
+    alerts = [
+        alert for alert in active_backup_alerts(args.alertmanager) if frozenset(alert["labels"].items()) not in ended
+    ]
     if alerts:
         post(args.webhook_file, reminder(args.cluster, alerts))
 

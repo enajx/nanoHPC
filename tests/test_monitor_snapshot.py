@@ -409,6 +409,18 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(json.loads(output.read_text())["nodes"][1]["available_gpus"], 0)
             self.assertIn('cluster_node_available_gpus{node="gpu1"} 0', metrics.read_text())
             self.assertIn('cluster_node_allocated_gpus{node="gpu1"} 4', metrics.read_text())
+            # Machines under maintenance are a metric too, so the alert rules leave them out of Slack.
+            self.assertIn('cluster_node_maintenance{node="gpu1"} 0', metrics.read_text())
+            drained = subprocess.run(
+                args,
+                env=dict(env, TEST_NODE_STATE="IDLE+DRAIN", TEST_DRAIN_REASON="maintenance:disk"),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(drained.returncode, 0, drained.stderr)
+            self.assertIn('cluster_node_maintenance{node="gpu1"} 1', metrics.read_text())
+            self.assertIn('cluster_node_maintenance{node="cpu1"} 0', metrics.read_text())
             paused = subprocess.run(
                 args,
                 env=dict(env, TEST_PARTITIONS_DOWN="1", TEST_NODE_STATE="IDLE+MAINTENANCE"),

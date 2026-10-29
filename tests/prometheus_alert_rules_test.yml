@@ -5,7 +5,7 @@ rule_files:
 evaluation_interval: 30s
 tests:
   # Health check states: a check that stays failing or warning alerts; one bad run (state kept 5 minutes) does not;
-  # a recovered check stops alerting.
+  # a recovered check keeps alerting for 7 days.
   - interval: 1m
     input_series:
       # Fails from minute 2 to 11, recovers at minute 12.
@@ -36,9 +36,17 @@ tests:
               check: service slurmd
             exp_annotations:
               summary: 'The check "service slurmd" is failing on c1.'
+      # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
       - eval_time: 13m
         alertname: HealthCheckFailing
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-c1
+              machine: c1
+              check: service slurmd
+            exp_annotations:
+              summary: 'The check "service slurmd" is failing on c1.'
       - eval_time: 8m
         alertname: HealthCheckWarning
         exp_alerts: []
@@ -52,24 +60,37 @@ tests:
               check: disk /home
             exp_annotations:
               summary: 'The check "disk /home" has a warning on front.'
+      # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
       - eval_time: 13m
         alertname: HealthCheckWarning
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node
+              machine: front
+              check: disk /home
+            exp_annotations:
+              summary: 'The check "disk /home" has a warning on front.'
 
-  # Health checks not running: the textfile keeps its last finish time when the checks stop running.
+  # Health checks not running: the textfile keeps its last finish time when the checks stop running. The alert
+  # waits 10 minutes, so a machine back from a long outage, whose old file is read until its health checks run
+  # (2 minutes after boot), posts nothing.
   - interval: 1m
     input_series:
-      # Runs until minute 5, then stops; runs again at minute 25.
+      # Runs until minute 5, then stops; runs again at minute 40.
       - series: 'cluster_health_timestamp_seconds{job="node-c1",machine="c1"}'
-        values: '0+60x5 300x19 1500+60x5'
+        values: '0+60x5 300x34 2400+60x5'
       # Runs all the time.
       - series: 'cluster_health_timestamp_seconds{job="node",machine="front"}'
-        values: '0+60x30'
+        values: '0+60x45'
+      # Off from minute 1 to 29 (no samples), back at 30 with its old file for 4 minutes, then runs again.
+      - series: 'cluster_health_timestamp_seconds{job="node-c9",machine="c9"}'
+        values: '0 _x28 0x4 2040+60x10'
     alert_rule_test:
-      - eval_time: 15m
+      - eval_time: 25m
         alertname: HealthChecksNotRunning
         exp_alerts: []
-      - eval_time: 21m
+      - eval_time: 32m
         alertname: HealthChecksNotRunning
         exp_alerts:
           - exp_labels:
@@ -78,9 +99,16 @@ tests:
               machine: c1
             exp_annotations:
               summary: "The health checks on c1 have not run for more than 15 minutes."
-      - eval_time: 26m
+      # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
+      - eval_time: 42m
         alertname: HealthChecksNotRunning
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-c1
+              machine: c1
+            exp_annotations:
+              summary: "The health checks on c1 have not run for more than 15 minutes."
 
   # A machine whose metrics cannot be read for 5 minutes; Prometheus's own job does not count.
   - interval: 1m
@@ -106,11 +134,18 @@ tests:
               machine: c2
             exp_annotations:
               summary: "Prometheus cannot read the metrics of c2 for 5 minutes, so its health checks are unknown; the machine may be down."
+      # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
       - eval_time: 11m
         alertname: MachineMetricsMissing
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-c2
+              machine: c2
+            exp_annotations:
+              summary: "Prometheus cannot read the metrics of c2 for 5 minutes, so its health checks are unknown; the machine may be down."
 
-  # A failed backup run alerts until a later run works.
+  # A failed backup run alerts until a later run works, and 7 days after.
   - interval: 1m
     input_series:
       - series: 'cluster_backup_last_exit_code{job="node",machine="front"}'
@@ -128,9 +163,16 @@ tests:
               machine: front
             exp_annotations:
               summary: "The last /home backup from front failed (exit code 23)."
+      # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
       - eval_time: 6m
         alertname: BackupFailed
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              machine: front
+            exp_annotations:
+              summary: "The last /home backup from front failed (exit code 23)."
 
   # An old last successful backup alerts; a daily one does not; a backup that never succeeded (0) is left to
   # BackupFailed.
@@ -157,9 +199,16 @@ tests:
               machine: front
             exp_annotations:
               summary: "The last successful /home backup from front is more than 26 hours old."
+      # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
       - eval_time: 31h
         alertname: BackupOld
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node
+              machine: front
+            exp_annotations:
+              summary: "The last successful /home backup from front is more than 26 hours old."
 
   # A machine that answers but has never written its health checks (for example its timer never ran).
   - interval: 1m
@@ -202,9 +251,16 @@ tests:
               machine: front
             exp_annotations:
               summary: "The automatic deploy on front failed (exit code 2). See journalctl -u nanohpc-auto-deploy there."
+      # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
       - eval_time: 7m
         alertname: AutoDeployFailed
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              machine: front
+            exp_annotations:
+              summary: "The automatic deploy on front failed (exit code 2). See journalctl -u nanohpc-auto-deploy there."
 
   # The alert says whether the dry run failed (machines left out, unchanged) or the real run failed.
   - interval: 1m
@@ -230,3 +286,97 @@ tests:
               machine: front
             exp_annotations:
               summary: "The automatic deploy on front failed: its real run failed, so machines may be partly changed. See journalctl -u nanohpc-auto-deploy there."
+
+  # 7 days: a check that fails, works for 2 days, and fails again is still the same alert (Slack gets nothing new).
+  # Once it has worked for 7 days the alert ends, and the next failure is a new alert.
+  - interval: 1m
+    input_series:
+      # Failing at minutes 0-10 and 2892-2902, working from 2903 to 13103, failing again from 13104.
+      - series: 'cluster_health_check_state{job="node-c5",machine="c5",check="service slurmd"}'
+        values: '2x10 0x2880 2x10 0x10200 2x10'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HealthCheckFailing
+        exp_alerts: &c5_failing
+          - exp_labels:
+              severity: critical
+              job: node-c5
+              machine: c5
+              check: service slurmd
+            exp_annotations:
+              summary: 'The check "service slurmd" is failing on c5.'
+      - eval_time: 2000m
+        alertname: HealthCheckFailing
+        exp_alerts: *c5_failing
+      - eval_time: 2897m
+        alertname: HealthCheckFailing
+        exp_alerts: *c5_failing
+      - eval_time: 12000m
+        alertname: HealthCheckFailing
+        exp_alerts: *c5_failing
+      - eval_time: 13050m
+        alertname: HealthCheckFailing
+        exp_alerts: []
+      - eval_time: 13114m
+        alertname: HealthCheckFailing
+        exp_alerts: *c5_failing
+
+  # Machines under maintenance get no alert, also when they are off; another failing machine still does.
+  - interval: 1m
+    input_series:
+      - series: 'cluster_health_check_state{job="node-c6",machine="c6",check="service slurmd"}'
+        values: '2x15'
+      - series: 'cluster_health_check_state{job="node-c8",machine="c8",check="service slurmd"}'
+        values: '2x15'
+      - series: 'up{job="node-c7",machine="c7"}'
+        values: '0x15'
+      - series: 'up{job="node",machine="front"}'
+        values: '1x15'
+      - series: 'cluster_node_maintenance{job="node",machine="front",node="c6"}'
+        values: '1x15'
+      - series: 'cluster_node_maintenance{job="node",machine="front",node="c7"}'
+        values: '1x15'
+      - series: 'cluster_node_maintenance{job="node",machine="front",node="c8"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HealthCheckFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-c8
+              machine: c8
+              check: service slurmd
+            exp_annotations:
+              summary: 'The check "service slurmd" is failing on c8.'
+      - eval_time: 10m
+        alertname: MachineMetricsMissing
+        exp_alerts: []
+
+  # A front node check that names other machines alerts once per named machine, as that machine, and not as a
+  # warning on the front node; a machine under maintenance is left out.
+  - interval: 1m
+    input_series:
+      - series: 'cluster_health_check_state{job="node",machine="front",check="metrics arrive from every machine"}'
+        values: '1x15'
+      - series: 'cluster_health_machine_check_state{job="node",machine="front",check="metrics arrive from every machine",about="c10"}'
+        values: '1x15'
+      - series: 'cluster_health_machine_check_state{job="node",machine="front",check="metrics arrive from every machine",about="c11"}'
+        values: '1x15'
+      - series: 'cluster_node_maintenance{job="node",machine="front",node="c11"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HealthCheckWarning
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: MachineCheckWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node
+              machine: c10
+              about: c10
+              check: metrics arrive from every machine
+            exp_annotations:
+              summary: 'The front node''s check "metrics arrive from every machine" has a warning about c10.'

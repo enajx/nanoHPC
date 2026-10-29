@@ -27,6 +27,8 @@ BROKEN_HOME_REPORT = [
     "FAIL  service nfs-server",
     "ok    home quota reader timer",
     "ok    the home quota reader's last run worked",
+    "ok    largest home folders timer",
+    "ok    the largest home folders measurement's last run worked",
     "WARN  disk /home: 95% space, 95% inodes used (warning from 90%)",
     "WARN  the last successful /home backup is less than 26 hours old",
     "WARN  the last /home backup run worked",
@@ -43,6 +45,8 @@ BROKEN_HOME_STATES = {
     "service nfs-server": "2",
     "home quota reader timer": "0",
     "the home quota reader's last run worked": "0",
+    "largest home folders timer": "0",
+    "the largest home folders measurement's last run worked": "0",
     "disk /home": "1",
     "the last successful /home backup is less than 26 hours old": "1",
     "the last /home backup run worked": "1",
@@ -233,6 +237,25 @@ class ClusterHealthMetricsTests(unittest.TestCase):
                 states, _ = read_states(metrics)
                 self.assertEqual(states[label], "2")
 
+    def test_largest_folders_failed_run_is_reported_on_the_home_machine(self) -> None:
+        """A failed or stopped largest-folders measurement is a health failure on the home machine."""
+        for failed_unit, label in (
+            ("nanohpc-home-folders.timer", "largest home folders timer"),
+            ("nanohpc-home-folders.service", "the largest home folders measurement's last run worked"),
+        ):
+            with (
+                self.subTest(failed_unit=failed_unit),
+                tempfile.TemporaryDirectory(prefix="cluster-health-") as directory,
+            ):
+                folder = Path(directory)
+                environment = make_machine(folder, "home", failed_unit)
+                metrics = folder / "health.prom"
+                result = run(["--metrics", str(metrics)], environment)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"FAIL  {label}", result.stdout)
+                states, _ = read_states(metrics)
+                self.assertEqual(states[label], "2")
+
     def test_notifier_failure_is_checked_when_slack_is_enabled_on_slurm_front(self) -> None:
         """The Slack sender is checked from intended alert settings, even if its webhook is missing."""
         for failed_unit, label in (
@@ -261,6 +284,62 @@ class ClusterHealthMetricsTests(unittest.TestCase):
                 monitor = run([], environment)
                 self.assertNotIn("user check channel notifier", monitor.stdout)
                 self.assertNotIn("user check timer", monitor.stdout)
+
+    def test_job_end_sender_is_checked_where_job_end_messages_are_on(self) -> None:
+        """With its queue folder (Slack and a bot token on), the job-end sender's timer and last run are checked."""
+        for failed_unit, label in (
+            ("nanohpc-job-end-notify.timer", "job-end message timer"),
+            ("nanohpc-job-end-notify.service", "the job-end message sender's last run worked"),
+        ):
+            with (
+                self.subTest(failed_unit=failed_unit),
+                tempfile.TemporaryDirectory(prefix="cluster-health-") as directory,
+            ):
+                folder = Path(directory)
+                environment = make_machine(folder, "front", failed_unit)
+                root = folder / "root"
+                off = run([], environment)
+                self.assertNotIn("job-end", off.stdout)
+                (root / "var/spool/nanohpc-slack-jobs").mkdir(parents=True)
+                result = run([], environment)
+                self.assertIn(f"FAIL  {label}", result.stdout)
+
+    def test_front_leaves_out_machines_offline_or_under_maintenance(self) -> None:
+        """The front node's checks about other machines leave out those offline (they have their own alert) or
+        under maintenance (no alert), so Slack gets nothing more about them. Fake Prometheus (curl) and sinfo:
+        gpu2 is under maintenance, cpu1 is offline, gpu4 has a real problem."""
+        with tempfile.TemporaryDirectory(prefix="cluster-health-front-") as directory:
+            folder = Path(directory)
+            environment = make_machine(folder, "front", "")
+            write_command(
+                folder / "bin",
+                "curl",
+                'case "$*" in\n'
+                '  *cluster_node_maintenance*) machines="gpu2 cpu1" ;;\n'
+                '  *"up{"*) machines="gpu2 cpu1 gpu4" ;;\n'
+                '  *cluster_gpu_collection*) machines="gpu2" ;;\n'
+                '  *) machines="" ;;\n'
+                "esac\n"
+                'result=""\n'
+                'for machine in $machines; do result="$result${result:+,}{\\"metric\\":{\\"machine\\":\\"$machine\\"}}"; done\n'
+                'echo "{\\"status\\":\\"success\\",\\"data\\":{\\"result\\":[$result]}}"\n',
+            )
+            write_command(folder / "bin", "sinfo", "printf 'gpu2 drained\\ncpu1 down\\ngpu4 drained\\n'\n")
+            metrics = folder / "health.prom"
+            report = run(["--metrics", str(metrics)], environment).stdout
+            # Each affected machine also gets its own series, so its alert names that machine.
+            _, others = read_states(metrics)
+            about = sorted(line for line in others if line.startswith("cluster_health_machine_check_state"))
+            self.assertEqual(
+                about,
+                [
+                    'cluster_health_machine_check_state{check="metrics arrive from every machine",about="gpu4"} 1',
+                    'cluster_health_machine_check_state{check="no Slurm node is down, drained, or not responding",about="gpu4"} 1',
+                ],
+            )
+            self.assertIn("WARN  metrics arrive from every machine (gpu4)", report)
+            self.assertIn("ok    GPU readings are fresh (under 2 minutes old)\n", report)
+            self.assertIn("WARN  no Slurm node is down, drained, or not responding (gpu4 drained)", report)
 
     def test_same_id_keeps_worst_state_and_values_are_escaped(self) -> None:
         """Checks that give the same id make one series with the worst state; quotes, backslashes, newlines escaped."""

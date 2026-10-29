@@ -1,0 +1,192 @@
+#!/usr/bin/python3
+"""Write each user's largest folders in their home, for the private usage box at login.
+
+Runs as root on the home machine, where the disk is, every hour. For each configured user it measures every
+entry at the top of their home and writes, to OUTPUT-DIR/NAME (owned by the user, mode 0400, replaced whole),
+a title line with the time measured and then up to five entries of at least the threshold, largest first:
+  "  12.3 GB  ~/project  (git repo)"  and, below a repository, its .worktrees folder when that is large too.
+A file with several hard links (like a uv .venv linked from the uv cache) counts once, in the entry seen
+first by name, as the filesystem quota counts it. Links are not followed: folders are opened by file
+descriptor, so a folder swapped for a link is not followed either. Other filesystems mounted inside a home
+are not counted. Folders and files that vanish or cannot be read are left out. A home that cannot be opened
+fails only that user: the others are written, and the run ends with an error naming them. Files of removed
+users are deleted. nanohpc-hello on the front node reads the file as the user (over NFS when /home is on
+another machine).
+
+Arguments:
+  --home-root PATH          the folder that holds the homes (/home).
+  --output-dir PATH         where the per-user files go; root-owned, mode 0711, so no one can list it.
+  --min-folder-bytes INT    the smallest entry listed.
+  --user NAME:UID           a configured user (repeat for each).
+"""
+
+import argparse
+import os
+import re
+import stat
+import sys
+import tempfile
+from contextlib import suppress
+from datetime import datetime
+from pathlib import Path
+
+GB = 1024**3
+SHOWN = 5
+# Open a folder only if it is a folder now, never through a link, so a folder swapped for a link is not followed.
+FOLDER = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def lstat_at(folder: int, name: str) -> os.stat_result | None:
+    """The entry's own details (links not followed), or None if it vanished or cannot be read."""
+    with suppress(OSError):
+        return os.stat(name, dir_fd=folder, follow_symlinks=False)
+    return None
+
+
+def open_at(folder: int, name: str) -> int | None:
+    """Open a subfolder without following links, or None if it is not a folder now or cannot be opened."""
+    with suppress(OSError):
+        return os.open(name, FOLDER, dir_fd=folder)
+    return None
+
+
+def file_bytes(info: os.stat_result, seen: set[int]) -> int:
+    """Allocated bytes of one file; a file with several hard links counts only the first time it is seen."""
+    if info.st_nlink > 1:
+        if info.st_ino in seen:
+            return 0
+        seen.add(info.st_ino)
+    return info.st_blocks * 512
+
+
+def walk(parent: int, name: str, device: int, seen: set[int], skip: str | None) -> tuple[int, int]:
+    """Measure the folder `name` in the open folder `parent`: its allocated bytes, and how many folders it holds
+    directly. Leaves out `skip` (None: nothing) at its top, links, other filesystems, and folders or files that
+    vanish or cannot be read. Only folder names are kept while walking, and hard links as inode numbers (one
+    filesystem)."""
+    total = 0
+    folders = 0
+    top = True
+    for _, subfolders, files, folder in os.fwalk(name, dir_fd=parent, follow_symlinks=False):
+        own = os.fstat(folder)
+        if own.st_dev != device:
+            subfolders.clear()
+            continue
+        total += own.st_blocks * 512
+        if top and skip in subfolders:
+            subfolders.remove(skip)
+        # fwalk lists links to folders with the folders and does not enter them; count real folders only.
+        real = [entry for entry in subfolders if (info := lstat_at(folder, entry)) and stat.S_ISDIR(info.st_mode)]
+        if top:
+            folders = len(real)
+            top = False
+        subfolders[:] = real
+        for entry in files:
+            info = lstat_at(folder, entry)
+            if info is not None:
+                total += file_bytes(info, seen)
+    return total, folders
+
+
+def printable(name: str) -> str:
+    """A folder name with control characters (such as a newline) shown as ?, so it stays on its line."""
+    return "".join(char if char.isprintable() else "?" for char in name)
+
+
+def largest(home: Path, min_bytes: int) -> list[str]:
+    """List the largest entries of at least min_bytes in a home, marking git repositories and their worktrees.
+    Raises OSError if the home itself cannot be opened."""
+    home_fd = os.open(home, FOLDER)
+    device = os.fstat(home_fd).st_dev
+    seen: set[int] = set()
+    measured: list[tuple[int, str, bool, tuple[int, int] | None]] = []
+    # A fixed name order, so a file shared by hard links is always counted in the same entry.
+    for name in sorted(os.listdir(home_fd)):
+        info = lstat_at(home_fd, name)
+        if info is None or not stat.S_ISDIR(info.st_mode):
+            measured.append((0 if info is None else file_bytes(info, seen), name, False, None))
+            continue
+        entry = open_at(home_fd, name)
+        if entry is None:
+            continue
+        repository = lstat_at(entry, ".git") is not None
+        worktrees = lstat_at(entry, ".worktrees")
+        part = None
+        if worktrees is not None and stat.S_ISDIR(worktrees.st_mode):
+            # A repository's worktrees first, then the rest of it: one pass, each file counted once.
+            part = walk(entry, ".worktrees", device, seen, None)
+        rest, _ = walk(entry, ".", device, seen, ".worktrees" if part is not None else None)
+        os.close(entry)
+        measured.append((rest + (part[0] if part else 0), name, repository, part))
+    os.close(home_fd)
+    large = sorted((item for item in measured if item[0] >= min_bytes), key=lambda item: item[0], reverse=True)
+    if not large:
+        return [f"No single folder uses {min_bytes / GB:g} GB or more."]
+    lines = []
+    for used, name, repository, part in large[:SHOWN]:
+        shown = printable(name)
+        lines.append(f"{used / GB:6.1f} GB  ~/{shown}{'  (git repo)' if repository else ''}")
+        if part is not None and part[0] >= min_bytes:
+            count = part[1]
+            lines.append(f"{part[0] / GB:6.1f} GB  ~/{shown}/.worktrees ({count} worktree{'' if count == 1 else 's'})")
+    return lines
+
+
+def publish(path: Path, text: str, uid: int) -> None:
+    """Replace one user's file atomically, readable only by that user."""
+    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(text)
+        stream.flush()
+        os.fchown(stream.fileno(), uid, -1)
+        os.fchmod(stream.fileno(), 0o400)
+        os.fsync(stream.fileno())
+    Path(temporary).replace(path)
+
+
+def main() -> None:
+    """Check the arguments, then measure and write each user's file in turn."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--home-root", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--min-folder-bytes", type=int, required=True)
+    parser.add_argument("--user", action="append", required=True, metavar="NAME:UID")
+    args = parser.parse_args()
+    users: dict[str, int] = {}
+    for item in args.user:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*:[0-9]+", item) is None:
+            raise ValueError("Invalid configured user name and UID: " + item)
+        name, uid = item.split(":")
+        if name in users:
+            raise ValueError("Duplicate configured user: " + name)
+        users[name] = int(uid)
+    if args.min_folder_bytes <= 0:
+        raise ValueError("The smallest listed size must be positive")
+    # Temporary files left by a run that was stopped while writing.
+    for old in args.output_dir.iterdir():
+        if old.name.startswith("."):
+            old.unlink()
+    failed = []
+    for name, uid in users.items():
+        home = args.home_root / name
+        title = f"Largest folders ({datetime.now().astimezone():%Y-%m-%d %H:%M}):"
+        if not os.path.lexists(home):
+            publish(args.output_dir / name, title + "\nNo home folder.\n", uid)
+            continue
+        # One user's unreadable home must not stop the others: name it and fail at the end.
+        try:
+            lines = largest(home, args.min_folder_bytes)
+        except OSError as error:
+            print(f"cluster-home-folders: {name}: {error}", file=sys.stderr, flush=True)
+            failed.append(name)
+            continue
+        publish(args.output_dir / name, "\n".join([title, *lines]) + "\n", uid)
+    for old in args.output_dir.iterdir():
+        if old.name not in users:
+            old.unlink()
+    if failed:
+        sys.exit("cluster-home-folders: could not measure the home of " + ", ".join(failed))
+
+
+if __name__ == "__main__":
+    main()

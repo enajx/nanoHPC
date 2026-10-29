@@ -721,6 +721,7 @@ def collect(
         return result
 
     compute_nodes = []
+    under_maintenance: set[str] = set()
     for node in nodes:
         total = gpu_count(node.get("CfgTRES", ""))
         compute = status(node["NodeName"], node["State"], total)
@@ -730,6 +731,7 @@ def collect(
         reason = maintenance_reason(node["State"], node.get("Reason", ""), compute["partitions"], down)
         if reason:
             apply_maintenance(compute, reason)
+            under_maintenance.add(node["NodeName"])
         compute_nodes.append(compute)
     storage_nodes = [status(name, "", 0) for name, machine in machines.items() if machine["role"] == "storage"]
     total_gpus, allocated_gpus = counted_gpus(nodes, compute_nodes)
@@ -786,6 +788,8 @@ def collect(
         metrics.append(f"cluster_node_available_gpus{{node={label(name)}}} {free}")
         metrics.append(f"cluster_node_allocated_gpus{{node={label(name)}}} {allocated}")
         metrics.append(f"cluster_node_total_gpus{{node={label(name)}}} {total}")
+        # Under maintenance, also when it is off: the alert rules post nothing to Slack about it.
+        metrics.append(f"cluster_node_maintenance{{node={label(name)}}} {int(name in under_maintenance)}")
     for row in ranking:
         user_label = label(row["user"])
         metrics.extend(

@@ -14,7 +14,7 @@ SCRIPT = ROOT / "src/nanohpc/files/nanohpc-backup-alert-weekly"
 
 
 class BackupAlertWeeklyTest(unittest.TestCase):
-    """Only active backup alerts appear in the weekly Slack reminder."""
+    """Only backup alerts whose problem is still there appear in the weekly Slack reminder."""
 
     def test_active_backup_alerts_show_start_day_and_other_alerts_are_ignored(self) -> None:
         alerts = [
@@ -37,22 +37,42 @@ class BackupAlertWeeklyTest(unittest.TestCase):
                 "status": {"state": "suppressed"},
             },
             {
+                "labels": {"alertname": "BackupOld", "machine": "ended"},
+                "annotations": {"summary": "a backup problem that ended"},
+                "startsAt": "2026-10-08T04:00:00Z",
+                "status": {"state": "active"},
+            },
+            {
                 "labels": {"alertname": "MachineMetricsMissing", "machine": "gpu"},
                 "annotations": {"summary": "unrelated"},
                 "startsAt": "2026-10-08T04:00:00Z",
                 "status": {"state": "active"},
             },
         ]
+        # Prometheus keeps an alert firing for 7 days after its condition ends (keepFiringSince): not a problem now.
+        rules = [
+            {"labels": alerts[0]["labels"], "state": "firing", "activeAt": "2026-10-09T04:00:00Z"},
+            {
+                "labels": {"alertname": "BackupOld", "machine": "ended"},
+                "state": "firing",
+                "activeAt": "2026-10-08T04:00:00Z",
+                "keepFiringSince": "2026-10-11T04:00:00Z",
+            },
+        ]
         posts: list[str] = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                if self.path != "/api/v2/alerts":
+                if self.path == "/api/v2/alerts":
+                    answer: object = alerts
+                elif self.path == "/prometheus/api/v1/alerts":
+                    answer = {"status": "success", "data": {"alerts": rules}}
+                else:
                     self.send_error(404)
                     return
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(json.dumps(alerts).encode())
+                self.wfile.write(json.dumps(answer).encode())
 
             def do_POST(self) -> None:
                 posts.append(json.loads(self.rfile.read(int(self.headers["Content-Length"])).decode())["text"])
@@ -79,6 +99,8 @@ class BackupAlertWeeklyTest(unittest.TestCase):
                     str(SCRIPT),
                     "--alertmanager",
                     base,
+                    "--prometheus",
+                    base + "/prometheus",
                     "--webhook-file",
                     str(webhook),
                     "--cluster",
@@ -95,6 +117,7 @@ class BackupAlertWeeklyTest(unittest.TestCase):
         self.assertIn("The last successful /home backup from store is more than 26 hours old. (since 10 Oct)", posts[0])
         self.assertNotIn("suppressed", posts[0])
         self.assertNotIn("unrelated", posts[0])
+        self.assertNotIn("ended", posts[0])
 
         alerts.clear()
         with tempfile.TemporaryDirectory() as directory:
@@ -106,6 +129,8 @@ class BackupAlertWeeklyTest(unittest.TestCase):
                     str(SCRIPT),
                     "--alertmanager",
                     base,
+                    "--prometheus",
+                    base + "/prometheus",
                     "--webhook-file",
                     str(webhook),
                     "--cluster",

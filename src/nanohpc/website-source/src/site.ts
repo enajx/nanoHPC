@@ -12,6 +12,7 @@
  *     "home_quota_hard_gb": int,
  *     "scratch_cleanup_days": int   // staged scratch data unused this long is deleted
  *     "interactive_machine_rule": str // configured placement rule, empty when unset
+ *     "faq": [{"question": str, "answer": str}] // optional; the administrator's own FAQ entries
  *     "demo": bool                    // optional; generated sample site only
  *   }
  *
@@ -27,8 +28,12 @@ export type SiteSettings = {
   home_quota_hard_gb: number
   scratch_cleanup_days: number
   interactive_machine_rule?: string
+  faq?: SiteFaqEntry[]
   demo?: boolean
 }
+
+/** One of the administrator's own FAQ entries from cluster.yml; a blank line in the answer starts a new paragraph. */
+export type SiteFaqEntry = { question: string; answer: string }
 
 export type MonitorSiteSettings = {
   mode: 'monitor'
@@ -40,8 +45,8 @@ export type MonitorSiteSettings = {
 
 export type LoadedSiteSettings = SiteSettings | MonitorSiteSettings
 
-const settingNames = ['cluster_name', 'logo', 'login_address', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'interactive_machine_rule', 'demo']
-const requiredNames = settingNames.filter(name => name !== 'demo' && name !== 'interactive_machine_rule')
+const settingNames = ['cluster_name', 'logo', 'login_address', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'interactive_machine_rule', 'faq', 'demo']
+const requiredNames = settingNames.filter(name => name !== 'demo' && name !== 'interactive_machine_rule' && name !== 'faq')
 
 /** Check site.json's content against the contract above and name the first problem. */
 export function checkSiteSettings(value: unknown): LoadedSiteSettings {
@@ -74,6 +79,7 @@ export function checkSiteSettings(value: unknown): LoadedSiteSettings {
     if (!Number.isInteger(settings[name])) throw new Error(`site.json: ${name} must be a whole number`)
   }
   if (settings.interactive_machine_rule !== undefined && typeof settings.interactive_machine_rule !== 'string') throw new Error('site.json: interactive_machine_rule must be text')
+  if (settings.faq !== undefined && !(Array.isArray(settings.faq) && settings.faq.every(isFaqEntry))) throw new Error('site.json: faq must be a list of {question, answer} texts')
   if (settings.demo !== undefined && typeof settings.demo !== 'boolean') throw new Error('site.json: demo must be a boolean')
   const logo = settings.logo
   // A relative URL keeps the logo under the site's own path.
@@ -81,6 +87,13 @@ export function checkSiteSettings(value: unknown): LoadedSiteSettings {
     throw new Error('site.json: logo must be null or a relative URL such as "logo.png"')
   }
   return settings as SiteSettings
+}
+
+/** True for an object with exactly a non-empty question and answer text. */
+function isFaqEntry(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const entry = value as Record<string, unknown>
+  return Object.keys(entry).length === 2 && typeof entry.question === 'string' && entry.question.trim() !== '' && typeof entry.answer === 'string' && entry.answer.trim() !== ''
 }
 
 /** Load and check site.json from the page's own folder. */

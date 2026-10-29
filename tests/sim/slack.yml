@@ -1,0 +1,9 @@
+# Three Ubuntu 24.04 VMs for the Slack checks: each problem posted once, maintenance and offline machines,
+# and private job-end messages, with a stand-in Slack on the front node.
+cluster: cluster-small.yml
+ubuntu: "24.04"
+fake_gpus: [gpu4]
+vms:
+  default: {cpus: 1, memory_gb: 1, disk_gb: 10}
+  front: {cpus: 2, memory_gb: 3, disk_gb: 20}
+extra_disk_gb: 10

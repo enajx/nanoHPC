@@ -38,6 +38,29 @@ gpu_inventory_mismatch=""
 
 has() { case "$roles" in *" $1 "*) return 0 ;; esac; return 1; }
 
+# Print a check's id: its label cut at the first " (" or ":", without surrounding spaces.
+check_id() {
+  local id=$1
+  id=${id%%" ("*}
+  id=${id%%:*}
+  id=${id#"${id%%[![:space:]]*}"}
+  id=${id%"${id##*[![:space:]]}"}
+  printf '%s' "$id"
+}
+
+# A front node check that names other machines also keeps each named machine (a warning about it), so the
+# alert rules post one alert per machine instead of one for the front node.
+about_ids=()
+about_machines=()
+about() {
+  local id machine
+  id=$(check_id "$1")
+  for machine in ${2//,/ }; do
+    about_ids+=("$id")
+    about_machines+=("$machine")
+  done
+}
+
 # Print one report line and keep the check's state for the metrics. A second check with the same id keeps the worst state.
 report() {
   local result=$1 label=$2 state id i
@@ -47,10 +70,7 @@ report() {
     FAIL) state=2 problems=1 ;;
   esac
   printf '%-5s %s\n' "$result" "$label"
-  id=${label%%" ("*}
-  id=${id%%:*}
-  id=${id#"${id%%[![:space:]]*}"}
-  id=${id%"${id##*[![:space:]]}"}
+  id=$(check_id "$label")
   for i in "${!check_ids[@]}"; do
     if test "${check_ids[$i]}" = "$id"; then
       test "$state" -gt "${check_states[$i]}" && check_states[$i]=$state
@@ -80,6 +100,14 @@ write_metrics() {
     for i in "${!check_ids[@]}"; do
       printf 'cluster_health_check_state{check="%s"} %s\n' "$(escape_label "${check_ids[$i]}")" "${check_states[$i]}"
     done
+    if test "${#about_ids[@]}" -gt 0; then
+      echo "# HELP cluster_health_machine_check_state A front node check with a warning about another machine (about)."
+      echo "# TYPE cluster_health_machine_check_state gauge"
+      for i in "${!about_ids[@]}"; do
+        printf 'cluster_health_machine_check_state{check="%s",about="%s"} 1\n' \
+          "$(escape_label "${about_ids[$i]}")" "$(escape_label "${about_machines[$i]}")"
+      done
+    fi
     echo "# HELP cluster_health_timestamp_seconds When cluster-health last finished on this machine (Unix time)."
     echo "# TYPE cluster_health_timestamp_seconds gauge"
     echo "cluster_health_timestamp_seconds $(date +%s)"
@@ -232,6 +260,8 @@ if has home; then
   check "service nfs-server" systemctl is-active --quiet nfs-server
   check "home quota reader timer" systemctl is-active --quiet nanohpc-home-quotas.timer
   check "the home quota reader's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-home-quotas.service'
+  check "largest home folders timer" systemctl is-active --quiet nanohpc-home-folders.timer
+  check "the largest home folders measurement's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-home-folders.service'
   disk /home
   # The nightly backup writes its result as metrics; only once a backup is configured.
   if test -f "$root/etc/nanohpc/backup/enabled"; then
@@ -275,6 +305,12 @@ if has front; then
     check "user check channel notifier timer" systemctl is-active --quiet nanohpc-user-check-notify.timer
     check "the user check channel notifier's last run worked" sh -c \
       '! systemctl is-failed --quiet nanohpc-user-check-notify.service'
+  fi
+  # Job-end messages are on (Slack and a bot token) exactly when their queue folder exists.
+  if test -d "$root/var/spool/nanohpc-slack-jobs"; then
+    check "job-end message timer" systemctl is-active --quiet nanohpc-job-end-notify.timer
+    check "the job-end message sender's last run worked" sh -c \
+      '! systemctl is-failed --quiet nanohpc-job-end-notify.service'
   fi
   check "the Slurm controller answers" scontrol ping
   if test -f /etc/systemd/system/nanohpc-auto-deploy.timer; then
@@ -323,10 +359,23 @@ if answer.get("status") != "success":
 print(",".join(sorted({r["metric"].get("machine", r["metric"].get("rule_group", "cluster")) for r in answer["data"]["result"]})))
 '
   }
+  # Machines that are offline (they have their own alert) or under maintenance (they get none) are left out of the
+  # checks about other machines, so Slack gets nothing more about them. If Prometheus does not answer, none is.
+  away=$(problem_machines 'up{job=~"node.*"} == 0 or label_replace(cluster_node_maintenance == 1, "machine", "$1", "node", "(.*)")') || away=""
+  # Print the comma-separated machines in $1 that are not away.
+  not_away() {
+    local machine kept=""
+    for machine in ${1//,/ }; do
+      case ",$away," in *",$machine,"*) ;; *) kept="$kept${kept:+,}$machine" ;; esac
+    done
+    printf '%s' "$kept"
+  }
   metric_check() {
     local label=$1 query=$2 machines
     if machines=$(problem_machines "$query"); then
+      machines=$(not_away "$machines")
       note "$label${machines:+ ($machines)}" test -z "$machines"
+      about "$label" "$machines"
     else
       report WARN "$label (Prometheus did not answer)"
     fi
@@ -356,8 +405,9 @@ print(",".join(sorted({r["metric"].get("machine", r["metric"].get("rule_group", 
   done
   note "metrics certificates valid for at least 30 more days${expiring:+ (expiring:$expiring; run nanohpc deploy)}" test -z "$expiring"
   if nodes=$(sinfo -h -N -t down,drain,fail,unknown,no_respond,maint -o '%N %T' 2>/dev/null); then
-    nodes=$(printf '%s\n' "$nodes" | sed '/^$/d' | sort -u | paste -sd ',' -)
-    note "no Slurm node is down, drained, not responding, or in maintenance${nodes:+ ($nodes)}" test -z "$nodes"
+    nodes=$(printf '%s\n' "$nodes" | awk -v away=",$away," 'NF && index(away, "," $1 ",") == 0' | sort -u | paste -sd ',' -)
+    note "no Slurm node is down, drained, or not responding${nodes:+ ($nodes)}" test -z "$nodes"
+    about "no Slurm node is down, drained, or not responding" "$(printf '%s' "$nodes" | tr ',' '\n' | awk '{ print $1 }' | paste -sd ',' -)"
   else
     check "sinfo lists the Slurm nodes" false
   fi

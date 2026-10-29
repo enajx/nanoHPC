@@ -301,6 +301,15 @@ bash ~/interactive-notebook.sh jupyter {{login_address}}
 # Or: bash ~/interactive-notebook.sh vscode {{login_address}}
 ```
 
+### Slack notifications
+
+Add these two lines to a batch job script to get a private Slack message from the cluster’s Slack app when the job ends: the job ID and name, how it ended with its exit code, how long it ran, and the machine. It is not an email; the cluster sends no email. It needs your Slack member ID in the cluster’s configuration: ask the administrators. Interactive shells get no message. Leave the lines out if you do not want the message.
+
+```bash
+#SBATCH --mail-type=END
+#SBATCH --mail-user=slack
+```
+
 ### Caches
 
 uv, Hugging Face, and PyTorch caches are placed on local scratch on compute machines so package downloads do not fill the shared home.

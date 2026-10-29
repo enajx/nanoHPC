@@ -10,6 +10,19 @@ tests:
         values: '20+0x10'
       - series: 'cluster_gpu_collection_timestamp_seconds{machine="gpu1"}'
         values: '0+30x10'
+      # GPU memory: GPUs 0 and 1 in use at 25% and 50%; GPU 2 idle (20 MiB, under 1 GiB), left out of the mean.
+      - series: 'cluster_gpu_memory_used_bytes{machine="gpu1",gpu="0"}'
+        values: '12884901888+0x10'
+      - series: 'cluster_gpu_memory_used_bytes{machine="gpu1",gpu="1"}'
+        values: '25769803776+0x10'
+      - series: 'cluster_gpu_memory_used_bytes{machine="gpu1",gpu="2"}'
+        values: '20971520+0x10'
+      - series: 'cluster_gpu_memory_total_bytes{machine="gpu1",gpu="0"}'
+        values: '51539607552+0x10'
+      - series: 'cluster_gpu_memory_total_bytes{machine="gpu1",gpu="1"}'
+        values: '51539607552+0x10'
+      - series: 'cluster_gpu_memory_total_bytes{machine="gpu1",gpu="2"}'
+        values: '51539607552+0x10'
       - series: 'cluster_allocated_gpu_hours{user="alice"}'
         values: '2+1x10'
       - series: 'cluster_pending_jobs'
@@ -20,6 +33,11 @@ tests:
         exp_samples:
           - labels: 'cluster_daily_gpu_utilization_percent{machine="gpu1",gpu="0"}'
             value: 20
+      - expr: cluster_daily_gpu_memory_used_percent
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster_daily_gpu_memory_used_percent{machine="gpu1"}'
+            value: 37.5
       - expr: cluster_daily_allocated_gpu_hours_total
         eval_time: 5m
         exp_samples:

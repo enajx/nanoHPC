@@ -139,5 +139,64 @@ class UserCheckNotifierDeployTest(unittest.TestCase):
         self.assertIn("not ansible_check_mode", task["when"])
 
 
+class JobEndMessagesDeployTest(unittest.TestCase):
+    """Job-end messages: the mail program and its queue, and the sender's service and timer, on the front node."""
+
+    def setUp(self) -> None:
+        self.tasks = yaml.safe_load(TASKS.read_text())
+
+    def task(self, name: str) -> dict:
+        return next(task for task in self.tasks if task["name"] == name)
+
+    def test_mail_program_queues_into_the_spool(self) -> None:
+        wrapper = self.task("Install Slurm's mail program, which queues private Slack messages")
+        content = wrapper["ansible.builtin.copy"]["content"]
+        self.assertEqual(wrapper["ansible.builtin.copy"]["dest"], "/usr/local/bin/nanohpc-slack-mail")
+        self.assertIn("exec /usr/local/bin/nanohpc-slack-mail-queue --spool /var/spool/nanohpc-slack-jobs", content)
+        spool = self.task("Create the queue where Slurm's mail program leaves ended jobs")
+        self.assertEqual(spool["ansible.builtin.file"]["owner"], "slurm")
+        self.assertEqual(spool["ansible.builtin.file"]["group"], "cluster-alertmanager")
+        self.assertEqual(spool["ansible.builtin.file"]["mode"], "2770")
+        self.assertIn("absent", spool["ansible.builtin.file"]["state"])
+
+    def test_sender_service_names_users_and_interactive_partitions(self) -> None:
+        task = self.task("Install the job-end message service and timer")
+        nanohpc = {
+            "users": [{"name": "alice", "slack_id": "U123"}, {"name": "bob"}],
+            "interactive_partitions": ["shell"],
+        }
+        unit = Template(task["ansible.builtin.copy"]["content"]).render(item="service", nanohpc=nanohpc)
+        for line in (
+            "User=cluster-alertmanager",
+            "--spool /var/spool/nanohpc-slack-jobs",
+            "--state /var/lib/nanohpc/alertmanager/job-end.json",
+            "--sacct /usr/bin/sacct",
+            "--bot-token-file /etc/nanohpc/alertmanager/slack-bot-token",
+            "--user alice:U123",
+            "--user bob:",
+            "--interactive-partition shell",
+            "ReadWritePaths=/var/lib/nanohpc/alertmanager /var/spool/nanohpc-slack-jobs",
+        ):
+            self.assertIn(line, unit)
+        self.assertNotIn("--interactive-partition main", unit)
+        self.assertNotIn("--interactive-partition both", unit)
+        timer = Template(task["ansible.builtin.copy"]["content"]).render(item="timer", nanohpc=nanohpc)
+        self.assertIn("OnUnitActiveSec=30s", timer)
+
+    def test_timer_runs_only_with_slack_bot_token_and_slurm(self) -> None:
+        task = self.task("Run the job-end message timer")
+        enabled = task["ansible.builtin.systemd_service"]["enabled"]
+        for slack, token, mode, expected in (
+            (True, "xoxb-1", "slurm", "True"),
+            (True, None, "slurm", "False"),
+            (False, "xoxb-1", "slurm", "False"),
+            (True, "xoxb-1", "monitor", "False"),
+        ):
+            rendered = Template(enabled).render(
+                nanohpc={"alerts": {"slack": slack}, "mode": mode}, nanohpc_secrets={"slack_bot_token": token}
+            )
+            self.assertEqual(rendered, expected, (slack, token, mode))
+
+
 if __name__ == "__main__":
     unittest.main()

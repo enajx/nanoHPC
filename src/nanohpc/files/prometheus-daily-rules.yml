@@ -11,6 +11,9 @@ groups:
       # GPU readings only while the collector is fresh (written in the last 90 seconds).
       - record: cluster:gpu_utilization_percent_fresh
         expr: cluster_gpu_utilization_percent and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)
+      # Mean % of memory used across each machine's GPUs in use (over 1 GiB), as the Cluster usage chart.
+      - record: cluster:machine_gpu_memory_used_percent_fresh
+        expr: avg by(machine) (100 * cluster_gpu_memory_used_bytes / cluster_gpu_memory_total_bytes and cluster_gpu_memory_used_bytes > 1073741824 and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90))
       - record: cluster:gpu_temperature_celsius_fresh
         expr: cluster_gpu_temperature_celsius and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)
       - record: cluster:gpu_power_watts_fresh
@@ -26,6 +29,8 @@ groups:
         expr: min_over_time(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}[24h])
       - record: cluster_daily_gpu_utilization_percent
         expr: avg_over_time(cluster:gpu_utilization_percent_fresh[24h])
+      - record: cluster_daily_gpu_memory_used_percent
+        expr: avg_over_time(cluster:machine_gpu_memory_used_percent_fresh[24h])
       - record: cluster_daily_gpu_temperature_celsius_max
         expr: max_over_time(cluster:gpu_temperature_celsius_fresh[24h])
       - record: cluster_daily_gpu_power_watts

@@ -37,7 +37,7 @@ def series(title: str, name: str, index: int, count: int) -> list[float]:
     if title == "Available memory":
         baseline = {"H100": 180, "H200": 180, "B200": 380, "Threadripper": 90, "DGX": 90}[name]
     spread = baseline * 0.2
-    unit = 1024**3 if title in ("Available memory", "Available filesystem space", "GPU memory used") else 1
+    unit = 1024**3 if title in ("Available memory", "Available filesystem space") else 1
     values = [
         round(
             max(0, baseline + spread * math.sin(step / 7 + seed) + spread * 0.3 * math.cos(step / 13 + seed / 3))

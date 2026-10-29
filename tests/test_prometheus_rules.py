@@ -22,6 +22,7 @@ EXPECTED_ALERTS = {
     "HealthChecksNotRunning": "warning",
     "HealthChecksMissing": "warning",
     "MachineMetricsMissing": "critical",
+    "MachineCheckWarning": "warning",
     "BackupFailed": "critical",
     "BackupOld": "warning",
     "AutoDeployFailed": "critical",
@@ -31,6 +32,7 @@ EXPECTED = [
     "cluster_daily_memory_used_ratio",
     "cluster_daily_filesystem_available_bytes_min",
     "cluster_daily_gpu_utilization_percent",
+    "cluster_daily_gpu_memory_used_percent",
     "cluster_daily_gpu_temperature_celsius_max",
     "cluster_daily_gpu_power_watts",
     "cluster_daily_allocated_gpu_hours_total",
@@ -123,7 +125,9 @@ class AlertRulesTests(unittest.TestCase):
         """One group of alerts, each with its severity and a summary naming the machine (and the check if any)."""
         groups = yaml.safe_load(ALERT_RULES.read_text())["groups"]
         self.assertEqual([group["name"] for group in groups], ["cluster-alerts"])
-        rules = groups[0]["rules"]
+        records = [rule for rule in groups[0]["rules"] if "record" in rule]
+        self.assertEqual([rule["record"] for rule in records], ["cluster_machine_maintenance"])
+        rules = [rule for rule in groups[0]["rules"] if "alert" in rule]
         self.assertEqual({rule["alert"]: rule["labels"]["severity"] for rule in rules}, EXPECTED_ALERTS)
         self.assertEqual(len(rules), len(EXPECTED_ALERTS))
         for rule in rules:
@@ -131,6 +135,61 @@ class AlertRulesTests(unittest.TestCase):
             self.assertIn("$labels.machine", rule["annotations"]["summary"], rule["alert"])
             if rule["alert"] in ("HealthCheckFailing", "HealthCheckWarning"):
                 self.assertIn("$labels.check", rule["annotations"]["summary"], rule["alert"])
+
+    def test_no_alert_for_a_machine_under_maintenance(self) -> None:
+        """Every alert leaves out machines under maintenance, also when they are off, so Slack gets nothing."""
+        for rule in yaml.safe_load(ALERT_RULES.read_text())["groups"][0]["rules"]:
+            if "alert" in rule:
+                self.assertIn("unless on(machine) cluster_machine_maintenance", rule["expr"], rule["alert"])
+
+    def test_health_checks_not_running_waits_for_the_first_run_after_boot(self) -> None:
+        """A machine back from a long outage shows its old health file until its checks run, 2 minutes after boot."""
+        rules = {rule.get("alert"): rule for rule in yaml.safe_load(ALERT_RULES.read_text())["groups"][0]["rules"]}
+        self.assertEqual(rules["HealthChecksNotRunning"].get("for"), "10m")
+
+    def test_every_alert_keeps_firing_for_7_days(self) -> None:
+        """A problem that comes back within 7 days of ending is the same alert, so Slack gets nothing new."""
+        for path in (ALERT_RULES, MONITOR_ALERT_RULES):
+            for group in yaml.safe_load(path.read_text())["groups"]:
+                for rule in group["rules"]:
+                    if "alert" in rule:
+                        self.assertEqual(rule.get("keep_firing_for"), "7d", f"{path.name}: {rule['alert']}")
+
+    def test_slack_posts_only_the_start_of_a_problem(self) -> None:
+        """Alertmanager posts a problem once, when it starts: no post when it ends and no repeat while it lasts."""
+        tasks = yaml.safe_load((REPO / "src/nanohpc/ansible/roles/alerts/tasks/main.yml").read_text())
+        task = next(task for task in tasks if task["name"] == "Install the Alertmanager configuration")
+        text = (
+            jinja2.Environment()
+            .from_string(task["vars"]["alertmanager_config_text"])
+            .render(nanohpc={"alerts": {"slack": True}, "cluster_name": "lab"})
+        )
+        config = yaml.safe_load(text)
+        self.assertEqual(config["route"]["repeat_interval"], "8760h")
+        slack = next(receiver for receiver in config["receivers"] if receiver["name"] == "slack")
+        self.assertIs(slack["slack_configs"][0]["send_resolved"], False)
+        self.assertNotIn("Resolved", text)
+        self.assertNotIn("green", text)
+
+    def test_prometheus_keeps_alert_state_across_deploys(self) -> None:
+        """A deploy that changes the configuration or rules reloads Prometheus, which keeps its alerts. A restart
+        loses them; Alertmanager then holds each alert 20 minutes (4 resend delays), long enough for a problem
+        still there to fire again before Alertmanager would count it as ended and post it again."""
+        tasks = yaml.safe_load((REPO / "src/nanohpc/ansible/roles/prometheus/tasks/main.yml").read_text())
+        units = next(task for task in tasks if task["name"] == "Install the Prometheus services")
+        content = units["ansible.builtin.copy"]["content"]
+        self.assertIn("--rules.alert.resend-delay=5m", content)
+        self.assertIn("ExecReload=/bin/kill -HUP $MAINPID", content)
+        run = next(task for task in tasks if task["name"] == "Run the detail Prometheus")
+        state = run["ansible.builtin.systemd_service"]["state"]
+        for unit, rules, expected in ((False, True, "reloaded"), (True, False, "restarted"), (False, False, "started")):
+            rendered = jinja2.Environment().from_string(state).render(
+                prometheus_units={"changed": unit},
+                detail_config={"changed": False},
+                daily_rules={"changed": False},
+                alert_rules={"changed": rules},
+            )
+            self.assertEqual(rendered.strip(), expected)
 
     @unittest.skipIf(shutil.which("promtool") is None, "promtool is not installed, so the alert rule tests cannot run")
     def test_promtool_alert_tests(self) -> None:
@@ -150,6 +209,7 @@ class MonitorRulesTests(unittest.TestCase):
         self.assertEqual([group["name"] for group in groups], ["monitor-minute-values", "monitor-daily-summaries"])
         records = {rule["record"] for group in groups for rule in group["rules"]}
         self.assertIn("cluster_daily_gpu_utilization_percent", records)
+        self.assertIn("cluster_daily_gpu_memory_used_percent", records)
         self.assertIn("cluster_daily_scrape_coverage_ratio", records)
         self.assertFalse(any("allocat" in name or "fairshare" in name or "jobs" in name for name in records))
         self.assertFalse(
@@ -173,13 +233,14 @@ class MonitorRulesTests(unittest.TestCase):
                 "HealthChecksNotRunning",
                 "HealthChecksMissing",
                 "MachineMetricsMissing",
-                "MonitorMachineOffline",
                 "MonitorMachineUnhealthy",
                 "SnapshotStale",
                 "GpuMetricsStale",
                 "GPUInventoryChanged",
             },
         )
+        # An offline machine gets only MachineMetricsMissing, not a second post from the snapshot.
+        self.assertNotIn("MonitorMachineOffline", rules)
         self.assertIn("cluster_monitor_machine_health", rules["MonitorMachineUnhealthy"]["expr"])
         self.assertIn("cluster_monitor_gpu_inventory_mismatch", rules["GPUInventoryChanged"]["expr"])
         for name, rule in rules.items():

@@ -74,6 +74,8 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(variables["cluster_name"], "labcluster")
         self.assertEqual([user["name"] for user in variables["users"]], ["alice", "bob"])
         self.assertEqual(variables["admins"], ["alice"])
+        # Jobs in partitions that take only the interactive shell get no job-end Slack message.
+        self.assertEqual(variables["interactive_partitions"], ["interactive"])
         # Only real GPUs are checked with nvidia-smi.
         self.assertEqual(variables["real_gpus"], {"gpu4": 4, "gpu4i": 4})
         # Fake GPUs get placeholder device files.
@@ -99,6 +101,14 @@ class PrepareTest(unittest.TestCase):
         prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
         variables = json.loads((self.work / "vars.json").read_text())["nanohpc"]
         self.assertEqual(variables["announcements"], self.config["announcements"])
+
+    def test_time_zone_reaches_ansible(self) -> None:
+        """The validated time zone (or none, to keep each machine's own) reaches the base role."""
+        prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
+        self.assertIsNone(json.loads((self.work / "vars.json").read_text())["nanohpc"]["time_zone"])
+        self.config["time_zone"] = "Europe/Berlin"
+        prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
+        self.assertEqual(json.loads((self.work / "vars.json").read_text())["nanohpc"]["time_zone"], "Europe/Berlin")
 
     def test_home_and_scratch_variables(self) -> None:
         prepare(self.config, self.hostnames, None, True, [], False, None, self.work)
@@ -192,8 +202,16 @@ class PrepareTest(unittest.TestCase):
                 "home_quota_hard_gb": 400,
                 "scratch_cleanup_days": 14,
                 "interactive_machine_rule": "A main job asking for more than 4 hours does not run on the interactive partition's shared machines (gpu4), which are kept free for interactive shells. Leave out --nodelist for those machines on longer jobs.",
+                "faq": [],
             },
         )
+
+    def test_faq_in_site_data(self) -> None:
+        """The administrator's FAQ entries from cluster.yml go to the website as they are."""
+        self.config["faq"] = [{"question": "Who do I ask for an account?", "answer": "Write to the cluster admin."}]
+        prepare(self.config, self.hostnames, None, False, [], False, None, self.work)
+        site = json.loads((self.work / "files" / "site.json").read_text())
+        self.assertEqual(site["faq"], self.config["faq"])
 
     def test_front_build_variables(self) -> None:
         """build: front builds the source shipped in the package; its hash names the release, and matches the

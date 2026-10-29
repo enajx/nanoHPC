@@ -86,6 +86,82 @@
       failed_when: not quota_output.stat.exists
       when: not ansible_check_mode  # checks this deploy's result
 
+# The users' largest folders (10 GB or more) for their private usage box at login. Measured where the disk is;
+# each user's file is in /home, so nanohpc-hello on the front node reads it as that user, wherever /home is.
+- name: Measure the users' largest home folders on the home machine
+  when: nanohpc.mode | default('slurm') != 'monitor' and inventory_hostname == nanohpc.home.server
+  block:
+    - name: Install cluster-home-folders
+      ansible.builtin.copy:
+        src: "{{ nanohpc.package_files }}/cluster-home-folders"
+        dest: /usr/local/bin/cluster-home-folders
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create the largest-folders folder, where each user can read only their own file
+      ansible.builtin.file:
+        path: /home/.nanohpc-home-folders
+        state: directory
+        owner: root
+        group: root
+        mode: "0711"
+
+    - name: Install the largest-folders service and hourly timer
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/nanohpc-home-folders.{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {% if item == 'service' %}
+          [Unit]
+          Description=Measure the users' largest home folders (nanoHPC)
+          RequiresMountsFor=/home
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/cluster-home-folders --home-root /home --output-dir /home/.nanohpc-home-folders \
+            --min-folder-bytes 10737418240 {{ nanohpc.home.policy_user_args }}
+          TimeoutStartSec=50min
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=read-only
+          PrivateTmp=true
+          PrivateDevices=true
+          ProtectKernelTunables=true
+          ProtectKernelModules=true
+          ProtectControlGroups=true
+          RestrictSUIDSGID=true
+          RestrictAddressFamilies=AF_UNIX
+          ReadWritePaths=/home/.nanohpc-home-folders
+          MemoryMax=512M
+          Nice=10
+          IOSchedulingClass=idle
+          {% else %}
+          [Unit]
+          Description=Measure the users' largest home folders every hour (nanoHPC)
+
+          [Timer]
+          OnBootSec=5min
+          OnUnitActiveSec=1h
+          AccuracySec=1min
+
+          [Install]
+          WantedBy=timers.target
+          {% endif %}
+      loop: [service, timer]
+      register: folder_units
+
+    # Not started by the deploy: on a large /home it runs for a while. A timer whose boot delay is past runs at once.
+    - name: Run the largest-folders timer
+      ansible.builtin.systemd_service:
+        name: nanohpc-home-folders.timer
+        enabled: true
+        state: started
+        daemon_reload: "{{ folder_units.changed }}"
+      when: not (ansible_check_mode and folder_units is changed)  # dry run: the timer is not installed yet
+
 - name: Install the status collector on the front node
   when: inventory_hostname in groups['role_front']
   block:

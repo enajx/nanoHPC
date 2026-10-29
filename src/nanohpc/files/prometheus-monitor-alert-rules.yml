@@ -1,10 +1,13 @@
 # Alerts for machines that run jobs directly. No scheduler or shared-storage checks are assumed.
+# As in Slurm mode, every alert keeps firing for 7 days after its condition ends, so a problem that comes back
+# within those 7 days posts nothing to Slack.
 groups:
   - name: monitor-alerts
     rules:
       - alert: HealthCheckFailing
         expr: cluster_health_check_state{check!="GPU inventory matches accepted hardware"} == 2
         for: 7m
+        keep_firing_for: 7d
         labels:
           severity: critical
         annotations:
@@ -13,6 +16,7 @@ groups:
       - alert: HealthCheckWarning
         expr: cluster_health_check_state == 1
         for: 7m
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
@@ -20,6 +24,8 @@ groups:
 
       - alert: HealthChecksNotRunning
         expr: time() - cluster_health_timestamp_seconds > 900
+        for: 10m
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
@@ -28,6 +34,7 @@ groups:
       - alert: HealthChecksMissing
         expr: up{job=~"node|node-.+"} == 1 unless on(machine) cluster_health_timestamp_seconds
         for: 15m
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
@@ -36,22 +43,16 @@ groups:
       - alert: MachineMetricsMissing
         expr: up{job=~"node|node-.+"} == 0
         for: 5m
+        keep_firing_for: 7d
         labels:
           severity: critical
         annotations:
           summary: 'Prometheus cannot read metrics from {{ $labels.machine }} for 5 minutes.'
 
-      - alert: MonitorMachineOffline
-        expr: cluster_monitor_machine_health{health="Offline"} == 1
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: '{{ $labels.machine }} is offline in the latest monitor snapshot.'
-
       - alert: MonitorMachineUnhealthy
         expr: cluster_monitor_machine_health{health=~"Warning|Unknown"} == 1
         for: 2m
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
@@ -60,6 +61,7 @@ groups:
       - alert: SnapshotStale
         expr: time() - cluster_snapshot_timestamp_seconds > 120
         for: 2m
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
@@ -68,6 +70,7 @@ groups:
       - alert: GpuMetricsStale
         expr: (time() - cluster_gpu_collection_timestamp_seconds > 120) or (cluster_machine_gpu_count > 0 unless on(machine) cluster_gpu_collection_timestamp_seconds)
         for: 2m
+        keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
@@ -75,6 +78,7 @@ groups:
 
       - alert: GPUInventoryChanged
         expr: cluster_monitor_gpu_inventory_mismatch == 1
+        keep_firing_for: 7d
         labels:
           severity: critical
         annotations:

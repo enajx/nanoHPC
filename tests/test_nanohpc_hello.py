@@ -76,8 +76,11 @@ class NanohpcHelloTests(unittest.TestCase):
         self.usage.mkdir()
         (self.usage / self.user).write_text("+----------+\n| BOX-LINE |\n+----------+\n")
         self.announcements = self.directory / "announcements"
+        self.folders = self.directory / "folders"
+        self.folders.mkdir()
         source = COMMAND.read_text()
         for fixed, fake in (
+            ("/home/.nanohpc-home-folders", self.folders),
             ("/var/lib/nanohpc/monitor/status.json", self.snapshot),
             ("/etc/nanohpc/login-banner.json", settings),
             ("/var/lib/nanohpc-home-notices", self.usage),
@@ -274,6 +277,40 @@ class NanohpcHelloTests(unittest.TestCase):
         self.assertIn("Disk usage: not measured yet; it is measured every 5 minutes.", self.plain())
         self.usage.rmdir()
         self.assertIn("Disk usage: run nanohpc-hello on the front node to see it.", self.plain())
+
+    def test_largest_folders_inside_the_usage_box(self) -> None:
+        """The home machine's list of largest folders is shown inside the usage box, with the box redrawn
+        around it; before the first measurement the box says when it is measured."""
+        (self.folders / self.user).write_text(
+            "Largest folders (2026-10-29 14:05):\n  42.0 GB  ~/project  (git repo)\n"
+            "  12.5 GB  ~/project/.worktrees (2 worktrees)\n"
+        )
+        lines = [line.strip() for line in self.plain().splitlines()]
+        start = lines.index(next(line for line in lines if "BOX-LINE" in line)) - 1
+        box = lines[start : start + 7]
+        self.assertEqual(
+            [line.strip("|").strip() if line.startswith("|") else line for line in box],
+            [
+                "+" + "-" * 47 + "+",
+                "BOX-LINE",
+                "",
+                "Largest folders (2026-10-29 14:05):",
+                "42.0 GB  ~/project  (git repo)",
+                "12.5 GB  ~/project/.worktrees (2 worktrees)",
+                "+" + "-" * 47 + "+",
+            ],
+        )
+        self.assertEqual(len({len(line) for line in box}), 1, box)
+        (self.folders / self.user).unlink()
+        self.assertIn("Largest folders: not measured yet; they are measured every hour.", self.plain())
+
+    def test_largest_folders_file_cannot_send_control_codes(self) -> None:
+        """The user owns the list file: only its printable text reaches the terminal."""
+        (self.folders / self.user).write_text("Largest folders:\n\x1b]0;title\x07  1.0 GB  ~/a\x1b[2J\x08b\r\n")
+        output = self.plain()
+        for code in ("\x1b", "\x07", "\x08", "\r"):
+            self.assertNotIn(code, output)
+        self.assertIn("]0;title  1.0 GB  ~/ab", output)
 
     def test_mac_locale_and_unknown_width_still_animate(self) -> None:
         """A Mac sends LC_CTYPE=UTF-8 without LANG; that is a UTF-8 terminal and must animate."""

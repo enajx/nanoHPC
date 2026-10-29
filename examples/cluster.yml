@@ -124,6 +124,10 @@ announcements: []               # messages in the front node's login banner, sho
                                 # included): [{message: "New CUDA toolkit", show_from: 2026-10-20, until: 2026-10-22}]
                                 # add users: [alice] for a message only those users see
 
+faq: []                         # your own questions on the website's FAQ page, after the generic ones:
+                                # [{question: "Who do I ask for a larger home quota?", answer: "Write to the admins."}]
+                                # a blank line in an answer starts a new paragraph
+
 auto_deploy:
   enabled: false                # true: the front node deploys this file's repository by itself
   repository: null              # git@github.com:lab/cluster-config.git (this cluster.yml at its root)
@@ -134,3 +138,6 @@ auto_deploy:
 
 nanohpc_version: null           # the nanoHPC version this cluster is deployed with, like "0.1.0"
                                 #   (needed for auto_deploy: the front node installs exactly this version)
+
+time_zone: null                 # every machine's time zone, like Europe/Berlin or UTC (timedatectl list-timezones)
+                                #   null: each machine keeps its own

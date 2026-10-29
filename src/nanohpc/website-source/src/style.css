@@ -211,6 +211,12 @@ footer a { text-decoration: underline; }
 .user-guide section { padding: 12px 0 30px; margin-bottom: 24px; }
 .user-guide h2 { font-size: 24px; margin-bottom: 22px; }
 .user-guide h3 { font-size: 17px; }
+/* FAQ: one card per question, closed until clicked. */
+.faq-search { display: block; width: 100%; box-sizing: border-box; padding: 12px 16px; font: inherit; font-size: 16px; color: inherit; }
+.faq details { margin-bottom: 16px; }
+.faq summary { cursor: pointer; padding: 16px 20px; font-size: 18px; font-weight: 700; }
+.faq-answer { padding: 0 20px 6px; }
+.faq-answer pre { margin-bottom: 20px; }
 .user-guide p { font-size: 16px; color: #37443e; }
 .user-guide pre { margin: 18px 0; font-size: 14px; }
 .partition-summary code { display: block; }

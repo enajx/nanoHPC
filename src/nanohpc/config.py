@@ -9,6 +9,7 @@ import datetime
 import ipaddress
 import re
 import subprocess
+import zoneinfo
 from collections.abc import Hashable, Mapping
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ TOP_FIELDS = (
     "auto_deploy",
     "nanohpc_version",
     "announcements",
+    "time_zone",
+    "faq",
 )
 
 POLICY_DEFAULTS: dict[str, Any] = {
@@ -908,6 +911,8 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "auto_deploy": with_defaults(checker, top.get("auto_deploy"), "auto_deploy", AUTO_DEPLOY_DEFAULTS),
         "nanohpc_version": top.get("nanohpc_version"),
         "announcements": check_announcements(checker, top.get("announcements"), users),
+        "time_zone": check_time_zone(checker, top.get("time_zone")),
+        "faq": check_faq(checker, top.get("faq")),
     }
     check_capacity(checker, machines, partitions, config["policy"])
     home = config["home"]
@@ -1003,6 +1008,37 @@ def check_announcements(checker: Checker, value: Any, users: list[dict[str, Any]
                         checker.fail(f"{path}.users[{user_index}]", "must name a configured user")
         announcements.append(entry)
     return announcements
+
+
+def check_time_zone(checker: Checker, value: Any) -> str | None:
+    """Check the optional time zone of every machine: an IANA name from this computer's zone list (each
+    machine's own list is checked again during the deploy). None keeps each machine's own zone."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in zoneinfo.available_timezones():
+        checker.fail("time_zone", f"{value!r} is not a known time zone: use a name such as Europe/Berlin or UTC")
+        return None
+    return value
+
+
+def check_faq(checker: Checker, value: Any) -> list[dict[str, Any]]:
+    """Validate the administrator's own website FAQ entries: a question and its answer, both text."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        checker.fail("faq", "must be a list")
+        return []
+    entries: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        path = f"faq[{index}]"
+        entry = checker.mapping(item, path, ("question", "answer"), ())
+        if entry is None:
+            continue
+        for key in ("question", "answer"):
+            if key in entry and (not isinstance(entry[key], str) or not entry[key].strip()):
+                checker.fail(f"{path}.{key}", "must be non-empty text")
+        entries.append(entry)
+    return entries
 
 
 def check_auto_deploy(checker: Checker, config: dict[str, Any]) -> None:

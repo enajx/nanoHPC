@@ -23,7 +23,7 @@ from nanohpc.probe import Disk, MachineFacts
 from nanohpc.wizard import Dependencies, WizardApp
 from nanohpc.wizard.app import WizardScreen
 from nanohpc.wizard.dialogs import AddressScreen, ChoiceScreen, MessageScreen, ProblemsScreen, WorkingScreen
-from nanohpc.wizard.state import disk_problem, scratch_warning
+from nanohpc.wizard.state import EXTRAS, disk_problem, error_step, scratch_warning
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "cluster.yml"
@@ -463,6 +463,32 @@ class ReviewTest(unittest.IsolatedAsyncioTestCase):
                 await go(pilot, 6)
                 self.assertEqual(len(app.screen.query_one("#errors", ListView).children), 0)
                 self.assertIn("is valid", text(app, ".ok"))
+
+
+class TimeZoneTest(unittest.IsolatedAsyncioTestCase):
+    """Extras asks for the optional time zone; an unknown one is an error shown there, empty keeps each machine's own."""
+
+    async def test_unknown_valid_and_empty_time_zone(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await go(pilot, 5)
+                await fill(pilot, {"#time-zone": "Mars/Olympus"})
+                await go(pilot, 6)
+                errors = [str(item.name) for item in app.screen.query_one("#errors", ListView).query("ListItem")]
+                self.assertEqual(len(errors), 1, errors)
+                self.assertTrue(errors[0].startswith("time_zone "), errors)
+                self.assertEqual(error_step(errors[0]), EXTRAS)
+                await go(pilot, 5)
+                await fill(pilot, {"#time-zone": "Europe/Berlin"})
+                await go(pilot, 6)
+                self.assertEqual(len(app.screen.query_one("#errors", ListView).children), 0)
+                self.assertEqual(app.state.file.get(["time_zone"]), "Europe/Berlin")
+                await go(pilot, 5)
+                await fill(pilot, {"#time-zone": ""})
+                self.assertIn("time_zone", app.state.file.as_text())
+                self.assertIsNone(app.state.file.get(["time_zone"]))
 
 
 class UidTest(unittest.IsolatedAsyncioTestCase):

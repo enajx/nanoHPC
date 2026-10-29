@@ -1,0 +1,54 @@
+# Only members of the sudo group can use su, so other users cannot try root's password. `requisite` refuses at
+# once ("su: Permission denied"), without asking for a password. Root keeps su through pam_rootok, which comes
+# first. Console login, sudo, and SSH use other PAM files.
+- name: Read su's PAM setup
+  ansible.builtin.slurp:
+    src: /etc/pam.d/su
+  register: su_pam
+
+- name: Stop unless root comes first and there is exactly one pam_wheel line to change
+  vars:
+    su_pam_lines: "{{ (su_pam.content | b64decode).splitlines() }}"
+    su_pam_rootok: "{{ su_pam_lines | select('match', '^auth\\s+sufficient\\s+pam_rootok\\.so\\s*$') | list }}"
+    su_pam_wheel: "{{ su_pam_lines | select('match', '^#?\\s*auth\\s+(required|requisite)\\s+pam_wheel\\.so(\\s+group=sudo)?\\s*$') | list }}"
+  ansible.builtin.assert:
+    that:
+      - su_pam_rootok | length == 1
+      - su_pam_wheel | length == 1
+      - su_pam_lines.index(su_pam_rootok[0]) < su_pam_lines.index(su_pam_wheel[0])
+    fail_msg: >-
+      {{ inventory_hostname }}: /etc/pam.d/su is not Ubuntu's file as nanoHPC expects (one 'auth sufficient
+      pam_rootok.so' line, then one pam_wheel.so line), so nanoHPC cannot limit su to the sudo group. Nothing changed.
+    quiet: true
+
+- name: Save a copy of su's PAM setup before the first change
+  ansible.builtin.copy:
+    src: /etc/pam.d/su
+    dest: /root/pam-su.before-nanohpc
+    remote_src: true
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Allow su only for the sudo group
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/su
+    regexp: '^#?\s*auth\s+(required|requisite)\s+pam_wheel\.so(\s+group=sudo)?\s*$'
+    line: auth       requisite  pam_wheel.so group=sudo
+
+# The checks give su no input: otherwise it waits for a password until the timeout. A dry run changes nothing, so
+# su would still ask everyone for the password.
+- name: Check that su refuses a user outside the sudo group without asking for a password
+  ansible.builtin.shell: timeout 10 runuser -u nobody -- script -qec "su root -c true" /dev/null </dev/null
+  register: su_refused
+  changed_when: false
+  failed_when: "'Password:' in su_refused.stdout or 'Permission denied' not in su_refused.stdout"
+  when: not ansible_check_mode
+
+- name: Check that su still asks an administrator for root's password
+  ansible.builtin.shell: timeout 10 runuser -u {{ nanohpc.admins[0] | quote }} -- script -qec "su root -c true" /dev/null </dev/null
+  register: su_allowed
+  changed_when: false
+  failed_when: "'Password:' not in su_allowed.stdout"
+  when: not ansible_check_mode

@@ -71,6 +71,11 @@ class SlurmConfTest(unittest.TestCase):
             self.assertIn(line + "\n", conf)
         self.assertIn("TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1", conf)
 
+    def test_job_mail_goes_to_the_slack_mail_program(self) -> None:
+        """Slurm sends job mail only to nanoHPC's mail program, which queues Slack messages; never email."""
+        conf = render(config_of(), names(config_of()), False).slurm_conf
+        self.assertIn("MailProg=/usr/local/bin/nanohpc-slack-mail\n", conf)
+
     def test_simulated_cluster_accepts_smaller_vms(self) -> None:
         self.assertNotIn("config_overrides", render(config_of(), names(config_of()), False).slurm_conf)
         self.assertIn("SlurmdParameters=config_overrides\n", render(config_of(), names(config_of()), True).slurm_conf)

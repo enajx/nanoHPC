@@ -164,7 +164,10 @@
       ExecStart={{ prometheus_dir }}/prometheus --config.file=/etc/nanohpc/prometheus/{{ item.config }} \
         --storage.tsdb.path={{ item.data }} --storage.tsdb.retention.time={{ item.retention }} \
         --storage.tsdb.retention.size={{ item.size }} --web.listen-address=127.0.0.1:{{ item.port }} \
-        --query.timeout=15s --query.max-concurrency={{ item.concurrency }} --query.max-samples={{ item.samples }}
+        --query.timeout=15s --query.max-concurrency={{ item.concurrency }} --query.max-samples={{ item.samples }} \
+        --rules.alert.resend-delay=5m
+      # A reload keeps the alerts' state (pending, firing, kept firing for 7 days); a restart loses it.
+      ExecReload=/bin/kill -HUP $MAINPID
       Restart=on-failure
       RestartSec=5
       NoNewPrivileges=true
@@ -191,13 +194,17 @@
     label: "{{ item.unit }}"
   register: prometheus_units
 
+# A changed configuration or rules file only reloads Prometheus, so Slack gets nothing again for alerts already
+# posted. Its resend delay of 5 minutes makes Alertmanager hold each alert for 20 minutes: after a restart, a
+# problem still there fires again before then and is not posted again.
 - name: Run the detail Prometheus
   ansible.builtin.systemd_service:
     name: nanohpc-prometheus
     enabled: true
     daemon_reload: "{{ prometheus_units.changed }}"
     state: >-
-      {{ 'restarted' if (prometheus_units.changed or detail_config.changed or daily_rules.changed or alert_rules.changed) else 'started' }}
+      {{ 'restarted' if prometheus_units.changed else 'reloaded' if (detail_config.changed or daily_rules.changed
+         or alert_rules.changed) else 'started' }}
   when: not (ansible_check_mode and prometheus_units is changed)  # dry run: the service is not installed yet
 
 - name: Run the history Prometheus
