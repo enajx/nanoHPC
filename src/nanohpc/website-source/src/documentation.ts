@@ -30,6 +30,8 @@ export type GuideValues = {
   home_quota_hard_gb: string
   scratch_cleanup_days: string
   interactive_machine_rule?: string
+  priority_rule: string
+  resubmit_rule: string
 }
 
 /** Placeholders for docs.md and policy.md; the deploy replaces each {{name}} with the value from site.json. */
@@ -40,6 +42,8 @@ export const templateValues: GuideValues = {
   home_quota_hard_gb: '{{home_quota_hard_gb}}',
   scratch_cleanup_days: '{{scratch_cleanup_days}}',
   interactive_machine_rule: '{{interactive_machine_rule}}',
+  priority_rule: '{{priority_rule}}',
+  resubmit_rule: '{{resubmit_rule}}',
 }
 
 /** The page's values, from site.json. */
@@ -51,6 +55,8 @@ export function siteValues(site: SiteSettings): GuideValues {
     home_quota_hard_gb: String(site.home_quota_hard_gb),
     scratch_cleanup_days: String(site.scratch_cleanup_days),
     interactive_machine_rule: site.interactive_machine_rule ?? '',
+    priority_rule: site.priority_rule,
+    resubmit_rule: site.resubmit_rule,
   }
 }
 
@@ -126,30 +132,37 @@ export function guideTopics(values: GuideValues): GuideTopic[] {
 /** One FAQ question; command is an optional code box after the text. */
 export type FaqEntry = { question: string; text: string[]; command?: string }
 
-/** The generic FAQ questions, true on every nanoHPC cluster, shown before the administrator's own from cluster.yml. */
-export const faqEntries: FaqEntry[] = [
-  { question: 'Can I use a specific version of CMake?', text: [
-    'Yes, and you do not need an admin or root: install it in your home with uv. Your home is shared, so every compute machine sees the same CMake. Do not rely on a system CMake: not every machine has one. Run your build inside a job, like any install.',
-    'Kitware, who make CMake, publish official CMake builds on PyPI as the cmake package; it is the normal cmake program, not a Python tool. uv tool install puts a cmake command in ~/.local/bin. If your project is a uv project, uv add --dev cmake records the version in the project instead, so every job gets the same one; --dev keeps CMake out of what people get when they install your package. Run it with uv run cmake.',
-  ], command: '# Any project:\nuv tool install cmake==3.30.5\ncmake --version\n\n# In a uv project:\nuv add --dev cmake==3.30.5\nuv run cmake --version' },
-  { question: 'Why is my job still pending?', text: [
-    'squeue --me shows the reason in its last column. Resources: no machine has the CPUs, memory, or GPUs you asked for free yet. Priority: other jobs are ahead of yours; the Cluster policy page explains the ranking. A reason that starts with QOS: you reached a per-user limit of that partition or of the whole cluster, such as the most GPUs one user may have, listed on the Cluster policy page; the job starts when some of your other jobs end. AssocMaxJobsLimit: your home is over its limit; new jobs wait until you clear space. Your home usage shows when you log in.',
-  ], command: 'squeue --me\nscontrol show job JOBID' },
-  { question: 'My job ended with OUT_OF_MEMORY. What do I do?', text: [
-    'Memory is enforced: a job that uses more memory than it asked for is stopped. Without --mem, a job gets the partition’s default memory per CPU, shown on the Cluster policy page. Ask for more with --mem; the request must fit on one machine, and the Machines page lists each machine’s RAM. sacct shows how much memory a finished job used (MaxRSS).',
-  ], command: 'sacct -j JOBID --format=JobID,State,ReqMem,MaxRSS\n\n# In job.sh:\n#SBATCH --mem=64G' },
-  { question: 'Can I do a dry run of a job before submitting it?', text: [
-    'Yes: add --test-only to sbatch. Slurm checks your script and the resources it asks for, then prints when and on which machine the job would start. No job is submitted, nothing is reserved, and the script does not run. The same flag works with srun and salloc.',
-    'If the machines are busy, it prints a later start time. That time is an estimate: it assumes running jobs use their full time limit, so the real start is often sooner. If no machine that is up can take the request (too many GPUs, too much memory or time), it prints the reason at once, for example Requested node configuration is not available. A machine that is down counts as not there.',
-    'It cannot find errors inside your script, such as a wrong path or a missing package: for those, run a short real job.',
-  ], command: 'sbatch --test-only job.sh\n# Example output:\n# sbatch: Job 1234 to start at 2026-11-06T15:46:21 using 4 processors on nodes NODE in partition PARTITION' },
-]
+/** The generic FAQ questions, true on every nanoHPC cluster, shown before the administrator's own from cluster.yml.
+ * The answer on resubmitting follows the cluster's priority settings. */
+export function faqEntries(values: GuideValues): FaqEntry[] {
+  return [
+    { question: 'Can I use a specific version of CMake?', text: [
+      'Yes, and you do not need an admin or root: install it in your home with uv. Your home is shared, so every compute machine sees the same CMake. Do not rely on a system CMake: not every machine has one. Run your build inside a job, like any install.',
+      'Kitware, who make CMake, publish official CMake builds on PyPI as the cmake package; it is the normal cmake program, not a Python tool. uv tool install puts a cmake command in ~/.local/bin. If your project is a uv project, uv add --dev cmake records the version in the project instead, so every job gets the same one; --dev keeps CMake out of what people get when they install your package. Run it with uv run cmake.',
+    ], command: '# Any project:\nuv tool install cmake==3.30.5\ncmake --version\n\n# In a uv project:\nuv add --dev cmake==3.30.5\nuv run cmake --version' },
+    { question: 'Why is my job still pending?', text: [
+      'squeue --me shows the reason in its last column. Resources: no machine has the CPUs, memory, or GPUs you asked for free yet. Priority: other jobs are ahead of yours; the Cluster policy page explains the ranking. A reason that starts with QOS: you reached a per-user limit of that partition or of the whole cluster, such as the most GPUs one user may have, listed on the Cluster policy page; the job starts when some of your other jobs end. AssocMaxJobsLimit: your home is over its limit; new jobs wait until you clear space. Your home usage shows when you log in.',
+    ], command: 'squeue --me\nscontrol show job JOBID' },
+    { question: 'My job ended with OUT_OF_MEMORY. What do I do?', text: [
+      'Memory is enforced: a job that uses more memory than it asked for is stopped. Without --mem, a job gets the partition’s default memory per CPU, shown on the Cluster policy page. Ask for more with --mem; the request must fit on one machine, and the Machines page lists each machine’s RAM. sacct shows how much memory a finished job used (MaxRSS).',
+    ], command: 'sacct -j JOBID --format=JobID,State,ReqMem,MaxRSS\n\n# In job.sh:\n#SBATCH --mem=64G' },
+    { question: 'Can I do a dry run of a job before submitting it?', text: [
+      'Yes: add --test-only to sbatch. Slurm checks your script and the resources it asks for, then prints when and on which machine the job would start. No job is submitted, nothing is reserved, and the script does not run. The same flag works with srun and salloc.',
+      'If the machines are busy, it prints a later start time. That time is an estimate: it assumes running jobs use their full time limit, so the real start is often sooner. If no machine that is up can take the request (too many GPUs, too much memory or time), it prints the reason at once, for example Requested node configuration is not available. A machine that is down counts as not there.',
+      'It cannot find errors inside your script, such as a wrong path or a missing package: for those, run a short real job.',
+    ], command: 'sbatch --test-only job.sh\n# Example output:\n# sbatch: Job 1234 to start at 2026-11-06T15:46:21 using 4 processors on nodes NODE in partition PARTITION' },
+    { question: 'If I cancel my job and resubmit it, do I lose priority?', text: [values.resubmit_rule] },
+  ]
+}
 
-export const policyExplanation = {
-  title: 'Queue ranking',
-  text: 'GPU-hours are allocated GPU count multiplied by runtime. CPU and RAM do not contribute to fair-share usage. Usage counts half after the configured fair-share half-life (45 days by default). The more of the cluster’s recent GPU-hours you used compared with your equal share, the lower your fair-share factor. Waiting time also contributes to priority. Running jobs are not interrupted by ranking, and priority does not guarantee a start time.',
-  command: 'sshare -al\nsprio',
-  liveSummary: 'The partition names, default partition, time limits, and machines are live values. Open the website policy page for the current partition summary.',
+/** The Cluster policy page's ranking explanation; the short-job bonus and waiting-time sentences follow the cluster's settings. */
+export function policyExplanation(values: GuideValues) {
+  return {
+    title: 'Queue ranking',
+    text: `GPU-hours are allocated GPU count multiplied by runtime. CPU and RAM do not contribute to fair-share usage. Usage counts half after the configured fair-share half-life (45 days by default). The more of the cluster’s recent GPU-hours you used compared with your equal share, the lower your fair-share factor. ${values.priority_rule} Running jobs are not interrupted by ranking, and priority does not guarantee a start time.`,
+    command: 'sshare -al\nsprio',
+    liveSummary: 'The partition names, default partition, time limits, and machines are live values. Open the website policy page for the current partition summary.',
+  }
 }
 
 function markdownCode(value: string): string {
@@ -179,5 +192,6 @@ export function docsMarkdown(values: GuideValues): string {
 
 /** Generate the static policy explanation, with the changing partition data left live. */
 export function policyMarkdown(values: GuideValues): string {
-  return `# ${values.cluster_name} cluster policy\n\n> Static explanation of queue policy. The partition summary changes with Slurm, so read it on the website.\n\n[Open the live policy page](./#policy)\n\n## ${policyExplanation.title}\n\n${policyExplanation.text}\n\n${markdownCode(policyExplanation.command)}\n\n## Live partition summary\n\n${policyExplanation.liveSummary}\n`
+  const explanation = policyExplanation(values)
+  return `# ${values.cluster_name} cluster policy\n\n> Static explanation of queue policy. The partition summary changes with Slurm, so read it on the website.\n\n[Open the live policy page](./#policy)\n\n## ${explanation.title}\n\n${explanation.text}\n\n${markdownCode(explanation.command)}\n\n## Live partition summary\n\n${explanation.liveSummary}\n`
 }

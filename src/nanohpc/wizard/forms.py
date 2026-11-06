@@ -29,6 +29,7 @@ class PartitionsStep(Step):
         "fairshare_half_life": "fair-share half-life",
         "age_weight": "waiting-time weight",
         "age_max": "waiting time counted up to",
+        "short_job_bonus": "short-job bonus (0 at the default partition's max time)",
     }
 
     def compose(self) -> ComposeResult:

@@ -1,5 +1,5 @@
 -- Shared rules. The tables above this line are generated per cluster:
--- submit_limit, default_partition, job_types (batch | interactive | any), walls (minutes), gpu_limits,
+-- submit_limit, short_job_bonus, default_partition, job_types (batch | interactive | any), walls (minutes), gpu_limits,
 -- interactive_machine_limits (minutes), interactive_machines (shared nodes by batch partition).
 local jobs_snapshot = nil
 local unconfirmed_submissions = {}
@@ -124,6 +124,7 @@ function slurm_job_submit(job_desc, part_list, submit_uid)
         slurm.log_user("Rejected: limit is %d running and pending jobs per user across all partitions. Array tasks count separately. Wait for jobs to finish or cancel your own pending jobs.", submit_limit)
         return slurm.ERROR
     end
+    local longest = nil
     for partition in (job_desc.partition or default_partition):gmatch("[^,]+") do
         local job_type = job_types[partition]
         if job_type == "batch" and job_desc.script == nil then
@@ -141,6 +142,7 @@ function slurm_job_submit(job_desc, part_list, submit_uid)
         end
         local time_limit = job_desc.time_limit
         if time_limit == nil or time_limit == slurm.NO_VAL then time_limit = wall end
+        if time_limit then longest = math.max(longest or 0, time_limit) end
         if keep_off_interactive_machines(job_desc, partition, time_limit) ~= slurm.SUCCESS then
             return slurm.ERROR
         end
@@ -149,6 +151,11 @@ function slurm_job_submit(job_desc, part_list, submit_uid)
             slurm.log_user("Rejected: %s allows at most %d GPUs for one user at a time. Request fewer GPUs or choose another partition.", partition, gpu_limits[partition])
             return slurm.ERROR
         end
+    end
+    -- Short-job bonus: short_job_bonus points that fall in a straight line to 0 at the default partition's
+    -- time limit. Slurm adds site_factor to the job's priority (the SITE column of sprio).
+    if longest then
+        job_desc.site_factor = math.floor(short_job_bonus * math.max(0, 1 - longest / walls[default_partition]) + 0.5)
     end
     local pending = (unconfirmed_submissions[job_desc.user_id] or 0) + requested_tasks(job_desc.array_inx)
     unconfirmed_submissions[job_desc.user_id] = pending

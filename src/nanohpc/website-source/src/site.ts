@@ -12,6 +12,8 @@
  *     "home_quota_hard_gb": int,
  *     "scratch_cleanup_days": int   // staged scratch data unused this long is deleted
  *     "interactive_machine_rule": str // configured placement rule, empty when unset
+ *     "priority_rule": str          // the short-job bonus and waiting-time sentences of the Cluster policy page
+ *     "resubmit_rule": str          // the FAQ answer on cancelling and resubmitting a job
  *     "faq": [{"question": str, "answer": str}] // optional; the administrator's own FAQ entries
  *     "demo": bool                    // optional; generated sample site only
  *   }
@@ -28,6 +30,8 @@ export type SiteSettings = {
   home_quota_hard_gb: number
   scratch_cleanup_days: number
   interactive_machine_rule?: string
+  priority_rule: string
+  resubmit_rule: string
   faq?: SiteFaqEntry[]
   demo?: boolean
 }
@@ -45,7 +49,7 @@ export type MonitorSiteSettings = {
 
 export type LoadedSiteSettings = SiteSettings | MonitorSiteSettings
 
-const settingNames = ['cluster_name', 'logo', 'login_address', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'interactive_machine_rule', 'faq', 'demo']
+const settingNames = ['cluster_name', 'logo', 'login_address', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'interactive_machine_rule', 'priority_rule', 'resubmit_rule', 'faq', 'demo']
 const requiredNames = settingNames.filter(name => name !== 'demo' && name !== 'interactive_machine_rule' && name !== 'faq')
 
 /** Check site.json's content against the contract above and name the first problem. */
@@ -72,7 +76,7 @@ export function checkSiteSettings(value: unknown): LoadedSiteSettings {
   const unknown = names.filter(name => !settingNames.includes(name))
   const missing = requiredNames.filter(name => !names.includes(name))
   if (unknown.length || missing.length) throw new Error(`site.json: unknown settings [${unknown.join(', ')}], missing settings [${missing.join(', ')}]`)
-  for (const name of ['cluster_name', 'login_address']) {
+  for (const name of ['cluster_name', 'login_address', 'priority_rule', 'resubmit_rule']) {
     if (typeof settings[name] !== 'string' || !settings[name]) throw new Error(`site.json: ${name} must be a non-empty string`)
   }
   for (const name of ['home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days']) {

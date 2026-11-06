@@ -81,8 +81,9 @@ policy:
   default_memory_mb_per_cpu: 1024
   fairshare_weight: 40000
   fairshare_half_life: 45-00:00:00
-  age_weight: 1000
+  age_weight: 0
   age_max: 7-00:00:00
+  short_job_bonus: 5000
 home:
   quota_soft_gb: 300
   quota_hard_gb: 400

@@ -202,6 +202,8 @@ class PrepareTest(unittest.TestCase):
                 "home_quota_hard_gb": 400,
                 "scratch_cleanup_days": 14,
                 "interactive_machine_rule": "A main job asking for more than 4 hours does not run on the interactive partition's shared machines (gpu4), which are kept free for interactive shells. Leave out --nodelist for those machines on longer jobs.",
+                "priority_rule": "Jobs with a shorter --time get a bonus of up to 5000 points that falls in a straight line to 0 at the main partition's time limit (24:00:00); it shows in the SITE column of sprio. Waiting time does not add priority.",
+                "resubmit_rule": "No. Priority comes from the GPU-hours you used over time (fair share) and the --time you ask for, and it is recomputed every minute. Cancelling and resubmitting does not change these, so it does not lower your priority.",
                 "faq": [],
             },
         )

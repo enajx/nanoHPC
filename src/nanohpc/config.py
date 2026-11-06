@@ -45,8 +45,9 @@ POLICY_DEFAULTS: dict[str, Any] = {
     "default_memory_mb_per_cpu": 8192,
     "fairshare_weight": 40000,
     "fairshare_half_life": "45-00:00:00",
-    "age_weight": 1000,
+    "age_weight": 0,
     "age_max": "7-00:00:00",
+    "short_job_bonus": 5000,
 }
 HOME_DEFAULTS: dict[str, Any] = {"quota_soft_gb": 300, "quota_hard_gb": 400}
 SCRATCH_DEFAULTS: dict[str, Any] = {"cleanup_days": 14, "job_retention_days": 7}
@@ -749,9 +750,12 @@ def check_policy(checker: Checker, value: Any) -> dict[str, Any]:
         "default_cpus_per_gpu",
         "default_memory_mb_per_cpu",
         "fairshare_weight",
-        "age_weight",
     ):
         checker.positive(policy[key], f"policy.{key}")
+    # 0 turns these priority parts off.
+    for key in ("age_weight", "short_job_bonus"):
+        if not whole(policy[key]) or policy[key] < 0:
+            checker.fail(f"policy.{key}", "must be 0 or a positive integer")
     checker.gpu_limit(policy["max_gpus_per_user"], "policy.max_gpus_per_user")
     for key in ("fairshare_half_life", "age_max"):
         checker.matches(policy[key], SLURM_TIME, f"policy.{key}", 'a Slurm time in quotes, like "7-00:00:00"')

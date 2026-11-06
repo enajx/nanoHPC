@@ -190,13 +190,14 @@ ONLY: dict[str, Part] = {
     "policy": Part(
         "policy",
         ("front", "compute"),
-        "QoS, fair-share, and limits (slurm.conf, job_submit.lua, Slurm's QoS); Slurm restarts where they changed",
+        "QoS, fair-share, the short-job bonus, and limits (slurm.conf, job_submit.lua, Slurm's QoS); Slurm restarts"
+        " where they changed; the website's site data (priority rules) and the pages filled from it",
     ),
     "partitions": Part(
         "partitions",
         ("front", "compute"),
         "partitions and GPUs (slurm.conf and gres.conf on every Slurm machine, job_submit.lua, Slurm's QoS; Slurm"
-        " restarts where they changed), and the website's policy data",
+        " restarts where they changed), and the website's policy data and site data (priority rules)",
     ),
     "node": Part(
         "node",
@@ -575,8 +576,49 @@ def site_data(config: dict[str, Any]) -> dict[str, Any]:
         "home_quota_hard_gb": config["home"]["quota_hard_gb"],
         "scratch_cleanup_days": config["scratch"]["cleanup_days"],
         "interactive_machine_rule": " ".join(rules),
+        "priority_rule": priority_rule(config),
+        "resubmit_rule": resubmit_rule(config),
         "faq": config["faq"],
     }
+
+
+def priority_rule(config: dict[str, Any]) -> str:
+    """Return the website's sentences on the short-job bonus and waiting time, from the policy in cluster.yml."""
+    policy = config["policy"]
+    sentences = []
+    if policy["short_job_bonus"] > 0:
+        name, partition = next((name, p) for name, p in config["partitions"].items() if p["default"])
+        sentences.append(
+            f"Jobs with a shorter --time get a bonus of up to {policy['short_job_bonus']} points that falls in a "
+            f"straight line to 0 at the {name} partition's time limit ({partition['max_time']}); it shows in the "
+            "SITE column of sprio."
+        )
+    if policy["age_weight"] > 0:
+        sentences.append(
+            f"Waiting time also adds priority, up to {policy['age_weight']} points after {policy['age_max']} of waiting."
+        )
+    else:
+        sentences.append("Waiting time does not add priority.")
+    return " ".join(sentences)
+
+
+def resubmit_rule(config: dict[str, Any]) -> str:
+    """Return the FAQ answer on cancelling and resubmitting a job, from the policy in cluster.yml."""
+    policy = config["policy"]
+    parts = ["the GPU-hours you used over time (fair share)"]
+    if policy["short_job_bonus"] > 0:
+        parts.append("the --time you ask for")
+    if policy["age_weight"] > 0:
+        parts.append("how long the job has waited")
+        return (
+            f"Yes: priority comes from {', '.join(parts[:-1])}, and {parts[-1]}. A resubmitted job starts waiting "
+            "again from zero, so it loses the waiting-time priority the cancelled job had gained. Your fair share "
+            "does not change."
+        )
+    return (
+        f"No. Priority comes from {' and '.join(parts)}, and it is recomputed every minute. Cancelling and "
+        "resubmitting does not change these, so it does not lower your priority."
+    )
 
 
 def monitor_machines(config: dict[str, Any]) -> dict[str, dict[str, Any]]:

@@ -250,6 +250,9 @@ class NewClusterTest(unittest.IsolatedAsyncioTestCase):
                 # 4 Partitions: the defaults; 5 Website: the placeholder hostname is an error until changed.
                 await go(pilot, 3)
                 self.assertEqual(app.screen.query_one("#partition-table", DataTable).row_count, 1)
+                # The priority fields show nanoHPC's defaults: no waiting-time points, a short-job bonus of 5000.
+                self.assertEqual(app.screen.query_one("#policy-age_weight", Input).placeholder, "0")
+                self.assertEqual(app.screen.query_one("#policy-short_job_bonus", Input).placeholder, "5000")
                 await go(pilot, 6)
                 self.assertIn("placeholder", text(app, "#errors ListItem Label"))
                 await go(pilot, 4)
