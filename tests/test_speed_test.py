@@ -1,17 +1,42 @@
 """Run the installed speed-test command against local files and inspect its exporter output."""
 
+import functools
 import hashlib
+import http.server
+import importlib.machinery
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import types
 import unittest
+import unittest.mock
 from pathlib import Path
+from typing import Any
 
 import jinja2
 import yaml
 
 SCRIPT = Path(__file__).resolve().parents[1] / "src/nanohpc/files/cluster-speed-test"
 ROLE = Path(__file__).resolve().parents[1] / "src/nanohpc/ansible/roles/machine_metrics/tasks/main.yml"
+
+
+class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    """Serve files from a folder without logging each request."""
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+def serve(test: unittest.TestCase, folder: Path) -> int:
+    """Serve the folder over HTTP on 127.0.0.1 for the length of the test; return the port."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(QuietHandler, directory=str(folder)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    test.addCleanup(server.server_close)
+    test.addCleanup(server.shutdown)
+    return server.server_address[1]
 
 
 class SpeedTestCommandTests(unittest.TestCase):
@@ -85,7 +110,7 @@ class SpeedTestCommandTests(unittest.TestCase):
                     "--output",
                     str(output),
                     "--url",
-                    source.as_uri(),
+                    f"http://127.0.0.1:{serve(self, base)}/download.bin",
                     "--large-mb",
                     "4",
                     "--small-files",
@@ -122,7 +147,7 @@ class SpeedTestCommandTests(unittest.TestCase):
                     "--output",
                     str(output),
                     "--url",
-                    source.as_uri(),
+                    f"http://127.0.0.1:{serve(self, base)}/download.bin",
                     "--internet-seconds",
                     "1",
                 ],
@@ -135,3 +160,36 @@ class SpeedTestCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DownloadTests(unittest.TestCase):
+    """The download moves past server addresses that never answer."""
+
+    def test_address_that_never_answers_is_skipped(self) -> None:
+        """A network that drops one of a server's addresses must not make the download read 0.
+
+        Injected: the name resolves to an address that never answers (192.0.2.1, a reserved test address), then to
+        a local server. The download must move on within a few seconds and report a speed above 0.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            (base / "download.bin").write_bytes(b"a" * (4 * 1024 * 1024))
+            port = serve(self, base)
+            loader = importlib.machinery.SourceFileLoader("cluster_speed_test", str(SCRIPT))
+            module = types.ModuleType(loader.name)
+            loader.exec_module(module)
+            real_getaddrinfo = socket.getaddrinfo
+
+            def getaddrinfo(host: str, *args: Any, **kwargs: Any) -> list[Any]:
+                if host != "speed-test.invalid":
+                    return real_getaddrinfo(host, *args, **kwargs)
+                return [
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port)),
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+                ]
+
+            with unittest.mock.patch("socket.getaddrinfo", getaddrinfo):
+                start = time.monotonic()
+                speed = module.download(f"http://speed-test.invalid:{port}/download.bin", 3)
+            self.assertGreater(speed, 0)
+            self.assertLess(time.monotonic() - start, 12)
