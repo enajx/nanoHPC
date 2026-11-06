@@ -146,6 +146,8 @@ def render_slurm_conf(config: dict[str, Any], hostnames: dict[str, str], simulat
         "ProctrackType=proctrack/cgroup",
         "TaskPlugin=task/affinity,task/cgroup",
         "JobAcctGatherType=jobacct_gather/cgroup",
+        # An interactive shell says it is on the compute node (installed before this file on compute machines).
+        "TaskProlog=/etc/slurm/nanohpc-task-prolog",
     ]
     if simulated:
         # Simulated machines are smaller VMs than the hardware written in cluster.yml.

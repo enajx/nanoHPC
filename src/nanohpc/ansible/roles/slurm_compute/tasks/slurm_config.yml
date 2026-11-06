@@ -1,6 +1,15 @@
 # slurm.conf, cgroup.conf, and this machine's gres.conf; slurmd restarts when they change (also run alone by
 # --only policy, partitions, and node).
 
+# Before slurm.conf, which names it: a missing task prolog would make every job on this machine fail.
+- name: Install the task prolog that tells an interactive shell where it is
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-task-prolog"
+    dest: /etc/slurm/nanohpc-task-prolog
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Install slurm.conf and cgroup.conf
   ansible.builtin.copy:
     src: "{{ nanohpc.files }}/{{ item }}"
