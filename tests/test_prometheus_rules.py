@@ -9,11 +9,15 @@ from pathlib import Path
 import jinja2
 import yaml
 
+from nanohpc.config import check_config
+from nanohpc.render import render_alert_settings
+
 REPO = Path(__file__).resolve().parents[1]
 RULES = REPO / "src/nanohpc/files/prometheus-daily-rules.yml"
 RULES_TEST = REPO / "tests/prometheus_daily_rules_test.yml"
 ALERT_RULES = REPO / "src/nanohpc/files/prometheus-alert-rules.yml"
 ALERT_RULES_TEST = REPO / "tests/prometheus_alert_rules_test.yml"
+ALERT_SETTINGS_TEST = REPO / "tests/prometheus_alert_settings.yml"
 MONITOR_DAILY_RULES = REPO / "src/nanohpc/files/prometheus-monitor-daily-rules.yml"
 MONITOR_ALERT_RULES = REPO / "src/nanohpc/files/prometheus-monitor-alert-rules.yml"
 EXPECTED_ALERTS = {
@@ -26,6 +30,8 @@ EXPECTED_ALERTS = {
     "BackupFailed": "critical",
     "BackupOld": "warning",
     "AutoDeployFailed": "critical",
+    "MachineBackOnline": "info",
+    "HomeLinkSlow": "warning",
 }
 EXPECTED = [
     "cluster_daily_cpu_busy_ratio",
@@ -171,6 +177,49 @@ class AlertRulesTests(unittest.TestCase):
         self.assertNotIn("Resolved", text)
         self.assertNotIn("green", text)
 
+    def test_slack_shows_a_machine_back_online_as_good_news(self) -> None:
+        """An info alert (a machine back online) is posted with a check mark, not as a problem."""
+        tasks = yaml.safe_load((REPO / "src/nanohpc/ansible/roles/alerts/tasks/main.yml").read_text())
+        task = next(task for task in tasks if task["name"] == "Install the Alertmanager configuration")
+        text = (
+            jinja2.Environment()
+            .from_string(task["vars"]["alertmanager_config_text"])
+            .render(nanohpc={"alerts": {"slack": True}, "cluster_name": "lab"})
+        )
+        slack = next(receiver for receiver in yaml.safe_load(text)["receivers"] if receiver["name"] == "slack")
+        config = slack["slack_configs"][0]
+        self.assertIn('{{ if eq .CommonLabels.severity "info" }}Back online{{ else }}Problem{{ end }}', config["title"])
+        self.assertIn(
+            '{{ if eq .Labels.severity "info" }}:white_check_mark:{{ else }}:red_circle:{{ end }}', config["text"]
+        )
+
+    def test_alert_settings_used_by_the_promtool_tests_are_nanohpcs_defaults(self) -> None:
+        """The promtool tests read the settings file nanoHPC generates for a cluster.yml without alert settings."""
+        config, errors = check_config(yaml.safe_load((REPO / "examples/cluster.yml").read_text()))
+        self.assertEqual(errors, [])
+        self.assertEqual(render_alert_settings(config), ALERT_SETTINGS_TEST.read_text())
+
+    def test_alert_settings_follow_cluster_yml(self) -> None:
+        raw = yaml.safe_load((REPO / "examples/cluster.yml").read_text())
+        raw["alerts"].update(backup_old_days=3, slow_home_mb_per_second=80)
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        rules = {
+            rule["record"]: rule["expr"] for rule in yaml.safe_load(render_alert_settings(config))["groups"][0]["rules"]
+        }
+        self.assertEqual(
+            rules,
+            {
+                "nanohpc_setting_backup_old_seconds": "vector(259200)",
+                "nanohpc_setting_slow_home_mb_per_second": "vector(80)",
+            },
+        )
+
+    def test_home_link_slow_and_backup_old_use_the_settings(self) -> None:
+        rules = {rule.get("alert"): rule for rule in yaml.safe_load(ALERT_RULES.read_text())["groups"][0]["rules"]}
+        self.assertIn("nanohpc_setting_backup_old_seconds", rules["BackupOld"]["expr"])
+        self.assertIn("nanohpc_setting_slow_home_mb_per_second", rules["HomeLinkSlow"]["expr"])
+
     def test_prometheus_keeps_alert_state_across_deploys(self) -> None:
         """A deploy that changes the configuration or rules reloads Prometheus, which keeps its alerts. A restart
         loses them; Alertmanager then holds each alert 20 minutes (4 resend delays), long enough for a problem
@@ -183,13 +232,30 @@ class AlertRulesTests(unittest.TestCase):
         run = next(task for task in tasks if task["name"] == "Run the detail Prometheus")
         state = run["ansible.builtin.systemd_service"]["state"]
         for unit, rules, expected in ((False, True, "reloaded"), (True, False, "restarted"), (False, False, "started")):
-            rendered = jinja2.Environment().from_string(state).render(
-                prometheus_units={"changed": unit},
-                detail_config={"changed": False},
-                daily_rules={"changed": False},
-                alert_rules={"changed": rules},
+            rendered = (
+                jinja2.Environment()
+                .from_string(state)
+                .render(
+                    prometheus_units={"changed": unit},
+                    detail_config={"changed": False},
+                    daily_rules={"changed": False},
+                    alert_rules={"changed": rules},
+                    alert_settings={"changed": False},
+                )
             )
             self.assertEqual(rendered.strip(), expected)
+        settings_only = (
+            jinja2.Environment()
+            .from_string(state)
+            .render(
+                prometheus_units={"changed": False},
+                detail_config={"changed": False},
+                daily_rules={"changed": False},
+                alert_rules={"changed": False},
+                alert_settings={"changed": True},
+            )
+        )
+        self.assertEqual(settings_only.strip(), "reloaded")
 
     @unittest.skipIf(shutil.which("promtool") is None, "promtool is not installed, so the alert rule tests cannot run")
     def test_promtool_alert_tests(self) -> None:
@@ -233,6 +299,7 @@ class MonitorRulesTests(unittest.TestCase):
                 "HealthChecksNotRunning",
                 "HealthChecksMissing",
                 "MachineMetricsMissing",
+                "MachineBackOnline",
                 "MonitorMachineUnhealthy",
                 "SnapshotStale",
                 "GpuMetricsStale",
@@ -245,7 +312,7 @@ class MonitorRulesTests(unittest.TestCase):
         self.assertIn("cluster_monitor_gpu_inventory_mismatch", rules["GPUInventoryChanged"]["expr"])
         for name, rule in rules.items():
             self.assertTrue(rule["expr"].strip(), name)
-            self.assertIn(rule["labels"]["severity"], ("warning", "critical"))
+            self.assertIn(rule["labels"]["severity"], ("info", "warning", "critical"))
             self.assertNotIn("Slurm", str(rule))
             self.assertNotIn("backup", str(rule).lower())
 

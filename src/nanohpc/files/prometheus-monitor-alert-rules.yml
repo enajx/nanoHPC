@@ -49,6 +49,16 @@ groups:
         annotations:
           summary: 'Prometheus cannot read metrics from {{ $labels.machine }} for 5 minutes.'
 
+      # A machine whose offline post was sent (MachineMetricsMissing firing, also in its 7 days after) reports again:
+      # posted once, as good news. Not for a short outage that never posted.
+      - alert: MachineBackOnline
+        expr: up{job=~"node|node-.+"} == 1 and on(machine) ALERTS{alertname="MachineMetricsMissing", alertstate="firing"}
+        keep_firing_for: 7d
+        labels:
+          severity: info
+        annotations:
+          summary: '{{ $labels.machine }} is back online.'
+
       - alert: MonitorMachineUnhealthy
         expr: cluster_monitor_machine_health{health=~"Warning|Unknown"} == 1
         for: 2m

@@ -227,7 +227,11 @@ class PrometheusTest(unittest.TestCase):
         self.assertEqual(prometheus["global"]["scrape_interval"], "30s")
         self.assertEqual(
             prometheus["rule_files"],
-            ["/etc/nanohpc/prometheus/daily-rules.yml", "/etc/nanohpc/prometheus/alert-rules.yml"],
+            [
+                "/etc/nanohpc/prometheus/alert-settings.yml",
+                "/etc/nanohpc/prometheus/daily-rules.yml",
+                "/etc/nanohpc/prometheus/alert-rules.yml",
+            ],
         )
         # Alerts go to the front node's Alertmanager, on localhost.
         self.assertEqual(

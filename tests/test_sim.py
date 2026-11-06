@@ -2410,7 +2410,11 @@ class SimSlackTest(SimUsersBase):
             self.health("cpu1", "sudo systemctl start nanohpc-scratch-cleanup.timer")
 
         with self.subTest("the alert rules pass their promtool tests on the front node's promtool"):
-            for relative in ("src/nanohpc/files/prometheus-alert-rules.yml", "tests/prometheus_alert_rules_test.yml"):
+            for relative in (
+                "src/nanohpc/files/prometheus-alert-rules.yml",
+                "tests/prometheus_alert_rules_test.yml",
+                "tests/prometheus_alert_settings.yml",
+            ):
                 copied = self.ssh("front", f"mkdir -p /tmp/rules/$(dirname {relative}) && cat > /tmp/rules/{relative}",
                                   stdin=(ROOT / relative).read_text())  # fmt: skip
                 self.assertEqual(copied.returncode, 0, copied.stderr)
@@ -2455,8 +2459,17 @@ class SimSlackTest(SimUsersBase):
             time.sleep(330)
             new = self.channel()[before:]
             self.assertEqual(new, [], new)
-            self.assertEqual(self.ssh("gpu4", "sudo systemctl start nanohpc-node-exporter").returncode, 0)
             self.health("cpu1", "sudo systemctl start nanohpc-scratch-cleanup.timer")
+
+        with self.subTest("a machine back from offline is posted once as back online"):
+            before = len(self.channel())
+            self.assertEqual(self.ssh("gpu4", "sudo systemctl start nanohpc-node-exporter").returncode, 0)
+            time.sleep(150)
+            new = self.channel()[before:]
+            self.assertEqual(len(new), 1, new)
+            self.assertIn("Back online", new[0])
+            self.assertIn(":white_check_mark: gpu4 is back online.", new[0])
+            self.assertEqual(self.on_front("cat /etc/nanohpc/prometheus/alert-settings.yml").count("vector("), 2)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

@@ -115,6 +115,8 @@ backup:
 alerts:
   slack: false                  # true: the webhook is NANOHPC_SLACK_WEBHOOK in .env next to this file
                                 # users with slack_id also need NANOHPC_SLACK_BOT_TOKEN in .env
+  backup_old_days: 7            # post when the last good backup is older than this
+  slow_home_mb_per_second: 50   # post when a compute machine's large-file /home read is slower, two nights in a row
 
 user_check:
   allowed_tunnels: []           # exceptions: [{user: bob, program: cloudflared, machines: [gpu4]}]

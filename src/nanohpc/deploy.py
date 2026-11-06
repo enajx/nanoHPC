@@ -720,6 +720,7 @@ def prepare(
     (files / "hosts").write_text(rendered.hosts)
     (files / "exports").write_text(rendered.home_exports)
     (files / "prometheus.yml").write_text(rendered.prometheus_yml)
+    (files / "alert-settings.yml").write_text(rendered.alert_settings)
     (files / "monitor-machines.json").write_text(json.dumps(monitor_machines(config), indent=2))
     (files / "site.json").write_text(json.dumps(site_data(config), indent=2))
     for name, text in rendered.gres_conf.items():

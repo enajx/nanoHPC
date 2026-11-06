@@ -1,6 +1,8 @@
 # promtool unit tests for src/nanohpc/files/prometheus-alert-rules.yml (run by tests/test_prometheus_rules.py).
 # cluster-health runs every 5 minutes; here a sample every minute stands for what Prometheus scrapes.
 rule_files:
+  # The settings first, so the alerts see them in the same evaluation: nanoHPC's defaults (7 days, 50 MB/s).
+  - prometheus_alert_settings.yml
   - ../src/nanohpc/files/prometheus-alert-rules.yml
 evaluation_interval: 30s
 tests:
@@ -174,23 +176,24 @@ tests:
             exp_annotations:
               summary: "The last /home backup from front failed (exit code 23)."
 
-  # An old last successful backup alerts; a daily one does not; a backup that never succeeded (0) is left to
-  # BackupFailed.
+  # A last successful backup older than alerts.backup_old_days (7 days here) alerts; a daily one does not; a backup
+  # that never succeeded (0) is left to BackupFailed.
   - interval: 1h
     input_series:
-      # Last success at hour 1, then again at hour 30.
+      # Last success at hour 1, then again at hour 200.
       - series: 'cluster_backup_last_success_timestamp_seconds{job="node",machine="front"}'
-        values: '3600x29 108000x10'
-      # Succeeds every day.
+        values: '3600x199 720000x10'
+      # Succeeds every hour.
       - series: 'cluster_backup_last_success_timestamp_seconds{job="node-store",machine="store"}'
-        values: '3600x23 86400x16'
+        values: '0+3600x210'
       - series: 'cluster_backup_last_success_timestamp_seconds{job="node-new",machine="new"}'
-        values: '0x39'
+        values: '0x210'
     alert_rule_test:
-      - eval_time: 26h
+      # 167 hours old: not yet.
+      - eval_time: 168h
         alertname: BackupOld
         exp_alerts: []
-      - eval_time: 28h
+      - eval_time: 170h
         alertname: BackupOld
         exp_alerts:
           - exp_labels:
@@ -198,9 +201,9 @@ tests:
               job: node
               machine: front
             exp_annotations:
-              summary: "The last successful /home backup from front is more than 26 hours old."
+              summary: "The last successful /home backup from front is 7d 1h 0m 0s old."
       # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
-      - eval_time: 31h
+      - eval_time: 205h
         alertname: BackupOld
         exp_alerts:
           - exp_labels:
@@ -208,7 +211,17 @@ tests:
               job: node
               machine: front
             exp_annotations:
-              summary: "The last successful /home backup from front is more than 26 hours old."
+              summary: "The last successful /home backup from front is 8d 6h 0m 0s old."
+
+  # The health check's 26-hour backup warning shows on the website but is not posted: BackupOld posts backup age.
+  - interval: 1m
+    input_series:
+      - series: 'cluster_health_check_state{job="node",machine="front",check="the last successful /home backup is less than 26 hours old"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HealthCheckWarning
+        exp_alerts: []
 
   # A machine that answers but has never written its health checks (for example its timer never ran).
   - interval: 1m
@@ -380,3 +393,71 @@ tests:
               check: metrics arrive from every machine
             exp_annotations:
               summary: 'The front node''s check "metrics arrive from every machine" has a warning about c10.'
+
+  # Back online: posted once when a machine whose offline post was sent (MachineMetricsMissing firing) reports again.
+  # Not for a short outage that never posted, and not while the machine is under maintenance.
+  - interval: 1m
+    input_series:
+      # Down from minute 2 to 9 (offline posted at minute 7), back at minute 10.
+      - series: 'up{job="node-c2",machine="c2"}'
+        values: '1 1 0 0 0 0 0 0 0 0 1 1 1 1 1'
+      # Down for 3 minutes only: never posted as offline.
+      - series: 'up{job="node-c1",machine="c1"}'
+        values: '1 0 0 0 1 1 1 1 1 1 1 1 1 1 1'
+      # Down from minute 2, under maintenance from minute 9, back at minute 10.
+      - series: 'up{job="node-c3",machine="c3"}'
+        values: '1 1 0 0 0 0 0 0 0 0 1 1 1 1 1'
+      - series: 'cluster_node_maintenance{job="node",machine="front",node="c3"}'
+        values: '0x8 1x6'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: MachineBackOnline
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: MachineBackOnline
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              job: node-c2
+              machine: c2
+            exp_annotations:
+              summary: "c2 is back online."
+      - eval_time: 14m
+        alertname: MachineBackOnline
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              job: node-c2
+              machine: c2
+            exp_annotations:
+              summary: "c2 is back online."
+
+  # Slow /home: the large-file read under alerts.slow_home_mb_per_second (50 here) in two nightly runs in a row.
+  # One slow night does not alert, nor two readings of the same run.
+  - interval: 1h
+    input_series:
+      # Runs at hours 2, 26, and 50: fast, then slow twice.
+      - series: 'cluster_machine_speed_mb_per_second{job="node-c1",machine="c1",test="home_large_read"}'
+        values: '200x25 30x49'
+      - series: 'cluster_machine_speed_timestamp_seconds{job="node-c1",machine="c1"}'
+        values: '7200x25 93600x23 180000x25'
+      # Slow, but only one run (its timer stopped).
+      - series: 'cluster_machine_speed_mb_per_second{job="node-c2",machine="c2",test="home_large_read"}'
+        values: '30x75'
+      - series: 'cluster_machine_speed_timestamp_seconds{job="node-c2",machine="c2"}'
+        values: '7200x75'
+    alert_rule_test:
+      # One slow night.
+      - eval_time: 40h
+        alertname: HomeLinkSlow
+        exp_alerts: []
+      - eval_time: 51h
+        alertname: HomeLinkSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-c1
+              machine: c1
+              test: home_large_read
+            exp_annotations:
+              summary: "c1: slow link to /home (30 MB/s reading one large file, two nights in a row)."

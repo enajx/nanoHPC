@@ -418,7 +418,7 @@ class HeterogeneousClusterTest(unittest.TestCase):
         self.assertEqual(config["home"], {"quota_soft_gb": 300, "quota_hard_gb": 400})
         self.assertEqual(config["scratch"], {"cleanup_days": 14, "job_retention_days": 7})
         self.assertIsNone(config["backup"])
-        self.assertEqual(config["alerts"], {"slack": False})
+        self.assertEqual(config["alerts"], {"slack": False, "backup_old_days": 7, "slow_home_mb_per_second": 50})
 
         self.assertEqual(
             config["auto_deploy"],
@@ -958,6 +958,16 @@ class InvalidConfigTest(unittest.TestCase):
                 "auto_deploy.repository is required when auto_deploy.enabled is true",
             ),
             ("slack not bool", lambda raw: raw["alerts"].update(slack="yes"), "alerts.slack must be true or false"),
+            (
+                "backup days not positive",
+                lambda raw: raw["alerts"].update(backup_old_days=0),
+                "alerts.backup_old_days must be a positive integer",
+            ),
+            (
+                "slow home not positive",
+                lambda raw: raw["alerts"].update(slow_home_mb_per_second="fast"),
+                "alerts.slow_home_mb_per_second must be a positive integer",
+            ),
         ]
         for label, change, expected in cases:
             with self.subTest(label):

@@ -25,7 +25,7 @@ groups:
           summary: 'The check "{{ $labels.check }}" is failing on {{ $labels.machine }}.'
 
       - alert: HealthCheckWarning
-        expr: (cluster_health_check_state == 1 unless on(machine, check) cluster_health_machine_check_state) unless on(machine) cluster_machine_maintenance
+        expr: (cluster_health_check_state == 1 unless on(machine, check) cluster_health_machine_check_state unless on(machine, check) cluster_health_check_state{check=~"the last successful /home backup is .*"}) unless on(machine) cluster_machine_maintenance
         for: 7m
         keep_firing_for: 7d
         labels:
@@ -77,6 +77,16 @@ groups:
         annotations:
           summary: "Prometheus cannot read the metrics of {{ $labels.machine }} for 5 minutes, so its health checks are unknown; the machine may be down."
 
+      # A machine whose offline post was sent (MachineMetricsMissing firing, also in its 7 days after) reports again:
+      # posted once, as good news. Not for a short outage that never posted, not while under maintenance.
+      - alert: MachineBackOnline
+        expr: (up{job=~"node|node-.+"} == 1 and on(machine) ALERTS{alertname="MachineMetricsMissing", alertstate="firing"}) unless on(machine) cluster_machine_maintenance
+        keep_firing_for: 7d
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.machine }} is back online."
+
       # The backup writes its last exit code after each run; it stays until a later run works.
       - alert: BackupFailed
         expr: (cluster_backup_last_exit_code != 0) unless on(machine) cluster_machine_maintenance
@@ -86,15 +96,32 @@ groups:
         annotations:
           summary: "The last /home backup from {{ $labels.machine }} failed (exit code {{ $value }})."
 
-      # Only once the backup has succeeded at least once (the time is above 0): before that there is no series,
-      # or a time of 0, and a run that failed is reported by BackupFailed.
+      # Older than alerts.backup_old_days (alert-settings.yml). Only once the backup has succeeded at least once (the
+      # time is above 0): before that there is no series, or a time of 0, and a run that failed is reported by
+      # BackupFailed. The health check's 26-hour warning shows on the website and is not posted (HealthCheckWarning).
       - alert: BackupOld
-        expr: (time() - cluster_backup_last_success_timestamp_seconds > 26 * 3600 and cluster_backup_last_success_timestamp_seconds > 0) unless on(machine) cluster_machine_maintenance
+        expr: (time() - cluster_backup_last_success_timestamp_seconds > on() group_left() nanohpc_setting_backup_old_seconds and cluster_backup_last_success_timestamp_seconds > 0) unless on(machine) cluster_machine_maintenance
         keep_firing_for: 7d
         labels:
           severity: warning
         annotations:
-          summary: "The last successful /home backup from {{ $labels.machine }} is more than 26 hours old."
+          summary: "The last successful /home backup from {{ $labels.machine }} is {{ $value | humanizeDuration }} old."
+
+      # The nightly large-file /home read under alerts.slow_home_mb_per_second (alert-settings.yml) in two runs in a
+      # row: this one and the one a day before (a different run, at least 12 hours older). One slow night is not
+      # posted. The link speed never changes a machine's health.
+      - alert: HomeLinkSlow
+        expr: >-
+          (
+            cluster_machine_speed_mb_per_second{test="home_large_read"} < on() group_left() nanohpc_setting_slow_home_mb_per_second
+            and on(machine) (cluster_machine_speed_mb_per_second{test="home_large_read"} offset 1d < on() group_left() nanohpc_setting_slow_home_mb_per_second)
+            and on(machine) (cluster_machine_speed_timestamp_seconds - cluster_machine_speed_timestamp_seconds offset 1d > 12 * 3600)
+          ) unless on(machine) cluster_machine_maintenance
+        keep_firing_for: 7d
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.machine }}: slow link to /home ({{ $value | printf \"%.0f\" }} MB/s reading one large file, two nights in a row)."
 
       # An automatic deploy that failed; it is not tried again until a newer commit. Exit code 3 (`nanohpc deploy`):
       # the dry run failed on some machines, which were left out, unchanged. 4: the real run failed, so machines

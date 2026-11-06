@@ -72,6 +72,15 @@
     check_command: "{{ prometheus_dir }}/promtool check rules %s"
   when: ansible_check_mode and not promtool_pending
 
+- name: Check the alert settings with promtool (dry run)
+  ansible.builtin.include_role:
+    name: dry_run_check
+  vars:
+    check_content: null
+    check_source: "{{ nanohpc.files }}/alert-settings.yml"
+    check_command: "{{ prometheus_dir }}/promtool check rules %s"
+  when: ansible_check_mode and not promtool_pending and nanohpc.mode | default('slurm') != 'monitor'
+
 - name: Check the detail configuration with promtool (dry run)
   ansible.builtin.include_role:
     name: dry_run_check
@@ -96,6 +105,16 @@
     mode: "0644"
     validate: "{{ prometheus_dir }}/promtool check rules %s"
   register: alert_rules
+
+# Slurm mode: alerts.backup_old_days and alerts.slow_home_mb_per_second from cluster.yml, which the alert rules use.
+- name: Install the alert settings (checked with promtool first)
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/alert-settings.yml"
+    dest: /etc/nanohpc/prometheus/alert-settings.yml
+    mode: "0644"
+    validate: "{{ prometheus_dir }}/promtool check rules %s"
+  register: alert_settings
+  when: nanohpc.mode | default('slurm') != 'monitor'
 
 - name: Install the detail configuration (checked with promtool first)
   ansible.builtin.copy:
@@ -204,7 +223,7 @@
     daemon_reload: "{{ prometheus_units.changed }}"
     state: >-
       {{ 'restarted' if prometheus_units.changed else 'reloaded' if (detail_config.changed or daily_rules.changed
-         or alert_rules.changed) else 'started' }}
+         or alert_rules.changed or alert_settings.changed) else 'started' }}
   when: not (ansible_check_mode and prometheus_units is changed)  # dry run: the service is not installed yet
 
 - name: Run the history Prometheus
