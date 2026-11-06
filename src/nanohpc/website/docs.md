@@ -31,7 +31,7 @@ ssh -A {{cluster_name}}
 
 ### Get your code onto {{cluster_name}}
 
-Forward your laptop’s SSH agent, then clone or pull from GitHub. This uses your loaded laptop key without copying its private key to {{cluster_name}}. Only forward your agent to a machine you trust. (Other options: a read-only deploy key for one repository, or gh auth login on {{cluster_name}}.)
+Forward your laptop’s SSH agent, then clone or pull from GitHub. This uses your loaded laptop key without copying its private key to {{cluster_name}}. To skip the -A, add ForwardAgent yes under Host {{cluster_name}} in ~/.ssh/config. Only forward your agent to a machine you trust. (Other options: a read-only deploy key for one repository, or gh auth login on {{cluster_name}}.)
 
 ```bash
 git clone git@github.com:OWNER/REPOSITORY.git
@@ -141,12 +141,22 @@ squeue --me
 
 ### Interactive shell
 
-Partitions set up for interactive shells accept only this command form. Replace PARTITION with such a partition; the Cluster policy page lists the partitions. You can change the resource amounts and time. Slurm waits for those resources, selects the compute node, and opens Bash there. Exit the shell to release the resources. Direct SSH to compute nodes is for administrators only.
+Run srun once, on the {{cluster_name}} front node. Partitions set up for interactive shells accept only this command form. Replace PARTITION with such a partition; the Cluster policy page lists the partitions. You can change the resource amounts and time. Slurm waits for those resources, selects the compute node, and opens Bash there. The name after @ in your prompt changes from the front node’s name to the compute node’s name: that is how you know you are now on the compute node. This shell already has the GPUs you asked for, in any folder you cd to. Go to your project in this shell and run your code. There is no need to run srun again, for example after cd to your project: the second srun only waits for the GPUs this shell already has, until the job ends. Exit the shell to release the resources. The shell lives in your terminal: if you close the terminal or lose SSH, the shell and its job end. For work that must keep running, use a batch job. The -l in bash -l starts a login shell: it reads /etc/profile and your ~/.bash_profile, so the shell is set up like a normal SSH login (your PATH, conda, and so on). Direct SSH to compute nodes is for administrators only.
 
 When to use: debugging, short tests, and checking that your code and environment work on a GPU before you submit a long batch job.
 
 ```bash
+# 1. On the {{cluster_name}} front node: get a shell on a compute node
 srun --partition=PARTITION --gpus=1 --cpus-per-task=4 --time=01:00:00 --pty bash -l
+
+# 2. The prompt changes to the compute node’s name.
+#    This shell has the GPU. Go to your project and run your code:
+cd ~/YOUR_PROJECT
+uv run --locked python script.py
+#    Not srun again here: it would wait for the GPU this shell already has.
+
+# 3. When done, release the GPU:
+exit
 ```
 
 ## Shared vs scratch

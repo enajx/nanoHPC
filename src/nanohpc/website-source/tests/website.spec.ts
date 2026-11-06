@@ -661,6 +661,25 @@ test('the guide covers supported containers and interactive notebooks without cl
   expect(await helper.text()).toContain('because SSH forwarding')
 })
 
+test('the guide says to run srun once on the front node and what the interactive shell is, and offers ForwardAgent', async ({ page }) => {
+  await mockGrafana(page)
+  await page.goto(`${origin}${prefix}#docs`)
+  await expect(page.locator('.instruction').filter({ hasText: 'add ForwardAgent yes under Host mylab in ~/.ssh/config' })).toHaveCount(1)
+  await page.getByRole('tab', { name: 'Interactive shell' }).click()
+  const shell = page.locator('.topic-text').filter({ hasText: 'Run srun once, on the mylab front node.' })
+  await expect(shell).toBeVisible()
+  for (const sentence of [
+    'This shell already has the GPUs you asked for, in any folder you cd to.',
+    'The name after @ in your prompt changes from the front node’s name to the compute node’s name',
+    'if you close the terminal or lose SSH, the shell and its job end. For work that must keep running, use a batch job.',
+    'it reads /etc/profile and your ~/.bash_profile',
+  ]) await expect(shell).toContainText(sentence)
+  await expect(page.locator('.user-guide code').filter({ hasText: 'Not srun again here' })).toBeVisible()
+  const docs = await (await page.request.get(`${origin}${prefix}docs.md`)).text()
+  expect(docs).toContain('Run srun once, on the mylab front node.')
+  expect(docs).toContain('add ForwardAgent yes under Host mylab in ~/.ssh/config')
+})
+
 test('Cluster Usage excludes samples from a stale snapshot', async ({ page }) => {
   await mockGrafana(page)
   const expressions: string[] = []
