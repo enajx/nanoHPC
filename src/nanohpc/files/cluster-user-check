@@ -339,6 +339,9 @@ def main() -> None:
             continue
         if admin:
             continue
+        # srun and salloc on the front node listen on random ports to talk to the job they started: not a finding.
+        if args.role == "front" and process["exe"] in ("/usr/bin/srun", "/usr/bin/salloc"):
+            continue
         # On a compute machine only root starts a user manager: Slurm's `su - <user>` for --export=ALL,VAR=value
         # or --get-user-env (2026-10-07), or an admin. It stops about 10 s later; lingering is reported on its own.
         if args.role == "compute" and process["manager"]:
