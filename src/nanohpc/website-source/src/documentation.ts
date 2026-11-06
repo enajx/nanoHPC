@@ -138,6 +138,11 @@ export const faqEntries: FaqEntry[] = [
   { question: 'My job ended with OUT_OF_MEMORY. What do I do?', text: [
     'Memory is enforced: a job that uses more memory than it asked for is stopped. Without --mem, a job gets the partition’s default memory per CPU, shown on the Cluster policy page. Ask for more with --mem; the request must fit on one machine, and the Machines page lists each machine’s RAM. sacct shows how much memory a finished job used (MaxRSS).',
   ], command: 'sacct -j JOBID --format=JobID,State,ReqMem,MaxRSS\n\n# In job.sh:\n#SBATCH --mem=64G' },
+  { question: 'Can I do a dry run of a job before submitting it?', text: [
+    'Yes: add --test-only to sbatch. Slurm checks your script and the resources it asks for, then prints when and on which machine the job would start. No job is submitted, nothing is reserved, and the script does not run. The same flag works with srun and salloc.',
+    'If the machines are busy, it prints a later start time. That time is an estimate: it assumes running jobs use their full time limit, so the real start is often sooner. If no machine that is up can take the request (too many GPUs, too much memory or time), it prints the reason at once, for example Requested node configuration is not available. A machine that is down counts as not there.',
+    'It cannot find errors inside your script, such as a wrong path or a missing package: for those, run a short real job.',
+  ], command: 'sbatch --test-only job.sh\n# Example output:\n# sbatch: Job 1234 to start at 2026-11-06T15:46:21 using 4 processors on nodes NODE in partition PARTITION' },
 ]
 
 export const policyExplanation = {

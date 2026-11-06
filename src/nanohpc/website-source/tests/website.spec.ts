@@ -509,6 +509,12 @@ test('FAQ shows the generic and the administrator questions, closed until clicke
   const pending = cards.filter({ hasText: 'Why is my job still pending?' })
   await pending.locator('summary').click()
   await expect(pending.locator('.faq-answer')).toContainText('a per-user limit of that partition or of the whole cluster')
+  // A dry run: sbatch --test-only, what it checks and what it does not.
+  const dryRun = cards.filter({ hasText: 'Can I do a dry run of a job before submitting it?' })
+  await dryRun.locator('summary').click()
+  await expect(dryRun.locator('.faq-answer code')).toContainText('sbatch --test-only job.sh')
+  for (const sentence of ['No job is submitted', 'it prints a later start time', 'A machine that is down counts as not there', 'It cannot find errors inside your script'])
+    await expect(dryRun.locator('.faq-answer')).toContainText(sentence)
   // Search keeps the questions that contain every typed word, in the question, answer, or command.
   const search = page.getByRole('searchbox', { name: 'Search questions' })
   await search.fill('uv cmake')
