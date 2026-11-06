@@ -2354,6 +2354,31 @@ class SimSlackTest(SimUsersBase):
             "/etc/systemd/system/nanohpc-job-end-notify.service && sudo systemctl daemon-reload"
         )
 
+        with self.subTest("the interactive shell says it is on the compute node; a batch job prints nothing"):
+            shell = self.run_command(
+                "ssh", "-tt", "-F", str(self.state / "ssh_config"), "front",
+                "cd /tmp && sudo -u alice srun -p interactive -w gpu4 --gpus=1 --pty bash -l", stdin="exit\n",
+            )  # fmt: skip
+            self.assertEqual(shell.returncode, 0, shell.stdout + shell.stderr)
+            self.assertRegex(
+                shell.stdout, r"You are on the compute node gpu4, in job \d+, with 1 GPU until \d\d:\d\d\."
+            )
+            self.assertIn("Run your code here (no need for srun again). Type exit to release the GPU.", shell.stdout)
+            job = self.on_front(
+                "cd /tmp && sudo -u alice sbatch --parsable --wait -o /tmp/prolog-batch.out -p main -w gpu4 --gpus=1"
+                " --wrap 'srun hostname'"
+            ).strip()
+            self.assertEqual(self.finished_job(job), ("COMPLETED", "gpu4"))
+            self.assertNotIn("You are on", self.on_front("cat /tmp/prolog-batch.out"))
+
+        with self.subTest("a 1-hour job gets the short-job bonus (4792 of 5000) and no waiting-time points"):
+            job = self.on_front(
+                "cd /tmp && sudo -u alice sbatch --parsable --begin=now+1hour -t 60 -o /dev/null -p main --wrap true"
+            ).strip()
+            self.addCleanup(self.ssh, "front", f"sudo scancel {job}")
+            self.assertEqual(self.on_front(f"sprio -n -h -j {job} -o '%.20S %.20A'").split(), ["4792", "0"])
+            self.on_front(f"sudo scancel {job}")
+
         with self.subTest("a batch job with --mail-user=slack gets one private message when it ends; no email"):
             script = (
                 "#!/bin/bash\n#SBATCH --job-name=slack-test\n#SBATCH --mail-type=END\n"
