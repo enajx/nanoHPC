@@ -156,6 +156,7 @@ def shape_problems(data: Any) -> list[str]:
         "backup",
         "alerts",
         "auto_deploy",
+        "agent",
     ):
         expect(data.get(section), dict, section)
     expect(data.get("users"), list, "users")
@@ -191,7 +192,7 @@ def error_step(error: str, mode: str = "slurm") -> int:
             return 1
         if head.startswith("cluster"):
             return 2
-        if head.startswith(("alerts", "NANOHPC_")) or ".env" in error:
+        if head.startswith(("alerts", "agent", "NANOHPC_")) or ".env" in error:
             return 3
         return 4
     if ".env" in error or error.startswith("NANOHPC_"):
@@ -219,7 +220,7 @@ def error_step(error: str, mode: str = "slurm") -> int:
         return PARTITIONS
     if section in ("home", "scratch"):
         return STORAGE
-    if section in ("backup", "alerts", "auto_deploy", "nanohpc_version", "time_zone"):
+    if section in ("backup", "alerts", "agent", "auto_deploy", "nanohpc_version", "time_zone"):
         return EXTRAS
     return REVIEW
 

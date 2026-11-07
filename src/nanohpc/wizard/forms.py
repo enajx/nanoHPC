@@ -10,6 +10,7 @@ from textual.containers import Horizontal
 from textual.widgets import Button, DataTable, Input, Select, Static
 
 from nanohpc.config import POLICY_DEFAULTS
+from nanohpc.wizard.agent import agent_fields
 from nanohpc.wizard.common import BoundInput, BoundSwitch, Step, cell, field
 from nanohpc.wizard.dialogs import ConfirmScreen, PartitionForm, PartitionScreen, plain
 from nanohpc.wizard.state import field_text, remove_value
@@ -215,7 +216,8 @@ class WebsiteStep(Step):
 
 
 class ExtrasStep(Step):
-    """6 Extras: the backup, Slack alerts, automatic deploys, the pinned nanoHPC version, and the time zone."""
+    """6 Extras: the backup, Slack alerts, the Slack agent, automatic deploys, the pinned nanoHPC version, and the time
+    zone."""
 
     def compose(self) -> ComposeResult:
         """Show the extras' fields."""
@@ -244,6 +246,7 @@ class ExtrasStep(Step):
             "hint",
             None,
         )
+        yield from agent_fields(state, False)
         yield Static("Automatic deploys", classes="subheading")
         auto = ["auto_deploy"]
         yield field("enabled", BoundSwitch(state, [*auto, "enabled"], "auto-enabled"))

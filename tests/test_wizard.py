@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 from textual.pilot import Pilot
-from textual.widgets import Button, Checkbox, DataTable, Input, Label, ListView, Select, Static, TextArea
+from textual.widgets import Button, Checkbox, DataTable, Input, Label, ListView, Select, Static, Switch, TextArea
 
 from nanohpc.config import load_config
 from nanohpc.fixuid import FixPlan
@@ -492,6 +492,51 @@ class TimeZoneTest(unittest.IsolatedAsyncioTestCase):
                 await fill(pilot, {"#time-zone": ""})
                 self.assertIn("time_zone", app.state.file.as_text())
                 self.assertIsNone(app.state.file.get(["time_zone"]))
+
+
+class SlackAgentTest(unittest.IsolatedAsyncioTestCase):
+    """Extras (and monitor mode's Alerts) ask for the optional Slack agent: on or off, its channel, and who approves."""
+
+    async def test_agent_on_with_channel_and_approvers(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            (Path(folder) / ".env").write_text(
+                "NANOHPC_SLACK_BOT_TOKEN=xoxb-1\nNANOHPC_SLACK_APP_TOKEN=xapp-1\nNANOHPC_ANTHROPIC_API_KEY=sk-ant-1\n"
+            )
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await go(pilot, 5)
+                app.screen.query_one("#agent-enabled", Switch).value = True
+                await settle(pilot)
+                await go(pilot, 6)
+                errors = [str(item.name) for item in app.screen.query_one("#errors", ListView).query("ListItem")]
+                self.assertIn("agent.channel is required when agent.enabled is true", errors)
+                self.assertTrue(all(error_step(error) == EXTRAS for error in errors), errors)
+                await go(pilot, 5)
+                await fill(pilot, {"#agent-channel": "C0123ABC", "#agent-approvers": "alice=U111, sam = U222"})
+                self.assertEqual(
+                    app.state.file.get(["agent", "approvers"]),
+                    [{"name": "alice", "slack_id": "U111"}, {"name": "sam", "slack_id": "U222"}],
+                )
+                await go(pilot, 6)
+                self.assertEqual(len(app.screen.query_one("#errors", ListView).children), 0)
+                await go(pilot, 5)
+                await fill(pilot, {"#agent-approvers": "alice"})
+                await go(pilot, 6)
+                errors = [str(item.name) for item in app.screen.query_one("#errors", ListView).query("ListItem")]
+                self.assertTrue(any(error.startswith("agent.approvers") for error in errors), errors)
+
+    async def test_monitor_mode_asks_for_the_agent_and_its_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "monitor.yml"
+            shutil.copy(ROOT / "examples" / "monitor.yml", path)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await go(pilot, 3)
+                await fill(pilot, {"#agent-channel": "C0123ABC", "#agent-repository": "git@github.com:lab/m.git"})
+                self.assertEqual(app.state.file.get(["agent", "repository"]), "git@github.com:lab/m.git")
+                await pilot.press("q")
+                await settle(pilot)
 
 
 class UidTest(unittest.IsolatedAsyncioTestCase):

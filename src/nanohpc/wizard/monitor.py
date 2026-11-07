@@ -9,6 +9,7 @@ from textual.containers import Horizontal
 from textual.widgets import Button, DataTable, Input, Select, Static
 
 from nanohpc.config import MACHINE_NAME
+from nanohpc.wizard.agent import agent_fields
 from nanohpc.wizard.common import BoundSwitch, Step, cell, field
 from nanohpc.wizard.dialogs import ConfirmScreen, plain
 from nanohpc.wizard.forms import WebsiteStep
@@ -130,7 +131,7 @@ class MonitorUsersStep(Step):
 
 
 class MonitorAlertsStep(Step):
-    """Configure Slack delivery for monitoring alerts."""
+    """Configure Slack delivery for monitoring alerts, and the optional Slack agent."""
 
     def compose(self) -> ComposeResult:
         """Show the optional Slack switch and secret instructions."""
@@ -141,6 +142,7 @@ class MonitorAlertsStep(Step):
             "hint",
             None,
         )
+        yield from agent_fields(self.state, True)
 
 
 MONITOR_STEP_CLASSES: tuple[type[Step], ...] = (
