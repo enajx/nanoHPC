@@ -1,0 +1,9 @@
+# Simulated test cluster: test-only file, never used on a real cluster.
+# The small cluster on Ubuntu 24.04, to check the Slack agent's runner, its pushes, and deploys from Slack.
+cluster: cluster-auto.yml
+ubuntu: "24.04"
+fake_gpus: [gpu4]
+vms:
+  default: {cpus: 1, memory_gb: 1, disk_gb: 10}
+  front: {cpus: 2, memory_gb: 3, disk_gb: 20}   # runs MariaDB, the automatic deploys, and the agent
+extra_disk_gb: 10

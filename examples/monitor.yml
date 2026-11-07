@@ -24,3 +24,11 @@ users: [alice, bob]             # existing login names shown on the website; [] 
 
 alerts:
   slack: false                  # true needs NANOHPC_SLACK_WEBHOOK in .env
+
+# Optional Slack agent (see examples/cluster.yml); repository: where it pushes edits of this file.
+# agent:
+#   enabled: true
+#   channel: C0123ABC
+#   approvers:
+#     - {name: alice, slack_id: U0123ABC}
+#   repository: git@github.com:lab/monitor-config.git
