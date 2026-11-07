@@ -123,6 +123,21 @@
     mode: "0644"
   when: nanohpc.agent_deploy.install.kind == 'wheel'
 
+- name: Read the installed nanoHPC version
+  ansible.builtin.command: /opt/nanohpc-tool/bin/nanohpc --version
+  register: agent_installed_nanohpc
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+# A deploy asked from Slack has installed the pinned version before it runs, so this does nothing then.
+- name: Install the pinned nanoHPC version
+  ansible.builtin.command: /usr/local/sbin/nanohpc-install {{ nanohpc.agent_deploy.version }}
+  environment:
+    NANOHPC_INSTALL_CONF: /var/lib/nanohpc-agent-runner/install.conf
+    NANOHPC_INSTALL_WHEELS: /var/lib/nanohpc-agent-runner/wheels
+  when: agent_installed_nanohpc.stdout != 'nanohpc ' ~ nanohpc.agent_deploy.version
+
 - name: Write the SSH config that reaches every machine as root with the runner's key
   ansible.builtin.copy:
     dest: /var/lib/nanohpc-agent-runner/ssh_config

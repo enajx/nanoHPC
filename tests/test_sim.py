@@ -4800,6 +4800,8 @@ class SimSlackAgentMonitorTest(unittest.TestCase):
         with self.subTest("first deploy: the agent, and its runner key for root on every machine"):
             self.deploy()
             self.assertEqual(self.on_host("systemctl is-active nanohpc-agent-runner").strip(), "active")
+            installed = self.on_host("sudo /opt/nanohpc-tool/bin/nanohpc --version")
+            self.assertIn(config["nanohpc_version"], installed)
             for machine in ("host", "gpu1", "cpu1"):
                 keys = self.ssh(machine, "sudo cat /root/.ssh/authorized_keys").stdout
                 self.assertIn(f'from="{host}",no-agent-forwarding,no-port-forwarding', keys, machine)
