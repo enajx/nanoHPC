@@ -46,7 +46,7 @@
     mode: "0750"
   when: not (ansible_check_mode and agent_account is changed)
 
-- name: Pin the SSH host keys of the machines the runner reaches (monitor mode: every machine, for its deploys)
+- name: Pin the SSH host keys of the machines the runner reaches (in monitor mode every machine, for its deploys)
   ansible.builtin.copy:
     dest: /var/lib/nanohpc-agent-runner/machines_known_hosts
     owner: root

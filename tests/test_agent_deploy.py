@@ -61,6 +61,15 @@ def render_with(template: str, variables: dict[str, Any]) -> dict[str, Any]:
     return rendered if isinstance(rendered, dict) else json.loads(rendered)
 
 
+class PlaybookFilesTest(unittest.TestCase):
+    def test_every_playbook_and_role_file_is_valid_yaml(self) -> None:
+        """A YAML error stops the whole deploy at its dry run; catch it without machines."""
+        ansible = ROOT / "src/nanohpc/ansible"
+        for path in sorted([*ansible.glob("*.yml"), *ansible.glob("roles/*/*/*.yml")]):
+            with self.subTest(str(path.relative_to(ansible))):
+                yaml.safe_load(path.read_text())
+
+
 class AgentSettingsTest(unittest.TestCase):
     def test_without_automatic_deploys_there_are_no_pushes_or_deploys(self) -> None:
         config = config_with({"enabled": True, "channel": "C1AB", "approvers": APPROVERS}, None)
