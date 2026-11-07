@@ -316,6 +316,31 @@ class LastingFindingsTest(unittest.TestCase):
     def lines(self) -> list[str]:
         return findings(self.out)
 
+    def test_front_node_does_not_report_the_ports_of_srun_and_salloc(self) -> None:
+        """srun and salloc on the front node listen on random ports to talk to their job: not a finding.
+
+        A program at another path with the same name is still reported.
+        """
+        session = "/user.slice/user-1101.slice/session-7.scope"
+        add, listen = self.machine.process, self.machine.listen
+        add(
+            "noah srun",
+            1101,
+            "/usr/bin/srun",
+            ["srun", "--partition=interactive", "--gpus=1", "--time=01:00:00", "--pty", "bash", "-l"],
+            session,
+        )
+        listen("noah srun", 33283, 701)
+        listen("noah srun", 40405, 702)
+        add("noah salloc", 1101, "/usr/bin/salloc", ["salloc", "--gpus=1"], session)
+        listen("noah salloc", 35725, 703)
+        add("noah own srun", 1101, "/home/noah/bin/srun", ["/home/noah/bin/srun"], session)
+        listen("noah own srun", 5000, 704)
+        run_check(self.machine, self.out, self.state, "2026-11-05T17:00:00+01:00", role="front")
+        ports = [line for line in self.lines() if 'kind="port"' in line and 'user="noah"' in line]
+        self.assertEqual(len(ports), 1, ports)
+        self.assertIn('detail="`srun` (port 5000)"', ports[0])
+
     def test_compute_machine_reports_processes_outside_jobs_and_all_user_ports(self) -> None:
         """The leftover process is outside a job; both job and leftover listeners are reported."""
         run_check(self.machine, self.out, self.state, "2026-10-05T16:00:00+02:00")

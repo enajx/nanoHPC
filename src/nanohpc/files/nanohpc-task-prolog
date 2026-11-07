@@ -1,0 +1,20 @@
+#!/bin/sh
+# Slurm task prolog (TaskProlog in slurm.conf), run as the job's user before each task. Slurm writes each
+# "print" line to the task's output. The first step of a job run with a terminal (srun --pty, which sets
+# SLURM_PTY_PORT) is the interactive shell: it says where the user is, so they do not run srun again inside it.
+# Batch jobs, their srun steps, and srun without --pty print nothing and do not ask the controller anything.
+# Always exits 0: a failing task prolog would stop the task.
+[ "$SLURM_STEP_ID" = 0 ] && [ -n "$SLURM_PTY_PORT" ] || exit 0
+end="an end time Slurm could not give"
+if job=$(scontrol show job -o "$SLURM_JOB_ID" 2>/dev/null); then
+  value=$(printf '%s\n' "$job" | sed -n 's/.* EndTime=[0-9-]*T\([0-9]*:[0-9]*\):[0-9]* .*/\1/p')
+  [ -n "$value" ] && end=$value
+fi
+case "${SLURM_GPUS_ON_NODE:-0}" in
+  0) gpus="no GPU" ;;
+  1) gpus="1 GPU" ;;
+  *) gpus="$SLURM_GPUS_ON_NODE GPUs" ;;
+esac
+echo "print You are on the compute node $SLURMD_NODENAME, in job $SLURM_JOB_ID, with $gpus until $end."
+echo "print Run your code here (no need for srun again). Type exit to release the GPU."
+exit 0

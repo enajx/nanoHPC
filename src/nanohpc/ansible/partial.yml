@@ -141,11 +141,12 @@
   tags: [users]
   roles: [alerts]
 
-# The website shows the home quotas and the scratch cleanup days, from site.json and the pages filled from it.
+# The website shows the home quotas, the scratch cleanup days, and the priority rules (from the policy and the
+# default partition's time limit), from site.json and the pages filled from it.
 - name: The website's site data and the pages filled from it on the front node
   hosts: role_front
   become: true
-  tags: [users]
+  tags: [users, policy, partitions]
   tasks:
     - name: site.json, docs.md, and policy.md
       ansible.builtin.import_role:

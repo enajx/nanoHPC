@@ -24,6 +24,8 @@ PLACEHOLDERS = (
     "home_quota_hard_gb",
     "scratch_cleanup_days",
     "interactive_machine_rule",
+    "priority_rule",
+    "resubmit_rule",
 )
 
 

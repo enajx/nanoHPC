@@ -66,7 +66,7 @@ class SlurmConfTest(unittest.TestCase):
     def test_fair_share_policy(self) -> None:
         conf = render(config_of(), names(config_of()), False).slurm_conf
         for line in ("PriorityType=priority/multifactor", "PriorityFlags=NO_FAIR_TREE",
-                     "PriorityWeightFairshare=40000", "PriorityWeightAge=1000",
+                     "PriorityWeightFairshare=40000", "PriorityWeightAge=0",
                      "PriorityDecayHalfLife=45-00:00:00", "PriorityMaxAge=7-00:00:00", "JobSubmitPlugins=lua"):  # fmt: skip
             self.assertIn(line + "\n", conf)
         self.assertIn("TRESBillingWeights=CPU=0,Mem=0,GRES/gpu=1", conf)
@@ -227,7 +227,11 @@ class PrometheusTest(unittest.TestCase):
         self.assertEqual(prometheus["global"]["scrape_interval"], "30s")
         self.assertEqual(
             prometheus["rule_files"],
-            ["/etc/nanohpc/prometheus/daily-rules.yml", "/etc/nanohpc/prometheus/alert-rules.yml"],
+            [
+                "/etc/nanohpc/prometheus/alert-settings.yml",
+                "/etc/nanohpc/prometheus/daily-rules.yml",
+                "/etc/nanohpc/prometheus/alert-rules.yml",
+            ],
         )
         # Alerts go to the front node's Alertmanager, on localhost.
         self.assertEqual(

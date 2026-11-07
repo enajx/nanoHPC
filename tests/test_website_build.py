@@ -90,6 +90,8 @@ class WebsiteBuildTest(unittest.TestCase):
             "home_quota_hard_gb",
             "scratch_cleanup_days",
             "interactive_machine_rule",
+            "priority_rule",
+            "resubmit_rule",
         }
         for name in ("docs.md", "policy.md"):
             used = set(re.findall(r"\{\{(\w+)\}\}", (BUILT / name).read_text(encoding="utf-8")))

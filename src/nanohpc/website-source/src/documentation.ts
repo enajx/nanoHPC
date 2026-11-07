@@ -30,6 +30,8 @@ export type GuideValues = {
   home_quota_hard_gb: string
   scratch_cleanup_days: string
   interactive_machine_rule?: string
+  priority_rule: string
+  resubmit_rule: string
 }
 
 /** Placeholders for docs.md and policy.md; the deploy replaces each {{name}} with the value from site.json. */
@@ -40,6 +42,8 @@ export const templateValues: GuideValues = {
   home_quota_hard_gb: '{{home_quota_hard_gb}}',
   scratch_cleanup_days: '{{scratch_cleanup_days}}',
   interactive_machine_rule: '{{interactive_machine_rule}}',
+  priority_rule: '{{priority_rule}}',
+  resubmit_rule: '{{resubmit_rule}}',
 }
 
 /** The page's values, from site.json. */
@@ -51,6 +55,8 @@ export function siteValues(site: SiteSettings): GuideValues {
     home_quota_hard_gb: String(site.home_quota_hard_gb),
     scratch_cleanup_days: String(site.scratch_cleanup_days),
     interactive_machine_rule: site.interactive_machine_rule ?? '',
+    priority_rule: site.priority_rule,
+    resubmit_rule: site.resubmit_rule,
   }
 }
 
@@ -68,7 +74,7 @@ export function guideSteps(values: GuideValues): GuideStep[] {
     { title: `1. SSH into ${name}`, column: 'right', blocks: [
       { kind: 'code', text: `ssh -A ${name}` },
       { kind: 'heading', text: `Get your code onto ${name}` },
-      { kind: 'paragraph', text: `Forward your laptop’s SSH agent, then clone or pull from GitHub. This uses your loaded laptop key without copying its private key to ${name}. Only forward your agent to a machine you trust. (Other options: a read-only deploy key for one repository, or gh auth login on ${name}.)` },
+      { kind: 'paragraph', text: `Forward your laptop’s SSH agent, then clone or pull from GitHub. This uses your loaded laptop key without copying its private key to ${name}. To skip the -A, add ForwardAgent yes under Host ${name} in ~/.ssh/config. Only forward your agent to a machine you trust. (Other options: a read-only deploy key for one repository, or gh auth login on ${name}.)` },
       { kind: 'code', text: 'git clone git@github.com:OWNER/REPOSITORY.git\ncd REPOSITORY' },
     ] },
     { title: '2. Submit a job', column: 'right', blocks: [
@@ -102,7 +108,7 @@ export function guideSteps(values: GuideValues): GuideStep[] {
 export function guideTopics(values: GuideValues): GuideTopic[] {
   return [
     { title: 'Batch job', panel: 'Batch vs interactive', text: 'Save your commands in a job script and submit it with sbatch, preferably from a git worktree (see Shared vs scratch). Slurm starts it when the requested resources are free, in the default partition unless you name another one, and stops it at its time limit. You can log out while it waits or runs; its output goes to the file named by --output.', whenToUse: 'training runs, sweeps, and anything that runs without you watching it.', command: 'cd ~/YOUR_PROJECT/.worktrees/RUN\nsbatch job.sh\nsqueue --me' },
-    { title: 'Interactive shell', panel: 'Batch vs interactive', text: 'Partitions set up for interactive shells accept only this command form. Replace PARTITION with such a partition; the Cluster policy page lists the partitions. You can change the resource amounts and time. Slurm waits for those resources, selects the compute node, and opens Bash there. Exit the shell to release the resources. Direct SSH to compute nodes is for administrators only.', whenToUse: 'debugging, short tests, and checking that your code and environment work on a GPU before you submit a long batch job.', command: 'srun --partition=PARTITION --gpus=1 --cpus-per-task=4 --time=01:00:00 --pty bash -l' },
+    { title: 'Interactive shell', panel: 'Batch vs interactive', text: `Run srun once, on the ${values.cluster_name} front node. Partitions set up for interactive shells accept only this command form. Replace PARTITION with such a partition; the Cluster policy page lists the partitions. You can change the resource amounts and time. Slurm waits for those resources, selects the compute node, and opens Bash there. The name after @ in your prompt changes from the front node’s name to the compute node’s name: that is how you know you are now on the compute node. This shell already has the GPUs you asked for, in any folder you cd to. Go to your project in this shell and run your code. There is no need to run srun again, for example after cd to your project: the second srun only waits for the GPUs this shell already has, until the job ends. Exit the shell to release the resources. The shell lives in your terminal: if you close the terminal or lose SSH, the shell and its job end. For work that must keep running, use a batch job. The -l in bash -l starts a login shell: it reads /etc/profile and your ~/.bash_profile, so the shell is set up like a normal SSH login (your PATH, conda, and so on). Direct SSH to compute nodes is for administrators only.`, whenToUse: 'debugging, short tests, and checking that your code and environment work on a GPU before you submit a long batch job.', command: `# 1. On the ${values.cluster_name} front node: get a shell on a compute node\nsrun --partition=PARTITION --gpus=1 --cpus-per-task=4 --time=01:00:00 --pty bash -l\n\n# 2. The prompt changes to the compute node’s name.\n#    This shell has the GPU. Go to your project and run your code:\ncd ~/YOUR_PROJECT\nuv run --locked python script.py\n#    Not srun again here: it would wait for the GPU this shell already has.\n\n# 3. When done, release the GPU:\nexit` },
     { title: 'With a git worktree', panel: 'Shared vs scratch', group: 'Shared mode', text: 'Make a separate git worktree for each run and submit from it with sbatch. The job runs that fixed copy of the code, so you can keep editing and pulling in your main checkout. The worktree holds the last commit only, so commit your changes first, and add .worktrees/ and logs/ to .gitignore. Write results to an absolute path in your home outside the worktree, such as $HOME/YOUR_PROJECT/results: they are saved as the job writes them, and a job stopped at its time limit loses only the work in progress. Cost: each worktree is a full copy of the code in your home, and uv sync builds a separate .venv in it. The job reads both over the network, and building the .venv copies the whole environment into your home, which takes job time for large packages such as PyTorch. Remove the worktree when the job has ended; git worktree remove refuses if it holds files you have not committed.', whenToUse: 'most jobs: training runs and sweeps, especially long ones or many at once while you keep changing the code.', command: 'cd ~/YOUR_PROJECT\nmkdir -p logs\nRUN=.worktrees/$(date +%Y%m%d-%H%M%S)\ngit worktree add --detach "$RUN"\n(cd "$RUN" && sbatch --output="$HOME/YOUR_PROJECT/logs/job-%j.log" job.sh)\n\n# After the job has ended:\ngit worktree remove "$RUN"' },
     { title: 'Plain', panel: 'Shared vs scratch', group: 'Shared mode', text: 'Use this when you want the job to read and write the shared project directly. There is no project copy or output copy-back. A git pull, branch switch, or file edit can change code used by processes that start later in a pending or running job.', whenToUse: 'jobs that spend their time on CPU or GPU work and read or write few files, when you will not edit the project while the job waits or runs.', command: 'cd ~/YOUR_PROJECT\nsbatch job.sh' },
     { title: 'With local scratch', panel: 'Shared vs scratch', group: 'Shared mode', text: `Keep code and results in your home, and put large datasets and temporary files on the compute machine’s local disk. Add these lines to job.sh. stage-dataset --private copies a dataset folder from your home (path relative to your home) to local scratch once, and later jobs on the same machine reuse it. If the administrator set up shared datasets, use stage-dataset --shared NAME to copy one from the read-only /shared/datasets area into your private local scratch. A staged copy that no job has used for ${values.scratch_cleanup_days} days is deleted automatically. Files in TMPDIR are not copied back; the last line deletes them.`, whenToUse: 'large datasets that are read many times, or jobs that write many temporary files, where reading and writing over the shared home would slow the job.', command: 'export TMPDIR=/scratch/$USER/tmp/$SLURM_JOB_ID\nmkdir -p "$TMPDIR"\nDATA=$(stage-dataset --private datasets/MY_DATASET)\nuv run --locked python train.py --data "$DATA" --output "$HOME/YOUR_PROJECT/results/$SLURM_JOB_ID"\nrm -rf "$TMPDIR"' },
@@ -126,25 +132,37 @@ export function guideTopics(values: GuideValues): GuideTopic[] {
 /** One FAQ question; command is an optional code box after the text. */
 export type FaqEntry = { question: string; text: string[]; command?: string }
 
-/** The generic FAQ questions, true on every nanoHPC cluster, shown before the administrator's own from cluster.yml. */
-export const faqEntries: FaqEntry[] = [
-  { question: 'Can I use a specific version of CMake?', text: [
-    'Yes, and you do not need an admin or root: install it in your home with uv. Your home is shared, so every compute machine sees the same CMake. Do not rely on a system CMake: not every machine has one. Run your build inside a job, like any install.',
-    'Kitware, who make CMake, publish official CMake builds on PyPI as the cmake package; it is the normal cmake program, not a Python tool. uv tool install puts a cmake command in ~/.local/bin. If your project is a uv project, uv add --dev cmake records the version in the project instead, so every job gets the same one; --dev keeps CMake out of what people get when they install your package. Run it with uv run cmake.',
-  ], command: '# Any project:\nuv tool install cmake==3.30.5\ncmake --version\n\n# In a uv project:\nuv add --dev cmake==3.30.5\nuv run cmake --version' },
-  { question: 'Why is my job still pending?', text: [
-    'squeue --me shows the reason in its last column. Resources: no machine has the CPUs, memory, or GPUs you asked for free yet. Priority: other jobs are ahead of yours; the Cluster policy page explains the ranking. A reason that starts with QOS: you reached a per-user limit of that partition or of the whole cluster, such as the most GPUs one user may have, listed on the Cluster policy page; the job starts when some of your other jobs end. AssocMaxJobsLimit: your home is over its limit; new jobs wait until you clear space. Your home usage shows when you log in.',
-  ], command: 'squeue --me\nscontrol show job JOBID' },
-  { question: 'My job ended with OUT_OF_MEMORY. What do I do?', text: [
-    'Memory is enforced: a job that uses more memory than it asked for is stopped. Without --mem, a job gets the partition’s default memory per CPU, shown on the Cluster policy page. Ask for more with --mem; the request must fit on one machine, and the Machines page lists each machine’s RAM. sacct shows how much memory a finished job used (MaxRSS).',
-  ], command: 'sacct -j JOBID --format=JobID,State,ReqMem,MaxRSS\n\n# In job.sh:\n#SBATCH --mem=64G' },
-]
+/** The generic FAQ questions, true on every nanoHPC cluster, shown before the administrator's own from cluster.yml.
+ * The answer on resubmitting follows the cluster's priority settings. */
+export function faqEntries(values: GuideValues): FaqEntry[] {
+  return [
+    { question: 'Can I use a specific version of CMake?', text: [
+      'Yes, and you do not need an admin or root: install it in your home with uv. Your home is shared, so every compute machine sees the same CMake. Do not rely on a system CMake: not every machine has one. Run your build inside a job, like any install.',
+      'Kitware, who make CMake, publish official CMake builds on PyPI as the cmake package; it is the normal cmake program, not a Python tool. uv tool install puts a cmake command in ~/.local/bin. If your project is a uv project, uv add --dev cmake records the version in the project instead, so every job gets the same one; --dev keeps CMake out of what people get when they install your package. Run it with uv run cmake.',
+    ], command: '# Any project:\nuv tool install cmake==3.30.5\ncmake --version\n\n# In a uv project:\nuv add --dev cmake==3.30.5\nuv run cmake --version' },
+    { question: 'Why is my job still pending?', text: [
+      'squeue --me shows the reason in its last column. Resources: no machine has the CPUs, memory, or GPUs you asked for free yet. Priority: other jobs are ahead of yours; the Cluster policy page explains the ranking. A reason that starts with QOS: you reached a per-user limit of that partition or of the whole cluster, such as the most GPUs one user may have, listed on the Cluster policy page; the job starts when some of your other jobs end. AssocMaxJobsLimit: your home is over its limit; new jobs wait until you clear space. Your home usage shows when you log in.',
+    ], command: 'squeue --me\nscontrol show job JOBID' },
+    { question: 'My job ended with OUT_OF_MEMORY. What do I do?', text: [
+      'Memory is enforced: a job that uses more memory than it asked for is stopped. Without --mem, a job gets the partition’s default memory per CPU, shown on the Cluster policy page. Ask for more with --mem; the request must fit on one machine, and the Machines page lists each machine’s RAM. sacct shows how much memory a finished job used (MaxRSS).',
+    ], command: 'sacct -j JOBID --format=JobID,State,ReqMem,MaxRSS\n\n# In job.sh:\n#SBATCH --mem=64G' },
+    { question: 'Can I do a dry run of a job before submitting it?', text: [
+      'Yes: add --test-only to sbatch. Slurm checks your script and the resources it asks for, then prints when and on which machine the job would start. No job is submitted, nothing is reserved, and the script does not run. The same flag works with srun and salloc.',
+      'If the machines are busy, it prints a later start time. That time is an estimate: it assumes running jobs use their full time limit, so the real start is often sooner. If no machine that is up can take the request (too many GPUs, too much memory or time), it prints the reason at once, for example Requested node configuration is not available. A machine that is down counts as not there.',
+      'It cannot find errors inside your script, such as a wrong path or a missing package: for those, run a short real job.',
+    ], command: 'sbatch --test-only job.sh\n# Example output:\n# sbatch: Job 1234 to start at 2026-11-06T15:46:21 using 4 processors on nodes NODE in partition PARTITION' },
+    { question: 'If I cancel my job and resubmit it, do I lose priority?', text: [values.resubmit_rule] },
+  ]
+}
 
-export const policyExplanation = {
-  title: 'Queue ranking',
-  text: 'GPU-hours are allocated GPU count multiplied by runtime. CPU and RAM do not contribute to fair-share usage. Usage counts half after the configured fair-share half-life (45 days by default). The more of the cluster’s recent GPU-hours you used compared with your equal share, the lower your fair-share factor. Waiting time also contributes to priority. Running jobs are not interrupted by ranking, and priority does not guarantee a start time.',
-  command: 'sshare -al\nsprio',
-  liveSummary: 'The partition names, default partition, time limits, and machines are live values. Open the website policy page for the current partition summary.',
+/** The Cluster policy page's ranking explanation; the short-job bonus and waiting-time sentences follow the cluster's settings. */
+export function policyExplanation(values: GuideValues) {
+  return {
+    title: 'Queue ranking',
+    text: `GPU-hours are allocated GPU count multiplied by runtime. CPU and RAM do not contribute to fair-share usage. Usage counts half after the configured fair-share half-life (45 days by default). The more of the cluster’s recent GPU-hours you used compared with your equal share, the lower your fair-share factor. ${values.priority_rule} Running jobs are not interrupted by ranking, and priority does not guarantee a start time.`,
+    command: 'sshare -al\nsprio',
+    liveSummary: 'The partition names, default partition, time limits, and machines are live values. Open the website policy page for the current partition summary.',
+  }
 }
 
 function markdownCode(value: string): string {
@@ -174,5 +192,6 @@ export function docsMarkdown(values: GuideValues): string {
 
 /** Generate the static policy explanation, with the changing partition data left live. */
 export function policyMarkdown(values: GuideValues): string {
-  return `# ${values.cluster_name} cluster policy\n\n> Static explanation of queue policy. The partition summary changes with Slurm, so read it on the website.\n\n[Open the live policy page](./#policy)\n\n## ${policyExplanation.title}\n\n${policyExplanation.text}\n\n${markdownCode(policyExplanation.command)}\n\n## Live partition summary\n\n${policyExplanation.liveSummary}\n`
+  const explanation = policyExplanation(values)
+  return `# ${values.cluster_name} cluster policy\n\n> Static explanation of queue policy. The partition summary changes with Slurm, so read it on the website.\n\n[Open the live policy page](./#policy)\n\n## ${explanation.title}\n\n${explanation.text}\n\n${markdownCode(explanation.command)}\n\n## Live partition summary\n\n${explanation.liveSummary}\n`
 }

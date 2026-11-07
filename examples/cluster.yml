@@ -95,8 +95,9 @@ policy:
   default_memory_mb_per_cpu: 1024
   fairshare_weight: 40000       # recent GPU usage, classic fair share
   fairshare_half_life: "45-00:00:00"
-  age_weight: 1000              # waiting time
+  age_weight: 0                 # waiting time (0: waiting adds no priority)
   age_max: "7-00:00:00"
+  short_job_bonus: 5000         # shorter --time: up to this many points, 0 at the default partition's max_time
 
 home:
   quota_soft_gb: 300
@@ -114,6 +115,8 @@ backup:
 alerts:
   slack: false                  # true: the webhook is NANOHPC_SLACK_WEBHOOK in .env next to this file
                                 # users with slack_id also need NANOHPC_SLACK_BOT_TOKEN in .env
+  backup_old_days: 7            # post when the last good backup is older than this
+  slow_home_mb_per_second: 50   # post when a compute machine's large-file /home read is slower, two nights in a row
 
 user_check:
   allowed_tunnels: []           # exceptions: [{user: bob, program: cloudflared, machines: [gpu4]}]

@@ -238,6 +238,8 @@ function App({ site }: { site: SiteSettings }) {
     if (page === 'users' && requestedUser) document.getElementById(`user-${requestedUser}`)?.scrollIntoView({ block: 'start' })
   }, [page, requestedMachine, requestedUser, hasData])
   const isGuide = page === 'docs'
+  const values = siteValues(site)
+  const explanation = policyExplanation(values)
   // The How to and FAQ pages are static text: no data notice and no update time.
   const isStatic = isGuide || page === 'faq'
   const markdownPage = isGuide ? 'docs' : page === 'machines' ? 'machines' : page === 'policy' ? 'policy' : null
@@ -274,15 +276,15 @@ function App({ site }: { site: SiteSettings }) {
         <UserCards users={data?.users ?? []} stale={stale || failed}/>
       </>}
       {page === 'usage' && dashboard('Machine and GPU metrics', 'machines', `${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0${metricsMachineParams}`)}
-      {isGuide && <HowToUse values={siteValues(site)} partitions={data?.partitions ?? null}/>}
+      {isGuide && <HowToUse values={values} partitions={data?.partitions ?? null}/>}
       {page === 'policy' && <>
         <h2 className="section-heading">Partition policy</h2>
         {data ? policyCards(data.policies, data.partitions ?? []).map((card) => <section className="panel policies" key={card.title}><div className="panel-heading"><h2>{card.title}</h2></div><dl>{card.rows.map((policy) => <div key={policy.name}><dt>{policy.name}</dt><dd>{policy.value}</dd></div>)}</dl></section>) : <section className="panel policies"><div className="panel-heading"><h2>Current policies</h2></div><p>Live policies are unavailable. Run <code>scontrol show partition</code> on the front node to inspect queue limits.</p></section>}
-        <div className="user-guide"><section><h2>{policyExplanation.title}</h2><p>{policyExplanation.text}</p><pre><code>{policyExplanation.command}</code></pre></section>
+        <div className="user-guide"><section><h2>{explanation.title}</h2><p>{explanation.text}</p><pre><code>{explanation.command}</code></pre></section>
           {data && <PartitionBox partitions={data.partitions ?? []} nodes={data.nodes} policies={data.policies}/>}
         </div>
       </>}
-      {page === 'faq' && <Faq own={site.faq ?? []}/>}
+      {page === 'faq' && <Faq own={site.faq ?? []} values={values}/>}
       <footer>{!isStatic && freshness}<p>{demo ? 'This demo' : site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
     </main></div>
   </>

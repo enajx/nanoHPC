@@ -8,18 +8,21 @@ One large file is written (forced to disk) and read back past this machine's cac
 files are written and read back the same way, and one public file is downloaded to nowhere."""
 
 import argparse
+import http.client
 import mmap
 import os
 import shutil
 import socket
 import time
-import urllib.request
+import urllib.parse
 from pathlib import Path
 
 # Reads go past this machine's cache with O_DIRECT (Linux); macOS has none, which only matters in local tests.
 DIRECT = getattr(os, "O_DIRECT", 0)
 BLOCK = 4 * 1024 * 1024
 SMALL = 32 * 1024
+CONNECT_SECONDS = 5
+READ_SECONDS = 30
 
 
 def read_direct(path: Path, buffer: mmap.mmap) -> int:
@@ -32,12 +35,23 @@ def read_direct(path: Path, buffer: mmap.mmap) -> int:
 
 
 def download(url: str, internet_seconds: int) -> float:
-    """Download speed in MB/s; the download stops after internet_seconds, and what arrived by then counts."""
+    """Download speed in MB/s, timed from the open connection; the download stops after internet_seconds, and
+    what arrived by then counts. Each of the server's addresses gets CONNECT_SECONDS to answer before the next is
+    tried, so an address the network drops does not use up the read timeout and make the result 0."""
+    parts = urllib.parse.urlsplit(url)
+    connection_type = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+    connection = connection_type(parts.netloc, timeout=CONNECT_SECONDS)
+    connection.connect()
+    connection.sock.settimeout(READ_SECONDS)
     start = time.monotonic()
     total = 0
-    with urllib.request.urlopen(url, timeout=30) as response:
-        while (chunk := response.read(BLOCK)) and time.monotonic() - start < internet_seconds:
-            total += len(chunk)
+    connection.request("GET", urllib.parse.urlunsplit(("", "", parts.path, parts.query, "")))
+    response = connection.getresponse()
+    if response.status != 200:
+        raise RuntimeError(f"download answered HTTP {response.status}: {url}")
+    while (chunk := response.read(BLOCK)) and time.monotonic() - start < internet_seconds:
+        total += len(chunk)
+    connection.close()
     return total / 1e6 / (time.monotonic() - start)
 
 

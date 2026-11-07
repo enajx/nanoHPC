@@ -102,8 +102,9 @@
           slack_configs:
             - api_url_file: /etc/nanohpc/alertmanager/slack-webhook
               send_resolved: false
-              title: '[{{ nanohpc.cluster_name }}] Problem: {% raw %}{{ .CommonLabels.alertname }}{% endraw %}'
-              text: '{% raw %}{{ range .Alerts.Firing }}:red_circle: {{ .Annotations.summary }}{{ "\n" }}{{ end }}{% endraw %}'
+              # An info alert (a machine back online) is good news, posted with a check mark.
+              title: '[{{ nanohpc.cluster_name }}] {% raw %}{{ if eq .CommonLabels.severity "info" }}Back online{{ else }}Problem{{ end }}: {{ .CommonLabels.alertname }}{% endraw %}'
+              text: '{% raw %}{{ range .Alerts.Firing }}{{ if eq .Labels.severity "info" }}:white_check_mark:{{ else }}:red_circle:{{ end }} {{ .Annotations.summary }}{{ "\n" }}{{ end }}{% endraw %}'
       {% endif %}
   block:
     - name: Check the Alertmanager configuration with amtool (dry run)

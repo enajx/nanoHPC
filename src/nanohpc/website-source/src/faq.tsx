@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { faqEntries, type FaqEntry } from './documentation'
+import { faqEntries, type FaqEntry, type GuideValues } from './documentation'
 import type { SiteFaqEntry } from './site'
 
 /** The administrator's entry from cluster.yml as a FAQ entry: each blank-line-separated part is a paragraph. */
@@ -9,11 +9,11 @@ function fromSite(entry: SiteFaqEntry): FaqEntry {
 
 /** The FAQ page: a search box over questions and answers, and one card per question, closed until clicked.
  * The generic questions come first, then the administrator's own. */
-export function Faq({ own }: { own: SiteFaqEntry[] }) {
+export function Faq({ own, values }: { own: SiteFaqEntry[]; values: GuideValues }) {
   const [search, setSearch] = useState('')
   const words = search.toLowerCase().split(/\s+/).filter(Boolean)
   // A question shows when every typed word is in its question, answer, or command.
-  const shown = [...faqEntries, ...own.map(fromSite)].filter((entry) => {
+  const shown = [...faqEntries(values), ...own.map(fromSite)].filter((entry) => {
     const text = [entry.question, ...entry.text, entry.command ?? ''].join(' ').toLowerCase()
     return words.every((word) => text.includes(word))
   })

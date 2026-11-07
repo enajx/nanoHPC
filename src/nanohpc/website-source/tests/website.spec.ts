@@ -31,6 +31,8 @@ const site = {
   home_quota_hard_gb: 300,
   scratch_cleanup_days: 21,
   interactive_machine_rule: "A main job asking for more than 4 hours does not run on the interactive partition's shared machines (gpu1), which are kept free for interactive shells. Leave out --nodelist for those machines on longer jobs.",
+  priority_rule: 'Jobs with a shorter --time get a bonus of up to 5000 points that falls in a straight line to 0 at the main partition’s time limit (24:00:00); it shows in the SITE column of sprio. Waiting time does not add priority.',
+  resubmit_rule: 'No. Priority comes from the GPU-hours you used over time (fair share) and the --time you ask for, and it is recomputed every minute.',
   faq: [{ question: 'Who do I ask for a larger home quota?', answer: 'Write to the mylab admins.\n\nSay how much space you need and for how long.' }],
 }
 const gib = 1024 ** 3
@@ -467,8 +469,10 @@ test('the site renders every tab from the fixture data under a non-root path', a
   await nav.getByRole('link', { name: 'Cluster policy', exact: true }).click()
   await expect(page.locator('.policies h2')).toHaveText(['main (default)', 'interactive', 'All partitions'])
   await expect(page.locator('.policies').first()).toContainText('1-00:00:00')
+  await expect(page.locator('.user-guide p').filter({ hasText: 'fair-share factor' })).toContainText(site.priority_rule)
   const policy = await page.request.get(`${origin}${prefix}policy.md`)
   expect(await policy.text()).toContain('# mylab cluster policy')
+  expect(await policy.text()).toContain(site.priority_rule)
 
   expectInsidePrefix(seen.requests)
   expect(seen.errors).toEqual([])
@@ -509,6 +513,16 @@ test('FAQ shows the generic and the administrator questions, closed until clicke
   const pending = cards.filter({ hasText: 'Why is my job still pending?' })
   await pending.locator('summary').click()
   await expect(pending.locator('.faq-answer')).toContainText('a per-user limit of that partition or of the whole cluster')
+  // A dry run: sbatch --test-only, what it checks and what it does not.
+  const dryRun = cards.filter({ hasText: 'Can I do a dry run of a job before submitting it?' })
+  await dryRun.locator('summary').click()
+  await expect(dryRun.locator('.faq-answer code')).toContainText('sbatch --test-only job.sh')
+  for (const sentence of ['No job is submitted', 'it prints a later start time', 'A machine that is down counts as not there', 'It cannot find errors inside your script'])
+    await expect(dryRun.locator('.faq-answer')).toContainText(sentence)
+  // Cancel and resubmit: the answer follows the cluster's priority settings, from site.json.
+  const resubmit = cards.filter({ hasText: 'If I cancel my job and resubmit it, do I lose priority?' })
+  await resubmit.locator('summary').click()
+  await expect(resubmit.locator('.faq-answer p')).toHaveText([site.resubmit_rule])
   // Search keeps the questions that contain every typed word, in the question, answer, or command.
   const search = page.getByRole('searchbox', { name: 'Search questions' })
   await search.fill('uv cmake')
@@ -659,6 +673,25 @@ test('the guide covers supported containers and interactive notebooks without cl
   expect(helper.ok()).toBe(true)
   expect(await helper.text()).toContain('Remote-SSH cannot connect to the front node')
   expect(await helper.text()).toContain('because SSH forwarding')
+})
+
+test('the guide says to run srun once on the front node and what the interactive shell is, and offers ForwardAgent', async ({ page }) => {
+  await mockGrafana(page)
+  await page.goto(`${origin}${prefix}#docs`)
+  await expect(page.locator('.instruction').filter({ hasText: 'add ForwardAgent yes under Host mylab in ~/.ssh/config' })).toHaveCount(1)
+  await page.getByRole('tab', { name: 'Interactive shell' }).click()
+  const shell = page.locator('.topic-text').filter({ hasText: 'Run srun once, on the mylab front node.' })
+  await expect(shell).toBeVisible()
+  for (const sentence of [
+    'This shell already has the GPUs you asked for, in any folder you cd to.',
+    'The name after @ in your prompt changes from the front node’s name to the compute node’s name',
+    'if you close the terminal or lose SSH, the shell and its job end. For work that must keep running, use a batch job.',
+    'it reads /etc/profile and your ~/.bash_profile',
+  ]) await expect(shell).toContainText(sentence)
+  await expect(page.locator('.user-guide code').filter({ hasText: 'Not srun again here' })).toBeVisible()
+  const docs = await (await page.request.get(`${origin}${prefix}docs.md`)).text()
+  expect(docs).toContain('Run srun once, on the mylab front node.')
+  expect(docs).toContain('add ForwardAgent yes under Host mylab in ~/.ssh/config')
 })
 
 test('Cluster Usage excludes samples from a stale snapshot', async ({ page }) => {

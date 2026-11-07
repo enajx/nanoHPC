@@ -2354,6 +2354,37 @@ class SimSlackTest(SimUsersBase):
             "/etc/systemd/system/nanohpc-job-end-notify.service && sudo systemctl daemon-reload"
         )
 
+        with self.subTest("the interactive shell says it is on the compute node; a batch job prints nothing"):
+            shell = self.run_command(
+                "ssh", "-tt", "-F", str(self.state / "ssh_config"), "front",
+                "cd /tmp && sudo -u alice srun -p interactive -w gpu4 --gpus=1 --pty bash -l", stdin="exit\n",
+            )  # fmt: skip
+            self.assertEqual(shell.returncode, 0, shell.stdout + shell.stderr)
+            self.assertRegex(
+                shell.stdout, r"You are on the compute node gpu4, in job \d+, with 1 GPU until \d\d:\d\d\."
+            )
+            self.assertIn("Run your code here (no need for srun again). Type exit to release the GPU.", shell.stdout)
+            job = self.on_front(
+                "cd /tmp && sudo -u alice sbatch --parsable --wait -o /tmp/prolog-batch.out -p main -w gpu4 --gpus=1"
+                " --wrap 'srun hostname'"
+            ).strip()
+            self.assertEqual(self.finished_job(job), ("COMPLETED", "gpu4"))
+            # The batch script runs on gpu4, so its output file is there.
+            output = self.ssh("gpu4", "cat /tmp/prolog-batch.out")
+            self.assertEqual(output.returncode, 0, output.stdout + output.stderr)
+            self.assertNotIn("You are on", output.stdout)
+
+        with self.subTest("a 1-hour job gets the short-job bonus (4792 of 5000) and no waiting-time points"):
+            # sprio lists only jobs that could start now, so a job that holds all of gpu4's memory (4096 MB)
+            # keeps the 1-hour job waiting.
+            submit = "cd /tmp && sudo -u alice sbatch --parsable -o /dev/null -p main -w gpu4"
+            holder = self.on_front(f"{submit} --mem=4096 --wrap 'sleep 600'").strip()
+            self.addCleanup(self.ssh, "front", f"sudo scancel {holder}")
+            job = self.on_front(f"{submit} -t 60 --wrap true").strip()
+            self.addCleanup(self.ssh, "front", f"sudo scancel {job}")
+            self.assertEqual(self.on_front(f"sprio -n -h -j {job} -o '%.20S %.20A'").split(), ["4792", "0"])
+            self.on_front(f"sudo scancel {job} {holder}")
+
         with self.subTest("a batch job with --mail-user=slack gets one private message when it ends; no email"):
             script = (
                 "#!/bin/bash\n#SBATCH --job-name=slack-test\n#SBATCH --mail-type=END\n"
@@ -2410,7 +2441,11 @@ class SimSlackTest(SimUsersBase):
             self.health("cpu1", "sudo systemctl start nanohpc-scratch-cleanup.timer")
 
         with self.subTest("the alert rules pass their promtool tests on the front node's promtool"):
-            for relative in ("src/nanohpc/files/prometheus-alert-rules.yml", "tests/prometheus_alert_rules_test.yml"):
+            for relative in (
+                "src/nanohpc/files/prometheus-alert-rules.yml",
+                "tests/prometheus_alert_rules_test.yml",
+                "tests/prometheus_alert_settings.yml",
+            ):
                 copied = self.ssh("front", f"mkdir -p /tmp/rules/$(dirname {relative}) && cat > /tmp/rules/{relative}",
                                   stdin=(ROOT / relative).read_text())  # fmt: skip
                 self.assertEqual(copied.returncode, 0, copied.stderr)
@@ -2455,8 +2490,17 @@ class SimSlackTest(SimUsersBase):
             time.sleep(330)
             new = self.channel()[before:]
             self.assertEqual(new, [], new)
-            self.assertEqual(self.ssh("gpu4", "sudo systemctl start nanohpc-node-exporter").returncode, 0)
             self.health("cpu1", "sudo systemctl start nanohpc-scratch-cleanup.timer")
+
+        with self.subTest("a machine back from offline is posted once as back online"):
+            before = len(self.channel())
+            self.assertEqual(self.ssh("gpu4", "sudo systemctl start nanohpc-node-exporter").returncode, 0)
+            time.sleep(150)
+            new = self.channel()[before:]
+            self.assertEqual(len(new), 1, new)
+            self.assertIn("Back online", new[0])
+            self.assertIn(":white_check_mark: gpu4 is back online.", new[0])
+            self.assertEqual(self.on_front("cat /etc/nanohpc/prometheus/alert-settings.yml").count("vector("), 2)
 
 
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")

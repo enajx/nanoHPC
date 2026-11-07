@@ -45,12 +45,15 @@ POLICY_DEFAULTS: dict[str, Any] = {
     "default_memory_mb_per_cpu": 8192,
     "fairshare_weight": 40000,
     "fairshare_half_life": "45-00:00:00",
-    "age_weight": 1000,
+    "age_weight": 0,
     "age_max": "7-00:00:00",
+    "short_job_bonus": 5000,
 }
 HOME_DEFAULTS: dict[str, Any] = {"quota_soft_gb": 300, "quota_hard_gb": 400}
 SCRATCH_DEFAULTS: dict[str, Any] = {"cleanup_days": 14, "job_retention_days": 7}
 ALERTS_DEFAULTS: dict[str, Any] = {"slack": False}
+# Slurm mode only: BackupOld posts after this many days; HomeLinkSlow below this large-file /home read, two nights.
+SLURM_ALERTS_DEFAULTS: dict[str, Any] = {**ALERTS_DEFAULTS, "backup_old_days": 7, "slow_home_mb_per_second": 50}
 USER_CHECK_DEFAULTS: dict[str, Any] = {"allowed_tunnels": []}
 USER_CHECK_PROGRAMS = frozenset(
     {
@@ -749,9 +752,12 @@ def check_policy(checker: Checker, value: Any) -> dict[str, Any]:
         "default_cpus_per_gpu",
         "default_memory_mb_per_cpu",
         "fairshare_weight",
-        "age_weight",
     ):
         checker.positive(policy[key], f"policy.{key}")
+    # 0 turns these priority parts off.
+    for key in ("age_weight", "short_job_bonus"):
+        if not whole(policy[key]) or policy[key] < 0:
+            checker.fail(f"policy.{key}", "must be 0 or a positive integer")
     checker.gpu_limit(policy["max_gpus_per_user"], "policy.max_gpus_per_user")
     for key in ("fairshare_half_life", "age_max"):
         checker.matches(policy[key], SLURM_TIME, f"policy.{key}", 'a Slurm time in quotes, like "7-00:00:00"')
@@ -906,7 +912,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "home": check_home(checker, top.get("home")),
         "scratch": with_defaults(checker, top.get("scratch"), "scratch", SCRATCH_DEFAULTS),
         "backup": check_backup(checker, top.get("backup"), machines),
-        "alerts": with_defaults(checker, top.get("alerts"), "alerts", ALERTS_DEFAULTS),
+        "alerts": with_defaults(checker, top.get("alerts"), "alerts", SLURM_ALERTS_DEFAULTS),
         "user_check": check_user_check(checker, top.get("user_check"), users, machines),
         "auto_deploy": with_defaults(checker, top.get("auto_deploy"), "auto_deploy", AUTO_DEPLOY_DEFAULTS),
         "nanohpc_version": top.get("nanohpc_version"),
@@ -927,6 +933,8 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
     checker.positive(config["scratch"]["cleanup_days"], "scratch.cleanup_days")
     checker.positive(config["scratch"]["job_retention_days"], "scratch.job_retention_days")
     checker.boolean(config["alerts"]["slack"], "alerts.slack")
+    checker.positive(config["alerts"]["backup_old_days"], "alerts.backup_old_days")
+    checker.positive(config["alerts"]["slow_home_mb_per_second"], "alerts.slow_home_mb_per_second")
     check_auto_deploy(checker, config)
     return config, checker.errors
 
