@@ -448,7 +448,7 @@ def check_monitor_machines(checker: Checker, value: Any) -> dict[str, dict[str, 
 
 def check_monitor_config(checker: Checker, raw: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the monitoring-only configuration and fill shared website and alert defaults."""
-    top = checker.mapping(raw, "", ("cluster", "machines", "users"), ("alerts", "agent"))
+    top = checker.mapping(raw, "", ("cluster", "machines", "users"), ("alerts", "agent", "nanohpc_version"))
     if top is None:
         return {}
     users = check_monitor_users(checker, top.get("users"))
@@ -462,7 +462,22 @@ def check_monitor_config(checker: Checker, raw: Mapping[str, Any]) -> dict[str, 
     alerts = with_defaults(checker, top.get("alerts"), "alerts", ALERTS_DEFAULTS)
     checker.boolean(alerts["slack"], "alerts.slack")
     agent = check_agent(checker, top.get("agent"), "monitor")
-    return {"cluster": cluster, "machines": machines, "users": users, "alerts": alerts, "agent": agent}
+    # Deploys asked from Slack run on the monitor host with this nanoHPC version.
+    version = top.get("nanohpc_version")
+    if version is not None and not (isinstance(version, str) and VERSION.fullmatch(version)):
+        checker.fail("nanohpc_version", 'must be a version such as "0.1.0", in quotes')
+    if version is None and agent["enabled"] is True and agent["repository"] is not None:
+        checker.fail(
+            "nanohpc_version", "is required when agent.repository is set (the version the monitor host installs)"
+        )
+    return {
+        "cluster": cluster,
+        "machines": machines,
+        "users": users,
+        "alerts": alerts,
+        "agent": agent,
+        "nanohpc_version": version,
+    }
 
 
 def check_users(checker: Checker, value: Any) -> list[dict[str, Any]]:

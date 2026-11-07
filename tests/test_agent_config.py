@@ -51,9 +51,27 @@ class AgentConfigTest(unittest.TestCase):
         self.assertEqual(config["agent"]["approvers"], APPROVERS)
         self.assertEqual((config["agent"]["daily_usd"], config["agent"]["requests_per_person"]), (5, 3))
         repository = "git@github.com:lab/monitor-config.git"
-        config, errors = errors_with(MONITOR, {**ON, "repository": repository})
+        config, errors = errors_with(MONITOR, {**ON, "enabled": False, "repository": repository})
         self.assertEqual(errors, [])
         self.assertEqual(config["agent"]["repository"], repository)
+
+    def test_monitor_mode_pins_a_version_for_deploys_from_slack(self) -> None:
+        repository = {**ON, "repository": "git@github.com:lab/monitor-config.git"}
+        raw = yaml.safe_load(MONITOR.read_text())
+        raw["agent"] = {**repository, "enabled": True}
+        raw["nanohpc_version"] = "0.1.0"
+        config, errors = check_config(raw)
+        self.assertEqual((errors, config["nanohpc_version"]), ([], "0.1.0"))
+        del raw["nanohpc_version"]
+        self.assertIn(
+            "nanohpc_version is required when agent.repository is set (the version the monitor host installs)",
+            check_config(raw)[1],
+        )
+        raw["nanohpc_version"] = "1.0"
+        self.assertIn('nanohpc_version must be a version such as "0.1.0", in quotes', check_config(raw)[1])
+        raw["nanohpc_version"] = "0.1.0"
+        raw["agent"]["enabled"] = False
+        self.assertEqual(check_config(raw)[1], [])
 
     def test_bad_settings_name_their_field(self) -> None:
         cases = [

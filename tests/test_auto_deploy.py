@@ -336,6 +336,15 @@ class AutoDeployTests(unittest.TestCase):
         self.assert_run(0)
         self.assertEqual(self.cluster.state_file("deployed"), newer)
 
+    def test_monitor_mode_runs_deploy_monitor(self) -> None:
+        """--deploy-command deploy-monitor (the Slack agent in monitor mode) runs nanohpc deploy-monitor."""
+        result = self.cluster.run_with(self.url, ["--deploy-command", "deploy-monitor", "--again", "--", "--dry-run"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            self.cluster.deploys()[-1]["args"],
+            ["deploy-monitor", "cluster.yml", "--ssh-config", "/etc/nanohpc/ssh_config", "--dry-run"],
+        )
+
     def test_journal_says_which_run_failed(self) -> None:
         """nanohpc deploy exits 3 when its dry run failed on some machines (left out, unchanged), 4 when its real
         run failed; the journal says which, and the metric keeps the code for the alert."""

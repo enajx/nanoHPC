@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.metadata
+import json
 import os
 import shutil
 import sys
@@ -86,7 +87,9 @@ def run_deploy_monitor(
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
         return 1
-    config, errors = load_config(path, True, False)
+    # Set when the Slack agent's runner deploys from the monitor host (nanohpc-auto-deploy).
+    automatic = os.environ.get("NANOHPC_AUTOMATIC") == "1"
+    config, errors = load_config(path, True, automatic)
     if errors:
         print(f"{path}: {len(errors)} error(s); nothing was changed", file=sys.stderr)
         for error in errors:
@@ -101,7 +104,10 @@ def run_deploy_monitor(
     if only is not None and only.part != "node":
         print("Monitor mode --only supports node NAME only.", file=sys.stderr)
         return 1
-    return deploy.deploy_monitor(config, ssh_config, False, {}, dry_run_only, only, accept_hardware_change)
+    # A simulated cluster's monitor host deploys itself like `nanohpc sim deploy` (test use).
+    simulated = os.environ.get("NANOHPC_SIMULATED") == "1"
+    fake_gpus = json.loads(os.environ.get("NANOHPC_FAKE_GPUS_JSON", "{}")) if simulated else {}
+    return deploy.deploy_monitor(config, ssh_config, simulated, fake_gpus, dry_run_only, only, accept_hardware_change)
 
 
 def forwarding_rules(path: Path) -> int:

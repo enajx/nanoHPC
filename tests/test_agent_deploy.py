@@ -3,14 +3,18 @@ templating), the variables from cluster.yml, and where the role runs."""
 
 import copy
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 
+from nanohpc import cli
 from nanohpc.config import check_config
 from nanohpc.deploy import agent_cluster_yml, agent_variables
 
@@ -96,6 +100,35 @@ class AgentSettingsTest(unittest.TestCase):
         config["secrets"] = {"slack_bot_token": "xoxb-secret"}
         self.assertNotIn("xoxb-secret", agent_cluster_yml(config))
         self.assertIn("approvers", agent_cluster_yml(config))
+
+
+class MonitorDeployFromTheFrontTest(unittest.TestCase):
+    """deploy-monitor run by the agent's runner on the monitor host (labelled: deploy_monitor is replaced by a
+    recorder, nothing is deployed): an automatic deploy, and on a simulated cluster its fake GPUs."""
+
+    def test_environment_reaches_deploy_monitor(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "cluster.yml"
+            path.write_text((ROOT / "examples/monitor.yml").read_text())
+            fake = {"gpu1": {"count": 2, "type": "A6000"}}
+            environment = {
+                "NANOHPC_AUTOMATIC": "1",
+                "NANOHPC_SIMULATED": "1",
+                "NANOHPC_FAKE_GPUS_JSON": json.dumps(fake),
+            }
+            with (
+                mock.patch.dict(os.environ, environment),
+                mock.patch.object(cli.deploy, "deploy_monitor", return_value=0) as recorder,
+            ):
+                self.assertEqual(cli.run_deploy_monitor(path, None, True, None, None), 0)
+            _, _, simulated, fake_gpus, dry_run, *_ = recorder.call_args.args
+            self.assertEqual((simulated, fake_gpus, dry_run), (True, fake, True))
+            with (
+                mock.patch.dict(os.environ, {"NANOHPC_SIMULATED": ""}),
+                mock.patch.object(cli.deploy, "deploy_monitor", return_value=0) as recorder,
+            ):
+                cli.run_deploy_monitor(path, None, False, None, None)
+            self.assertEqual(recorder.call_args.args[2:4], (False, {}))
 
 
 if __name__ == "__main__":
