@@ -85,6 +85,12 @@ class AgentSettingsTest(unittest.TestCase):
         self.assertTrue(bot["code"])
         self.assertEqual(bot["limits"]["daily_usd"], 3)
 
+    def test_no_crash_dumps_and_the_bots_processes_are_hidden(self) -> None:
+        for name in ("nanohpc-agent-runner", "nanohpc-agent"):
+            unit = (ROLE / "templates" / f"{name}.service.j2").read_text()
+            self.assertIn("\nLimitCORE=0\n", unit, name)
+        self.assertIn("\nProtectProc=invisible\n", (ROLE / "templates/nanohpc-agent.service.j2").read_text())
+
     def test_the_settings_the_agent_reads_have_no_secrets(self) -> None:
         config = config_with({"enabled": True, "channel": "C1AB", "approvers": APPROVERS}, None)
         config["secrets"] = {"slack_bot_token": "xoxb-secret"}

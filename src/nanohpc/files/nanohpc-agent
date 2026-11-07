@@ -42,6 +42,8 @@ SECRET_PATTERNS = [
     re.compile(r"https://hooks\.slack\.com/services/\S+"),
     re.compile(r"NANOHPC_[A-Z_]*(SECRET|TOKEN|KEY|WEBHOOK)=\S+"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
+    # Password hashes, as in /etc/shadow.
+    re.compile(r"\$(1|2[aby]?|5|6|y|gy|7)\$[^\s:]+"),
 ]
 
 
@@ -54,102 +56,135 @@ def mask(text: str) -> str:
 
 # ---------------------------------------------------------------- runner: the read-only rule
 
-# Each allowed program and the first arguments it may start with (None: any arguments).
+# Reads are wide: any program below, on any file, except files that hold secrets, and people's own files unless an
+# approver asks. Output is masked as well. Each program and the first arguments it may start with (None: any).
 READ_ONLY = {
-    "systemctl": [
-        ["status"],
-        ["is-active"],
-        ["is-failed"],
-        ["is-enabled"],
-        ["list-units"],
-        ["list-timers"],
-        ["--failed"],
-    ],
+    "systemctl": [["status"], ["is-active"], ["is-failed"], ["is-enabled"], ["list-units"], ["list-unit-files"],
+                  ["list-timers"], ["list-dependencies"], ["show"], ["cat"], ["--failed"], ["--no-pager"]],
     "journalctl": None,
-    "df": None,
-    "free": None,
-    "uptime": None,
+    # Files and folders: contents, listings, sizes, checksums.
+    "cat": None, "head": None, "tail": None, "grep": None, "zgrep": None, "zcat": None, "ls": None, "find": None,
+    "wc": None, "du": None, "file": None, "readlink": None, "realpath": None, "stat": None, "test": None,
+    "diff": None, "cmp": None, "md5sum": None, "sha256sum": None,
+    # The machine: processes, memory, disks, hardware, accounts, logins, time.
+    "ps": None, "pgrep": None, "uptime": None, "free": None, "df": None, "lsblk": None, "findmnt": None,
+    "uname": None, "lscpu": None, "lspci": None, "lsusb": None, "lsmod": None, "sensors": None, "vmstat": None,
+    "iostat": None, "id": None, "getent": None, "groups": None, "who": None, "w": None, "last": None,
+    "lastlog": None, "date": None, "nproc": None, "dpkg": [["-l"], ["-s"], ["-L"], ["--list"], ["--status"]],
+    "apt": [["list"], ["policy"], ["show"]], "apt-cache": [["policy"], ["show"], ["search"]],
+    "timedatectl": [["status"], ["show"], []], "chronyc": [["tracking"], ["sources"], ["sourcestats"]],
+    "loginctl": [["list-sessions"], ["list-users"], ["show-user"], ["user-status"]],
+    "top": [["-b"]],
     "nvidia-smi": None,
-    # File details only (size, owner, times, whether it exists), never contents.
-    "stat": None,
-    "test": None,
-    "ip": [["addr"], ["-br", "addr"], ["link"], ["-br", "link"], ["route"]],
-}
+    "ipmitool": [["sensor"], ["sdr"], ["sel", "list"], ["sel", "elist"], ["sel", "info"], ["chassis", "status"],
+                 ["lan", "print"], ["mc", "info"], ["fru"]],
+    # The network.
+    "ip": [["addr"], ["-br", "addr"], ["link"], ["-br", "link"], ["route"], ["neigh"], ["-s", "link"], ["rule"]],
+    "ss": None, "nft": [["list"]], "iptables": [["-S"], ["-L"], ["-n", "-L"], ["-nL"], ["-nvL"], ["-L", "-n"]],
+    "resolvectl": [["status"], ["query"]], "getfacl": None,
+    "git": None,
+}  # fmt: skip
 # Slurm mode only.
 SLURM_READ_ONLY = {
-    "sinfo": None,
-    "squeue": None,
-    "sacct": None,
-    "sshare": None,
-    "sprio": None,
-    "sstat": None,
-    "sdiag": None,
-    "scontrol": [["show"], ["ping"]],
-    "sacctmgr": [["show"], ["list"], ["-n", "show"], ["-n", "list"], ["-P", "show"], ["-P", "list"]],
-}
+    "sinfo": None, "squeue": None, "sacct": None, "sshare": None, "sprio": None, "sstat": None, "sdiag": None,
+    "scontrol": [["show"], ["ping"], ["-o", "show"], ["-d", "show"]],
+    "sacctmgr": [["show"], ["list"], ["-n", "show"], ["-n", "list"], ["-P", "show"], ["-P", "list"],
+                 ["-nP", "show"], ["-nP", "list"]],
+    "munge": [["-n"]],
+}  # fmt: skip
 # journalctl options that change the journal.
-JOURNAL_CHANGES = (
-    "--vacuum",
-    "--rotate",
-    "--flush",
-    "--sync",
-    "--relinquish",
-    "--smart-relinquish",
-    "--setup-keys",
-    "--update-catalog",
-)
+JOURNAL_CHANGES = ("--vacuum", "--rotate", "--flush", "--sync", "--relinquish", "--smart-relinquish",
+                   "--setup-keys", "--update-catalog")  # fmt: skip
 # dmesg options that clear the kernel log or change the console.
 DMESG_CHANGES = {"-c", "-C", "-D", "-E", "--clear", "--read-clear", "--console-off", "--console-on", "--console-level"}
-# nvidia-smi options that change the GPUs.
-NVIDIA_SMI_CHANGES = ("-r", "--gpu-reset", "-pm", "--persistence-mode", "-pl", "--power-limit", "-c", "--compute-mode",
-                      "-e", "--ecc-config", "-lgc", "-rgc", "-lmc", "-rmc", "-ac", "-rac", "-mig", "--lock", "--reset")
 OUTPUT_LIMIT = 30000
 COMMAND_TIMEOUT = 120
 # A deploy from Slack waits at most this long.
 DEPLOY_TIMEOUT = 60 * 60
+# ip words that change the network.
+IP_CHANGES = {"set", "add", "del", "delete", "flush", "change", "replace", "append", "prepend"}
+# find actions that run programs or write files.
+FIND_ACTIONS = {"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}
+# nvidia-smi options that change the GPUs; dmon and pmon never end.
+NVIDIA_CHANGES = ("-pm", "-pl", "-r", "-c", "-e", "-ac", "-rac", "-acp", "-am", "-caa", "-mig", "-lgc", "-rgc",
+                  "-lmc", "-rmc", "-cc", "--persistence-mode", "--power-limit", "--gpu-reset", "--compute-mode",
+                  "--ecc-config", "--applications-clocks", "--lock-gpu-clocks", "--reset-gpu-clocks",
+                  "--lock-memory-clocks", "--reset-memory-clocks", "--multi-instance-gpu", "dmon", "pmon", "-l",
+                  "--loop", "-f", "--filename", "mig", "drain", "nvlink", "clocks", "conf-compute", "-lms")  # fmt: skip
+# git subcommands that only read.
+GIT_READS = {"log", "show", "diff", "status", "blame", "rev-parse", "branch", "describe", "shortlog", "ls-files",
+             "remote", "grep", "reflog", "tag", "cat-file"}  # fmt: skip
+# Files that hold secrets, never read or changed for anyone: folders, exact files, and names anywhere.
+SECRET_DIRS = ("/etc/nanohpc-agent", "/var/lib/nanohpc-agent-runner", "/etc/nanohpc/auto-deploy",
+               "/etc/nanohpc/alertmanager", "/etc/nanohpc/metrics-ca", "/etc/nanohpc/metrics-tls",
+               "/etc/nanohpc/website/tls", "/etc/nanohpc/test-acme", "/root/.ssh", "/etc/munge", "/etc/letsencrypt",
+               "/etc/ssl/private")  # fmt: skip
+SECRET_FILES = ("/etc/shadow", "/etc/shadow-", "/etc/gshadow", "/etc/gshadow-", "/etc/slurm/slurm.key",
+                "/etc/slurm/jwt_hs256.key", "/etc/slurm/slurmdbd.conf", "/etc/mysql/debian.cnf")  # fmt: skip
+SECRET_NAME = re.compile(r"^(id_[a-z0-9]+|\.env.*|.*\.env|environ|.*_key|.*\.key|.*token.*|.*secret.*|.*password.*|"
+                         r".*webhook.*|\.netrc|\.pgpass|\.git-credentials|credentials.*|privkey.*\.pem|.*\.p12)$",
+                         re.IGNORECASE)  # fmt: skip
+# People's own files: read only when an approver asks.
+PRIVATE_DIRS = ("/home", "/scratch")
 
-# Options tail and grep may use on log files; the ones in *_VALUE take a number after them.
-TAIL_FLAGS = {"-n"}
-GREP_FLAGS = {"-i", "-n", "-E", "-F", "-c", "-v", "-r", "-l", "-w", "-h", "-H"}
-GREP_VALUE = {"-m", "-A", "-B", "-C"}
+
+def path_args(args: list[str]) -> list[str]:
+    """Every argument, and the part after = of an option, that could name a file."""
+    found = []
+    for arg in args:
+        for part in (arg, arg.split("=", 1)[1] if "=" in arg else ""):
+            if part and ("/" in part or part.startswith(".") or SECRET_NAME.match(part)):
+                found.append(part)
+    return found
 
 
-def inside(path: str, log_dirs: list[str]) -> bool:
-    """True when the real path (symlinks followed) is one of the log folders or under one."""
+def under(path: str, folders: tuple[str, ...]) -> bool:
+    """True when the path, as written or with symlinks followed, is one of the folders or under one."""
+    for form in (os.path.normpath(path), os.path.realpath(path)):
+        if any(form == folder or form.startswith(folder + os.sep) for folder in folders):
+            return True
+    return False
+
+
+def secret_path(path: str) -> bool:
+    """True for a file that holds a secret (its folder, the file itself, or its name)."""
     real = os.path.realpath(path)
+    if under(path, SECRET_DIRS) or os.path.normpath(path) in SECRET_FILES or real in SECRET_FILES:
+        return True
+    if real.startswith("/proc/") and real.endswith("/environ"):
+        return True
+    names = {os.path.basename(os.path.normpath(path)), os.path.basename(real)}
+    return any(SECRET_NAME.match(name) and not name.endswith(".pub") for name in names)
+
+
+def holds_secret_folder(path: str) -> bool:
+    """True when a recursive read from this folder would reach a folder of secrets."""
+    # A relative folder is taken from / (where the runner runs), which covers it on every machine.
+    path = os.path.join(os.sep, path)
+    for form in (os.path.normpath(path), os.path.realpath(path)):
+        start = form.rstrip(os.sep) + os.sep
+        if any((folder + os.sep).startswith(start) for folder in SECRET_DIRS):
+            return True
+    return False
+
+
+def recursive(program: str, args: list[str]) -> bool:
+    """True for a grep or diff that walks folders."""
+    if program not in ("grep", "zgrep", "diff"):
+        return False
     return any(
-        real == os.path.realpath(folder) or real.startswith(os.path.realpath(folder) + os.sep) for folder in log_dirs
+        arg in ("--recursive", "--dereference-recursive")
+        or arg.startswith("--directories=recurse")
+        or (arg.startswith("-") and not arg.startswith("--") and ("r" in arg or "R" in arg))
+        for arg in args
     )
 
 
-def log_read_refusal(program: str, args: list[str], log_dirs: list[str]) -> str | None:
-    """tail and grep only read files inside the log folders, with a fixed set of options."""
-    plain: list[str] = []
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if program == "tail" and arg in TAIL_FLAGS or program == "grep" and arg in GREP_VALUE:
-            if index + 1 >= len(args) or not args[index + 1].isdigit():
-                return f"{arg} needs a number"
-            index += 2
-            continue
-        if arg.startswith("-"):
-            if program == "grep" and arg in GREP_FLAGS:
-                index += 1
-                continue
-            return f"{program} {arg} is not allowed"
-        plain.append(arg)
-        index += 1
-    paths = plain[1:] if program == "grep" else plain
-    if not paths:
-        return f"{program} needs a file in {', '.join(log_dirs)}"
-    for path in paths:
-        if not inside(path, log_dirs):
-            return f"{path} is outside the log folders ({', '.join(log_dirs)})"
-    return None
+def private_paths(argv: list[str]) -> list[str]:
+    """The arguments that name people's own files (under /home or /scratch)."""
+    return [path for path in path_args(argv[1:]) if under(path, PRIVATE_DIRS)]
 
 
-LS_LETTERS = set("lahtrS1")
 PING_VALUE = {"-c", "-W"}
 PING_MAX_COUNT = 10
 
@@ -179,27 +214,39 @@ def ping_refusal(args: list[str]) -> str | None:
     return None
 
 
-def ls_refusal(args: list[str], log_dirs: list[str]) -> str | None:
-    """ls lists only the log folders, with simple listing options."""
-    paths = [arg for arg in args if not arg.startswith("-")]
-    flags = [arg for arg in args if arg.startswith("-")]
-    if any(not set(flag[1:]) <= LS_LETTERS or flag == "-" for flag in flags):
-        return f"ls options are limited to -{''.join(sorted(LS_LETTERS))}"
-    if not paths:
-        return f"ls needs a folder in {', '.join(log_dirs)}"
-    outside = [path for path in paths if not inside(path, log_dirs)]
-    return f"{outside[0]} is outside the log folders ({', '.join(log_dirs)})" if outside else None
+def git_refusal(args: list[str]) -> str | None:
+    """git only reads: optional -C folder, then a reading subcommand, with no config or output options."""
+    rest = args[2:] if args[:1] == ["-C"] and len(args) >= 2 else args
+    if not rest or rest[0] not in GIT_READS:
+        return f"git {rest[0] if rest else ''} is not a reading git command (allowed: {', '.join(sorted(GIT_READS))})"
+    if any(arg.startswith(("-c", "--output", "--ext-diff", "--exec", "--upload-pack", "--config", "-O",
+                           "--open-files-in-pager")) for arg in rest):  # fmt: skip
+        return "that git option can run a program or write a file"
+    if rest[0] in ("branch", "tag", "remote") and any(
+        not arg.startswith("-") or arg in ("-d", "-D", "-m", "-M") for arg in rest[1:]
+    ):
+        return f"git {rest[0]} only lists here"
+    return None
 
 
-def refusal(argv: list[str], log_dirs: list[str], slurm: bool) -> str | None:
+def secret_refusal(argv: list[str]) -> str | None:
+    """Why this command would touch files with secrets, or None. Applies to reads and changes alike, so a secret
+    never lands in Slack; deploys still manage those files."""
+    secrets = [path for path in path_args(argv[1:]) if secret_path(path)]
+    return f"{secrets[0]} holds secrets and is never read or changed from Slack" if secrets else None
+
+
+def refusal(argv: list[str], slurm: bool) -> str | None:
     """Why the runner refuses this command as a read, or None when it is read-only and allowed."""
     if not argv:
         return "empty command"
     program, args = argv[0], argv[1:]
-    if program in ("tail", "grep"):
-        return log_read_refusal(program, args, log_dirs)
-    if program == "ls":
-        return ls_refusal(args, log_dirs)
+    secret = secret_refusal(argv)
+    if secret is not None:
+        return secret
+    # Every plain argument counts here: a bare name like "etc" is a folder relative to where the command runs.
+    if recursive(program, args) and any(holds_secret_folder(arg) for arg in args if not arg.startswith("-")):
+        return f"a recursive {program} there would reach files with secrets; use a narrower folder"
     if program == "ping":
         return ping_refusal(args)
     if program == "dmesg":
@@ -207,6 +254,8 @@ def refusal(argv: list[str], log_dirs: list[str], slurm: bool) -> str | None:
         return f"dmesg {changes[0]} changes the kernel log or console" if changes else None
     if program == "hostname":
         return None if not args else "hostname takes no arguments here"
+    if program == "git":
+        return git_refusal(args)
     allowed = {**READ_ONLY, **SLURM_READ_ONLY} if slurm else READ_ONLY
     if program not in allowed:
         return f"{program} is not on the read-only list"
@@ -215,8 +264,21 @@ def refusal(argv: list[str], log_dirs: list[str], slurm: bool) -> str | None:
         return f"{program} {' '.join(args[:2])} is not a read-only use of {program}"
     if program == "journalctl" and any(arg.startswith(JOURNAL_CHANGES) for arg in args):
         return "that journalctl option changes the journal"
-    if program == "nvidia-smi" and any(arg.split("=")[0] in NVIDIA_SMI_CHANGES for arg in args):
-        return "that nvidia-smi option changes the GPUs"
+    if program == "tail" and any(arg in ("-f", "-F") or arg.startswith("--follow") for arg in args):
+        return "tail -f never ends; use tail -n"
+    if program == "find" and any(arg in FIND_ACTIONS for arg in args):
+        return "that find action runs a program or writes a file"
+    if program == "nvidia-smi" and any(arg.split("=", 1)[0] in NVIDIA_CHANGES for arg in args):
+        return "that nvidia-smi option changes the GPUs or never ends"
+    # BSD-style letters without a dash: "e" adds the environment ("-e" with a dash only means all processes).
+    if program == "ps" and any(not arg.startswith("-") and arg.isalpha() and "e" in arg for arg in args):
+        return "ps e shows processes' environment, which can hold keys"
+    if program == "ip" and IP_CHANGES & set(args):
+        return "that ip command changes the network"
+    if program == "top" and "-n" not in args:
+        return "top needs -b -n 1"
+    if program in ("cat", "head", "tail", "zcat") and not [arg for arg in args if not arg.startswith("-")]:
+        return f"{program} needs a file"
     return None
 
 
@@ -245,30 +307,41 @@ class RunnerRule:
     change by an approver or with an approver's click. Commands for another machine go there as root over SSH
     with the runner's own key; the front node's are run here."""
 
-    def __init__(self, front: str, log_dirs: list[str], approvers: list[str], hosts: dict[str, str], key: str,
-                 known_hosts: str, slurm: bool) -> None:
-        self.front, self.log_dirs, self.approvers, self.hosts = front, log_dirs, approvers, hosts
+    def __init__(self, front: str, approvers: list[str], hosts: dict[str, str], key: str, known_hosts: str,
+                 slurm: bool) -> None:
+        self.front, self.approvers, self.hosts = front, approvers, hosts
         self.key, self.known_hosts, self.slurm = key, known_hosts, slurm
 
     def refusal(self, argv: list[str], requester: str, host: str, mode: str, approver: str | None) -> str | None:
         """Why this request is refused, or None."""
         if host != self.front and host not in self.hosts:
             return f"refused: unknown machine {host}; known: {', '.join([self.front, *sorted(self.hosts)])}."
-        reason = refusal(argv, self.log_dirs, self.slurm)
+        approved = requester in self.approvers or approver in self.approvers
+        secret = secret_refusal(argv) if argv else None
+        if secret is not None:
+            return f"refused: {secret}."
+        reason = refusal(argv, self.slurm)
         if reason is None:
+            if private_paths(argv) and not approved:
+                return "refused: people's own files (/home, /scratch) are read only when an approver asks."
             return None
         if mode != "change":
-            return f"refused: {reason}. The runner runs only commands on its read-only list."
+            return (f"refused: {reason}. This is not a read the runner allows; asked by an approver, the deep agent "
+                    "can run it as a change.")
         if host == self.front and Path(argv[0]).name in LEAVES_LIMITS:
             return f"refused: {argv[0]} could run outside the runner's limits on {self.front}."
         if host == self.front and any(OWN_MARK in arg for arg in argv):
             return f"refused: on {self.front}, changes may not touch the agent's own files, account, or services."
-        if requester in self.approvers or approver in self.approvers:
+        if approved:
             return None
         return "refused: a change runs only for an approver, or after an approver clicks Approve."
 
     def command(self, argv: list[str], host: str) -> list[str]:
         """The argv to run here: the command itself on the front node, ssh for another machine."""
+        if argv[0] == "git":
+            # Read any checkout (they belong to other accounts), with no pager, hooks, or fsmonitor.
+            argv = ["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+                    "--no-pager", *argv[1:]]  # fmt: skip
         if host == self.front:
             return argv
         return [
@@ -788,12 +861,15 @@ the other machines are {machines}. Your working folder holds the cluster's setti
 (cluster.yml){docs}. Read them before answering anything that is not obvious.
 
 Your way to run a command is run_command, on {front} or another machine (host), through a runner that refuses
-anything that changes something. tail, grep, and ls work only in /var/log (all of it); dmesg -T for kernel
-messages; ping needs -c (at most 10); hostname takes no arguments.
+anything that changes something. Reads are wide: {slurm_reads}systemctl and journalctl, dmesg -T, cat, head, tail,
+grep, ls, find, du, ps, nvidia-smi, ip, ss, git (log, show, diff, status, with -C <folder>), and more, on any file
+except those that hold secrets; people's own files (/home, /scratch) only when an approver asks. Logs are in
+/var/log. ping needs -c (at most 10). If a read you need is refused and an approver asked, hand it to the deep
+agent, which can run it as a change.
 Only the "deep" agent can change something (run_change) or change the cluster.yml repository; you cannot. Never
 claim a change was made unless its output says so.
 
-For what happened before, read the records instead of guessing: journalctl (the deploys are in
+For what happened before, read the records instead of guessing: {history}journalctl (the deploys are in
 journalctl -u nanohpc-auto-deploy), /var/log/nanohpc-agent/runner.log (every command you ran and who asked).
 
 Hand the request to the "deep" agent, and stop there, when it needs a change on the cluster or in the
@@ -815,7 +891,8 @@ them would; never recite its facts or quote it.
 """
 
 DEEP_PROMPT = """You take over requests that need care: a change, or a problem the first checks did not explain.
-Investigate with run_command and the files in your working folder first.
+Investigate with run_command and the files in your working folder first. When a read you need is refused and an
+approver asked, run it with run_change instead (it runs at once for them).
 
 To change something, use run_change: one command per call, the smallest change that fixes the problem, then
 check its effect with run_command. Before a change, check what it touches (for example that no job runs on a
@@ -879,6 +956,10 @@ def rules(config: dict) -> str:
         machines=", ".join(config["machines"]) or "none",
         docs=", and the user guide (docs.md) and policy (policy.md) from the cluster website" if config["docs"] else "",
         status_examples="the queue, someone's jobs" if slurm else "GPU use, who runs what",
+        slurm_reads="Slurm, " if slurm else "",
+        history="git -C /var/lib/nanohpc/auto-deploy/config log (every change to cluster.yml and why), "
+        if config["code"] and slurm
+        else "",
         people="" if config["people"] is None else PEOPLE_PROMPT.format(people=config["people"]),
     )
 
@@ -1084,8 +1165,8 @@ def serve_bot(config: dict) -> None:
 def serve_runner_from(config: dict) -> None:
     """Start the runner from its settings file (written by nanoHPC's deploy, root only)."""
     approvers = list(config["approvers"])
-    rule = RunnerRule(config["front"], config["log_dirs"], approvers, config["hosts"], config["key"],
-                      config["known_hosts"], config["slurm"])
+    rule = RunnerRule(config["front"], approvers, config["hosts"], config["key"], config["known_hosts"],
+                      config["slurm"])
     repository = config["repository"]
     code = None
     if repository is not None:

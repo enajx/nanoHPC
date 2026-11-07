@@ -94,33 +94,94 @@ def wait_for(socket_path: str) -> None:
 
 
 class ReadOnlyRule(unittest.TestCase):
-    """The runner's read list: only commands that change nothing; Slurm commands only in Slurm mode."""
+    """The runner's read list: wide reads that change nothing, on any file except those that hold secrets; Slurm
+    commands only in Slurm mode."""
 
     def setUp(self) -> None:
         self.agent = load_agent()
+        self.folder = tempfile.TemporaryDirectory()
+        base = Path(self.folder.name)
+        self.log = str(base / "slurmctld.log")
+        Path(self.log).write_text("error: node gpu1 not responding\n")
+        (base / "bot-token").write_text("xoxb-1\n")
+        self.escape = str(base / "escape.log")
+        Path(self.escape).symlink_to(base / "bot-token")
 
-    def refused(self, argv: list[str], slurm: bool) -> bool:
-        return self.agent.refusal(argv, ["/var/log"], slurm) is not None
+    def tearDown(self) -> None:
+        self.folder.cleanup()
 
-    def test_reads_are_allowed(self) -> None:
-        for argv in (["sinfo", "-N"], ["squeue"], ["scontrol", "show", "node"], ["journalctl", "-u", "slurmd"],
-                     ["systemctl", "status", "slurmd"], ["nvidia-smi"], ["dmesg", "-T"], ["ping", "-c", "3", "gpu1"],
-                     ["tail", "-n", "50", "/var/log/syslog"], ["ls", "-la", "/var/log"]):  # fmt: skip
-            self.assertFalse(self.refused(argv, True), argv)
+    def refused(self, argv: list[str]) -> bool:
+        return self.agent.refusal(argv, True) is not None
 
-    def test_changes_are_refused(self) -> None:
-        for argv in (["scancel", "12"], ["scontrol", "update", "node=gpu1"], ["systemctl", "restart", "slurmd"],
-                     ["journalctl", "--vacuum-time=1d"], ["dmesg", "-C"], ["nvidia-smi", "-pl", "200"],
-                     ["tail", "/etc/shadow"], ["ping", "gpu1"], ["rm", "/tmp/x"]):  # fmt: skip
-            self.assertTrue(self.refused(argv, True), argv)
+    def test_dmesg_reads_but_never_clears_or_changes_the_console(self) -> None:
+        self.assertFalse(self.refused(["dmesg", "-T", "--level", "err"]))
+        for argv in (["dmesg", "-c"], ["dmesg", "-C"], ["dmesg", "--clear"], ["dmesg", "-n", "1"], ["dmesg", "-D"]):
+            self.assertTrue(self.refused(argv), argv)
+
+    def test_reads_are_allowed_on_any_ordinary_file(self) -> None:
+        for argv in (["sinfo", "-N"], ["squeue"], ["sacct", "-j", "12"], ["scontrol", "show", "node", "gpu1"],
+                     ["sacctmgr", "show", "qos"], ["systemctl", "status", "slurmctld"], ["systemctl", "cat", "munge"],
+                     ["journalctl", "-u", "slurmctld", "-n", "50"], ["df", "-h"], ["tail", "-n", "200", self.log],
+                     ["grep", "-nE", "a|b", self.log], ["cat", "/etc/slurm/slurm.conf"], ["head", "/etc/fstab"],
+                     ["grep", "-r", "munge", "/var/log"], ["ls", "-la", "/etc/ssh"], ["find", "/etc", "-name", "*.conf"],
+                     ["ps", "aux"], ["ps", "-ef"], ["nvidia-smi"], ["nvidia-smi", "--query-gpu=name", "--format=csv"],
+                     ["ss", "-tlnp"], ["ip", "-br", "addr"], ["top", "-b", "-n", "1"], ["stat", "/tmp/x"],
+                     ["test", "-f", "/tmp/x"], ["cat", "/etc/ssh/ssh_host_ed25519_key.pub"],
+                     ["git", "-C", "/var/lib/nanohpc/auto-deploy/config", "log", "-5", "--oneline"], ["git", "status"],
+                     ["hostname"], ["ping", "-c", "2", "-W", "2", "gpu1"]):  # fmt: skip
+            self.assertFalse(self.refused(argv), argv)
+
+    def test_changes_and_endless_commands_are_refused(self) -> None:
+        for argv in (["scontrol", "update", "NodeName=gpu1", "State=RESUME"], ["scancel", "12"],
+                     ["systemctl", "restart", "slurmd"], ["journalctl", "--vacuum-size=1M"], ["journalctl", "--rotate"],
+                     ["sacctmgr", "-i", "delete", "user", "x"], ["bash", "-c", "sinfo"], ["rm", "-rf", "/"], [],
+                     ["find", "/tmp", "-delete"], ["find", "/", "-exec", "sh", "{}", ";"], ["tail", "-f", self.log],
+                     ["nvidia-smi", "-pl", "200"], ["nvidia-smi", "dmon"], ["git", "commit", "-m", "x"],
+                     ["git", "-c", "core.pager=sh", "log"], ["git", "branch", "-D", "main"], ["git", "grep", "-O", "x"],
+                     ["ping", "gpu1"], ["hostname", "newname"], ["top"], ["ps", "auxe"], ["ps", "eww"],
+                     ["ip", "link", "set", "eth0", "down"]):  # fmt: skip
+            self.assertTrue(self.refused(argv), argv)
+
+    def test_files_with_secrets_are_never_read(self) -> None:
+        for argv in (["cat", "/etc/nanohpc-agent/env"], ["cat", "/etc/shadow"],
+                     ["tail", "/etc/nanohpc/alertmanager/slack-webhook"],
+                     ["cat", "/var/lib/nanohpc-agent-runner/repository_ed25519"], ["cat", ".ssh/id_ed25519"],
+                     ["cat", "/etc/ssh/ssh_host_ed25519_key"], ["cat", "/etc/munge/munge.key"],
+                     ["cat", "/proc/1/environ"], ["cat", "/etc/slurm/slurmdbd.conf"], ["cat", "/etc/nanohpc/slurmdbd.env"],
+                     ["cat", "/var/lib/nanohpc/auto-deploy/config/.env"], ["cat", "/etc/nanohpc/metrics-tls/node.key"],
+                     ["grep", "-f", "/root/.ssh/id_rsa", self.log], ["cat", self.escape], ["cat", "/opt/x/.env"],
+                     ["grep", "-r", "xoxb", "/etc"], ["grep", "-rn", "key", "/"], ["grep", "-r", "xoxb", "etc"],
+                     ["diff", "-r", "/etc", "/tmp"]):  # fmt: skip
+            self.assertTrue(self.refused(argv), argv)
+
+    def test_peoples_own_files_are_read_only_when_an_approver_asks(self) -> None:
+        rule = self.agent.RunnerRule("front", [ALICE], {"gpu1": "10.0.0.7"}, "key", "known_hosts", True)
+        argv = ["ls", "-la", "/home/bob"]
+        self.assertIsNotNone(rule.refusal(argv, BOB, "front", "read", None))
+        self.assertIsNone(rule.refusal(argv, ALICE, "front", "read", None))
+
+    def test_files_with_secrets_are_refused_even_as_an_approvers_change(self) -> None:
+        rule = self.agent.RunnerRule("front", [ALICE], {"gpu1": "10.0.0.7"}, "key", "known_hosts", True)
+        for argv in (["cat", "/etc/munge/munge.key"], ["cp", "/root/.ssh/id_ed25519", "/tmp/k"]):
+            self.assertIsNotNone(rule.refusal(argv, ALICE, "gpu1", "change", ALICE), argv)
+
+    def test_git_reads_any_checkout_with_no_pager_or_hooks(self) -> None:
+        rule = self.agent.RunnerRule("front", [ALICE], {"gpu1": "10.0.0.7"}, "key", "known_hosts", True)
+        command = rule.command(["git", "log", "-1"], "front")
+        self.assertEqual(command[:7], ["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c",
+                                       "core.hooksPath=/dev/null"])  # fmt: skip
+        self.assertIn("--no-pager", command)
 
     def test_monitor_mode_has_no_slurm_commands(self) -> None:
-        self.assertTrue(self.refused(["sinfo"], False))
-        self.assertFalse(self.refused(["nvidia-smi"], False))
+        self.assertIsNotNone(self.agent.refusal(["sinfo"], False))
+        self.assertIsNone(self.agent.refusal(["nvidia-smi"], False))
 
     def test_secrets_are_masked(self) -> None:
-        text = "xoxb-1-abc xapp-1-def sk-ant-api03-x https://hooks.slack.com/services/T/B/x NANOHPC_DEPLOY_WEBHOOK_SECRET=abc"
-        self.assertEqual(self.agent.mask(text), "[hidden] [hidden] [hidden] [hidden] [hidden]")
+        text = (
+            "xoxb-1-abc xapp-1-def sk-ant-api03-x https://hooks.slack.com/services/T/B/x "
+            "NANOHPC_DEPLOY_WEBHOOK_SECRET=abc root:$6$salt$hash:19000"
+        )
+        self.assertEqual(self.agent.mask(text), "[hidden] [hidden] [hidden] [hidden] [hidden] root:[hidden]:19000")
 
     def test_deploy_arguments(self) -> None:
         for args in ([], ["--dry-run"], ["--only", "users"], ["--only", "node", "gpu2"]):
@@ -156,7 +217,6 @@ class Runner(unittest.TestCase):
             "socket": self.socket,
             "socket_group": grp.getgrgid(os.getgid()).gr_name,
             "log": str(self.log),
-            "log_dirs": [str(base)],
             "front": "front",
             "approvers": [ALICE, SAM],
             "hosts": {"gpu1": "10.0.0.7"},
@@ -253,7 +313,7 @@ class FrontChanges(unittest.TestCase):
 
     def setUp(self) -> None:
         agent = load_agent()
-        self.rule = agent.RunnerRule("front", ["/var/log"], [ALICE], {"gpu1": "10.0.0.7"}, "key", "known_hosts", True)
+        self.rule = agent.RunnerRule("front", [ALICE], {"gpu1": "10.0.0.7"}, "key", "known_hosts", True)
 
     def refused(self, argv: list[str]) -> bool:
         return self.rule.refusal(argv, ALICE, "front", "change", None) is not None

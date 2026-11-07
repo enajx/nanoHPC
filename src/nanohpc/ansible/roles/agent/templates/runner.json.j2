@@ -4,7 +4,6 @@
   "socket": "/run/nanohpc-agent/runner.sock",
   "socket_group": "nanohpc-agent",
   "log": "/var/log/nanohpc-agent/runner.log",
-  "log_dirs": ["/var/log"],
   "front": inventory_hostname,
   "approvers": nanohpc.agent.approvers | list,
   "hosts": dict(compute | zip(compute | map('extract', nanohpc.machines) | map(attribute='address'))),

@@ -16,6 +16,10 @@ ExecStart=/opt/nanohpc-agent/venv/bin/python /usr/local/bin/nanohpc-agent bot --
 Restart=on-failure
 RestartSec=30
 NoNewPrivileges=true
+# No crash dumps: they would hold the key or tokens, and Ubuntu's crash reporter can send them out.
+LimitCORE=0
+# Its processes are hidden from other accounts' views of /proc.
+ProtectProc=invisible
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/nanohpc-agent-work

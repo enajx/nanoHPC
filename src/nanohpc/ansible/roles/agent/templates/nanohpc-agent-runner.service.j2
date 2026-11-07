@@ -14,6 +14,8 @@ ExecStart=/usr/bin/python3 /usr/local/bin/nanohpc-agent runner --config /var/lib
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
+# No crash dumps: they would hold the key or tokens, and Ubuntu's crash reporter can send them out.
+LimitCORE=0
 # Changes may write on the front node, except the agent's own files; the rule refuses them too.
 ReadOnlyPaths=/usr/local/bin/nanohpc-agent /etc/nanohpc-agent /opt/nanohpc-agent /var/lib/nanohpc-agent /var/lib/nanohpc-agent-runner/id_ed25519 /var/lib/nanohpc-agent-runner/runner.json /var/lib/nanohpc-agent-runner/machines_known_hosts /etc/systemd/system/nanohpc-agent.service /etc/systemd/system/nanohpc-agent-runner.service
 
