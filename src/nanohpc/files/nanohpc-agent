@@ -1,0 +1,1112 @@
+#!/usr/bin/env python3
+"""The nanoHPC Slack agent: answers @-mentions in one Slack channel, runs changes and pushes after an Approve.
+
+Two parts, in one file:
+
+- `nanohpc-agent runner --config RUNNER_JSON`: runs as root on the front node and is the only part that runs
+  commands. It listens on a Unix socket that only the agent's account can reach, runs a command only if the rule
+  allows it (read-only for anyone; a change only for an approver or after an approver's click), on the front node
+  or as root over SSH on another machine, masks secrets in the output, and logs every request. It also keeps its
+  own clone of the cluster.yml repository (code changes, pushed after an approver's click) and runs deploys.
+- `nanohpc-agent bot --config BOT_JSON`: runs as the agent's account (no keys, no sudo). It holds the Slack
+  connection (Socket Mode), answers only @-mentions in the agent's channel (and approvers' private messages),
+  enforces the usage limits, and asks Claude, whose only way to run a command is the runner.
+
+The runner needs only Python's standard library; the bot runs from its own uv environment with slack_bolt and
+claude_agent_sdk, imported only by the bot.
+"""
+
+import argparse
+import grp
+import json
+import os
+import re
+import shlex
+import shutil
+import socket
+import socketserver
+import subprocess
+import threading
+import uuid
+from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+# ---------------------------------------------------------------- shared: secrets in text
+
+SECRET_PATTERNS = [
+    re.compile(r"xox[abposr]-[A-Za-z0-9-]+"),
+    re.compile(r"xapp-[A-Za-z0-9-]+"),
+    re.compile(r"sk-ant-[A-Za-z0-9_-]+"),
+    re.compile(r"https://hooks\.slack\.com/services/\S+"),
+    re.compile(r"NANOHPC_[A-Z_]*(SECRET|TOKEN|KEY|WEBHOOK)=\S+"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
+]
+
+
+def mask(text: str) -> str:
+    """Replace anything that looks like a Slack token, Anthropic key, webhook, nanoHPC secret, or private key."""
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub("[hidden]", text)
+    return text
+
+
+# ---------------------------------------------------------------- runner: the read-only rule
+
+# Each allowed program and the first arguments it may start with (None: any arguments).
+READ_ONLY = {
+    "systemctl": [
+        ["status"],
+        ["is-active"],
+        ["is-failed"],
+        ["is-enabled"],
+        ["list-units"],
+        ["list-timers"],
+        ["--failed"],
+    ],
+    "journalctl": None,
+    "df": None,
+    "free": None,
+    "uptime": None,
+    "nvidia-smi": None,
+    # File details only (size, owner, times, whether it exists), never contents.
+    "stat": None,
+    "test": None,
+    "ip": [["addr"], ["-br", "addr"], ["link"], ["-br", "link"], ["route"]],
+}
+# Slurm mode only.
+SLURM_READ_ONLY = {
+    "sinfo": None,
+    "squeue": None,
+    "sacct": None,
+    "sshare": None,
+    "sprio": None,
+    "sstat": None,
+    "sdiag": None,
+    "scontrol": [["show"], ["ping"]],
+    "sacctmgr": [["show"], ["list"], ["-n", "show"], ["-n", "list"], ["-P", "show"], ["-P", "list"]],
+}
+# journalctl options that change the journal.
+JOURNAL_CHANGES = (
+    "--vacuum",
+    "--rotate",
+    "--flush",
+    "--sync",
+    "--relinquish",
+    "--smart-relinquish",
+    "--setup-keys",
+    "--update-catalog",
+)
+# dmesg options that clear the kernel log or change the console.
+DMESG_CHANGES = {"-c", "-C", "-D", "-E", "--clear", "--read-clear", "--console-off", "--console-on", "--console-level"}
+# nvidia-smi options that change the GPUs.
+NVIDIA_SMI_CHANGES = ("-r", "--gpu-reset", "-pm", "--persistence-mode", "-pl", "--power-limit", "-c", "--compute-mode",
+                      "-e", "--ecc-config", "-lgc", "-rgc", "-lmc", "-rmc", "-ac", "-rac", "-mig", "--lock", "--reset")
+OUTPUT_LIMIT = 30000
+COMMAND_TIMEOUT = 120
+# A deploy from Slack waits at most this long.
+DEPLOY_TIMEOUT = 60 * 60
+
+# Options tail and grep may use on log files; the ones in *_VALUE take a number after them.
+TAIL_FLAGS = {"-n"}
+GREP_FLAGS = {"-i", "-n", "-E", "-F", "-c", "-v", "-r", "-l", "-w", "-h", "-H"}
+GREP_VALUE = {"-m", "-A", "-B", "-C"}
+
+
+def inside(path: str, log_dirs: list[str]) -> bool:
+    """True when the real path (symlinks followed) is one of the log folders or under one."""
+    real = os.path.realpath(path)
+    return any(
+        real == os.path.realpath(folder) or real.startswith(os.path.realpath(folder) + os.sep) for folder in log_dirs
+    )
+
+
+def log_read_refusal(program: str, args: list[str], log_dirs: list[str]) -> str | None:
+    """tail and grep only read files inside the log folders, with a fixed set of options."""
+    plain: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if program == "tail" and arg in TAIL_FLAGS or program == "grep" and arg in GREP_VALUE:
+            if index + 1 >= len(args) or not args[index + 1].isdigit():
+                return f"{arg} needs a number"
+            index += 2
+            continue
+        if arg.startswith("-"):
+            if program == "grep" and arg in GREP_FLAGS:
+                index += 1
+                continue
+            return f"{program} {arg} is not allowed"
+        plain.append(arg)
+        index += 1
+    paths = plain[1:] if program == "grep" else plain
+    if not paths:
+        return f"{program} needs a file in {', '.join(log_dirs)}"
+    for path in paths:
+        if not inside(path, log_dirs):
+            return f"{path} is outside the log folders ({', '.join(log_dirs)})"
+    return None
+
+
+LS_LETTERS = set("lahtrS1")
+PING_VALUE = {"-c", "-W"}
+PING_MAX_COUNT = 10
+
+
+def ping_refusal(args: list[str]) -> str | None:
+    """ping needs a count (-c, at most PING_MAX_COUNT) and one host; only -c, -W, and -q."""
+    hosts: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in PING_VALUE:
+            if index + 1 >= len(args) or not args[index + 1].isdigit():
+                return f"{arg} needs a number"
+            index += 2
+            continue
+        if arg == "-q":
+            index += 1
+            continue
+        if arg.startswith("-"):
+            return f"ping {arg} is not allowed"
+        hosts.append(arg)
+        index += 1
+    if "-c" not in args or int(args[args.index("-c") + 1]) > PING_MAX_COUNT:
+        return f"ping needs -c with a count of at most {PING_MAX_COUNT}"
+    if len(hosts) != 1:
+        return "ping takes one host"
+    return None
+
+
+def ls_refusal(args: list[str], log_dirs: list[str]) -> str | None:
+    """ls lists only the log folders, with simple listing options."""
+    paths = [arg for arg in args if not arg.startswith("-")]
+    flags = [arg for arg in args if arg.startswith("-")]
+    if any(not set(flag[1:]) <= LS_LETTERS or flag == "-" for flag in flags):
+        return f"ls options are limited to -{''.join(sorted(LS_LETTERS))}"
+    if not paths:
+        return f"ls needs a folder in {', '.join(log_dirs)}"
+    outside = [path for path in paths if not inside(path, log_dirs)]
+    return f"{outside[0]} is outside the log folders ({', '.join(log_dirs)})" if outside else None
+
+
+def refusal(argv: list[str], log_dirs: list[str], slurm: bool) -> str | None:
+    """Why the runner refuses this command as a read, or None when it is read-only and allowed."""
+    if not argv:
+        return "empty command"
+    program, args = argv[0], argv[1:]
+    if program in ("tail", "grep"):
+        return log_read_refusal(program, args, log_dirs)
+    if program == "ls":
+        return ls_refusal(args, log_dirs)
+    if program == "ping":
+        return ping_refusal(args)
+    if program == "dmesg":
+        changes = [arg for arg in args if arg in DMESG_CHANGES or arg.startswith(("--console", "-n"))]
+        return f"dmesg {changes[0]} changes the kernel log or console" if changes else None
+    if program == "hostname":
+        return None if not args else "hostname takes no arguments here"
+    allowed = {**READ_ONLY, **SLURM_READ_ONLY} if slurm else READ_ONLY
+    if program not in allowed:
+        return f"{program} is not on the read-only list"
+    prefixes = allowed[program]
+    if prefixes is not None and not any(args[: len(prefix)] == prefix for prefix in prefixes):
+        return f"{program} {' '.join(args[:2])} is not a read-only use of {program}"
+    if program == "journalctl" and any(arg.startswith(JOURNAL_CHANGES) for arg in args):
+        return "that journalctl option changes the journal"
+    if program == "nvidia-smi" and any(arg.split("=")[0] in NVIDIA_SMI_CHANGES for arg in args):
+        return "that nvidia-smi option changes the GPUs"
+    return None
+
+
+# On the front node, a change may not touch the agent's own files, account or services (its rules and limits
+# live there), nor use a program that runs outside the runner's service limits. The service also mounts those
+# files read-only for the runner.
+OWN_MARK = "nanohpc-agent"
+LEAVES_LIMITS = {"systemd-run", "nsenter", "unshare", "mount", "umount", "chroot", "machinectl", "systemd-nspawn"}
+# The deploys the agent may ask for: `nanohpc deploy`, its dry run, or one part.
+DEPLOY_PARTS = {"users", "policy", "partitions", "node"}
+
+
+def deploy_refusal(args: list[str]) -> str | None:
+    """Why these `nanohpc deploy` arguments are refused, or None: none, --dry-run, or --only with one part."""
+    if args in ([], ["--dry-run"]):
+        return None
+    if len(args) >= 2 and args[0] == "--only" and args[1] in DEPLOY_PARTS:
+        if args[1] == "node":
+            return None if len(args) == 3 and re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]*", args[2]) else "--only node takes one machine name"
+        return None if len(args) == 2 else f"--only {args[1]} takes nothing after it"
+    return "nanohpc deploy takes nothing, --dry-run, or --only users | policy | partitions | node NAME"
+
+
+class RunnerRule:
+    """What the runner may run: read-only commands for anyone; any other command (a change) only when asked as a
+    change by an approver or with an approver's click. Commands for another machine go there as root over SSH
+    with the runner's own key; the front node's are run here."""
+
+    def __init__(self, front: str, log_dirs: list[str], approvers: list[str], hosts: dict[str, str], key: str,
+                 known_hosts: str, slurm: bool) -> None:
+        self.front, self.log_dirs, self.approvers, self.hosts = front, log_dirs, approvers, hosts
+        self.key, self.known_hosts, self.slurm = key, known_hosts, slurm
+
+    def refusal(self, argv: list[str], requester: str, host: str, mode: str, approver: str | None) -> str | None:
+        """Why this request is refused, or None."""
+        if host != self.front and host not in self.hosts:
+            return f"refused: unknown machine {host}; known: {', '.join([self.front, *sorted(self.hosts)])}."
+        reason = refusal(argv, self.log_dirs, self.slurm)
+        if reason is None:
+            return None
+        if mode != "change":
+            return f"refused: {reason}. The runner runs only commands on its read-only list."
+        if host == self.front and Path(argv[0]).name in LEAVES_LIMITS:
+            return f"refused: {argv[0]} could run outside the runner's limits on {self.front}."
+        if host == self.front and any(OWN_MARK in arg for arg in argv):
+            return f"refused: on {self.front}, changes may not touch the agent's own files, account, or services."
+        if requester in self.approvers or approver in self.approvers:
+            return None
+        return "refused: a change runs only for an approver, or after an approver clicks Approve."
+
+    def command(self, argv: list[str], host: str) -> list[str]:
+        """The argv to run here: the command itself on the front node, ssh for another machine."""
+        if host == self.front:
+            return argv
+        return [
+            "ssh", "-i", self.key, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+            "-o", f"UserKnownHostsFile={self.known_hosts}", "-o", "StrictHostKeyChecking=yes",
+            "-o", "ConnectTimeout=10", f"root@{self.hosts[host]}", "--", shlex.join(argv),
+        ]  # fmt: skip
+
+    def run(self, argv: list[str], requester: str, host: str, mode: str, approver: str | None) -> tuple[bool, str]:
+        """Run the request if the rule allows it; return whether it ran and its masked output."""
+        reason = self.refusal(argv, requester, host, mode, approver)
+        if reason is not None:
+            return False, reason
+        command = self.command(argv, host)
+        if shutil.which(command[0]) is None:
+            return False, f"{command[0]} is not installed on this machine."
+        # A command that runs too long is reported to Claude, not left to crash the request.
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=COMMAND_TIMEOUT,
+                                    stdin=subprocess.DEVNULL, check=False)
+        except subprocess.TimeoutExpired:
+            return True, f"[stopped after {COMMAND_TIMEOUT} seconds: the command took too long]"
+        output = result.stdout + result.stderr
+        if len(output) > OUTPUT_LIMIT:
+            output = output[:OUTPUT_LIMIT] + f"\n[cut: {len(output) - OUTPUT_LIMIT} more characters]"
+        return True, mask(f"{output}\n[exit {result.returncode}]")
+
+
+def git_ssh(key: str, known_hosts: str) -> str:
+    """The ssh command git uses with the agent's repository key and the repository host's pinned key."""
+    return (f"ssh -i {shlex.quote(key)} -o IdentitiesOnly=yes -o BatchMode=yes "
+            f"-o UserKnownHostsFile={shlex.quote(known_hosts)} -o StrictHostKeyChecking=yes")
+
+
+class CodeChanges:
+    """Code changes from Slack: edits to the cluster.yml repository. The runner keeps its own clone, which only
+    root can reach, and the repository key. The agent edits a plain copy in its own folder; the runner turns that
+    into a patch, run as the agent's account, and applies it to its clone with git apply (which refuses paths
+    outside the repository). A commit and push happen only after an approver's click, and only for the exact tree
+    that was shown."""
+
+    def __init__(self, remote: str, branch: str, clone: str, work: str, agent_user: str, key: str, known_hosts: str,
+                 approvers: list[str], author: str, email: str, after_push: str) -> None:
+        self.remote, self.branch, self.clone, self.work, self.approvers = remote, branch, clone, work, approvers
+        self.author, self.email, self.after_push = author, email, after_push
+        # As the agent's account, so root never writes into or reads through the agent's folder.
+        same = agent_user == os.environ.get("USER", "") or agent_user == ""
+        self.as_agent = [] if same else ["runuser", "-u", agent_user, "--"]
+        self.ssh = git_ssh(key, known_hosts)
+
+    def git(self, *args: str, stdin: str | None) -> subprocess.CompletedProcess:
+        """git as root in the runner's clone, with hooks off."""
+        return subprocess.run(
+            ["git", "-c", "core.hooksPath=/dev/null", "-c", f"safe.directory={self.clone}", "-C", self.clone, *args],
+            input=stdin, capture_output=True, text=True, timeout=COMMAND_TIMEOUT,
+            env=dict(os.environ, GIT_SSH_COMMAND=self.ssh), check=False,
+        )  # fmt: skip
+
+    def agent(self, *argv: str, stdin: bytes | None) -> subprocess.CompletedProcess:
+        """A command as the agent's account."""
+        return subprocess.run([*self.as_agent, *argv], input=stdin, capture_output=True, timeout=COMMAND_TIMEOUT,
+                              check=False)
+
+    def fresh(self) -> str | None:
+        """Clone if needed, then reset the clone to the branch on the remote with no other files; return an error,
+        or None."""
+        if not os.path.isdir(os.path.join(self.clone, ".git")):
+            result = subprocess.run(["git", "clone", "-q", "-b", self.branch, self.remote, self.clone],
+                                    capture_output=True, text=True, timeout=COMMAND_TIMEOUT,
+                                    env=dict(os.environ, GIT_SSH_COMMAND=self.ssh), check=False)
+            if result.returncode != 0:
+                return result.stderr
+        for args in (("fetch", "-q", "origin", self.branch), ("reset", "-q", "--hard", f"origin/{self.branch}"),
+                     ("clean", "-qfdx")):
+            result = self.git(*args, stdin=None)
+            if result.returncode != 0:
+                return result.stderr
+        return None
+
+    def start(self) -> dict:
+        """Give the agent a fresh copy of the branch in its folder."""
+        error = self.fresh()
+        if error is not None:
+            return {"ok": False, "output": mask(error)}
+        archive = subprocess.run(["git", "-c", f"safe.directory={self.clone}", "-C", self.clone, "archive",
+                                  "--format=tar", "HEAD"], capture_output=True, timeout=COMMAND_TIMEOUT, check=False)
+        steps = [
+            (["find", self.work, "-mindepth", "1", "-delete"], None),
+            (["tar", "-x", "-C", self.work], archive.stdout),
+            (["git", "-C", self.work, "init", "-q"], None),
+            (["git", "-C", self.work, "add", "-A"], None),
+            (["git", "-C", self.work, "-c", "user.name=base", "-c", "user.email=base@localhost", "commit", "-qm",
+              "base"], None),
+        ]
+        for argv, stdin in steps:
+            result = self.agent(*argv, stdin=stdin)
+            if result.returncode != 0:
+                return {"ok": False, "output": result.stderr.decode()}
+        head = self.git("rev-parse", "--short", "HEAD", stdin=None).stdout.strip()
+        return {"ok": True, "output": f"{self.work} holds {self.branch} at {head}."}
+
+    def stage(self) -> dict:
+        """Apply the agent's edits to the clone (not committed); return the diff and its tree."""
+        result = self.agent("git", "-C", self.work, "add", "-A", stdin=None)
+        if result.returncode != 0:
+            return {"ok": False, "output": result.stderr.decode()}
+        patch = self.agent("git", "-C", self.work, "diff", "--cached", "--binary", "HEAD", stdin=None)
+        error = self.fresh()
+        if error is not None:
+            return {"ok": False, "output": mask(error)}
+        if not patch.stdout.strip():
+            return {"ok": False, "output": "There are no changes in the work folder."}
+        applied = self.git("apply", "--index", "--binary", "-", stdin=patch.stdout.decode())
+        if applied.returncode != 0:
+            return {"ok": False, "output": applied.stderr}
+        tree = self.git("write-tree", stdin=None).stdout.strip()
+        stat = self.git("diff", "--cached", "--stat", stdin=None).stdout
+        diff = self.git("diff", "--cached", stdin=None).stdout
+        return {"ok": True, "tree": tree, "stat": stat, "diff": mask(diff), "output": stat}
+
+    def push(self, requester: str, approver: str | None, tree: str, message: str) -> dict:
+        """Commit and push the staged change, only with an approver's click and only if it is what was shown."""
+        if approver not in self.approvers:
+            return {"ok": False, "output": "refused: a push needs a click on Approve by an approver."}
+        if self.git("write-tree", stdin=None).stdout.strip() != tree:
+            return {"ok": False, "output": "refused: the staged change is not the one that was shown. Ask again."}
+        full = f"{message.strip()}\n\nRequested-by: {requester}\nApproved-by: {approver}\n"
+        commit = self.git("-c", f"user.name={self.author}", "-c", f"user.email={self.email}", "commit", "-q", "-F",
+                          "-", stdin=full)
+        if commit.returncode != 0:
+            return {"ok": False, "output": commit.stderr}
+        pushed = self.git("push", "-q", "origin", f"HEAD:{self.branch}", stdin=None)
+        if pushed.returncode != 0:
+            self.fresh()
+            return {"ok": False, "output": f"The push failed, nothing changed in the repository:\n{mask(pushed.stderr)}"}
+        head = self.git("rev-parse", "--short", "HEAD", stdin=None).stdout.strip()
+        return {"ok": True, "output": f"Pushed {head} to {self.branch}. {self.after_push}"}
+
+
+class Deploys:
+    """Deploys from Slack, asked as a change `nanohpc deploy [--dry-run | --only PART]` on the front node. The
+    runner runs the given deploy command (nanoHPC's automatic deploy, which takes the same locks as every other
+    deploy and runs `nanohpc deploy` with its dry run first on every machine) for the newest commit of the
+    branch, also when that commit was deployed or failed before."""
+
+    def __init__(self, argv: list[str]) -> None:
+        """argv: the deploy command; the `nanohpc deploy` arguments follow it after `--`."""
+        self.argv = argv
+
+    def run(self, args: list[str]) -> tuple[bool, str]:
+        """Run the deploy with these `nanohpc deploy` arguments; return whether it ran and its masked output."""
+        try:
+            result = subprocess.run([*self.argv, "--", *args], capture_output=True, text=True, timeout=DEPLOY_TIMEOUT,
+                                    stdin=subprocess.DEVNULL, check=False)
+        except subprocess.TimeoutExpired:
+            return True, f"[stopped waiting after {DEPLOY_TIMEOUT // 60} minutes; the deploy may still be running]"
+        output = result.stdout + result.stderr
+        if len(output) > OUTPUT_LIMIT:
+            output = output[-OUTPUT_LIMIT:] + f"\n[cut: the first {len(output) - OUTPUT_LIMIT} characters]"
+        return True, mask(f"{output}\n[exit {result.returncode}]")
+
+
+def serve_runner(socket_path: str, socket_group: str, log_path: Path, rule: RunnerRule, code: CodeChanges | None,
+                 deploys: Deploys | None) -> None:
+    """Answer one JSON request per connection: {argv, requester, host, mode, approver} -> {ran, output}, or a code
+    request {code: start | stage | push, requester, approver, tree, message} -> CodeChanges' answer."""
+    log_lock = threading.Lock()
+    code_lock = threading.Lock()
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self) -> None:
+            request = json.loads(self.rfile.readline())
+            if "code" in request:
+                action, requester = str(request["code"]), str(request["requester"])
+                approver = None if request.get("approver") is None else str(request["approver"])
+                with code_lock:
+                    if code is None:
+                        answer = {"ok": False, "output": "Code changes are off: the cluster has no repository."}
+                    elif action == "start":
+                        answer = code.start()
+                    elif action == "stage":
+                        answer = code.stage()
+                    elif action == "push":
+                        answer = code.push(requester, approver, str(request["tree"]), str(request["message"]))
+                    else:
+                        answer = {"ok": False, "output": f"unknown code request {action}"}
+                record = {"time": datetime.now().astimezone().isoformat(), "requester": requester, "code": action,
+                          "approver": approver, "ok": answer["ok"], "tree": answer.get("tree", request.get("tree"))}
+                with log_lock, log_path.open("a") as log:
+                    log.write(json.dumps(record) + "\n")
+                self.wfile.write((json.dumps(answer) + "\n").encode())
+                return
+            argv = [str(part) for part in request["argv"]]
+            requester, host, mode = str(request["requester"]), str(request["host"]), str(request["mode"])
+            approver = None if request["approver"] is None else str(request["approver"])
+            if host == rule.front and argv[:2] == ["nanohpc", "deploy"]:
+                reason = rule.refusal(argv, requester, host, mode, approver)
+                if reason is None:
+                    reason = deploy_refusal(argv[2:])
+                    reason = None if reason is None else f"refused: {reason}."
+                if reason is None and deploys is None:
+                    reason = "refused: deploys from Slack are off: the cluster has no automatic deploy."
+                ran, output = (False, reason) if reason is not None else deploys.run(argv[2:])
+            else:
+                ran, output = rule.run(argv, requester, host, mode, approver)
+            record = {"time": datetime.now().astimezone().isoformat(), "requester": requester, "host": host,
+                      "mode": mode, "approver": approver, "argv": argv, "ran": ran}
+            with log_lock, log_path.open("a") as log:
+                log.write(json.dumps(record) + "\n")
+            self.wfile.write((json.dumps({"ran": ran, "output": output}) + "\n").encode())
+
+    if os.path.exists(socket_path):
+        os.unlink(socket_path)
+    with socketserver.ThreadingUnixStreamServer(socket_path, Handler) as server:
+        # Only the socket and its folder belong to the bot's group; the runner itself stays root:root, so files a
+        # change creates on the front node are not the bot's to edit.
+        gid = grp.getgrnam(socket_group).gr_gid
+        os.chown(os.path.dirname(os.path.abspath(socket_path)), -1, gid)
+        os.chmod(os.path.dirname(os.path.abspath(socket_path)), 0o750)
+        os.chown(socket_path, -1, gid)
+        os.chmod(socket_path, 0o660)
+        server.serve_forever()
+
+
+def ask_code(socket_path: str, request: dict) -> dict:
+    """Send one code request to the runner (start, stage, or push) and return its answer."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(socket_path)
+        connection.sendall((json.dumps(request) + "\n").encode())
+        reply = connection.makefile().readline()
+    return json.loads(reply)
+
+
+def ask_runner(socket_path: str, argv: list[str], requester: str, host: str, mode: str,
+               approver: str | None) -> dict:
+    """Send one command to the runner and return its answer {ran, output}. mode is "read" or "change"; approver
+    is the Slack member who clicked Approve, if any."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(socket_path)
+        request = {"argv": argv, "requester": requester, "host": host, "mode": mode, "approver": approver}
+        connection.sendall((json.dumps(request) + "\n").encode())
+        reply = connection.makefile().readline()
+    return json.loads(reply)
+
+
+# ---------------------------------------------------------------- bot: usage limits
+
+
+class Ledger:
+    """Today's spending and requests per person, kept in a file so a restart does not reset them.
+
+    limits: daily_usd (everyone together), request_usd (one request), requests_per_person,
+    unlimited (Slack member IDs with no per-person limit; the daily cap still applies).
+    zone: the time zone whose midnight starts a new day (None: the machine's own).
+    """
+
+    def __init__(self, path: Path, limits: dict, zone: ZoneInfo | None) -> None:
+        self.path = path
+        self.limits = limits
+        self.zone = zone
+        self.lock = threading.Lock()
+
+    def _today(self, now: datetime) -> dict:
+        day = now.astimezone(self.zone).date().isoformat()
+        state = json.loads(self.path.read_text()) if self.path.exists() else {}
+        if state.get("day") != day:
+            state = {"day": day, "spent": 0.0, "requests": {}, "cap_noticed": False}
+        return state
+
+    def _save(self, state: dict) -> None:
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(state))
+        temporary.replace(self.path)
+
+    def refusal(self, user: str, now: datetime) -> str | None:
+        """Why this person's request is refused now, or None."""
+        with self.lock:
+            state = self._today(now)
+        if state["spent"] >= self.limits["daily_usd"]:
+            return (f"The daily limit of ${self.limits['daily_usd']:.2f} for everyone together is reached. "
+                    "I answer again after midnight.")
+        if (user not in self.limits["unlimited"]
+                and state["requests"].get(user, 0) >= self.limits["requests_per_person"]):
+            return (f"You have used your {self.limits['requests_per_person']} requests for today (the limit). "
+                    "Try again tomorrow.")
+        return None
+
+    def requests_today(self, user: str, now: datetime) -> int:
+        """How many requests this person has made today."""
+        with self.lock:
+            state = self._today(now)
+        return state["requests"].get(user, 0)
+
+    def budget(self, now: datetime) -> float:
+        """The most one request may spend now: the per-request limit or what is left of the day."""
+        with self.lock:
+            state = self._today(now)
+        return max(0.0, min(self.limits["request_usd"], self.limits["daily_usd"] - state["spent"]))
+
+    def record(self, user: str, cost: float, now: datetime) -> None:
+        """Count one request and its cost."""
+        with self.lock:
+            state = self._today(now)
+            state["spent"] += cost
+            state["requests"][user] = state["requests"].get(user, 0) + 1
+            self._save(state)
+
+    def cap_notice_due(self, now: datetime) -> bool:
+        """True once a day, the first time this is asked after the daily cap is reached."""
+        with self.lock:
+            state = self._today(now)
+            if state["spent"] < self.limits["daily_usd"] or state["cap_noticed"]:
+                return False
+            state["cap_noticed"] = True
+            self._save(state)
+            return True
+
+
+# ---------------------------------------------------------------- bot: changes and Approve
+
+# run(argv, requester, host, mode, approver) -> {ran, output}: ask_runner with the socket filled in.
+Run = Callable[[list[str], str, str, str, str | None], dict]
+# code(request) -> answer: ask_code with the socket filled in.
+Code = Callable[[dict], dict]
+DIFF_SHOWN = 3500  # characters of a diff per Slack message
+DIFF_MESSAGES = 4  # messages at most; a longer diff is cut and says so
+
+
+class Approvals:
+    """Changes asked for in Slack. An approver's change runs at once, unless it could cut remote access; any
+    other change waits in the thread with Approve and Deny buttons, and only a click by an approver counts (Slack
+    sets the clicker's member ID, and the runner checks it again). Waiting changes are kept in memory: after a
+    restart, a click says the change has expired."""
+
+    def __init__(self, approvers: dict[str, str], run: Run, code: Code) -> None:
+        """approvers: Slack member ID -> name."""
+        self.approvers, self.run, self.code = approvers, run, code
+        self.waiting: dict[str, dict] = {}
+        self.lock = threading.Lock()
+
+    def names(self) -> str:
+        return " or ".join(f"<@{member}>" for member in self.approvers)
+
+    def post_result(self, client, channel: str, thread: str, argv: list[str], host: str, result: dict) -> None:
+        shown = thread_excerpt(result["output"])
+        client.chat_postMessage(channel=channel, thread_ts=thread, text=mask(
+            f"`{shlex.join(argv)}` on {host}{'' if result['ran'] else ' (refused)'}:\n```{shown}```"))
+
+    def who(self, channel: str, requester: str) -> str:
+        """Who a waiting request names: nobody in a private chat (ID starting with D), where the approvers are
+        not; in a channel, the approvers and the requester."""
+        if channel.startswith("D"):
+            return "Waiting for Approve: you ask"
+        return f"{' '.join(f'<@{member}>' for member in self.approvers)}: <@{requester}> asks"
+
+    def post_buttons(self, client, channel: str, thread: str, text: str, kind: str, waiting: dict) -> None:
+        """Keep a waiting request and post it with its Approve and Deny buttons."""
+        key = uuid.uuid4().hex
+        with self.lock:
+            self.waiting[key] = {**waiting, "kind": kind, "channel": channel, "thread": thread}
+        client.chat_postMessage(channel=channel, thread_ts=thread, text=text, blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            {"type": "actions", "elements": [
+                {"type": "button", "action_id": f"{kind}_approve", "value": key, "style": "primary",
+                 "text": {"type": "plain_text", "text": "Approve"}},
+                {"type": "button", "action_id": f"{kind}_deny", "value": key, "style": "danger",
+                 "text": {"type": "plain_text", "text": "Deny"}},
+            ]},
+        ])
+
+    def ask(self, argv: list[str], host: str, reason: str, risky: bool, requester: str, client, channel: str,
+            thread: str) -> str:
+        """Run the change or post it for approval; return what Claude is told."""
+        if requester in self.approvers and not risky:
+            result = self.run(argv, requester, host, "change", None)
+            self.post_result(client, channel, thread, argv, host, result)
+            return result["output"]
+        why = " It could cut remote access." if risky else ""
+        text = mask(f"{self.who(channel, requester)} to run `{shlex.join(argv)}` on {host}.\n"
+                    f"Reason: {reason}.{why}")
+        self.post_buttons(client, channel, thread, text, "change", {"argv": argv, "host": host, "requester": requester})
+        return ("Posted for approval; waiting for a click on Approve by an approver. It runs when approved and its "
+                "output is posted in the thread. Stop here and tell the person.")
+
+    def ask_push(self, staged: dict, message: str, requester: str, client, channel: str, thread: str) -> str:
+        """Show a staged code change and wait for an approver's click; a push always waits, whoever asked."""
+        diff = staged["diff"]
+        parts = [diff[start : start + DIFF_SHOWN] for start in range(0, len(diff), DIFF_SHOWN)][:DIFF_MESSAGES]
+        for part in parts:
+            client.chat_postMessage(channel=channel, thread_ts=thread, text=f"```{part}```")
+        if len(diff) > DIFF_SHOWN * DIFF_MESSAGES:
+            client.chat_postMessage(channel=channel, thread_ts=thread, text=(
+                f"_The diff is cut: {len(diff) - DIFF_SHOWN * DIFF_MESSAGES} more characters are not shown._"))
+        text = mask(f"{self.who(channel, requester)} to commit and push:\n```{message}\n\n{staged['stat']}```")
+        self.post_buttons(client, channel, thread, text, "push",
+                          {"tree": staged["tree"], "message": message, "requester": requester})
+        return ("The diff is posted; waiting for a click on Approve by an approver. When approved, it is committed "
+                "and pushed. Stop here and tell the person.")
+
+    def click(self, body: dict, client) -> None:
+        """An Approve or Deny click: only an approver's counts, and each change is decided once."""
+        clicker = body["user"]["id"]
+        action = body["actions"][0]
+        channel, message = body["channel"]["id"], body["message"]["ts"]
+        if clicker not in self.approvers:
+            client.chat_postEphemeral(channel=channel, user=clicker,
+                                      text=f"Only {self.names()} can approve or deny a change.")
+            return
+        with self.lock:
+            change = self.waiting.pop(action["value"], None)
+        if change is None:
+            client.chat_postEphemeral(channel=channel, user=clicker,
+                                      text="This change was already decided, or has expired (the agent restarted).")
+            return
+        if change["kind"] == "push":
+            approved = action["action_id"] == "push_approve"
+            verdict = "Approved" if approved else "Denied"
+            client.chat_update(channel=channel, ts=message, text=f"{verdict} by {self.approvers[clicker]}: "
+                               f"commit and push \"{change['message'].splitlines()[0]}\"", blocks=[])
+            if approved:
+                result = self.code({"code": "push", "requester": change["requester"], "approver": clicker,
+                                    "tree": change["tree"], "message": change["message"]})
+                client.chat_postMessage(channel=change["channel"], thread_ts=change["thread"],
+                                        text=mask(result["output"]))
+            return
+        command = f"`{shlex.join(change['argv'])}` on {change['host']}"
+        if action["action_id"] != "change_approve":
+            client.chat_update(channel=channel, ts=message, text=f"Denied by {self.approvers[clicker]}: {command}",
+                               blocks=[])
+            return
+        client.chat_update(channel=channel, ts=message, text=f"Approved by {self.approvers[clicker]}: {command}",
+                           blocks=[])
+        result = self.run(change["argv"], change["requester"], change["host"], "change", clicker)
+        self.post_result(client, change["channel"], change["thread"], change["argv"], change["host"], result)
+
+
+# ---------------------------------------------------------------- bot: Slack routing
+
+# change(argv, host, reason, could_cut_access) -> what Claude is told (Approvals.ask for this request).
+Change = Callable[[list[str], str, str, bool], str]
+# push(message) -> what Claude is told (stage the work folder and show it for approval).
+Push = Callable[[str], str]
+# answer(prompt, budget, requester, post, change, push) -> (reply text, cost in USD); post(text) writes to the
+# thread.
+Answer = Callable[[str, float, str, Callable[[str], None], Change, Push], tuple[str, float]]
+
+PRIVATE_CONTEXT = 10  # earlier messages of a private chat given as context
+
+
+def handle_event(event: dict, config: dict, ledger: Ledger, client, answer: Answer, approvals: Approvals,
+                 now: datetime) -> None:
+    """Answer a mention in the agent's channel, or a private message from an approver (answered privately); send
+    everything else one redirect to the channel."""
+    if event.get("bot_id") or event.get("subtype") or not event.get("user"):
+        return
+    channel, user = event["channel"], event["user"]
+    redirect = f"I only take requests in <#{config['channel']}>, so everyone can see them. Please ask there."
+    private = event["type"] == "message" and event.get("channel_type") == "im"
+    if private and user not in config["approvers"]:
+        client.chat_postMessage(channel=channel, text=redirect)
+        return
+    if event["type"] == "message" and not private:
+        return
+    if not private and channel != config["channel"]:
+        client.chat_postEphemeral(channel=channel, user=user, text=redirect)
+        return
+    # Every request is answered in its thread. A new message in a private chat also gets the chat's recent
+    # messages, so a follow-up sent outside the thread still has its context.
+    flat = private and "thread_ts" not in event
+    thread = event.get("thread_ts", event["ts"])
+
+    def post(text: str) -> None:
+        client.chat_postMessage(channel=channel, thread_ts=thread, text=mask(text))
+
+    reason = ledger.refusal(user, now)
+    if reason is not None:
+        post(reason)
+        return
+    history = ""
+    earlier: list[dict] = []
+    if flat:
+        earlier = list(reversed(client.conversations_history(channel=channel, limit=PRIVATE_CONTEXT)["messages"]))
+    elif "thread_ts" in event:
+        earlier = client.conversations_replies(channel=channel, ts=thread)["messages"]
+    if earlier:
+        history = "\n".join(f"{message.get('user', message.get('bot_id', '?'))}: {message.get('text', '')}"
+                            for message in earlier if message.get("ts") != event["ts"])
+    name = config["users"].get(user, "a Slack member with no cluster account")
+    number = ledger.requests_today(user, now) + 1
+    place = "in a private message" if private else "in the agent's channel"
+    prompt = (f"Request from Slack member {user} ({name}) {place}, their request {number} today:\n{event['text']}"
+              + (f"\n\nEarlier messages in this {'chat' if flat else 'thread'}:\n{history}" if history else ""))
+
+    def change(argv: list[str], host: str, reason: str, risky: bool) -> str:
+        return approvals.ask(argv, host, reason, risky, user, client, channel, thread)
+
+    def push(message: str) -> str:
+        staged = approvals.code({"code": "stage", "requester": user})
+        if not staged["ok"]:
+            post(mask(f"_Could not prepare the change:_ {staged['output']}"))
+            return staged["output"]
+        return approvals.ask_push(staged, message, user, client, channel, thread)
+
+    reply, cost = answer(prompt, ledger.budget(now), user, post, change, push)
+    ledger.record(user, cost, now)
+    post(reply)
+    if ledger.cap_notice_due(now):
+        client.chat_postMessage(channel=channel, text=(
+            f"The daily limit of ${ledger.limits['daily_usd']:.2f} for the agent is reached. "
+            "It answers again after midnight."))
+
+
+# ---------------------------------------------------------------- bot: Claude
+
+SYSTEM_PROMPT = """You answer in Slack for the {cluster} cluster, set up with nanoHPC. {front} is the {front_role};
+the other machines are {machines}. Your working folder holds the cluster's settings as nanoHPC read them
+(cluster.yml){docs}. Read them before answering anything that is not obvious.
+
+Your way to run a command is run_command, on {front} or another machine (host), through a runner that refuses
+anything that changes something. tail, grep, and ls work only in /var/log (all of it); dmesg -T for kernel
+messages; ping needs -c (at most 10); hostname takes no arguments.
+Only the "deep" agent can change something (run_change) or change the cluster.yml repository; you cannot. Never
+claim a change was made unless its output says so.
+
+For what happened before, read the records instead of guessing: journalctl (the deploys are in
+journalctl -u nanohpc-auto-deploy), /var/log/nanohpc-agent/runner.log (every command you ran and who asked).
+
+Hand the request to the "deep" agent, and stop there, when it needs a change on the cluster or in the
+cluster.yml repository, when a problem is not explained by the first checks (for example a machine down with no
+clear cause in the logs), or when the person asks you to investigate or look deeper. Answer everything else
+yourself: status, {status_examples}, reading logs, questions about the docs, what happened before.
+{people}
+You may keep a few notes about yourself with write_notes: a running joke, how you see the machines, what you
+like. Never events or people's private details. write_notes replaces all your notes, at most 1024 bytes; when
+they are full, rewrite them shorter. Your current notes are below.
+
+Write in simple, plain English. For cluster questions: short, the answer first, then 3 to 5 bullets at most.
+For small talk: one to three short sentences of plain text, no bullets. Slack formatting: *bold*, `code`, ```
+blocks. Never print tokens, keys, or passwords."""
+
+PEOPLE_PROMPT = """
+When a person comes up, read {people} first and let it shape how you react to them, as a colleague who knows
+them would; never recite its facts or quote it.
+"""
+
+DEEP_PROMPT = """You take over requests that need care: a change, or a problem the first checks did not explain.
+Investigate with run_command and the files in your working folder first.
+
+To change something, use run_change: one command per call, the smallest change that fixes the problem, then
+check its effect with run_command. Before a change, check what it touches (for example that no job runs on a
+machine before restarting it), and use the command's dry run first when it has one. Set could_cut_access to true
+for anything that could stop SSH or the network to a machine: SSH settings or keys, network, firewall, PAM, sudo,
+accounts, /etc/fstab or mounts, reboots and shutdowns. Never pause partitions or drain machines unless asked.
+When run_change says it is waiting for approval, stop there and tell the person it waits for an approver.
+
+{code}
+
+Answer the person directly and completely, in the same voice and format as described in your instructions."""
+
+CODE_PROMPT = """Anything nanoHPC sets up from cluster.yml (users, partitions, policy, machines, alerts) changes
+only through the cluster.yml repository, never by editing files on a machine, which the next deploy would undo.
+Call start_code_change, edit with Edit and Write in the work folder it names, then call propose_push with a commit
+message (one short line, then bullet points of the changes). You cannot run nanohpc validate, so keep each change
+small and say so. Nothing is committed or pushed until an approver clicks Approve, whoever asked; stop there and
+tell the person. {after_push}
+
+To deploy, use run_change on host {front} with argv ["nanohpc", "deploy", "--dry-run"] first, read what it would
+change, then ["nanohpc", "deploy"] (or ["nanohpc", "deploy", "--only", PART] with users, policy, partitions, or
+node NAME). It deploys the newest commit of the repository, with a dry run on every machine before changing it;
+machines whose dry run fails are left out. To add a user: add them to users in cluster.yml (start_code_change,
+propose_push); once the push is approved, deploy with --only users (could_cut_access false: it only adds
+accounts)."""
+
+NO_CODE_PROMPT = """This cluster has no repository for its cluster.yml, so you cannot change its settings or
+deploy; tell the person an administrator does that with nanohpc deploy."""
+
+NOTES_LIMIT = 1024
+THREAD_LINES = 5
+MAX_TURNS = 30
+
+
+def thread_excerpt(output: str) -> str:
+    """The first THREAD_LINES lines of a command's output for the thread, and how many more there are."""
+    lines = output.strip("\n").splitlines()
+    if len(lines) <= THREAD_LINES:
+        return "\n".join(lines)
+    return "\n".join(lines[:THREAD_LINES]) + f"\n({len(lines) - THREAD_LINES} more lines)"
+
+
+def save_notes(path: Path, text: str) -> str | None:
+    """Replace the notes, or return why not (over NOTES_LIMIT bytes); old notes stay when refused."""
+    size = len(text.encode())
+    if size > NOTES_LIMIT:
+        return f"refused: {size} bytes, the limit is {NOTES_LIMIT}. Rewrite your notes shorter."
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(text)
+    temporary.replace(path)
+    return None
+
+
+def rules(config: dict) -> str:
+    """The rules for this cluster, filled in from the agent's settings."""
+    slurm = config["mode"] == "slurm"
+    return SYSTEM_PROMPT.format(
+        cluster=config["cluster"],
+        front=config["front"],
+        front_role="login, Slurm controller, and monitoring machine" if slurm else "monitoring machine",
+        machines=", ".join(config["machines"]) or "none",
+        docs=", and the user guide (docs.md) and policy (policy.md) from the cluster website" if config["docs"] else "",
+        status_examples="the queue, someone's jobs" if slurm else "GPU use, who runs what",
+        people="" if config["people"] is None else PEOPLE_PROMPT.format(people=config["people"]),
+    )
+
+
+def deep_rules(config: dict) -> str:
+    """The deep agent's rules: with or without code changes and deploys."""
+    if config["code"]:
+        code = CODE_PROMPT.format(after_push=config["after_push"], front=config["front"])
+    else:
+        code = NO_CODE_PROMPT
+    return DEEP_PROMPT.format(code=code)
+
+
+def system_prompt(config: dict, core: str, notes: str) -> str:
+    """The rules, the personality, and its own notes, in that order (stable for caching)."""
+    return f"{rules(config)}\n\n# Who you are\n\n{core}\n\n# Your notes\n\n{notes or '(none yet)'}"
+
+
+def make_answer(config: dict) -> Answer:
+    """One Claude Agent SDK query per request: the main model, with the deep model as a subagent."""
+    import asyncio
+
+    from claude_agent_sdk import (
+        AgentDefinition,
+        ClaudeAgentOptions,
+        HookMatcher,
+        ResultMessage,
+        create_sdk_mcp_server,
+        query,
+        tool,
+    )
+
+    source = str(Path(config["source"]).resolve())
+    readable = [source, *config["docs"]]
+    notes_path = Path(config["notes"])
+    machines = ", ".join([config["front"], *config["machines"]])
+    work = config["work"]
+    core = Path(config["personality"]).read_text()
+    people = config["people"]
+
+    async def inside_readable(input_data: dict, tool_use_id: str | None, context) -> dict:
+        tool_input = input_data["tool_input"]
+        path = os.path.realpath(tool_input.get("file_path") or tool_input.get("path") or source)
+        folders = [*readable, work]
+        if path == people or any(path == folder or path.startswith(folder + os.sep) for folder in folders):
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                       "permissionDecisionReason": f"Only files under {', '.join(folders)} may be read."}}
+
+    def answer(prompt: str, budget: float, requester: str, post: Callable[[str], None],
+               change: Change, push: Push) -> tuple[str, float]:
+        @tool("run_command", "Run one read-only command through the runner. argv is the program and its "
+              f"arguments, no shell; host is one of: {machines}.", {"argv": list[str], "host": str})
+        async def run_command(args: dict) -> dict:
+            argv, host = [str(part) for part in args["argv"]], str(args["host"])
+            result = ask_runner(config["socket"], argv, requester, host, "read", None)
+            shown = thread_excerpt(result["output"])
+            post(f"`{shlex.join(argv)}` on {host}{'' if result['ran'] else ' (refused)'}:\n```{shown}```")
+            return {"content": [{"type": "text", "text": result["output"]}]}
+
+        @tool("run_change", "Run one command that changes something, through the runner. It runs at once for an "
+              "approver; for anyone else, or when could_cut_access is true, it waits for an approver's Approve in "
+              f"the thread. argv: the program and its arguments, no shell; host: one of {machines}; reason: why, in "
+              "one sentence.", {"argv": list[str], "host": str, "reason": str, "could_cut_access": bool})
+        async def run_change(args: dict) -> dict:
+            argv = [str(part) for part in args["argv"]]
+            told = change(argv, str(args["host"]), str(args["reason"]), bool(args["could_cut_access"]))
+            return {"content": [{"type": "text", "text": told}]}
+
+        @tool("write_notes", f"Replace all your notes about yourself (at most {NOTES_LIMIT} bytes).", {"text": str})
+        async def write_notes(args: dict) -> dict:
+            refused = save_notes(notes_path, str(args["text"]))
+            if refused is None:
+                post(f"_Updated my notes:_\n```{args['text']}```")
+            return {"content": [{"type": "text", "text": refused or "saved"}]}
+
+        @tool("start_code_change", f"Put a fresh copy of the cluster.yml repository in {work} for you to edit "
+              "(anything there before is removed).", {})
+        async def start_code_change(args: dict) -> dict:
+            started = ask_code(config["socket"], {"code": "start", "requester": requester})
+            post(f"_Work folder: {started['output']}_")
+            return {"content": [{"type": "text", "text": started["output"]}]}
+
+        @tool("propose_push", "Show your edits in the work folder as a diff in the thread, with a commit message, "
+              "and wait for an approver's Approve; only then are they committed and pushed.", {"message": str})
+        async def propose_push(args: dict) -> dict:
+            told = push(str(args["message"]))
+            return {"content": [{"type": "text", "text": told}]}
+
+        async def edits_in_work(input_data: dict, tool_use_id: str | None, context) -> dict:
+            path = os.path.realpath(input_data["tool_input"].get("file_path", ""))
+            inside_work = path.startswith(work + os.sep) and not path.startswith(os.path.join(work, ".git"))
+            if input_data.get("agent_type") == "deep" and inside_work and config["code"]:
+                return {}
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                           "permissionDecisionReason": "Only the deep agent may edit, and only "
+                                                                       f"files under {work} (not .git)."}}
+
+        async def only_deep(input_data: dict, tool_use_id: str | None, context) -> dict:
+            if input_data.get("agent_type") == "deep":
+                return {}
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                           "permissionDecisionReason": "Only the deep agent may make changes: "
+                                                                       "hand the request to it."}}
+
+        async def handing_over(input_data: dict, tool_use_id: str | None, context) -> dict:
+            post(f"_Handing this to {config['models']['deep']}: {input_data['tool_input'].get('description', '')}_")
+            return {}
+
+        notes = notes_path.read_text() if notes_path.exists() else ""
+        read_tools = ["Read", "Grep", "Glob", "mcp__cluster__run_command"]
+        code_tools = ["mcp__cluster__start_code_change", "mcp__cluster__propose_push", "Edit", "Write"]
+        deep_only = ["mcp__cluster__run_change", *(code_tools if config["code"] else [])]
+        tools = [run_command, run_change, write_notes, *([start_code_change, propose_push] if config["code"] else [])]
+        options = ClaudeAgentOptions(
+            model=config["models"]["main"],
+            fallback_model=None,
+            system_prompt=system_prompt(config, core, notes),
+            tools=["Read", "Grep", "Glob", "Edit", "Write", "Agent"],
+            allowed_tools=[*read_tools, *deep_only, "mcp__cluster__write_notes", "Agent"],
+            agents={"deep": AgentDefinition(description="For a change on the cluster or in the cluster.yml "
+                                            "repository, a problem the first checks did not explain, or a request "
+                                            "to investigate.", prompt=deep_rules(config),
+                                            tools=[*read_tools, *deep_only], model=config["models"]["deep"])},
+            mcp_servers={"cluster": create_sdk_mcp_server("cluster", tools=tools)},
+            strict_mcp_config=True,
+            permission_mode="dontAsk",
+            setting_sources=[],
+            # A deploy can take many minutes; the tool call waits for it.
+            env={"MCP_TOOL_TIMEOUT": str((DEPLOY_TIMEOUT + 300) * 1000)},
+            cwd=source,
+            max_turns=MAX_TURNS,
+            max_budget_usd=budget,
+            hooks={"PreToolUse": [HookMatcher(matcher="Read|Grep|Glob", hooks=[inside_readable]),
+                                  HookMatcher(matcher="mcp__cluster__run_change|mcp__cluster__start_code_change|"
+                                                      "mcp__cluster__propose_push", hooks=[only_deep]),
+                                  HookMatcher(matcher="Edit|Write", hooks=[edits_in_work]),
+                                  HookMatcher(matcher="Agent", hooks=[handing_over])]},
+        )
+
+        async def run() -> tuple[str, float]:
+            reply, cost = "", 0.0
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, ResultMessage):
+                    cost = message.total_cost_usd or 0.0
+                    reply = message.result or ""
+                    models = {name: round(usage.get("costUSD", 0.0), 4)
+                              for name, usage in (message.model_usage or {}).items()}
+                    # One line per request in the journal: who, cost, cost per model, and the reply.
+                    print(json.dumps({"requester": requester, "cost": round(cost, 4), "models": models,
+                                      "reply": mask(reply)}), flush=True)
+                    if message.subtype == "error_max_budget_usd":
+                        reply += f"\n\n_Stopped: this request reached its limit of ${budget:.2f}._"
+                    elif message.subtype == "error_max_turns":
+                        reply += "\n\n_Stopped: this request reached its step limit._"
+                    elif message.is_error:
+                        reply += f"\n\n_Stopped with an error: {message.subtype}._"
+            return reply or "_No answer._", cost
+
+        return asyncio.run(run())
+
+    return answer
+
+
+def serve_bot(config: dict) -> None:
+    """Connect to Slack (Socket Mode) and answer events one at a time."""
+    from slack_bolt import App
+    from slack_bolt.adapter.socket_mode import SocketModeHandler
+
+    bot_token = os.environ.pop("SLACK_BOT_TOKEN")
+    app_token = os.environ.pop("SLACK_APP_TOKEN")
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise SystemExit("ANTHROPIC_API_KEY is not set")
+    zone = ZoneInfo(config["timezone"]) if config["timezone"] else None
+    ledger = Ledger(Path(config["usage"]), config["limits"], zone)
+    answer = make_answer(config)
+
+    def run(argv: list[str], requester: str, host: str, mode: str, approver: str | None) -> dict:
+        return ask_runner(config["socket"], argv, requester, host, mode, approver)
+
+    def code(request: dict) -> dict:
+        return ask_code(config["socket"], request)
+
+    approvals = Approvals(config["approvers"], run, code)
+    one_at_a_time = threading.Lock()
+    app = App(token=bot_token)
+
+    def on_event(event: dict, client) -> None:
+        with one_at_a_time:
+            handle_event(event, config, ledger, client, answer, approvals, datetime.now().astimezone(zone))
+
+    def on_click(ack, body: dict, client) -> None:
+        ack()
+        approvals.click(body, client)
+
+    app.event("app_mention")(on_event)
+    app.event("message")(on_event)
+    for action in ("change_approve", "change_deny", "push_approve", "push_deny"):
+        app.action(action)(on_click)
+    SocketModeHandler(app, app_token).start()
+
+
+def serve_runner_from(config: dict) -> None:
+    """Start the runner from its settings file (written by nanoHPC's deploy, root only)."""
+    approvers = list(config["approvers"])
+    rule = RunnerRule(config["front"], config["log_dirs"], approvers, config["hosts"], config["key"],
+                      config["known_hosts"], config["slurm"])
+    repository = config["repository"]
+    code = None
+    if repository is not None:
+        code = CodeChanges(repository["remote"], repository["branch"], repository["clone"], config["work"],
+                           config["agent_user"], repository["key"], repository["known_hosts"], approvers,
+                           repository["author"], repository["email"], repository["after_push"])
+    deploys = None if config["deploy"] is None else Deploys(config["deploy"])
+    serve_runner(config["socket"], config["socket_group"], Path(config["log"]), rule, code, deploys)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("part", choices=("runner", "bot"), help="runner: run commands (root); bot: Slack and Claude")
+    parser.add_argument("--config", type=Path, required=True, help="the part's settings (JSON)")
+    args = parser.parse_args()
+    config = json.loads(args.config.read_text())
+    if args.part == "runner":
+        serve_runner_from(config)
+    else:
+        serve_bot(config)
+
+
+if __name__ == "__main__":
+    main()
