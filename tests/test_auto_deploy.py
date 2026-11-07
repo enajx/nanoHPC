@@ -336,6 +336,23 @@ class AutoDeployTests(unittest.TestCase):
         self.assert_run(0)
         self.assertEqual(self.cluster.state_file("deployed"), newer)
 
+    def test_a_dry_run_from_slack_installs_nothing(self) -> None:
+        """A dry run asked from Slack does not install the pinned version; the deploy itself reports a mismatch."""
+        self.cluster.commit("nanohpc_version: 2.0.0\nname: second\n")
+        result = self.cluster.run_with(self.url, ["--again", "--", "--dry-run"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.cluster.installs(), [])
+        self.assertEqual(self.cluster.deploys()[-1]["args"][-1], "--dry-run")
+
+    def test_a_busy_deploy_asked_from_slack_is_not_reported_as_done(self) -> None:
+        """With --again, another deploy holding a lock exits 75 (try again later), not 0."""
+        with self.cluster.maintenance_lock.open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            busy = self.cluster.run_with(self.url, ["--again"])
+        self.assertEqual(busy.returncode, 75, busy.stdout + busy.stderr)
+        self.assertIn("nothing was deployed", busy.stdout)
+        self.assertEqual(self.cluster.deploys(), [])
+
     def test_monitor_mode_runs_deploy_monitor(self) -> None:
         """--deploy-command deploy-monitor (the Slack agent in monitor mode) runs nanohpc deploy-monitor."""
         result = self.cluster.run_with(self.url, ["--deploy-command", "deploy-monitor", "--again", "--", "--dry-run"])

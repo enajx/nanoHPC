@@ -324,6 +324,18 @@
       changed_when: false  # a one-off run of the collector, not a change to the machine
       when: not ansible_check_mode  # the snapshot shows this deploy's result
 
+# --only node: the Slack agent's runner learns the machine's SSH host key.
+- name: Slack agent runner reaches the machine
+  hosts: role_front
+  become: true
+  tags: [node]
+  tasks:
+    - name: Pin the machine's SSH host key for the runner
+      ansible.builtin.include_role:
+        name: agent
+        tasks_from: known_hosts
+      when: nanohpc.agent.enabled
+
 - name: Start automatic deploys again
   hosts: role_front
   become: true

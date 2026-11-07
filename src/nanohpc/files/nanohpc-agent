@@ -56,53 +56,53 @@ def mask(text: str) -> str:
 
 # ---------------------------------------------------------------- runner: the read-only rule
 
-# Reads are wide: any program below, on any file, except files that hold secrets, and people's own files unless an
-# approver asks. Output is masked as well. Each program and the first arguments it may start with (None: any).
+# Reads are wide: the programs below, on any file, except files that hold secrets, and people's own files and
+# places anyone can write to unless an approver asks. Output is masked as well. Every argument is checked, not
+# only the first: programs with subcommands need a reading one, and options that change things are refused.
 READ_ONLY = {
-    "systemctl": [["status"], ["is-active"], ["is-failed"], ["is-enabled"], ["list-units"], ["list-unit-files"],
-                  ["list-timers"], ["list-dependencies"], ["show"], ["cat"], ["--failed"], ["--no-pager"]],
-    "journalctl": None,
-    # Files and folders: contents, listings, sizes, checksums.
-    "cat": None, "head": None, "tail": None, "grep": None, "zgrep": None, "zcat": None, "ls": None, "find": None,
-    "wc": None, "du": None, "file": None, "readlink": None, "realpath": None, "stat": None, "test": None,
-    "diff": None, "cmp": None, "md5sum": None, "sha256sum": None,
-    # The machine: processes, memory, disks, hardware, accounts, logins, time.
-    "ps": None, "pgrep": None, "uptime": None, "free": None, "df": None, "lsblk": None, "findmnt": None,
-    "uname": None, "lscpu": None, "lspci": None, "lsusb": None, "lsmod": None, "sensors": None, "vmstat": None,
-    "iostat": None, "id": None, "getent": None, "groups": None, "who": None, "w": None, "last": None,
-    "lastlog": None, "date": None, "nproc": None, "dpkg": [["-l"], ["-s"], ["-L"], ["--list"], ["--status"]],
-    "apt": [["list"], ["policy"], ["show"]], "apt-cache": [["policy"], ["show"], ["search"]],
-    "timedatectl": [["status"], ["show"], []], "chronyc": [["tracking"], ["sources"], ["sourcestats"]],
-    "loginctl": [["list-sessions"], ["list-users"], ["show-user"], ["user-status"]],
-    "top": [["-b"]],
-    "nvidia-smi": None,
-    "ipmitool": [["sensor"], ["sdr"], ["sel", "list"], ["sel", "elist"], ["sel", "info"], ["chassis", "status"],
-                 ["lan", "print"], ["mc", "info"], ["fru"]],
-    # The network.
-    "ip": [["addr"], ["-br", "addr"], ["link"], ["-br", "link"], ["route"], ["neigh"], ["-s", "link"], ["rule"]],
-    "ss": None, "nft": [["list"]], "iptables": [["-S"], ["-L"], ["-n", "-L"], ["-nL"], ["-nvL"], ["-L", "-n"]],
-    "resolvectl": [["status"], ["query"]], "getfacl": None,
-    "git": None,
+    "journalctl", "cat", "head", "tail", "grep", "zgrep", "zcat", "ls", "find", "wc", "du", "file", "readlink",
+    "realpath", "stat", "test", "diff", "cmp", "md5sum", "sha256sum", "ps", "pgrep", "uptime", "free", "df",
+    "lsblk", "findmnt", "uname", "lscpu", "lspci", "lsusb", "lsmod", "sensors", "vmstat", "iostat", "id", "getent",
+    "groups", "who", "w", "last", "lastlog", "date", "nproc", "top", "nvidia-smi", "ss", "getfacl", "dmesg",
+    "hostname", "ping", "git", "ip", "iptables", "dpkg", "ipmitool",
 }  # fmt: skip
-# Slurm mode only.
-SLURM_READ_ONLY = {
-    "sinfo": None, "squeue": None, "sacct": None, "sshare": None, "sprio": None, "sstat": None, "sdiag": None,
-    "scontrol": [["show"], ["ping"], ["-o", "show"], ["-d", "show"]],
-    "sacctmgr": [["show"], ["list"], ["-n", "show"], ["-n", "list"], ["-P", "show"], ["-P", "list"],
-                 ["-nP", "show"], ["-nP", "list"]],
-    "munge": [["-n"]],
+SLURM_READ_ONLY = {"sinfo", "squeue", "sacct", "sshare", "sprio", "sstat", "sdiag", "scontrol", "sacctmgr"}
+# Programs with subcommands: the reading ones, whether none at all is a read too, and options never allowed
+# (another machine, another root). Option values go with = (--lines=50), so the first plain word is the subcommand.
+SUBCOMMANDS = {
+    "systemctl": ({"status", "is-active", "is-failed", "is-enabled", "list-units", "list-unit-files", "list-timers",
+                   "list-dependencies", "list-sockets", "show", "cat"}, True,
+                  ("-H", "--host", "-M", "--machine", "--root", "--image")),
+    "timedatectl": ({"status", "show", "show-timesync", "timesync-status"}, True, ("-H", "--host", "-M", "--machine")),
+    "loginctl": ({"list-sessions", "list-users", "list-seats", "show-user", "user-status", "show-session",
+                  "session-status"}, True, ("-H", "--host", "-M", "--machine")),
+    "resolvectl": ({"status", "query", "statistics"}, True, ()),
+    "chronyc": ({"tracking", "sources", "sourcestats", "activity"}, False, ()),
+    "apt": ({"list", "policy", "show"}, False, ("-o", "--option", "-c", "--config-file")),
+    "apt-cache": ({"policy", "show", "search", "depends", "rdepends"}, False, ("-o", "--option", "-c", "--config-file")),
+    "nft": ({"list"}, False, ("-f", "--file", "-i", "--interactive")),
+    "scontrol": ({"show", "ping"}, False, ()),
+    "sacctmgr": ({"show", "list"}, False, ()),
 }  # fmt: skip
-# journalctl options that change the journal.
-JOURNAL_CHANGES = ("--vacuum", "--rotate", "--flush", "--sync", "--relinquish", "--smart-relinquish",
-                   "--setup-keys", "--update-catalog")  # fmt: skip
-# dmesg options that clear the kernel log or change the console.
-DMESG_CHANGES = {"-c", "-C", "-D", "-E", "--clear", "--read-clear", "--console-off", "--console-on", "--console-level"}
+# Options that change something, anywhere in the arguments (a one-letter option also inside -abc).
+CHANGING_OPTIONS = {
+    "journalctl": ("--vacuum-size", "--vacuum-time", "--vacuum-files", "--rotate", "--flush", "--sync",
+                   "--relinquish-var", "--smart-relinquish-var", "--setup-keys", "--update-catalog", "--cursor-file"),
+    "date": ("-s", "--set"),
+    "ss": ("-K", "--kill", "-D", "--diag"),
+    "sensors": ("-s", "--set"),
+    "file": ("-C", "--compile"),
+    "lastlog": ("-C", "--clear", "-S", "--set"),
+    "dmesg": ("-c", "-C", "-D", "-E", "-n", "--clear", "--read-clear", "--console-off", "--console-on",
+              "--console-level"),
+}  # fmt: skip
 OUTPUT_LIMIT = 30000
 COMMAND_TIMEOUT = 120
 # A deploy from Slack waits at most this long.
 DEPLOY_TIMEOUT = 60 * 60
-# ip words that change the network.
-IP_CHANGES = {"set", "add", "del", "delete", "flush", "change", "replace", "append", "prepend"}
+# ip words that change the network or run a program.
+IP_CHANGES = {"set", "add", "del", "delete", "flush", "change", "replace", "append", "prepend", "exec", "netns",
+              "-batch", "-b", "-force"}  # fmt: skip
 # find actions that run programs or write files.
 FIND_ACTIONS = {"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}
 # nvidia-smi options that change the GPUs; dmon and pmon never end.
@@ -111,21 +111,33 @@ NVIDIA_CHANGES = ("-pm", "-pl", "-r", "-c", "-e", "-ac", "-rac", "-acp", "-am", 
                   "--ecc-config", "--applications-clocks", "--lock-gpu-clocks", "--reset-gpu-clocks",
                   "--lock-memory-clocks", "--reset-memory-clocks", "--multi-instance-gpu", "dmon", "pmon", "-l",
                   "--loop", "-f", "--filename", "mig", "drain", "nvlink", "clocks", "conf-compute", "-lms")  # fmt: skip
-# git subcommands that only read.
+# ipmitool: the reading commands of the local BMC; no options but -c, and none of these words.
+IPMI_READS = (["sensor"], ["sdr"], ["sel", "list"], ["sel", "elist"], ["sel", "info"], ["chassis", "status"],
+              ["lan", "print"], ["mc", "info"], ["fru"])  # fmt: skip
+IPMI_WRITES = {"write", "set", "thresh", "edit", "clear", "reset", "delete", "add", "upload", "activate",
+               "deactivate", "power", "bootdev", "bootparam", "time", "selftest", "warm", "cold"}  # fmt: skip
+# nft words that change the rules (nft joins its arguments into one command line).
+NFT_WRITES = {"add", "create", "delete", "destroy", "flush", "insert", "replace", "reset", "rename", "import"}
+# iptables: only listing options, and -t with a table.
+IPTABLES_LETTERS = set("SLnvx")
+IPTABLES_LONG = {"--list", "--list-rules", "--numeric", "--verbose", "--exact", "--line-numbers"}
+# git subcommands that only read. git runs with hooks and fsmonitor off and trusts only repositories owned by root,
+# so another account's repository cannot make it run a program (diff drivers, filters).
 GIT_READS = {"log", "show", "diff", "status", "blame", "rev-parse", "branch", "describe", "shortlog", "ls-files",
              "remote", "grep", "reflog", "tag", "cat-file"}  # fmt: skip
 # Files that hold secrets, never read or changed for anyone: folders, exact files, and names anywhere.
 SECRET_DIRS = ("/etc/nanohpc-agent", "/var/lib/nanohpc-agent-runner", "/etc/nanohpc/auto-deploy",
                "/etc/nanohpc/alertmanager", "/etc/nanohpc/metrics-ca", "/etc/nanohpc/metrics-tls",
                "/etc/nanohpc/website/tls", "/etc/nanohpc/test-acme", "/root/.ssh", "/etc/munge", "/etc/letsencrypt",
-               "/etc/ssl/private")  # fmt: skip
+               "/etc/ssl/private", "/var/lib/grafana", "/dev")  # fmt: skip
 SECRET_FILES = ("/etc/shadow", "/etc/shadow-", "/etc/gshadow", "/etc/gshadow-", "/etc/slurm/slurm.key",
-                "/etc/slurm/jwt_hs256.key", "/etc/slurm/slurmdbd.conf", "/etc/mysql/debian.cnf")  # fmt: skip
+                "/etc/slurm/jwt_hs256.key", "/etc/slurm/slurmdbd.conf", "/etc/mysql/debian.cnf", "/proc/kcore")  # fmt: skip
 SECRET_NAME = re.compile(r"^(id_[a-z0-9]+|\.env.*|.*\.env|environ|.*_key|.*\.key|.*token.*|.*secret.*|.*password.*|"
-                         r".*webhook.*|\.netrc|\.pgpass|\.git-credentials|credentials.*|privkey.*\.pem|.*\.p12)$",
-                         re.IGNORECASE)  # fmt: skip
-# People's own files: read only when an approver asks.
-PRIVATE_DIRS = ("/home", "/scratch")
+                         r".*webhook.*|\.netrc|\.pgpass|\.git-credentials|credentials.*|privkey.*\.pem|.*\.p12|"
+                         r"swap.*\.img|swapfile)$", re.IGNORECASE)  # fmt: skip
+# People's own files, and places anyone can write to (where a link to a secret could be swapped in): read only
+# when an approver asks.
+PRIVATE_DIRS = ("/home", "/scratch", "/tmp", "/var/tmp", "/run/user", "/var/crash", "/run/lock", "/var/lock")
 
 
 def path_args(args: list[str]) -> list[str]:
@@ -138,51 +150,43 @@ def path_args(args: list[str]) -> list[str]:
     return found
 
 
+def absolute(path: str) -> str:
+    """The path as the runner reads it: commands run from /, so a relative path starts there."""
+    return os.path.normpath(os.path.join(os.sep, path))
+
+
 def under(path: str, folders: tuple[str, ...]) -> bool:
-    """True when the path, as written or with symlinks followed, is one of the folders or under one."""
-    for form in (os.path.normpath(path), os.path.realpath(path)):
-        if any(form == folder or form.startswith(folder + os.sep) for folder in folders):
-            return True
-    return False
+    """True when the (absolute, normalised) path is one of the folders or under one."""
+    return any(path == folder or path.startswith(folder + os.sep) for folder in folders)
 
 
-def secret_path(path: str) -> bool:
-    """True for a file that holds a secret (its folder, the file itself, or its name)."""
-    real = os.path.realpath(path)
-    if under(path, SECRET_DIRS) or os.path.normpath(path) in SECRET_FILES or real in SECRET_FILES:
-        return True
-    if real.startswith("/proc/") and real.endswith("/environ"):
-        return True
-    names = {os.path.basename(os.path.normpath(path)), os.path.basename(real)}
-    return any(SECRET_NAME.match(name) and not name.endswith(".pub") for name in names)
-
-
-def holds_secret_folder(path: str) -> bool:
-    """True when a recursive read from this folder would reach a folder of secrets."""
-    # A relative folder is taken from / (where the runner runs), which covers it on every machine.
-    path = os.path.join(os.sep, path)
-    for form in (os.path.normpath(path), os.path.realpath(path)):
-        start = form.rstrip(os.sep) + os.sep
-        if any((folder + os.sep).startswith(start) for folder in SECRET_DIRS):
-            return True
-    return False
-
-
-def recursive(program: str, args: list[str]) -> bool:
-    """True for a grep or diff that walks folders."""
-    if program not in ("grep", "zgrep", "diff"):
+def secret_place(path: str) -> bool:
+    """True for a file that holds a secret: its folder, the file itself, its name, or a process's memory or
+    environment (an absolute, normalised path)."""
+    if path == "/dev/null":
         return False
-    return any(
-        arg in ("--recursive", "--dereference-recursive")
-        or arg.startswith("--directories=recurse")
-        or (arg.startswith("-") and not arg.startswith("--") and ("r" in arg or "R" in arg))
-        for arg in args
-    )
+    if under(path, SECRET_DIRS) or path in SECRET_FILES or re.fullmatch(r"/proc/[^/]+/(environ|mem)", path):
+        return True
+    name = os.path.basename(path)
+    return bool(SECRET_NAME.match(name)) and not name.endswith(".pub")
 
 
-def private_paths(argv: list[str]) -> list[str]:
-    """The arguments that name people's own files (under /home or /scratch)."""
-    return [path for path in path_args(argv[1:]) if under(path, PRIVATE_DIRS)]
+def path_refusal(paths: list[str], reals: list[str], approved: bool) -> str | None:
+    """Why these paths (as written, absolute) and their real paths (links followed, on the machine the command runs
+    on) are refused, or None."""
+    for path, real in zip(paths, reals, strict=True):
+        if secret_place(path) or secret_place(real):
+            return f"{path} holds secrets and is never read or changed from Slack"
+    for path, real in zip(paths, reals, strict=True):
+        if (under(path, PRIVATE_DIRS) or under(real, PRIVATE_DIRS)) and not approved:
+            return f"{path} is in people's own files or a place anyone can write to; read only when an approver asks"
+    return None
+
+
+def local_paths(argv: list[str]) -> tuple[list[str], list[str]]:
+    """The command's paths, absolute, and their real paths on this machine."""
+    paths = [absolute(path) for path in path_args(argv[1:])]
+    return paths, [os.path.realpath(path) for path in paths]
 
 
 PING_VALUE = {"-c", "-W"}
@@ -219,7 +223,7 @@ def git_refusal(args: list[str]) -> str | None:
     rest = args[2:] if args[:1] == ["-C"] and len(args) >= 2 else args
     if not rest or rest[0] not in GIT_READS:
         return f"git {rest[0] if rest else ''} is not a reading git command (allowed: {', '.join(sorted(GIT_READS))})"
-    if any(arg.startswith(("-c", "--output", "--ext-diff", "--exec", "--upload-pack", "--config", "-O",
+    if any(arg.startswith(("-c", "--output", "--ext-diff", "--textconv", "--exec", "--upload-pack", "--config", "-O",
                            "--open-files-in-pager")) for arg in rest):  # fmt: skip
         return "that git option can run a program or write a file"
     if rest[0] in ("branch", "tag", "remote") and any(
@@ -229,41 +233,110 @@ def git_refusal(args: list[str]) -> str | None:
     return None
 
 
-def secret_refusal(argv: list[str]) -> str | None:
-    """Why this command would touch files with secrets, or None. Applies to reads and changes alike, so a secret
-    never lands in Slack; deploys still manage those files."""
-    secrets = [path for path in path_args(argv[1:]) if secret_path(path)]
-    return f"{secrets[0]} holds secrets and is never read or changed from Slack" if secrets else None
+def uses_option(args: list[str], options: tuple[str, ...]) -> str | None:
+    """The first argument that uses one of these options (also as --option=value, or a one-letter option inside
+    a group like -abc), or None."""
+    for arg in args:
+        for option in options:
+            if arg == option or (option.startswith("--") and arg.startswith(option + "=")):
+                return arg
+            if len(option) == 2 and arg.startswith("-") and not arg.startswith("--") and option[1] in arg[1:]:
+                return arg
+    return None
 
 
-def refusal(argv: list[str], slurm: bool) -> str | None:
-    """Why the runner refuses this command as a read, or None when it is read-only and allowed."""
+def subcommand_refusal(program: str, args: list[str]) -> str | None:
+    """Programs with subcommands: a reading one (the first plain word), and no option that reaches elsewhere."""
+    reads, bare, never = SUBCOMMANDS[program]
+    option = uses_option(args, never)
+    if option is not None:
+        return f"{program} {option} is not allowed here"
+    words = [arg for arg in args if not arg.startswith("-")]
+    if not words:
+        return None if bare else f"{program} needs one of: {', '.join(sorted(reads))}"
+    if words[0] not in reads:
+        return (f"{program} {words[0]} is not a reading {program} command (allowed: {', '.join(sorted(reads))}; "
+                "give option values with =)")
+    if program == "chronyc" and len(words) != 1:
+        return "chronyc takes one command"
+    if program == "nft" and (NFT_WRITES & set(words) or any(mark in arg for arg in args for mark in ";{}\n")):
+        return "that nft command changes the rules"
+    return None
+
+
+def iptables_refusal(args: list[str]) -> str | None:
+    """iptables only lists: -S, -L, -n, -v, -x (also grouped), -t TABLE, and listing long options."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in ("-t", "--table"):
+            index += 2
+            continue
+        if arg.startswith("--") and arg not in IPTABLES_LONG:
+            return f"iptables {arg} is not a listing option"
+        if arg.startswith("-") and not arg.startswith("--") and not set(arg[1:]) <= IPTABLES_LETTERS:
+            return f"iptables {arg} is not a listing option"
+        if not arg.startswith("-") and not re.fullmatch(r"[A-Za-z0-9_-]+", arg):
+            return f"iptables {arg} is not a chain name"
+        index += 1
+    return None
+
+
+def ipmitool_refusal(args: list[str]) -> str | None:
+    """ipmitool reads the local BMC only: a reading command, no options but -c, and no word that writes."""
+    if any(arg.startswith("-") and arg != "-c" for arg in args):
+        return "ipmitool takes no options here but -c (it reads the local BMC only)"
+    words = [arg for arg in args if arg != "-c"]
+    if not any(words[: len(read)] == read for read in IPMI_READS) or IPMI_WRITES & set(words):
+        return f"ipmitool {' '.join(words[:2])} is not a reading ipmitool command"
+    return None
+
+
+def recursive(program: str, args: list[str]) -> bool:
+    """True for a grep or diff that walks folders (refused: it could reach files with secrets)."""
+    if program not in ("grep", "zgrep", "diff"):
+        return False
+    for arg in args:
+        if arg in ("--recursive", "--dereference-recursive") or arg.startswith(("--directories", "-d")):
+            return True
+        if arg.startswith("-") and not arg.startswith("--") and ("r" in arg or "R" in arg):
+            return True
+    return False
+
+
+def command_refusal(argv: list[str], slurm: bool) -> str | None:
+    """Why the runner refuses this command as a read, from its program and arguments alone, or None."""
     if not argv:
         return "empty command"
     program, args = argv[0], argv[1:]
-    secret = secret_refusal(argv)
-    if secret is not None:
-        return secret
-    # Every plain argument counts here: a bare name like "etc" is a folder relative to where the command runs.
-    if recursive(program, args) and any(holds_secret_folder(arg) for arg in args if not arg.startswith("-")):
-        return f"a recursive {program} there would reach files with secrets; use a narrower folder"
+    if any("\n" in arg for arg in argv):
+        return "arguments may not hold line breaks"
+    if program in SLURM_READ_ONLY and not slurm:
+        return f"{program} is not on the read-only list (this cluster has no Slurm)"
+    if program in SUBCOMMANDS:
+        return subcommand_refusal(program, args)
+    if program not in READ_ONLY and program not in SLURM_READ_ONLY:
+        return f"{program} is not on the read-only list"
+    if recursive(program, args):
+        return f"a recursive {program} is not allowed (it could reach files with secrets); name the files"
+    option = uses_option(args, CHANGING_OPTIONS.get(program, ()))
+    if option is not None:
+        return f"{program} {option} changes something"
     if program == "ping":
         return ping_refusal(args)
-    if program == "dmesg":
-        changes = [arg for arg in args if arg in DMESG_CHANGES or arg.startswith(("--console", "-n"))]
-        return f"dmesg {changes[0]} changes the kernel log or console" if changes else None
     if program == "hostname":
         return None if not args else "hostname takes no arguments here"
     if program == "git":
         return git_refusal(args)
-    allowed = {**READ_ONLY, **SLURM_READ_ONLY} if slurm else READ_ONLY
-    if program not in allowed:
-        return f"{program} is not on the read-only list"
-    prefixes = allowed[program]
-    if prefixes is not None and not any(args[: len(prefix)] == prefix for prefix in prefixes):
-        return f"{program} {' '.join(args[:2])} is not a read-only use of {program}"
-    if program == "journalctl" and any(arg.startswith(JOURNAL_CHANGES) for arg in args):
-        return "that journalctl option changes the journal"
+    if program == "iptables":
+        return iptables_refusal(args)
+    if program == "ipmitool":
+        return ipmitool_refusal(args)
+    if program == "dpkg" and (args[:1] not in (["-l"], ["-s"], ["-L"], ["--list"], ["--status"], ["--listfiles"])
+                              or any(arg.startswith("-") for arg in args[1:])):  # fmt: skip
+        return "dpkg only lists here: -l, -s, or -L, then package names"
+    if program == "date" and any(not arg.startswith(("-", "+")) for arg in args):
+        return "date with a plain argument sets the clock"
     if program == "tail" and any(arg in ("-f", "-F") or arg.startswith("--follow") for arg in args):
         return "tail -f never ends; use tail -n"
     if program == "find" and any(arg in FIND_ACTIONS for arg in args):
@@ -274,12 +347,21 @@ def refusal(argv: list[str], slurm: bool) -> str | None:
     if program == "ps" and any(not arg.startswith("-") and arg.isalpha() and "e" in arg for arg in args):
         return "ps e shows processes' environment, which can hold keys"
     if program == "ip" and IP_CHANGES & set(args):
-        return "that ip command changes the network"
-    if program == "top" and "-n" not in args:
+        return "that ip command changes the network or runs a program"
+    if program == "top" and ("-b" not in args or "-n" not in args):
         return "top needs -b -n 1"
     if program in ("cat", "head", "tail", "zcat") and not [arg for arg in args if not arg.startswith("-")]:
         return f"{program} needs a file"
     return None
+
+
+def refusal(argv: list[str], slurm: bool) -> str | None:
+    """Why the runner refuses this command as a read on this machine (as anyone but an approver), or None."""
+    reason = command_refusal(argv, slurm)
+    if reason is not None:
+        return reason
+    paths, reals = local_paths(argv)
+    return path_refusal(paths, reals, False)
 
 
 # On the front node, a change may not touch the agent's own files, account or services (its rules and limits
@@ -319,15 +401,21 @@ class RunnerRule:
         """Why this request is refused, or None."""
         if host != self.front and host not in self.hosts:
             return f"refused: unknown machine {host}; known: {', '.join([self.front, *sorted(self.hosts)])}."
+        if not argv:
+            return "refused: empty command."
         approved = requester in self.approvers or approver in self.approvers
-        secret = secret_refusal(argv) if argv else None
-        if secret is not None:
-            return f"refused: {secret}."
-        reason = refusal(argv, self.slurm)
+        paths = [absolute(path) for path in path_args(argv[1:])]
+        reals = self.real_paths(paths, host)
+        if reals is None:
+            return f"refused: could not check where the paths lead on {host}."
+        # Files with secrets are refused for everyone, also as a change.
+        reason = path_refusal(paths, reals, True)
+        if reason is not None:
+            return f"refused: {reason}."
+        reason = command_refusal(argv, self.slurm)
         if reason is None:
-            if private_paths(argv) and not approved:
-                return "refused: people's own files (/home, /scratch) are read only when an approver asks."
-            return None
+            private = path_refusal(paths, reals, approved)
+            return None if private is None else f"refused: {private}."
         if mode != "change":
             return (f"refused: {reason}. This is not a read the runner allows; asked by an approver, the deep agent "
                     "can run it as a change.")
@@ -339,19 +427,36 @@ class RunnerRule:
             return None
         return "refused: a change runs only for an approver, or after an approver clicks Approve."
 
-    def command(self, argv: list[str], host: str) -> list[str]:
-        """The argv to run here: the command itself on the front node, ssh for another machine."""
-        if argv[0] == "git":
-            # Read any checkout (they belong to other accounts), with no pager, hooks, or fsmonitor.
-            argv = ["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-                    "--no-pager", *argv[1:]]  # fmt: skip
-        if host == self.front:
-            return argv
+    def ssh(self, host: str, command: str) -> list[str]:
+        """ssh to another machine as root with the runner's key, running `command` there."""
         return [
             "ssh", "-i", self.key, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
             "-o", f"UserKnownHostsFile={self.known_hosts}", "-o", "StrictHostKeyChecking=yes",
-            "-o", "ConnectTimeout=10", f"root@{self.hosts[host]}", "--", shlex.join(argv),
+            "-o", "ConnectTimeout=10", f"root@{self.hosts[host]}", "--", command,
         ]  # fmt: skip
+
+    def real_paths(self, paths: list[str], host: str) -> list[str] | None:
+        """Where these absolute paths really lead (links followed) on the machine the command runs on; None when
+        that cannot be read."""
+        if not paths:
+            return []
+        if host == self.front:
+            return [os.path.realpath(path) for path in paths]
+        result = subprocess.run(self.ssh(host, f"realpath -m -- {shlex.join(paths)}"), capture_output=True, text=True,
+                                timeout=COMMAND_TIMEOUT, stdin=subprocess.DEVNULL, check=False)
+        reals = result.stdout.splitlines()
+        if result.returncode != 0 or len(reals) != len(paths):
+            return None
+        return [os.path.normpath(real) for real in reals]
+
+    def command(self, argv: list[str], host: str) -> list[str]:
+        """The argv to run: the command itself on the front node (from /), ssh for another machine (also from /)."""
+        if argv[0] == "git":
+            # No pager, hooks, or fsmonitor; git itself refuses repositories not owned by root.
+            argv = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-pager", *argv[1:]]
+        if host == self.front:
+            return argv
+        return self.ssh(host, f"cd / && {shlex.join(argv)}")
 
     def run(self, argv: list[str], requester: str, host: str, mode: str, approver: str | None) -> tuple[bool, str]:
         """Run the request if the rule allows it; return whether it ran and its masked output."""
@@ -364,7 +469,7 @@ class RunnerRule:
         # A command that runs too long is reported to Claude, not left to crash the request.
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=COMMAND_TIMEOUT,
-                                    stdin=subprocess.DEVNULL, check=False)
+                                    stdin=subprocess.DEVNULL, cwd="/", check=False)
         except subprocess.TimeoutExpired:
             return True, f"[stopped after {COMMAND_TIMEOUT} seconds: the command took too long]"
         output = result.stdout + result.stderr

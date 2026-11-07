@@ -27,7 +27,8 @@ run, in order:
 The program exits with the deploy's exit code, or the code of the step that stopped it.
 
 A deploy asked from Slack (the nanoHPC Slack agent's runner) adds `--again`: step 4 is skipped, so the newest commit
-is deployed even when it is the deployed or the failed one. Arguments after `--` (`--dry-run`, or `--only PART`) are
+is deployed even when it is the deployed or the failed one, and a busy lock in step 1 exits 75, not 0. With
+`--dry-run` after `--`, step 6 installs nothing. Arguments after `--` (`--dry-run`, or `--only PART`) are
 added to the `nanohpc deploy` command of step 7; such a run writes no state file and no metric, as it does not deploy
 the whole commit.
 
@@ -86,6 +87,8 @@ SUCCESS = "cluster_auto_deploy_last_success_timestamp_seconds"
 CHECK = "cluster_auto_deploy_last_check_timestamp_seconds"
 INFO = "cluster_auto_deploy_info"
 MAINTENANCE_LOCK = Path("/run/nanohpc/maintenance.lock")
+# Exit code of a deploy asked from Slack (--again) that found another deploy or maintenance running (EX_TEMPFAIL).
+BUSY_EXIT = 75
 # What `nanohpc deploy`'s exit codes mean, for the journal.
 DEPLOY_FAILURES = {
     3: " (its dry run failed on some machines, which were left out, unchanged)",
@@ -319,13 +322,18 @@ def main() -> None:
     if not arguments.state.is_dir():
         parser.error(f"--state {arguments.state} is not a folder")
 
+    # A deploy asked from Slack (--again) is not retried by a timer: a busy lock is reported as not done.
+    busy = BUSY_EXIT if arguments.again else 0
     if not take_lock(arguments.state):
-        say("another deploy is running")
-        sys.exit(0)
+        say("another deploy is running" + ("; nothing was deployed, try again later" if arguments.again else ""))
+        sys.exit(busy)
     maintenance_fd = take_maintenance_lock()
     if maintenance_fd is None:
-        say("another cluster maintenance operation is running; this commit will be checked again")
-        sys.exit(0)
+        if arguments.again:
+            say("another cluster maintenance operation is running; nothing was deployed, try again later")
+        else:
+            say("another cluster maintenance operation is running; this commit will be checked again")
+        sys.exit(busy)
     started = str(time.time())
     checkout = arguments.checkout
 
@@ -358,7 +366,10 @@ def main() -> None:
         checked_only(arguments, started)
 
     move_to(arguments, started, commit)
-    install(arguments, started, commit)
+    # A dry run asked from Slack changes nothing it does not have to: no install (nanohpc deploy reports a version
+    # that differs from the pinned one).
+    if "--dry-run" not in arguments.deploy_arguments:
+        install(arguments, started, commit)
     say(f"deploying commit {commit} of {arguments.branch}")
     environment = dict(os.environ, NANOHPC_AUTOMATIC="1", NANOHPC_MAINTENANCE_FD=str(maintenance_fd))
     command = [arguments.nanohpc, arguments.deploy_command, "cluster.yml", "--ssh-config", arguments.ssh_config]

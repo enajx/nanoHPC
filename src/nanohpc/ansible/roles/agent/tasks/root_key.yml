@@ -7,7 +7,7 @@
     owner: root
     group: root
     mode: "0700"
-  when: nanohpc.agent.enabled
+  when: nanohpc.agent.enabled and hostvars[groups['role_front'][0]].agent_runner_public_key is defined
 
 - name: Accept the Slack agent runner's key for root, from the monitor host only
   ansible.builtin.lineinfile:
@@ -20,7 +20,8 @@
     owner: root
     group: root
     mode: "0600"
-  when: nanohpc.agent.enabled
+  # A monitor host left out of this run (its dry run failed) made no key: the machines keep the one they have.
+  when: nanohpc.agent.enabled and hostvars[groups['role_front'][0]].agent_runner_public_key is defined
 
 - name: Remove the Slack agent runner's key when the agent is off
   ansible.builtin.lineinfile:

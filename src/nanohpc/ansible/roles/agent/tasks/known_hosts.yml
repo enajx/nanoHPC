@@ -1,0 +1,10 @@
+# The SSH host keys of the machines the runner reaches (in monitor mode every machine, for its deploys), one line
+# per machine, so a partial deploy (--only node) adds its machine and keeps the others' lines.
+- name: Pin the SSH host keys of the machines the runner reaches
+  ansible.builtin.known_hosts:
+    path: /var/lib/nanohpc-agent-runner/machines_known_hosts
+    name: "{{ nanohpc.machines[item].address }}"
+    key: "{{ nanohpc.machines[item].address }} ssh-ed25519 {{ hostvars[item].ansible_facts.ssh_host_key_ed25519_public }}"
+  loop: >-
+    {{ (groups['role_compute'] | default([])) if nanohpc.mode | default('slurm') == 'slurm' else nanohpc.machines | list }}
+  when: hostvars[item].ansible_facts.ssh_host_key_ed25519_public is defined

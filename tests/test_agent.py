@@ -121,12 +121,15 @@ class ReadOnlyRule(unittest.TestCase):
     def test_reads_are_allowed_on_any_ordinary_file(self) -> None:
         for argv in (["sinfo", "-N"], ["squeue"], ["sacct", "-j", "12"], ["scontrol", "show", "node", "gpu1"],
                      ["sacctmgr", "show", "qos"], ["systemctl", "status", "slurmctld"], ["systemctl", "cat", "munge"],
-                     ["journalctl", "-u", "slurmctld", "-n", "50"], ["df", "-h"], ["tail", "-n", "200", self.log],
-                     ["grep", "-nE", "a|b", self.log], ["cat", "/etc/slurm/slurm.conf"], ["head", "/etc/fstab"],
-                     ["grep", "-r", "munge", "/var/log"], ["ls", "-la", "/etc/ssh"], ["find", "/etc", "-name", "*.conf"],
+                     ["journalctl", "-u", "slurmctld", "-n", "50"], ["df", "-h"], ["tail", "-n", "200", "/var/log/syslog"],
+                     ["grep", "-nE", "a|b", "/var/log/slurm/slurmctld.log"], ["cat", "/etc/slurm/slurm.conf"],
+                     ["head", "/etc/fstab"], ["ls", "-la", "/etc/ssh"], ["find", "/etc", "-name", "*.conf"],
+                     ["systemctl", "--no-pager", "status", "slurmd"], ["systemctl"], ["timedatectl"],
+                     ["iptables", "-nvL", "INPUT"], ["ipmitool", "sdr", "list"], ["nft", "list", "ruleset"],
+                     ["date", "+%s"], ["dpkg", "-l", "slurm"], ["scontrol", "-o", "show", "node"],
                      ["ps", "aux"], ["ps", "-ef"], ["nvidia-smi"], ["nvidia-smi", "--query-gpu=name", "--format=csv"],
-                     ["ss", "-tlnp"], ["ip", "-br", "addr"], ["top", "-b", "-n", "1"], ["stat", "/tmp/x"],
-                     ["test", "-f", "/tmp/x"], ["cat", "/etc/ssh/ssh_host_ed25519_key.pub"],
+                     ["ss", "-tlnp"], ["ip", "-br", "addr"], ["top", "-b", "-n", "1"], ["stat", "/etc/x"],
+                     ["test", "-f", "/etc/x"], ["cat", "/etc/ssh/ssh_host_ed25519_key.pub"],
                      ["git", "-C", "/var/lib/nanohpc/auto-deploy/config", "log", "-5", "--oneline"], ["git", "status"],
                      ["hostname"], ["ping", "-c", "2", "-W", "2", "gpu1"]):  # fmt: skip
             self.assertFalse(self.refused(argv), argv)
@@ -139,7 +142,23 @@ class ReadOnlyRule(unittest.TestCase):
                      ["nvidia-smi", "-pl", "200"], ["nvidia-smi", "dmon"], ["git", "commit", "-m", "x"],
                      ["git", "-c", "core.pager=sh", "log"], ["git", "branch", "-D", "main"], ["git", "grep", "-O", "x"],
                      ["ping", "gpu1"], ["hostname", "newname"], ["top"], ["ps", "auxe"], ["ps", "eww"],
-                     ["ip", "link", "set", "eth0", "down"]):  # fmt: skip
+                     ["ip", "link", "set", "eth0", "down"],
+                     # Changes behind a harmless first word, and options that change things anywhere.
+                     ["systemctl", "--no-pager", "restart", "slurmctld"], ["systemctl", "--failed", "poweroff"],
+                     ["systemctl", "-H", "other", "status"], ["timedatectl", "set-time", "2020-01-01"],
+                     ["date", "-s", "2020-01-01"], ["date", "010100002020"], ["ss", "-K", "dst", "10.0.0.1"],
+                     ["ss", "-tK"], ["ipmitool", "fru", "write", "0", "/tmp/x"], ["ipmitool", "sensor", "thresh", "x"],
+                     ["ipmitool", "-I", "lanplus", "-H", "bmc", "sdr"], ["iptables", "-L", "-Z"], ["iptables", "-F"],
+                     ["lastlog", "-C", "-u", "alice"], ["journalctl", "--cursor-file=/etc/nologin"],
+                     ["nft", "list ruleset; flush ruleset"], ["nft", "flush", "ruleset"], ["sensors", "-s"],
+                     ["file", "-C", "-m", "x"], ["dpkg", "-l", "--purge", "x"], ["apt", "list", "-o", "x=y"],
+                     ["chronyc", "tracking", "makestep"], ["resolvectl", "dns", "eth0", "1.1.1.1"],
+                     ["scontrol", "update", "node=gpu1"], ["sacctmgr", "-i", "add", "user", "x"],
+                     ["ip", "netns", "exec", "x", "sh"], ["munge", "-n"],
+                     # Recursive reads, which could reach files with secrets.
+                     ["grep", "-r", "munge", "/var/log"], ["grep", "-d", "recurse", "x", "/etc"],
+                     ["grep", "--directories=recurse", "x", "/etc"], ["diff", "-r", "/etc", "/opt"],
+                     ["cat", "line\nbreak"]):  # fmt: skip
             self.assertTrue(self.refused(argv), argv)
 
     def test_files_with_secrets_are_never_read(self) -> None:
@@ -151,26 +170,37 @@ class ReadOnlyRule(unittest.TestCase):
                      ["cat", "/var/lib/nanohpc/auto-deploy/config/.env"], ["cat", "/etc/nanohpc/metrics-tls/node.key"],
                      ["grep", "-f", "/root/.ssh/id_rsa", self.log], ["cat", self.escape], ["cat", "/opt/x/.env"],
                      ["grep", "-r", "xoxb", "/etc"], ["grep", "-rn", "key", "/"], ["grep", "-r", "xoxb", "etc"],
-                     ["diff", "-r", "/etc", "/tmp"]):  # fmt: skip
+                     ["diff", "-r", "/etc", "/tmp"], ["cat", "/dev/sda"], ["head", "-c", "100", "/dev/mem"],
+                     ["cat", "/proc/1/mem"], ["cat", "/proc/kcore"], ["cat", "/swap.img"],
+                     ["cat", "/var/lib/grafana/grafana.db"]):  # fmt: skip
             self.assertTrue(self.refused(argv), argv)
 
     def test_peoples_own_files_are_read_only_when_an_approver_asks(self) -> None:
         rule = self.agent.RunnerRule("front", [ALICE], {"gpu1": "10.0.0.7"}, "key", "known_hosts", True)
-        argv = ["ls", "-la", "/home/bob"]
-        self.assertIsNotNone(rule.refusal(argv, BOB, "front", "read", None))
-        self.assertIsNone(rule.refusal(argv, ALICE, "front", "read", None))
+        for argv in (["ls", "-la", "/home/bob"], ["cat", "/tmp/x"], ["cat", "tmp/x"], ["tail", "/var/tmp/y"]):
+            self.assertIsNotNone(rule.refusal(argv, BOB, "front", "read", None), argv)
+            self.assertIsNone(rule.refusal(argv, ALICE, "front", "read", None), argv)
+
+    def test_paths_are_checked_where_the_command_runs(self) -> None:
+        """On another machine, a link to a secret is found with that machine's own realpath (stand-in here)."""
+        rule = self.agent.RunnerRule("front", [ALICE], {"gpu1": "10.0.0.7"}, "key", "known_hosts", True)
+        rule.real_paths = lambda paths, host: ["/etc/munge/munge.key" for _ in paths]
+        refused = rule.refusal(["cat", "-v", "/var/log/innocent.log"], ALICE, "gpu1", "change", ALICE)
+        self.assertIn("holds secrets", refused)
+        rule.real_paths = lambda paths, host: None
+        self.assertIn("could not check", rule.refusal(["cat", "/var/log/syslog"], BOB, "gpu1", "read", None))
 
     def test_files_with_secrets_are_refused_even_as_an_approvers_change(self) -> None:
         rule = self.agent.RunnerRule("front", [ALICE], {"gpu1": "10.0.0.7"}, "key", "known_hosts", True)
         for argv in (["cat", "/etc/munge/munge.key"], ["cp", "/root/.ssh/id_ed25519", "/tmp/k"]):
             self.assertIsNotNone(rule.refusal(argv, ALICE, "gpu1", "change", ALICE), argv)
 
-    def test_git_reads_any_checkout_with_no_pager_or_hooks(self) -> None:
+    def test_git_trusts_only_roots_repositories_with_no_pager_or_hooks(self) -> None:
         rule = self.agent.RunnerRule("front", [ALICE], {"gpu1": "10.0.0.7"}, "key", "known_hosts", True)
         command = rule.command(["git", "log", "-1"], "front")
-        self.assertEqual(command[:7], ["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c",
-                                       "core.hooksPath=/dev/null"])  # fmt: skip
-        self.assertIn("--no-pager", command)
+        self.assertEqual(command, ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-pager",
+                                   "log", "-1"])  # fmt: skip
+        self.assertNotIn("safe.directory", " ".join(rule.command(["git", "status"], "gpu1")))
 
     def test_monitor_mode_has_no_slurm_commands(self) -> None:
         self.assertIsNotNone(self.agent.refusal(["sinfo"], False))
@@ -206,12 +236,13 @@ class Runner(unittest.TestCase):
         programs = {
             "sinfo": 'echo "gpu1 idle $*"\necho leaked xoxb-9-secret',
             "scancel": 'echo "cancelled $*"',
-            "ssh": 'for arg in "$@"; do echo "arg:$arg"; done',
+            "ssh": 'case "$*" in *"realpath -m -- "*) eval "set -- ${@: -1}"; shift 3; printf "%s\\n" "$@";;'
+            ' *) for arg in "$@"; do echo "arg:$arg"; done;; esac',
             "fake-deploy": 'echo "deploy $*"',
         }
         for name, body in programs.items():
             program = bin_dir / name
-            program.write_text(f"#!/bin/sh\n{body}\n")
+            program.write_text(f"#!/bin/bash\n{body}\n")
             program.chmod(0o755)
         self.socket = str(base / "runner.sock")
         self.log = base / "runner.log"
@@ -279,7 +310,7 @@ class Runner(unittest.TestCase):
         self.assertTrue(answer["ran"])
         self.assertIn("arg:root@10.0.0.7", answer["output"])
         self.assertIn("arg:StrictHostKeyChecking=yes", answer["output"])
-        self.assertIn("arg:systemctl status 'slurmd; rm -rf /'", answer["output"])
+        self.assertIn("arg:cd / && systemctl status 'slurmd; rm -rf /'", answer["output"])
 
     def test_an_unknown_machine_is_refused(self) -> None:
         answer = self.ask(["sinfo"], ALICE, "elsewhere", "change", None)
