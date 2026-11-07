@@ -53,6 +53,27 @@
         mode: "0644"
       when: inventory_hostname in groups['role_front']
 
+# The Slack agent's runner key: made on the monitor host first, then every machine accepts it for root from the
+# monitor host only (removed again when the agent is off).
+- name: Slack agent runner key on the monitor host
+  hosts: role_front
+  become: true
+  tasks:
+    - name: Make or read the key
+      ansible.builtin.include_role:
+        name: agent
+        tasks_from: key
+      when: nanohpc.agent.enabled
+
+- name: Slack agent runner key for root on every machine
+  hosts: all
+  become: true
+  tasks:
+    - name: Add or remove the key
+      ansible.builtin.include_role:
+        name: agent
+        tasks_from: root_key
+
 - name: Metrics certificates and exporters
   hosts: all
   become: true
@@ -82,6 +103,15 @@
   hosts: role_front
   become: true
   roles: [website]
+
+- name: Slack agent on the monitor host
+  hosts: role_front
+  become: true
+  tasks:
+    - name: Set up or remove the Slack agent
+      ansible.builtin.include_role:
+        name: agent
+        tasks_from: "{{ 'main' if nanohpc.agent.enabled else 'off' }}"
 
 - name: Health checks
   hosts: all

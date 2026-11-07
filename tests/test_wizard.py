@@ -535,6 +535,9 @@ class SlackAgentTest(unittest.IsolatedAsyncioTestCase):
                 await go(pilot, 3)
                 await fill(pilot, {"#agent-channel": "C0123ABC", "#agent-repository": "git@github.com:lab/m.git"})
                 self.assertEqual(app.state.file.get(["agent", "repository"]), "git@github.com:lab/m.git")
+                await fill(pilot, {"#agent-nanohpc-version": "0.1.0"})
+                self.assertEqual(app.state.file.get(["nanohpc_version"]), "0.1.0")
+                self.assertEqual(error_step("nanohpc_version is required when agent.repository is set", "monitor"), 3)
                 await pilot.press("q")
                 await settle(pilot)
 

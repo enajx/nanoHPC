@@ -1,5 +1,6 @@
 """The optional Slack agent's fields, shown in Extras (Slurm mode) and in Alerts (monitor mode)."""
 
+import importlib.metadata
 from collections.abc import Iterator
 
 from textual.widget import Widget
@@ -71,9 +72,17 @@ def agent_fields(state: WizardState, monitor: bool) -> Iterator[Widget]:
                 state, ["agent", "repository"], "optional", "git@github.com:lab/monitor-config.git", "agent-repository"
             ),
         )
+        yield field(
+            "nanoHPC version",
+            BoundInput(
+                state, ["nanohpc_version"], "text", importlib.metadata.version("nanohpc"), "agent-nanohpc-version"
+            ),
+        )
     yield Static(
         "Answers @-mentions in that channel. Approvers' changes run at once; anyone else's wait for an approver's "
-        "Approve. Limits: $1 a day, $1 a request, 10 requests a person (agent.daily_usd, request_usd, "
+        "Approve. With a repository (monitor mode), it pushes edits of this file there after an Approve and deploys "
+        "them when asked, installing the nanoHPC version above. "
+        "Limits: $1 a day, $1 a request, 10 requests a person (agent.daily_usd, request_usd, "
         f"requests_per_person). Put NANOHPC_SLACK_BOT_TOKEN, NANOHPC_SLACK_APP_TOKEN, and NANOHPC_ANTHROPIC_API_KEY "
         f"in .env next to {state.path.name}.",
         classes="hint",

@@ -1,0 +1,142 @@
+# Monitor mode with agent.repository: what the runner needs to deploy from Slack, as Slurm mode's automatic deploy
+# has it: the repository host's key, a checkout of the repository with the secrets next to cluster.yml, the
+# pinned nanoHPC installed the way the administrator installed it, and an SSH config that reaches every machine
+# as root with the runner's key. The runner runs nanohpc-auto-deploy --deploy-command deploy-monitor on it.
+
+- name: Install Git
+  ansible.builtin.apt:
+    name: git
+    state: present
+    install_recommends: false
+
+- name: Create the deploy state folder
+  ansible.builtin.file:
+    path: /var/lib/nanohpc-agent-runner/deploy-state
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Pin GitHub's SSH host keys for the repository
+  ansible.builtin.copy:
+    dest: /var/lib/nanohpc-agent-runner/repository_known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+      github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+      github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+  when: agent_repository_host == 'github.com'
+
+- name: Learn the repository host's SSH key (first deploy to this host only)
+  ansible.builtin.shell: |
+    set -eu
+    known=/var/lib/nanohpc-agent-runner/repository_known_hosts
+    if test -f "$known" && ssh-keygen -F {{ agent_repository_host | quote }} -f "$known" >/dev/null; then
+      exit 0
+    fi
+    if [ "$DRY_RUN" = True ]; then echo learned; exit 0; fi
+    ssh-keyscan -T 15 {{ agent_repository_host | quote }} > "$known.partial"
+    test -s "$known.partial"
+    mv "$known.partial" "$known"
+    echo learned
+  environment:
+    DRY_RUN: "{{ ansible_check_mode }}"
+  register: agent_repository_host_key
+  changed_when: "'learned' in agent_repository_host_key.stdout"
+  check_mode: false
+  when: agent_repository_host != 'github.com'
+
+# Made without network access, so a deploy works before the push key is added to the repository.
+- name: Create the checkout the runner deploys from
+  ansible.builtin.shell: |
+    set -eu
+    checkout=/var/lib/nanohpc-agent-runner/deploy
+    command='ssh -i /var/lib/nanohpc-agent-runner/repository_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/nanohpc-agent-runner/repository_known_hosts'
+    if [ "$DRY_RUN" = True ]; then
+      if ! test -d "$checkout/.git" \
+          || test "$(git -C "$checkout" config --get remote.origin.url || true)" != {{ nanohpc.agent.repository.remote | quote }} \
+          || test "$(git -C "$checkout" config --get core.sshCommand || true)" != "$command"; then
+        echo changed
+      fi
+      exit 0
+    fi
+    mkdir -p "$checkout"
+    cd "$checkout"
+    changed=""
+    if ! test -d .git; then git init -q; changed=yes; fi
+    if test "$(git config --get remote.origin.url || true)" != {{ nanohpc.agent.repository.remote | quote }}; then
+      git remote remove origin 2>/dev/null || true
+      git remote add origin {{ nanohpc.agent.repository.remote | quote }}
+      changed=yes
+    fi
+    if test "$(git config --get core.sshCommand || true)" != "$command"; then git config core.sshCommand "$command"; changed=yes; fi
+    grep -qx '.env' .git/info/exclude 2>/dev/null || { echo '.env' >> .git/info/exclude; changed=yes; }
+    test -z "$changed" || echo changed
+  environment:
+    DRY_RUN: "{{ ansible_check_mode }}"
+  register: agent_checkout
+  changed_when: "'changed' in agent_checkout.stdout"
+  check_mode: false
+
+- name: Put the secrets next to the checkout's cluster.yml (kept out of Git)
+  ansible.builtin.copy:
+    dest: /var/lib/nanohpc-agent-runner/deploy/.env
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      # Secrets for deploys asked from Slack, copied from the administrator's .env by nanohpc deploy-monitor.
+      {% for key, name in [('slack_webhook', 'NANOHPC_SLACK_WEBHOOK'), ('slack_bot_token', 'NANOHPC_SLACK_BOT_TOKEN'),
+                            ('slack_app_token', 'NANOHPC_SLACK_APP_TOKEN'), ('anthropic_api_key', 'NANOHPC_ANTHROPIC_API_KEY')] %}
+      {% if nanohpc_secrets[key] | default(None) %}{{ name }}={{ nanohpc_secrets[key] }}
+      {% endif %}
+      {% endfor %}
+  no_log: true
+
+- name: Install the nanoHPC installer and the deploy command
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [nanohpc-install, nanohpc-auto-deploy]
+
+- name: Say where nanoHPC comes from
+  ansible.builtin.copy:
+    dest: /var/lib/nanohpc-agent-runner/install.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      KIND={{ nanohpc.agent_deploy.install.kind }}
+      URL={{ nanohpc.agent_deploy.install.url if nanohpc.agent_deploy.install.kind == 'git' else '' }}
+
+- name: Copy the nanoHPC wheel (nanoHPC from a local checkout)
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/nanohpc-wheel/"
+    dest: /var/lib/nanohpc-agent-runner/wheels/
+    owner: root
+    group: root
+    mode: "0644"
+  when: nanohpc.agent_deploy.install.kind == 'wheel'
+
+- name: Write the SSH config that reaches every machine as root with the runner's key
+  ansible.builtin.copy:
+    dest: /var/lib/nanohpc-agent-runner/ssh_config
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name in nanohpc.machines %}
+      Host {{ name }}
+        HostName {{ nanohpc.machines[name].address }}
+        User root
+        IdentityFile /var/lib/nanohpc-agent-runner/id_ed25519
+        IdentitiesOnly yes
+        StrictHostKeyChecking yes
+        UserKnownHostsFile /var/lib/nanohpc-agent-runner/machines_known_hosts
+
+      {% endfor %}

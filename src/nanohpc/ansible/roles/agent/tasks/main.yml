@@ -3,6 +3,18 @@
 # Claude. With automatic deploys, the runner also keeps a clone of the cluster.yml repository it pushes to after
 # an approver's Approve, and runs deploys asked from Slack through nanohpc-auto-deploy.
 
+- name: Name the machines the runner reaches, and where the repository host's key is pinned
+  ansible.builtin.set_fact:
+    # Slurm mode: the compute machines. Monitor mode: every other machine.
+    agent_machines: >-
+      {{ groups['role_compute'] if nanohpc.mode | default('slurm') == 'slurm' else groups['role_machine'] | default([]) }}
+    agent_repository_known_hosts: >-
+      {{ '/etc/nanohpc/auto-deploy/repository_known_hosts' if nanohpc.mode | default('slurm') == 'slurm'
+         else '/var/lib/nanohpc-agent-runner/repository_known_hosts' }}
+    agent_repository_host: >-
+      {{ (nanohpc.agent.repository.remote | regex_replace('^ssh://', '')).split('@', 1)[1].split(':', 1)[0].split('/', 1)[0]
+         if nanohpc.agent.repository is not none else '' }}
+
 - name: Create the agent's own account (no keys, no sudo)
   ansible.builtin.user:
     name: nanohpc-agent
@@ -34,14 +46,14 @@
     mode: "0750"
   when: not (ansible_check_mode and agent_account is changed)
 
-- name: Pin every compute machine's SSH host key for the runner
+- name: Pin the SSH host keys of the machines the runner reaches (monitor mode: every machine, for its deploys)
   ansible.builtin.copy:
     dest: /var/lib/nanohpc-agent-runner/machines_known_hosts
     owner: root
     group: root
     mode: "0644"
     content: |
-      {% for name in groups['role_compute'] %}
+      {% for name in (agent_machines if nanohpc.mode | default('slurm') == 'slurm' else nanohpc.machines | list) %}
       {{ nanohpc.machines[name].address }} ssh-ed25519 {{ hostvars[name].ansible_facts.ssh_host_key_ed25519_public }}
       {% endfor %}
 
@@ -50,6 +62,10 @@
   args:
     creates: /var/lib/nanohpc-agent-runner/repository_ed25519
   when: nanohpc.agent.repository is not none
+
+- name: Prepare deploys from Slack in monitor mode
+  ansible.builtin.include_tasks: monitor.yml
+  when: nanohpc.mode | default('slurm') == 'monitor' and nanohpc.agent.repository is not none
 
 - name: Install the agent
   ansible.builtin.copy:
@@ -176,7 +192,7 @@
   environment:
     GIT_SSH_COMMAND: >-
       ssh -i /var/lib/nanohpc-agent-runner/repository_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes
-      -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/nanohpc/auto-deploy/repository_known_hosts
+      -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ agent_repository_known_hosts }}
   register: agent_push_reachable
   changed_when: false
   failed_when: false

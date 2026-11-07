@@ -3,7 +3,7 @@
   "mode": nanohpc.mode | default('slurm'),
   "cluster": nanohpc.cluster_name,
   "front": inventory_hostname,
-  "machines": groups['role_compute'],
+  "machines": agent_machines,
   "source": "/opt/nanohpc-agent/source",
   "docs": ["/srv/nanohpc-web/config"],
   "personality": "/etc/nanohpc-agent/personality.md",

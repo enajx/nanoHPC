@@ -192,7 +192,7 @@ def error_step(error: str, mode: str = "slurm") -> int:
             return 1
         if head.startswith("cluster"):
             return 2
-        if head.startswith(("alerts", "agent", "NANOHPC_")) or ".env" in error:
+        if head.startswith(("alerts", "agent", "nanohpc_version", "NANOHPC_")) or ".env" in error:
             return 3
         return 4
     if ".env" in error or error.startswith("NANOHPC_"):

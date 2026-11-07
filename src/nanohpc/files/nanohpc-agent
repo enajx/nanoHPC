@@ -291,10 +291,13 @@ LEAVES_LIMITS = {"systemd-run", "nsenter", "unshare", "mount", "umount", "chroot
 DEPLOY_PARTS = {"users", "policy", "partitions", "node"}
 
 
-def deploy_refusal(args: list[str]) -> str | None:
-    """Why these `nanohpc deploy` arguments are refused, or None: none, --dry-run, or --only with one part."""
+def deploy_refusal(args: list[str], slurm: bool) -> str | None:
+    """Why these `nanohpc deploy` arguments are refused, or None: none, --dry-run, or --only with one part (in
+    monitor mode, deploy-monitor's only part: node NAME)."""
     if args in ([], ["--dry-run"]):
         return None
+    if not slurm and args[:2] != ["--only", "node"]:
+        return "in monitor mode, nanohpc deploy takes nothing, --dry-run, or --only node NAME"
     if len(args) >= 2 and args[0] == "--only" and args[1] in DEPLOY_PARTS:
         if args[1] == "node":
             return None if len(args) == 3 and re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]*", args[2]) else "--only node takes one machine name"
@@ -540,7 +543,7 @@ def serve_runner(socket_path: str, socket_group: str, log_path: Path, rule: Runn
             if host == rule.front and argv[:2] == ["nanohpc", "deploy"]:
                 reason = rule.refusal(argv, requester, host, mode, approver)
                 if reason is None:
-                    reason = deploy_refusal(argv[2:])
+                    reason = deploy_refusal(argv[2:], rule.slurm)
                     reason = None if reason is None else f"refused: {reason}."
                 if reason is None and deploys is None:
                     reason = "refused: deploys from Slack are off: the cluster has no automatic deploy."
@@ -913,11 +916,14 @@ small and say so. Nothing is committed or pushed until an approver clicks Approv
 tell the person. {after_push}
 
 To deploy, use run_change on host {front} with argv ["nanohpc", "deploy", "--dry-run"] first, read what it would
-change, then ["nanohpc", "deploy"] (or ["nanohpc", "deploy", "--only", PART] with users, policy, partitions, or
-node NAME). It deploys the newest commit of the repository, with a dry run on every machine before changing it;
-machines whose dry run fails are left out. To add a user: add them to users in cluster.yml (start_code_change,
-propose_push); once the push is approved, deploy with --only users (could_cut_access false: it only adds
-accounts)."""
+change, then ["nanohpc", "deploy"] (or {parts}). It deploys the newest commit of the repository, with a dry run on
+every machine before changing it; machines whose dry run fails are left out.{add_user}"""
+
+SLURM_PARTS = '["nanohpc", "deploy", "--only", PART] with users, policy, partitions, or node NAME'
+MONITOR_PARTS = '["nanohpc", "deploy", "--only", "node", NAME] for one machine'
+ADD_USER = """ To add a user: add them to users in cluster.yml
+(start_code_change, propose_push); once the push is approved, deploy with --only users (could_cut_access false: it
+only adds accounts)."""
 
 NO_CODE_PROMPT = """This cluster has no repository for its cluster.yml, so you cannot change its settings or
 deploy; tell the person an administrator does that with nanohpc deploy."""
@@ -967,7 +973,13 @@ def rules(config: dict) -> str:
 def deep_rules(config: dict) -> str:
     """The deep agent's rules: with or without code changes and deploys."""
     if config["code"]:
-        code = CODE_PROMPT.format(after_push=config["after_push"], front=config["front"])
+        slurm = config["mode"] == "slurm"
+        code = CODE_PROMPT.format(
+            after_push=config["after_push"],
+            front=config["front"],
+            parts=SLURM_PARTS if slurm else MONITOR_PARTS,
+            add_user=ADD_USER if slurm else "",
+        )
     else:
         code = NO_CODE_PROMPT
     return DEEP_PROMPT.format(code=code)

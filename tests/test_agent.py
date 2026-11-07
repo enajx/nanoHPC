@@ -185,10 +185,12 @@ class ReadOnlyRule(unittest.TestCase):
 
     def test_deploy_arguments(self) -> None:
         for args in ([], ["--dry-run"], ["--only", "users"], ["--only", "node", "gpu2"]):
-            self.assertIsNone(self.agent.deploy_refusal(args), args)
+            self.assertIsNone(self.agent.deploy_refusal(args, True), args)
+        self.assertIsNone(self.agent.deploy_refusal(["--only", "node", "gpu2"], False))
+        self.assertIsNotNone(self.agent.deploy_refusal(["--only", "users"], False))
         for args in (["--only"], ["--only", "everything"], ["--only", "node"], ["--ssh-config", "/x"],
                      ["--only", "users", "extra"], ["--only", "node", "gpu2;rm"]):  # fmt: skip
-            self.assertIsNotNone(self.agent.deploy_refusal(args), args)
+            self.assertIsNotNone(self.agent.deploy_refusal(args, True), args)
 
 
 class Runner(unittest.TestCase):
@@ -602,6 +604,11 @@ class Prompts(unittest.TestCase):
         self.assertIn("read /etc/nanohpc-agent/people.md first", prompt)
         self.assertIn("front is the monitoring machine", prompt)
         self.assertNotIn("Slurm", prompt)
+
+    def test_monitor_mode_deploys_only_whole_or_one_machine(self) -> None:
+        rules = self.agent.deep_rules(bot_settings("monitor", True, None))
+        self.assertIn('["nanohpc", "deploy", "--only", "node", NAME]', rules)
+        self.assertNotIn("--only users", rules)
 
     def test_deep_rules_with_and_without_a_repository(self) -> None:
         with_code = self.agent.deep_rules(bot_settings("slurm", True, None))

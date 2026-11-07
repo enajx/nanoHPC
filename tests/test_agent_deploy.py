@@ -35,11 +35,12 @@ def config_with(agent: dict[str, Any], auto_deploy: dict[str, Any] | None) -> di
 
 
 def render(template: str, config: dict[str, Any]) -> dict[str, Any]:
-    """Render one of the role's JSON templates for the front node, as Ansible would."""
+    """Render one of the role's JSON templates for the front node, as Ansible would (Slurm mode)."""
     compute = [name for name, machine in config["machines"].items() if "compute" in machine["roles"]]
     variables = {
         "inventory_hostname": "front",
-        "groups": {"role_compute": compute},
+        "agent_machines": compute,
+        "agent_repository_known_hosts": "/etc/nanohpc/auto-deploy/repository_known_hosts",
         "nanohpc": {
             "mode": "slurm",
             "cluster_name": config["cluster"]["name"],
@@ -49,6 +50,11 @@ def render(template: str, config: dict[str, Any]) -> dict[str, Any]:
             "auto_deploy": {"simulated": True, "fake_gpus": ["gpu1"]},
         },
     }
+    return render_with(template, variables)
+
+
+def render_with(template: str, variables: dict[str, Any]) -> dict[str, Any]:
+    """Render one of the role's JSON templates with these variables."""
     text = (ROLE / "templates" / template).read_text()
     rendered = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(text))
     # The template module writes the text; Templar alone may hand back the value already parsed.
@@ -100,6 +106,43 @@ class AgentSettingsTest(unittest.TestCase):
         config["secrets"] = {"slack_bot_token": "xoxb-secret"}
         self.assertNotIn("xoxb-secret", agent_cluster_yml(config))
         self.assertIn("approvers", agent_cluster_yml(config))
+
+
+class MonitorAgentSettingsTest(unittest.TestCase):
+    def test_monitor_mode_reaches_every_other_machine_and_deploys_with_deploy_monitor(self) -> None:
+        raw = yaml.safe_load((ROOT / "examples/monitor.yml").read_text())
+        raw["agent"] = {"enabled": True, "channel": "C1AB", "approvers": APPROVERS,
+                        "repository": "git@github.com:lab/monitor.git"}  # fmt: skip
+        raw["nanohpc_version"] = "0.1.0"
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        others = [name for name in config["machines"] if name != config["cluster"]["monitor_host"]]
+        variables = {
+            "inventory_hostname": "host",
+            "agent_machines": others,
+            "agent_repository_known_hosts": "/var/lib/nanohpc-agent-runner/repository_known_hosts",
+            "nanohpc": {
+                "mode": "monitor",
+                "cluster_name": "lab",
+                "machines": config["machines"],
+                "agent": agent_variables(config),
+                "time_zone": None,
+                "agent_deploy": {"simulated": True, "fake_gpus": {"gpu1": {"count": 2, "type": "A6000"}}},
+            },
+        }
+        runner = render_with("runner.json.j2", variables)
+        self.assertEqual(sorted(runner["hosts"]), sorted(others))
+        self.assertFalse(runner["slurm"])
+        self.assertEqual((runner["repository"]["remote"], runner["repository"]["branch"]),
+                         ("git@github.com:lab/monitor.git", "main"))  # fmt: skip
+        self.assertIn("not deployed yet", runner["repository"]["after_push"])
+        argv = runner["deploy"]
+        self.assertEqual(argv[argv.index("--deploy-command") + 1], "deploy-monitor")
+        self.assertIn('--setenv=NANOHPC_FAKE_GPUS_JSON={"gpu1": {"count": 2, "type": "A6000"}}', argv)
+        self.assertIn("--setenv=NANOHPC_INSTALL_CONF=/var/lib/nanohpc-agent-runner/install.conf", argv)
+        self.assertEqual(argv[-1], "--again")
+        bot = render_with("bot.json.j2", variables)
+        self.assertEqual((bot["mode"], bot["machines"], bot["code"]), ("monitor", others, True))
 
 
 class MonitorDeployFromTheFrontTest(unittest.TestCase):
