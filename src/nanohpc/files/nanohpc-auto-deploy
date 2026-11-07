@@ -26,6 +26,11 @@ run, in order:
      failed (machines may be partly changed); the journal says which.
 The program exits with the deploy's exit code, or the code of the step that stopped it.
 
+A deploy asked from Slack (the nanoHPC Slack agent's runner) adds `--again`: step 4 is skipped, so the newest commit
+is deployed even when it is the deployed or the failed one. Arguments after `--` (`--dry-run`, or `--only PART`) are
+added to the `nanohpc deploy` command of step 7; such a run writes no state file and no metric, as it does not deploy
+the whole commit.
+
 cluster.yml is read without a YAML parser (this program uses only Python's standard library): the version must be
 on one top-level line, `nanohpc_version: 1.2.3`, the value plain or in single or double quotes, optionally followed
 by a space and a comment. A file with no such line, with the key written another way, or with the key twice is
@@ -54,6 +59,7 @@ Arguments (all required):
   --installer PATH    program run as `INSTALLER VERSION` to install that nanoHPC version.
   --nanohpc PATH      the nanohpc command to run.
   --ssh-config PATH   SSH config passed to `nanohpc deploy --ssh-config`.
+Optional: --again, and `-- DEPLOY_ARGUMENTS` (see above).
 """
 
 import argparse
@@ -301,6 +307,8 @@ def main() -> None:
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ["branch", "remote", "installer", "nanohpc", "ssh-config"]:
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--again", action="store_true", help="deploy the newest commit even if deployed or failed")
+    parser.add_argument("deploy_arguments", nargs="*", help="after --: more arguments for nanohpc deploy")
     arguments = parser.parse_args()
     if not BRANCH_NAME.fullmatch(arguments.branch):
         parser.error("--branch may hold only letters, digits, and ._/- and must not start with . / or -")
@@ -339,9 +347,9 @@ def main() -> None:
     commit = git(checkout, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]).stdout.strip()
 
     deployed, failed = arguments.state / "deployed", arguments.state / "failed"
-    if deployed.exists() and deployed.read_text(encoding="utf-8").strip() == commit:
+    if not arguments.again and deployed.exists() and deployed.read_text(encoding="utf-8").strip() == commit:
         checked_only(arguments, started)
-    if failed.exists() and failed.read_text(encoding="utf-8").strip() == commit:
+    if not arguments.again and failed.exists() and failed.read_text(encoding="utf-8").strip() == commit:
         say(f"commit {commit} failed before; waiting for a newer commit")
         checked_only(arguments, started)
 
@@ -352,10 +360,13 @@ def main() -> None:
     command = [arguments.nanohpc, "deploy", "cluster.yml", "--ssh-config", arguments.ssh_config]
     code = exit_code(
         subprocess.run(
-            command, cwd=checkout, stdin=subprocess.DEVNULL, env=environment,
+            [*command, *arguments.deploy_arguments], cwd=checkout, stdin=subprocess.DEVNULL, env=environment,
             pass_fds=(maintenance_fd,), check=False,
         ).returncode
     )
+    if arguments.deploy_arguments:
+        say(f"nanohpc deploy {' '.join(arguments.deploy_arguments)} of commit {commit} exited {code}; no commit is marked")
+        sys.exit(code)
     if code != 0:
         warn(f"deploy of commit {commit} failed with exit code {code}{DEPLOY_FAILURES.get(code, '')}; waiting for a newer commit")
         finish(arguments, started, code, commit)
