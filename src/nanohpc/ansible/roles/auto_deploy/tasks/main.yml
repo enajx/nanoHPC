@@ -113,6 +113,8 @@
       {% if nanohpc_secrets.slack_webhook %}NANOHPC_SLACK_WEBHOOK={{ nanohpc_secrets.slack_webhook }}
       {% endif %}{% if nanohpc_secrets.slack_bot_token | default(None) %}NANOHPC_SLACK_BOT_TOKEN={{ nanohpc_secrets.slack_bot_token }}
       {% endif %}{% if nanohpc_secrets.deploy_webhook %}NANOHPC_DEPLOY_WEBHOOK_SECRET={{ nanohpc_secrets.deploy_webhook }}
+      {% endif %}{% if nanohpc_secrets.slack_app_token | default(None) %}NANOHPC_SLACK_APP_TOKEN={{ nanohpc_secrets.slack_app_token }}
+      {% endif %}{% if nanohpc_secrets.anthropic_api_key | default(None) %}NANOHPC_ANTHROPIC_API_KEY={{ nanohpc_secrets.anthropic_api_key }}
       {% endif %}
   no_log: true
 

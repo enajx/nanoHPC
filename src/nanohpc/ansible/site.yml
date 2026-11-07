@@ -158,6 +158,12 @@
         tasks_from: key
       when: nanohpc.auto_deploy.enabled
 
+    - name: Make or read the Slack agent runner's key
+      ansible.builtin.include_role:
+        name: agent
+        tasks_from: key
+      when: nanohpc.agent.enabled
+
 - name: Base setup, users, and SSH access
   hosts: all
   become: true
@@ -296,6 +302,15 @@
       ansible.builtin.include_role:
         name: auto_deploy
         tasks_from: "{{ 'main' if nanohpc.auto_deploy.enabled else 'off' }}"
+
+- name: Slack agent on the front node
+  hosts: role_front
+  become: true
+  tasks:
+    - name: Set up or remove the Slack agent
+      ansible.builtin.include_role:
+        name: agent
+        tasks_from: "{{ 'main' if nanohpc.agent.enabled else 'off' }}"
 
 - name: Health checks on every machine
   hosts: all

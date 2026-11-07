@@ -44,9 +44,20 @@ def render(template: str, values: dict[str, Any]) -> str:
 
 def root_keys(admins: list[str], auto_deploy_key: str | None) -> str:
     """Render /etc/ssh/authorized_keys/root for the example users."""
+    return root_keys_with_agent(admins, auto_deploy_key, "")
+
+
+def root_keys_with_agent(admins: list[str], auto_deploy_key: str | None, agent_runner_key: str) -> str:
+    """Render /etc/ssh/authorized_keys/root, with the Slack agent runner's key ('' on machines without it)."""
     return render(
         "root_authorized_keys.j2",
-        {"users": USERS, "admins": admins, "auto_deploy_key": auto_deploy_key, "front_address": "10.0.0.10"},
+        {
+            "users": USERS,
+            "admins": admins,
+            "auto_deploy_key": auto_deploy_key,
+            "agent_runner_key": agent_runner_key,
+            "front_address": "10.0.0.10",
+        },
     )
 
 
@@ -120,6 +131,15 @@ class RootKeysTest(unittest.TestCase):
     def test_removed_administrator_loses_root(self) -> None:
         lines = key_lines(root_keys(["carol"], None))
         self.assertEqual(lines, ["ssh-ed25519 AAAAcarol carol@laptop"])
+
+    def test_slack_agent_runner_key_only_from_the_front_node_with_no_forwarding(self) -> None:
+        lines = key_lines(root_keys_with_agent(["alice"], None, "ssh-ed25519 AAAArunner nanohpc-agent-runner@front"))
+        self.assertEqual(
+            lines[-1],
+            'from="10.0.0.10",no-agent-forwarding,no-port-forwarding,no-X11-forwarding '
+            "ssh-ed25519 AAAArunner nanohpc-agent-runner@front",
+        )
+        self.assertNotIn("runner", root_keys(["alice"], None))
 
     def test_automatic_deploy_key_keeps_its_front_only_limit(self) -> None:
         lines = key_lines(root_keys(["alice"], "ssh-ed25519 AAAAfront nanohpc-auto-deploy@front"))

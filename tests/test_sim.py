@@ -4575,5 +4575,284 @@ exec /usr/bin/mount "$@"
         self.assertIn("Largest folders (", self.on_front("sudo -u alice cat /home/.nanohpc-home-folders/alice"))
 
 
+# Run as the agent's account on the front node: one request to the runner's socket, the answer as JSON.
+AGENT_ASK = """
+import importlib.machinery, importlib.util, json, sys
+loader = importlib.machinery.SourceFileLoader("agent", "/usr/local/bin/nanohpc-agent")
+spec = importlib.util.spec_from_loader("agent", loader)
+agent = importlib.util.module_from_spec(spec)
+loader.exec_module(agent)
+request = json.loads(sys.stdin.read())
+socket = "/run/nanohpc-agent/runner.sock"
+answer = agent.ask_code(socket, request["code"]) if "code" in request else agent.ask_runner(socket, *request["run"])
+print(json.dumps(answer))
+"""
+ALICE_SLACK = "U0ALICE"  # the approver
+BOB_SLACK = "U0BOB"  # not an approver
+
+
+class SimSlackAgentTest(SimUsersBase):
+    """The Slack agent on the front node, without Slack or Claude: its environment is built and its runner, asked
+    through its socket as the agent's account (as the bot asks it), reads on the front node and, as root with its
+    own key, on a compute machine; runs a change only for an approver or after an approver's click; pushes an edit
+    of cluster.yml after a click; and runs a deploy asked from Slack. A bare repository of bob on the front node
+    stands in for GitHub. Real Lima VMs."""
+
+    def setUp(self) -> None:
+        self.sim = SIM / "slack-agent.yml"
+        self.state = ROOT / ".nanohpc-sim" / "slack-agent"
+        super().setUp()
+
+    def ask(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Send one request to the runner as the agent's account; return its answer."""
+        command = f"cd /tmp && sudo -u nanohpc-agent python3 -c {shlex.quote(AGENT_ASK)}"
+        result = self.ssh("front", command, stdin=json.dumps(request))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def run_as(self, argv: list[str], requester: str, host: str, mode: str, approver: str | None) -> dict[str, Any]:
+        return self.ask({"run": [argv, requester, host, mode, approver]})
+
+    def push(self, config: dict[str, Any]) -> str:
+        """Commit cluster.yml to the stand-in repository as bob; return the new commit."""
+        script = textwrap.dedent("""
+            set -e
+            rm -rf /tmp/config-work && git clone -q /home/bob/config.git /tmp/config-work 2>/dev/null
+            cd /tmp/config-work
+            cat > cluster.yml
+            git add cluster.yml
+            git -c user.name=bob -c user.email=bob@example.org commit -qm config
+            git push -q /home/bob/config.git HEAD:main
+            git rev-parse HEAD
+        """)
+        command = f"cd /tmp && sudo -u bob bash -c {shlex.quote(script)}"
+        result = self.ssh("front", command, stdin=yaml.safe_dump(config, sort_keys=False))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout.strip().splitlines()[-1]
+
+    def test_runner_pushes_and_deploys(self) -> None:
+        cluster, config, _ = self.up_with_test_key()
+        front = config["machines"]["front"]["address"]
+        config["nanohpc_version"] = metadata.version("nanohpc")
+        config["auto_deploy"] = {
+            "enabled": True,
+            "repository": f"bob@{front}:/home/bob/config.git",
+            "branch": "main",
+            "every_minutes": 1440,  # the test starts each run itself
+        }
+        config["agent"] = {
+            "enabled": True,
+            "channel": "C0TEST",
+            "approvers": [{"name": "alice", "slack_id": ALICE_SLACK}],
+        }
+        cluster.write_text(yaml.safe_dump(config, sort_keys=False))
+        # Stand-in secrets: the bot cannot reach Slack with them; the runner needs none.
+        (cluster.parent / ".env").write_text(
+            "NANOHPC_SLACK_BOT_TOKEN=xoxb-test\nNANOHPC_SLACK_APP_TOKEN=xapp-test\nNANOHPC_ANTHROPIC_API_KEY=sk-ant-test\n"
+        )
+
+        with self.subTest("first deploy: the agent's environment, its runner, and its key on the compute machines"):
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            self.assertIn("The Slack agent cannot reach", result.stdout)
+            self.assertEqual(self.on_front("systemctl is-active nanohpc-agent-runner").strip(), "active")
+            self.on_front(
+                "sudo -u nanohpc-agent /opt/nanohpc-agent/venv/bin/python -c 'import slack_bolt, claude_agent_sdk'"
+            )
+            for machine in ("gpu4", "cpu1"):
+                keys = self.ssh(machine, "sudo cat /etc/ssh/authorized_keys/root").stdout
+                self.assertIn(f'from="{front}",no-agent-forwarding,no-port-forwarding', keys, machine)
+                self.assertIn("nanohpc-agent-runner@front", keys, machine)
+            self.assertNotIn("nanohpc-agent-runner", self.on_front("sudo cat /etc/ssh/authorized_keys/root"))
+            refused = self.ssh("front", "sudo -u nanohpc-agent cat /var/lib/nanohpc-agent-runner/id_ed25519")
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertNotIn("xoxb-test", self.on_front("sudo cat /etc/nanohpc-agent/bot.json"))
+
+        with self.subTest("reads for anyone, on the front node and as root on a compute machine"):
+            answer = self.run_as(["sinfo", "-h", "-o", "%n"], BOB_SLACK, "front", "read", None)
+            self.assertTrue(answer["ran"], answer)
+            self.assertIn("gpu4", answer["output"])
+            answer = self.run_as(["systemctl", "is-active", "slurmd"], BOB_SLACK, "gpu4", "read", None)
+            self.assertTrue(answer["ran"], answer)
+            self.assertIn("active", answer["output"])
+
+        with self.subTest("a change runs only for the approver, or after the approver's click"):
+            touch = ["touch", "/root/agent-test"]
+            refused = self.run_as(touch, BOB_SLACK, "gpu4", "change", None)
+            self.assertFalse(refused["ran"], refused)
+            self.assertNotEqual(self.ssh("gpu4", "sudo test -e /root/agent-test").returncode, 0)
+            approved = self.run_as(touch, BOB_SLACK, "gpu4", "change", ALICE_SLACK)
+            self.assertTrue(approved["ran"], approved)
+            self.assertEqual(self.ssh("gpu4", "sudo test -e /root/agent-test").returncode, 0)
+            log = self.on_front("sudo tail -n 1 /var/log/nanohpc-agent/runner.log")
+            self.assertEqual(json.loads(log)["approver"], ALICE_SLACK)
+
+        with self.subTest("an edit of cluster.yml is pushed only after the approver's click"):
+            push_key = self.on_front("sudo cat /var/lib/nanohpc-agent-runner/repository_ed25519.pub").strip()
+            read_key = self.on_front("sudo cat /etc/nanohpc/auto-deploy/repository_ed25519.pub").strip()
+            for user in config["users"]:
+                if user["name"] == "bob":
+                    user["ssh_keys"] = [*user["ssh_keys"], read_key, push_key]
+            cluster.write_text(yaml.safe_dump(config, sort_keys=False))
+            self.on_front("cd /tmp && sudo -u bob git init -q --bare --initial-branch=main /home/bob/config.git")
+            self.push(config)
+            result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+            self.assertEqual(result.returncode, 0, self.failure(result))
+            self.assertNotIn("The Slack agent cannot reach", result.stdout)
+            started = self.ask({"code": {"code": "start", "requester": BOB_SLACK}})
+            self.assertTrue(started["ok"], started)
+            self.on_front(
+                "sudo -u nanohpc-agent sh -c 'echo \"# checked by the agent\" >> /var/lib/nanohpc-agent-work/cluster.yml'"
+            )
+            staged = self.ask({"code": {"code": "stage", "requester": BOB_SLACK}})
+            self.assertTrue(staged["ok"], staged)
+            self.assertIn("+# checked by the agent", staged["diff"])
+            push = {"code": "push", "requester": BOB_SLACK, "tree": staged["tree"], "message": "Note a check"}
+            self.assertFalse(self.ask({"code": {**push, "approver": None}})["ok"])
+            pushed = self.ask({"code": {**push, "approver": ALICE_SLACK}})
+            self.assertTrue(pushed["ok"], pushed)
+            message = self.on_front("cd /tmp && sudo -u bob git -C /home/bob/config.git log -1 --format=%B main")
+            self.assertIn(f"Requested-by: {BOB_SLACK}", message)
+            self.assertIn(f"Approved-by: {ALICE_SLACK}", message)
+
+        with self.subTest("a deploy asked from Slack deploys the newest commit, here only the users"):
+            refused = self.run_as(["nanohpc", "deploy", "--only", "users"], BOB_SLACK, "front", "change", None)
+            self.assertFalse(refused["ran"], refused)
+            answer = self.run_as(["nanohpc", "deploy", "--only", "users"], BOB_SLACK, "front", "change", ALICE_SLACK)
+            self.assertTrue(answer["ran"], answer)
+            self.assertIn("[exit 0]", answer["output"], answer["output"][-3000:])
+            self.assertIn("no commit is marked", answer["output"])
+            checkout = self.on_front("sudo tail -n 1 /var/lib/nanohpc/auto-deploy/config/cluster.yml")
+            self.assertEqual(checkout.strip(), "# checked by the agent")
+
+
+class SimSlackAgentMonitorTest(unittest.TestCase):
+    """The Slack agent in monitor mode, without Slack or Claude: its runner, asked through its socket as the agent's
+    account, reaches every machine as root with its key; runs a change only after an approver's click; pushes an
+    edit of cluster.yml after a click; and deploys from Slack with nanohpc deploy-monitor. A bare repository of the
+    VMs' own account on the monitor host stands in for GitHub. Real Lima VMs."""
+
+    sim = SIM / "slack-agent-monitor.yml"
+    state = ROOT / ".nanohpc-sim" / "slack-agent-monitor"
+
+    def run_nanohpc(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        """Run the current source's command from the repository checkout."""
+        return subprocess.run(
+            [sys.executable, "-c", "from nanohpc.cli import main; main()", *arguments],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def ssh(self, machine: str, command: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+        """Run a command on one VM with the generated administrator SSH config."""
+        return subprocess.run(
+            ["ssh", "-F", str(self.state / "ssh_config"), machine, command],
+            cwd=ROOT,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def on_host(self, command: str) -> str:
+        result = self.ssh("host", command)
+        self.assertEqual(result.returncode, 0, f"{command}\n{result.stdout}{result.stderr}")
+        return result.stdout
+
+    def ask(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Send one request to the runner as the agent's account; return its answer."""
+        command = f"cd /tmp && sudo -u nanohpc-agent python3 -c {shlex.quote(AGENT_ASK)}"
+        result = self.ssh("host", command, stdin=json.dumps(request))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def run_as(self, argv: list[str], requester: str, host: str, approver: str | None) -> dict[str, Any]:
+        return self.ask({"run": [argv, requester, host, "change", approver]})
+
+    def deploy(self) -> None:
+        result = self.run_nanohpc("sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-3000:])
+
+    def test_runner_pushes_and_deploys_in_monitor_mode(self) -> None:
+        if os.environ.get("NANOHPC_SIM_KEEP") != "1":
+            self.addCleanup(self.run_nanohpc, "sim", "down", str(self.sim))
+        up = self.run_nanohpc("sim", "up", str(self.sim))
+        self.assertEqual(up.returncode, 0, up.stdout + up.stderr)
+        cluster = self.state / "cluster.yml"
+        config = yaml.safe_load(cluster.read_text())
+        host = config["machines"]["host"]["address"]
+        account = self.on_host("whoami").strip()
+        home = self.on_host("echo $HOME").strip()
+        config["nanohpc_version"] = metadata.version("nanohpc")
+        config["agent"] = {
+            "enabled": True,
+            "channel": "C0TEST",
+            "approvers": [{"name": "alice", "slack_id": ALICE_SLACK}],
+            "repository": f"{account}@{host}:{home}/config.git",
+        }
+        cluster.write_text(yaml.safe_dump(config, sort_keys=False))
+        (self.state / ".env").write_text(
+            "NANOHPC_SLACK_BOT_TOKEN=xoxb-test\nNANOHPC_SLACK_APP_TOKEN=xapp-test\nNANOHPC_ANTHROPIC_API_KEY=sk-ant-test\n"
+        )
+
+        with self.subTest("first deploy: the agent, and its runner key for root on every machine"):
+            self.deploy()
+            self.assertEqual(self.on_host("systemctl is-active nanohpc-agent-runner").strip(), "active")
+            installed = self.on_host("sudo /opt/nanohpc-tool/bin/nanohpc --version")
+            self.assertIn(config["nanohpc_version"], installed)
+            for machine in ("host", "gpu1", "cpu1"):
+                keys = self.ssh(machine, "sudo cat /root/.ssh/authorized_keys").stdout
+                self.assertIn(f'from="{host}",no-agent-forwarding,no-port-forwarding', keys, machine)
+                self.assertIn("nanohpc-agent-runner@host", keys, machine)
+
+        with self.subTest("reads as root on another machine; a change only after the approver's click"):
+            answer = self.ask({"run": [["nvidia-smi", "-L"], BOB_SLACK, "gpu1", "read", None]})
+            self.assertTrue(answer["ran"], answer)
+            self.assertIn("refused", self.ask({"run": [["sinfo"], BOB_SLACK, "host", "read", None]})["output"])
+            touch = ["touch", "/root/agent-test"]
+            self.assertFalse(self.run_as(touch, BOB_SLACK, "cpu1", None)["ran"])
+            self.assertTrue(self.run_as(touch, BOB_SLACK, "cpu1", ALICE_SLACK)["ran"])
+            self.assertEqual(self.ssh("cpu1", "sudo test -e /root/agent-test").returncode, 0)
+
+        with self.subTest("an edit of cluster.yml is pushed after the approver's click"):
+            push_key = self.on_host("sudo cat /var/lib/nanohpc-agent-runner/repository_ed25519.pub").strip()
+            self.on_host(f"echo {shlex.quote(push_key)} >> ~/.ssh/authorized_keys")
+            self.on_host("git init -q --bare --initial-branch=main ~/config.git")
+            seed = textwrap.dedent("""
+                set -e
+                rm -rf /tmp/seed && mkdir /tmp/seed && cd /tmp/seed && git init -q -b main
+                cat > cluster.yml
+                git add cluster.yml && git -c user.name=t -c user.email=t@t commit -qm seed
+                git push -q ~/config.git main
+            """)
+            seeded = self.ssh("host", f"bash -c {shlex.quote(seed)}", stdin=yaml.safe_dump(config, sort_keys=False))
+            self.assertEqual(seeded.returncode, 0, seeded.stdout + seeded.stderr)
+            started = self.ask({"code": {"code": "start", "requester": BOB_SLACK}})
+            self.assertTrue(started["ok"], started)
+            self.on_host(
+                "sudo -u nanohpc-agent sh -c 'echo \"# checked by the agent\" >> /var/lib/nanohpc-agent-work/cluster.yml'"
+            )
+            staged = self.ask({"code": {"code": "stage", "requester": BOB_SLACK}})
+            self.assertTrue(staged["ok"], staged)
+            push = {"code": "push", "requester": BOB_SLACK, "tree": staged["tree"], "message": "Note a check"}
+            self.assertFalse(self.ask({"code": {**push, "approver": None}})["ok"])
+            pushed = self.ask({"code": {**push, "approver": ALICE_SLACK}})
+            self.assertTrue(pushed["ok"], pushed)
+            self.assertIn("not deployed yet", pushed["output"])
+            self.assertIn(f"Approved-by: {ALICE_SLACK}", self.on_host("git -C ~/config.git log -1 --format=%B main"))
+
+        with self.subTest("deploys from Slack: a dry run, then one machine, of the newest commit"):
+            refused = self.run_as(["nanohpc", "deploy", "--only", "users"], ALICE_SLACK, "host", None)
+            self.assertFalse(refused["ran"], refused)
+            for args in (["--dry-run"], ["--only", "node", "gpu1"]):
+                answer = self.run_as(["nanohpc", "deploy", *args], BOB_SLACK, "host", ALICE_SLACK)
+                self.assertTrue(answer["ran"], answer)
+                self.assertIn("[exit 0]", answer["output"], answer["output"][-3000:])
+            checkout = self.on_host("sudo tail -n 1 /var/lib/nanohpc-agent-runner/deploy/cluster.yml")
+            self.assertEqual(checkout.strip(), "# checked by the agent")
+
+
 if __name__ == "__main__":
     unittest.main()

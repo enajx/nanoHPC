@@ -1,0 +1,48 @@
+{% set machines = agent_machines %}
+{% set monitor = nanohpc.mode | default('slurm') == 'monitor' %}
+{% set repository = nanohpc.agent.repository %}
+{{ {
+  "socket": "/run/nanohpc-agent/runner.sock",
+  "socket_group": "nanohpc-agent",
+  "log": "/var/log/nanohpc-agent/runner.log",
+  "front": inventory_hostname,
+  "approvers": nanohpc.agent.approvers | list,
+  "hosts": dict(machines | zip(machines | map('extract', nanohpc.machines) | map(attribute='address'))),
+  "key": "/var/lib/nanohpc-agent-runner/id_ed25519",
+  "known_hosts": "/var/lib/nanohpc-agent-runner/machines_known_hosts",
+  "slurm": nanohpc.mode | default('slurm') == 'slurm',
+  "work": "/var/lib/nanohpc-agent-work",
+  "agent_user": "nanohpc-agent",
+  "repository": none if repository is none else {
+    "remote": repository.remote,
+    "branch": repository.branch,
+    "clone": "/var/lib/nanohpc-agent-runner/repository",
+    "key": "/var/lib/nanohpc-agent-runner/repository_ed25519",
+    "known_hosts": agent_repository_known_hosts,
+    "author": "nanoHPC Slack agent",
+    "email": "nanohpc-agent@" ~ inventory_hostname,
+    "after_push": repository.after_push
+  },
+  "deploy": none if repository is none else (
+    ["systemd-run", "--unit=nanohpc-agent-deploy", "--wait", "--pipe", "--collect", "--quiet",
+     "--property=RuntimeMaxSec=3h", "--setenv=HOME=/root"]
+    + (([] if not nanohpc.agent_deploy.simulated else
+         ["--setenv=NANOHPC_SIMULATED=1", "--setenv=NANOHPC_FAKE_GPUS_JSON=" ~ (nanohpc.agent_deploy.fake_gpus | to_json)])
+       + ["--setenv=NANOHPC_INSTALL_CONF=/var/lib/nanohpc-agent-runner/install.conf",
+          "--setenv=NANOHPC_INSTALL_WHEELS=/var/lib/nanohpc-agent-runner/wheels",
+          "/usr/local/sbin/nanohpc-auto-deploy", "--checkout", "/var/lib/nanohpc-agent-runner/deploy",
+          "--branch", repository.branch, "--remote", repository.remote,
+          "--state", "/var/lib/nanohpc-agent-runner/deploy-state",
+          "--metrics", "/var/lib/nanohpc-agent-runner/deploy.prom",
+          "--installer", "/usr/local/sbin/nanohpc-install", "--nanohpc", "/opt/nanohpc-tool/bin/nanohpc",
+          "--ssh-config", "/var/lib/nanohpc-agent-runner/ssh_config", "--deploy-command", "deploy-monitor", "--again"]
+       if monitor else
+       (["--setenv=NANOHPC_SIMULATED=1", "--setenv=NANOHPC_FAKE_GPUS=" ~ (nanohpc.auto_deploy.fake_gpus | join(','))]
+        if nanohpc.auto_deploy.simulated else [])
+       + ["/usr/local/sbin/nanohpc-auto-deploy", "--checkout", "/var/lib/nanohpc/auto-deploy/config",
+          "--branch", repository.branch, "--remote", repository.remote,
+          "--state", "/var/lib/nanohpc/auto-deploy/state",
+          "--metrics", "/var/lib/nanohpc/metrics-textfile/auto-deploy.prom",
+          "--installer", "/usr/local/sbin/nanohpc-install", "--nanohpc", "/opt/nanohpc-tool/bin/nanohpc",
+          "--ssh-config", "/etc/nanohpc/auto-deploy/ssh_config", "--again"]))
+} | to_nice_json }}

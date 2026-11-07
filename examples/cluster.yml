@@ -118,6 +118,20 @@ alerts:
   backup_old_days: 7            # post when the last good backup is older than this
   slow_home_mb_per_second: 50   # post when a compute machine's large-file /home read is slower, two nights in a row
 
+# Optional Slack agent: answers @-mentions in one channel; changes run for approvers or after their Approve.
+# Needs NANOHPC_SLACK_BOT_TOKEN, NANOHPC_SLACK_APP_TOKEN, and NANOHPC_ANTHROPIC_API_KEY in .env.
+# With auto_deploy, it can also push edits of this file and deploy, after an approver's Approve.
+# agent:
+#   enabled: true
+#   channel: C0123ABC             # the channel's ID
+#   approvers:                    # Slack users whose Approve counts
+#     - {name: alice, slack_id: U0123ABC}
+#   daily_usd: 1                  # for everyone together
+#   request_usd: 1
+#   requests_per_person: 10       # approvers have no per-person limit
+#   personality: agent/personality.md   # optional file next to this one
+#   people: agent/people.md       # optional
+
 user_check:
   allowed_tunnels: []           # exceptions: [{user: bob, program: cloudflared, machines: [gpu4]}]
                                 # known programs: tailscale, tailscaled, cloudflared, ngrok, frpc,

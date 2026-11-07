@@ -124,6 +124,10 @@ class Cluster:
 
     def run(self, remote: str) -> subprocess.CompletedProcess[str]:
         """Run the runner as the systemd timer does, with something on stdin that the deploy must not get."""
+        return self.run_with(remote, [])
+
+    def run_with(self, remote: str, extra: list[str]) -> subprocess.CompletedProcess[str]:
+        """Run the runner with the timer's arguments, then `extra` (the Slack agent's --again and deploy arguments)."""
         return subprocess.run(
             [
                 sys.executable,
@@ -144,6 +148,7 @@ class Cluster:
                 str(self.nanohpc),
                 "--ssh-config",
                 "/etc/nanohpc/ssh_config",
+                *extra,
             ],
             input="secret on stdin\n",
             capture_output=True,
@@ -290,6 +295,72 @@ class AutoDeployTests(unittest.TestCase):
         self.assertEqual(len(self.cluster.deploys()), 2)
         self.assertEqual(self.cluster.state_file("deployed"), good)
         self.assertIsNone(self.cluster.state_file("failed"))
+
+    def test_again_deploys_a_deployed_or_failed_commit_once_more(self) -> None:
+        """--again (a deploy asked from Slack) deploys the newest commit even when it was deployed or failed."""
+        commit = self.cluster.commit("nanohpc_version: 1.0.0\nname: second\n")
+        self.assert_run(0)
+        again = self.cluster.run_with(self.url, ["--again"])
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(len(self.cluster.deploys()), 2)
+        self.assertEqual(self.cluster.state_file("deployed"), commit)
+        (self.cluster.root / "deploy-exit").write_text("2")
+        bad = self.cluster.commit("nanohpc_version: 1.0.0\nname: bad\n")
+        self.assert_run(2)
+        (self.cluster.root / "deploy-exit").write_text("0")
+        retried = self.cluster.run_with(self.url, ["--again"])
+        self.assertEqual(retried.returncode, 0, retried.stdout + retried.stderr)
+        self.assertEqual(self.cluster.state_file("deployed"), bad)
+        self.assertIsNone(self.cluster.state_file("failed"))
+
+    def test_deploy_arguments_after_a_double_dash_leave_the_state_alone(self) -> None:
+        """--dry-run or --only after `--` go to nanohpc deploy; such a run marks no commit and keeps the metrics."""
+        commit = self.cluster.commit("nanohpc_version: 1.0.0\nname: second\n")
+        self.assert_run(0)
+        metrics = self.cluster.metrics.read_text()
+        newer = self.cluster.commit("nanohpc_version: 1.0.0\nname: third\n")
+        for extra, code in ((["--dry-run"], "0"), (["--only", "users"], "4")):
+            with self.subTest(extra=extra):
+                (self.cluster.root / "deploy-exit").write_text(code)
+                result = self.cluster.run_with(self.url, ["--again", "--", *extra])
+                self.assertEqual(result.returncode, int(code), result.stdout + result.stderr)
+                call = self.cluster.deploys()[-1]
+                self.assertEqual(
+                    call["args"], ["deploy", "cluster.yml", "--ssh-config", "/etc/nanohpc/ssh_config", *extra]
+                )
+                self.assertEqual(call["cluster_yml"], "nanohpc_version: 1.0.0\nname: third\n")
+                self.assertEqual(self.cluster.state_file("deployed"), commit)
+                self.assertIsNone(self.cluster.state_file("failed"))
+                self.assertEqual(self.cluster.metrics.read_text(), metrics)
+        (self.cluster.root / "deploy-exit").write_text("0")
+        self.assert_run(0)
+        self.assertEqual(self.cluster.state_file("deployed"), newer)
+
+    def test_a_dry_run_from_slack_installs_nothing(self) -> None:
+        """A dry run asked from Slack does not install the pinned version; the deploy itself reports a mismatch."""
+        self.cluster.commit("nanohpc_version: 2.0.0\nname: second\n")
+        result = self.cluster.run_with(self.url, ["--again", "--", "--dry-run"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.cluster.installs(), [])
+        self.assertEqual(self.cluster.deploys()[-1]["args"][-1], "--dry-run")
+
+    def test_a_busy_deploy_asked_from_slack_is_not_reported_as_done(self) -> None:
+        """With --again, another deploy holding a lock exits 75 (try again later), not 0."""
+        with self.cluster.maintenance_lock.open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            busy = self.cluster.run_with(self.url, ["--again"])
+        self.assertEqual(busy.returncode, 75, busy.stdout + busy.stderr)
+        self.assertIn("nothing was deployed", busy.stdout)
+        self.assertEqual(self.cluster.deploys(), [])
+
+    def test_monitor_mode_runs_deploy_monitor(self) -> None:
+        """--deploy-command deploy-monitor (the Slack agent in monitor mode) runs nanohpc deploy-monitor."""
+        result = self.cluster.run_with(self.url, ["--deploy-command", "deploy-monitor", "--again", "--", "--dry-run"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            self.cluster.deploys()[-1]["args"],
+            ["deploy-monitor", "cluster.yml", "--ssh-config", "/etc/nanohpc/ssh_config", "--dry-run"],
+        )
 
     def test_journal_says_which_run_failed(self) -> None:
         """nanohpc deploy exits 3 when its dry run failed on some machines (left out, unchanged), 4 when its real

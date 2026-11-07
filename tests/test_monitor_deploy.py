@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import yaml
 
 from nanohpc import deploy
+from nanohpc.config import AGENT_DEFAULTS
 from nanohpc.maintenance_lock import MaintenanceLockBusy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +32,7 @@ class MonitorDeployTest(unittest.TestCase):
             patch.object(deploy, "prepare_monitor") as prepare,
             patch("nanohpc.maintenance_lock.acquire", side_effect=MaintenanceLockBusy("busy")),
         ):
-            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, True, None, None), 1)
+            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, False, True, None, None), 1)
             prepare.assert_not_called()
 
     def test_changed_gpu_inventory_after_lock_stops_monitor_deploy(self) -> None:
@@ -48,7 +49,7 @@ class MonitorDeployTest(unittest.TestCase):
             patch("nanohpc.maintenance_lock.acquire", return_value=holder),
             contextlib.redirect_stderr(io.StringIO()),
         ):
-            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, True, None, None), 1)
+            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, False, True, None, None), 1)
             prepare.assert_not_called()
 
     def test_command_is_available(self) -> None:
@@ -88,11 +89,13 @@ class MonitorDeployTest(unittest.TestCase):
             },
             "users": ["alice"],
             "alerts": {"slack": False},
+            "agent": dict(AGENT_DEFAULTS),
+            "nanohpc_version": None,
             "secrets": {},
         }
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
-            deploy.prepare_monitor(config, None, False, {}, work, None)
+            deploy.prepare_monitor(config, None, False, {}, {}, work, None)
             inventory = yaml.safe_load((work / "inventory.yml").read_text())["all"]["children"]
             self.assertEqual(list(inventory["role_front"]["hosts"]), ["front"])
             self.assertEqual(list(inventory["role_machine"]["hosts"]), ["gpu1"])
@@ -120,7 +123,7 @@ class MonitorDeployTest(unittest.TestCase):
             deployed={"front": ["front", "home"], "gpu1": None},
         )
         with patch.object(deploy, "probe", return_value=found), patch.object(deploy, "probe_monitor_gpus") as gpus:
-            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, True, None, None), 1)
+            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, False, True, None, None), 1)
             gpus.assert_not_called()
 
     def test_changed_gpu_inventory_needs_explicit_accept(self) -> None:
@@ -139,7 +142,7 @@ class MonitorDeployTest(unittest.TestCase):
             patch.object(deploy, "read_monitor_baseline", return_value=({"front": old, "gpu1": old}, None)),
             patch.object(deploy, "prepare_monitor") as prepare,
         ):
-            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, True, None, None), 1)
+            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, False, True, None, None), 1)
             prepare.assert_not_called()
 
     def test_node_deploy_checks_only_selected_machine_and_host(self) -> None:
@@ -158,7 +161,9 @@ class MonitorDeployTest(unittest.TestCase):
             patch.object(deploy, "probe_monitor_gpus", return_value=({"front": {}, "gpu1": {}}, [])) as gpu_probe,
             patch.object(deploy, "read_monitor_baseline", return_value=(None, None)),
         ):
-            self.assertEqual(deploy.deploy_monitor(config, None, False, {}, True, deploy.Only("node", "gpu1"), None), 1)
+            self.assertEqual(
+                deploy.deploy_monitor(config, None, False, {}, False, True, deploy.Only("node", "gpu1"), None), 1
+            )
             probe.assert_called_once_with(["front", "gpu1"], None)
             gpu_probe.assert_called_once_with(["front", "gpu1"], None, {})
 

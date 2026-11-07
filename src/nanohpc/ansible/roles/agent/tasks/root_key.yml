@@ -1,0 +1,31 @@
+# Monitor mode: nanoHPC does not manage root's keys there, so the runner's key is one line in root's own key file,
+# accepted only from the monitor host, with no forwarding. Removed again when the agent is off.
+- name: Create root's SSH folder
+  ansible.builtin.file:
+    path: /root/.ssh
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: nanohpc.agent.enabled and hostvars[groups['role_front'][0]].agent_runner_public_key is defined
+
+- name: Accept the Slack agent runner's key for root, from the monitor host only
+  ansible.builtin.lineinfile:
+    path: /root/.ssh/authorized_keys
+    regexp: "nanohpc-agent-runner@"
+    line: >-
+      from="{{ nanohpc.metrics.front_address }}",no-agent-forwarding,no-port-forwarding,no-X11-forwarding
+      {{ hostvars[groups['role_front'][0]].agent_runner_public_key }}
+    create: true
+    owner: root
+    group: root
+    mode: "0600"
+  # A monitor host left out of this run (its dry run failed) made no key: the machines keep the one they have.
+  when: nanohpc.agent.enabled and hostvars[groups['role_front'][0]].agent_runner_public_key is defined
+
+- name: Remove the Slack agent runner's key when the agent is off
+  ansible.builtin.lineinfile:
+    path: /root/.ssh/authorized_keys
+    regexp: "nanohpc-agent-runner@"
+    state: absent
+  when: not nanohpc.agent.enabled
