@@ -107,7 +107,9 @@ def run_deploy_monitor(
     # A simulated cluster's monitor host deploys itself like `nanohpc sim deploy` (test use).
     simulated = os.environ.get("NANOHPC_SIMULATED") == "1"
     fake_gpus = json.loads(os.environ.get("NANOHPC_FAKE_GPUS_JSON", "{}")) if simulated else {}
-    return deploy.deploy_monitor(config, ssh_config, simulated, fake_gpus, dry_run_only, only, accept_hardware_change)
+    return deploy.deploy_monitor(
+        config, ssh_config, simulated, fake_gpus, automatic, dry_run_only, only, accept_hardware_change
+    )
 
 
 def forwarding_rules(path: Path) -> int:
@@ -180,7 +182,7 @@ def simulate(
                 print("monitor simulation needs a fake_gpus mapping", file=sys.stderr)
                 return 1
             return deploy.deploy_monitor(
-                config, ssh_config or state / "ssh_config", True, plan.fake_gpus, dry_run_only, only, None
+                config, ssh_config or state / "ssh_config", True, plan.fake_gpus, False, dry_run_only, only, None
             )
         if not isinstance(plan.fake_gpus, list):
             print("Slurm simulation needs a fake_gpus list", file=sys.stderr)

@@ -121,14 +121,24 @@ class MonitorDeployFromTheFrontTest(unittest.TestCase):
                 mock.patch.object(cli.deploy, "deploy_monitor", return_value=0) as recorder,
             ):
                 self.assertEqual(cli.run_deploy_monitor(path, None, True, None, None), 0)
-            _, _, simulated, fake_gpus, dry_run, *_ = recorder.call_args.args
-            self.assertEqual((simulated, fake_gpus, dry_run), (True, fake, True))
+            _, _, simulated, fake_gpus, automatic, dry_run, *_ = recorder.call_args.args
+            self.assertEqual((simulated, fake_gpus, automatic, dry_run), (True, fake, True, True))
             with (
                 mock.patch.dict(os.environ, {"NANOHPC_SIMULATED": ""}),
                 mock.patch.object(cli.deploy, "deploy_monitor", return_value=0) as recorder,
             ):
                 cli.run_deploy_monitor(path, None, False, None, None)
-            self.assertEqual(recorder.call_args.args[2:4], (False, {}))
+            self.assertEqual(recorder.call_args.args[2:5], (False, {}, False))
+
+    def test_an_automatic_monitor_deploy_needs_the_inherited_lock(self) -> None:
+        config, errors = check_config(yaml.safe_load((ROOT / "examples/monitor.yml").read_text()))
+        self.assertEqual(errors, [])
+        with (
+            mock.patch.dict(os.environ, {"NANOHPC_MAINTENANCE_FD": ""}),
+            mock.patch.object(cli.deploy, "probe") as probe,
+        ):
+            self.assertEqual(cli.deploy.deploy_monitor(config, None, False, {}, True, False, None, None), 1)
+        probe.assert_not_called()
 
 
 if __name__ == "__main__":

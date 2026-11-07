@@ -520,7 +520,15 @@ def agent_variables(config: dict[str, Any]) -> dict[str, Any]:
     agent = config["agent"]
     deploy = config.get("auto_deploy", {})
     repository = None
-    if deploy.get("enabled"):
+    if agent["repository"] is not None:
+        # Monitor mode: the agent's own repository; deploys run only when asked.
+        repository = {
+            "remote": agent["repository"],
+            "branch": "main",
+            "after_push": "It is not deployed yet: ask me to deploy it (after a dry run), or deploy it with "
+            "nanohpc deploy-monitor.",
+        }
+    elif deploy.get("enabled"):
         minutes = deploy["every_minutes"]
         repository = {
             "remote": deploy["repository"],
@@ -792,6 +800,7 @@ def prepare_monitor(
     config: dict[str, Any],
     ssh_config: Path | None,
     simulated: bool,
+    fake_gpus: dict[str, dict[str, Any]],
     gpus: dict[str, dict[str, Any]],
     work: Path,
     node: str | None,
@@ -802,6 +811,7 @@ def prepare_monitor(
     (files / "prometheus.yml").write_text(render_prometheus(config))
     (files / "monitor-machines.json").write_text(json.dumps(monitor_machines(config), indent=2))
     (files / "site.json").write_text(json.dumps(site_data(config), indent=2))
+    (files / "agent-cluster.yml").write_text(agent_cluster_yml(config))
     secrets = work / "secrets.json"
     secrets.touch(mode=0o600)
     secrets.chmod(0o600)
@@ -821,6 +831,16 @@ def prepare_monitor(
         "uv": UV,
         "website": website_variables(config, simulated),
         "alerts": {"slack": config["alerts"]["slack"]},
+        "agent": agent_variables(config),
+        # How the monitor host installs the pinned nanoHPC for the Slack agent's deploys, and on a simulated
+        # cluster how `nanohpc sim deploy` deployed it (so the agent's deploys do the same).
+        "agent_deploy": {
+            "version": config["nanohpc_version"],
+            "install": install_source(metadata.distribution("nanohpc").read_text("direct_url.json")),
+            "simulated": simulated,
+            "fake_gpus": fake_gpus,
+        },
+        "time_zone": None,
         "gpu_baseline": gpus,
         "metrics": {
             **METRICS,
@@ -898,11 +918,20 @@ def deploy_monitor(
     ssh_config: Path | None,
     simulated: bool,
     fake_gpus: dict[str, dict[str, Any]],
+    automatic: bool,
     dry_run_only: bool,
     only: Only | None,
     accept_hardware_change: str | None,
 ) -> int:
-    """Deploy monitoring only, after checking mode conflicts and accepted GPU inventory."""
+    """Deploy monitoring only, after checking mode conflicts and accepted GPU inventory. `automatic`: run on the
+    monitor host by the Slack agent's runner (nanohpc-auto-deploy), which already holds the maintenance lock."""
+    if automatic:
+        inherited = os.environ.get("NANOHPC_MAINTENANCE_FD", "")
+        try:
+            maintenance_lock.validate_inherited(int(inherited), maintenance_lock.LOCK_PATH)
+        except (ValueError, maintenance_lock.MaintenanceLockError) as failure:
+            print(f"Nothing was changed: automatic deploy has no valid maintenance lock: {failure}", file=sys.stderr)
+            return 1
     names = list(config["machines"])
     host = config["cluster"]["monitor_host"]
     node = None if only is None else only.node
@@ -975,6 +1004,10 @@ def deploy_monitor(
     password = (
         getpass.getpass(f"sudo password on {', '.join(found.needs_password)}: ") if found.needs_password else None
     )
+    if automatic:
+        return _deploy_monitor_prepared(
+            config, ssh_config, simulated, fake_gpus, baseline, node, names, host, found, dry_run_only, password
+        )
     try:
         holder = maintenance_lock.acquire(host, ssh_config, password if host in found.needs_password else None)
     except maintenance_lock.MaintenanceLockError as failure:
@@ -999,7 +1032,7 @@ def deploy_monitor(
                 )
                 return 1
             return _deploy_monitor_prepared(
-                config, ssh_config, simulated, baseline, node, names, host, found, dry_run_only, password
+                config, ssh_config, simulated, fake_gpus, baseline, node, names, host, found, dry_run_only, password
             )
     except maintenance_lock.MaintenanceLockError as failure:
         print(f"Monitor deploy stopped: {failure}", file=sys.stderr)
@@ -1010,6 +1043,7 @@ def _deploy_monitor_prepared(
     config: dict[str, Any],
     ssh_config: Path | None,
     simulated: bool,
+    fake_gpus: dict[str, dict[str, Any]],
     baseline: dict[str, dict[str, Any]],
     node: str | None,
     names: list[str],
@@ -1021,7 +1055,15 @@ def _deploy_monitor_prepared(
     """Prepare and apply monitoring while holding the monitor host's maintenance lock."""
     work = CACHE / "clusters" / config["cluster"]["name"] / "monitor"
     work.mkdir(parents=True, exist_ok=True)
-    prepare_monitor(config, ssh_config, simulated, baseline, work, node)
+    # The monitor host's nanoHPC for deploys asked from Slack is installed by a full deploy only.
+    agent = config["agent"]
+    if agent["enabled"] is True and agent["repository"] is not None and node is None:
+        install = install_source(metadata.distribution("nanohpc").read_text("direct_url.json"))
+        error = nanohpc_wheel(install, config["nanohpc_version"], work)
+        if error is not None:
+            print(f"Nothing was changed: {error}", file=sys.stderr)
+            return 1
+    prepare_monitor(config, ssh_config, simulated, fake_gpus, baseline, work, node)
     machines = names if node is None else list(dict.fromkeys([node, host]))
     playbook = Path(sys.executable).parent / "ansible-playbook"
     command = [
