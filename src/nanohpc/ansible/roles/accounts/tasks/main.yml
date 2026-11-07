@@ -231,7 +231,7 @@
                                 and inventory_hostname == nanohpc.backup.machine) else [] }}
 
 # Root's keys: each administrator's keys from cluster.yml, and with automatic deploys the front node's key,
-# accepted only from its address. An administrator removed from cluster.yml loses root login here.
+# accepted only from its address; on compute machines, the Slack agent runner's key, also from the front node only. An administrator removed from cluster.yml loses root login here.
 - name: Accept the administrators' keys, and the front node's automatic deploy key, for root
   ansible.builtin.template:
     src: root_authorized_keys.j2
@@ -243,6 +243,10 @@
     users: "{{ nanohpc.users }}"
     admins: "{{ nanohpc.admins }}"
     auto_deploy_key: "{{ hostvars[groups['role_front'][0]].auto_deploy_public_key if nanohpc.auto_deploy.enabled else '' }}"
+    # The Slack agent's runner reaches the compute machines as root, from the front node only.
+    agent_runner_key: >-
+      {{ hostvars[groups['role_front'][0]].agent_runner_public_key
+         if nanohpc.agent.enabled and inventory_hostname in groups['role_compute'] else '' }}
     front_address: "{{ nanohpc.metrics.front_address }}"
 
 - name: List the installed SSH key files

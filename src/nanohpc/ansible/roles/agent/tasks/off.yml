@@ -1,0 +1,30 @@
+# The Slack agent is off in cluster.yml: stop and remove its services and settings (its keys stay, unused; the
+# compute machines no longer accept the runner's key, see the accounts role).
+- name: Look for the agent's services
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-agent.service
+  register: agent_installed
+
+- name: Stop the agent
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: [nanohpc-agent, nanohpc-agent-runner]
+  when: agent_installed.stat.exists
+
+- name: Remove the agent's services and settings
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/nanohpc-agent.service
+    - /etc/systemd/system/nanohpc-agent-runner.service
+    - /etc/nanohpc-agent
+    - /var/lib/nanohpc-agent-runner/runner.json
+  register: agent_removed
+
+- name: Forget the removed services
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: agent_removed is changed and not ansible_check_mode

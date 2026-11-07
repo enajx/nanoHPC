@@ -385,6 +385,7 @@ def variables(
             "website": website_variables(config, simulated),
             "backup": backup_variables(config),
             "auto_deploy": auto_deploy_variables(config, simulated, fake_gpus),
+            "agent": agent_variables(config),
             # Run by the front node's automatic deploy (it keeps the install settings a manual deploy made).
             "automatic": automatic,
             "alerts": {"slack": config["alerts"]["slack"]},
@@ -506,6 +507,54 @@ def auto_deploy_variables(config: dict[str, Any], simulated: bool, fake_gpus: li
         "simulated": simulated,
         "fake_gpus": fake_gpus,
     }
+
+
+# The Slack agent's models: one for every request, and a subagent for changes, unexplained problems, deep looks.
+AGENT_MODELS = {"main": "claude-sonnet-5-5", "deep": "claude-opus-5-5"}
+
+
+def agent_variables(config: dict[str, Any]) -> dict[str, Any]:
+    """Return what the agent role needs: the channel, approvers (Slack member ID -> name), limits, who people are
+    in Slack, the personality and people files, and the repository it pushes to and deploys from (the automatic
+    deploy's, or none: then it has no code changes and no deploys)."""
+    agent = config["agent"]
+    deploy = config.get("auto_deploy", {})
+    repository = None
+    if deploy.get("enabled"):
+        minutes = deploy["every_minutes"]
+        repository = {
+            "remote": deploy["repository"],
+            "branch": deploy["branch"],
+            "after_push": "The front node deploys it "
+            + ("right away (webhook)." if deploy["webhook"] else f"within {minutes} minutes."),
+        }
+    approvers = {item["slack_id"]: item["name"] for item in agent["approvers"]}
+    users = {
+        user["slack_id"]: user["name"] for user in config["users"] if isinstance(user, dict) and "slack_id" in user
+    }
+    return {
+        "enabled": agent["enabled"],
+        "channel": agent["channel"],
+        "approvers": approvers,
+        "users": {**users, **approvers},
+        "limits": {
+            "daily_usd": agent["daily_usd"],
+            "request_usd": agent["request_usd"],
+            "requests_per_person": agent["requests_per_person"],
+        },
+        "personality": agent["personality"],
+        "people": agent["people"],
+        "repository": repository,
+        "models": AGENT_MODELS,
+    }
+
+
+def agent_cluster_yml(config: dict[str, Any]) -> str:
+    """Return the cluster's settings as nanoHPC read them, without secrets, for the Slack agent to read."""
+    shown = {key: value for key, value in config.items() if key != "secrets"}
+    return "# The cluster's settings as nanoHPC read them from cluster.yml (no secrets).\n" + yaml.safe_dump(
+        shown, sort_keys=False
+    )
 
 
 def backup_variables(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -724,6 +773,7 @@ def prepare(
     (files / "alert-settings.yml").write_text(rendered.alert_settings)
     (files / "monitor-machines.json").write_text(json.dumps(monitor_machines(config), indent=2))
     (files / "site.json").write_text(json.dumps(site_data(config), indent=2))
+    (files / "agent-cluster.yml").write_text(agent_cluster_yml(config))
     for name, text in rendered.gres_conf.items():
         (files / "gres" / f"{name}.conf").write_text(text)
     # Secrets go in their own file that only this user can read, never in vars.json.

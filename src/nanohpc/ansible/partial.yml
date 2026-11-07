@@ -81,6 +81,12 @@
         tasks_from: key
       when: nanohpc.auto_deploy.enabled
 
+    - name: Make or read the Slack agent runner's key
+      ansible.builtin.include_role:
+        name: agent
+        tasks_from: key
+      when: nanohpc.agent.enabled
+
 # --only users
 
 - name: Users, SSH keys, sudo keys, and who may log in, on every machine

@@ -1,0 +1,27 @@
+# The Slack agent runner's key on the front node: the compute machines accept it for root, from the front node only
+# (accounts role). Made before the accounts role runs, so the first deploy already installs it.
+- name: Create the runner's own folder (its keys and settings; root only)
+  ansible.builtin.file:
+    path: /var/lib/nanohpc-agent-runner
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Make the runner's key for root on the compute machines
+  ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-agent-runner@{{ inventory_hostname }}" -f /var/lib/nanohpc-agent-runner/id_ed25519
+  args:
+    creates: /var/lib/nanohpc-agent-runner/id_ed25519
+  register: agent_runner_keygen
+
+- name: Read the runner key's public half
+  ansible.builtin.slurp:
+    src: /var/lib/nanohpc-agent-runner/id_ed25519.pub
+  register: agent_runner_key_file
+  when: not (ansible_check_mode and agent_runner_keygen is changed)  # dry run: the key is not made yet
+
+- name: Keep the public key for the compute machines
+  ansible.builtin.set_fact:
+    agent_runner_public_key: >-
+      {{ (agent_runner_key_file.content | b64decode | trim) if agent_runner_key_file.content is defined
+         else '(the key this deploy makes)' }}

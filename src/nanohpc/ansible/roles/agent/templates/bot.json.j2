@@ -1,0 +1,23 @@
+{% set approvers = nanohpc.agent.approvers %}
+{{ {
+  "mode": nanohpc.mode | default('slurm'),
+  "cluster": nanohpc.cluster_name,
+  "front": inventory_hostname,
+  "machines": groups['role_compute'],
+  "source": "/opt/nanohpc-agent/source",
+  "docs": ["/srv/nanohpc-web/config"],
+  "personality": "/etc/nanohpc-agent/personality.md",
+  "people": none if nanohpc.agent.people is none else "/etc/nanohpc-agent/people.md",
+  "notes": "/var/lib/nanohpc-agent/notes.md",
+  "work": "/var/lib/nanohpc-agent-work",
+  "code": nanohpc.agent.repository is not none,
+  "after_push": "" if nanohpc.agent.repository is none else nanohpc.agent.repository.after_push,
+  "channel": nanohpc.agent.channel,
+  "approvers": approvers,
+  "users": nanohpc.agent.users,
+  "limits": nanohpc.agent.limits | combine({"unlimited": approvers | list}),
+  "models": nanohpc.agent.models,
+  "timezone": nanohpc.time_zone,
+  "usage": "/var/lib/nanohpc-agent/usage.json",
+  "socket": "/run/nanohpc-agent/runner.sock"
+} | to_nice_json }}

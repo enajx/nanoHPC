@@ -1,0 +1,21 @@
+[Unit]
+Description=Run commands for the nanoHPC Slack agent (read-only for anyone; changes for approvers or after their Approve)
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0022
+RuntimeDirectory=nanohpc-agent
+RuntimeDirectoryMode=0750
+LogsDirectory=nanohpc-agent
+LogsDirectoryMode=0750
+ExecStart=/usr/bin/python3 /usr/local/bin/nanohpc-agent runner --config /var/lib/nanohpc-agent-runner/runner.json
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+# Changes may write on the front node, except the agent's own files; the rule refuses them too.
+ReadOnlyPaths=/usr/local/bin/nanohpc-agent /etc/nanohpc-agent /opt/nanohpc-agent /var/lib/nanohpc-agent /var/lib/nanohpc-agent-runner/id_ed25519 /var/lib/nanohpc-agent-runner/runner.json /var/lib/nanohpc-agent-runner/machines_known_hosts /etc/systemd/system/nanohpc-agent.service /etc/systemd/system/nanohpc-agent-runner.service
+
+[Install]
+WantedBy=multi-user.target

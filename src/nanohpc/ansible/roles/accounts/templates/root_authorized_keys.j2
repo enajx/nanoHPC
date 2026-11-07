@@ -10,3 +10,7 @@
 # The front node's automatic deploys, accepted only from its address.
 from="{{ front_address }}",no-agent-forwarding,no-X11-forwarding {{ auto_deploy_key }}
 {% endif %}
+{% if agent_runner_key | default('') %}
+# The Slack agent's runner (on the front node): read-only checks, and changes an approver asked for or approved.
+from="{{ front_address }}",no-agent-forwarding,no-port-forwarding,no-X11-forwarding {{ agent_runner_key }}
+{% endif %}

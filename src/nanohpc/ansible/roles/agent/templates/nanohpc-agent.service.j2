@@ -1,0 +1,32 @@
+[Unit]
+Description=The nanoHPC Slack agent (answers @-mentions in its Slack channel)
+After=network-online.target nanohpc-agent-runner.service
+Wants=network-online.target
+Requires=nanohpc-agent-runner.service
+
+[Service]
+Type=simple
+User=nanohpc-agent
+Group=nanohpc-agent
+StateDirectory=nanohpc-agent
+StateDirectoryMode=0750
+Environment=HOME=/var/lib/nanohpc-agent
+EnvironmentFile=/etc/nanohpc-agent/env
+ExecStart=/opt/nanohpc-agent/venv/bin/python /usr/local/bin/nanohpc-agent bot --config /etc/nanohpc-agent/bot.json
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nanohpc-agent-work
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

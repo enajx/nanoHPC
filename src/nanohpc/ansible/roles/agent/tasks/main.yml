@@ -1,0 +1,192 @@
+# The optional Slack agent on the front node (agent in cluster.yml; see nanohpc-agent): a runner service as root
+# that runs only what its rule allows, and the bot as its own account (no keys, no sudo) that talks to Slack and
+# Claude. With automatic deploys, the runner also keeps a clone of the cluster.yml repository it pushes to after
+# an approver's Approve, and runs deploys asked from Slack through nanohpc-auto-deploy.
+
+- name: Create the agent's own account (no keys, no sudo)
+  ansible.builtin.user:
+    name: nanohpc-agent
+    system: true
+    create_home: false
+    home: /var/lib/nanohpc-agent
+    shell: /usr/sbin/nologin
+  register: agent_account
+
+- name: Create the folders for the agent's settings, environment, and the files it reads
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /etc/nanohpc-agent, group: nanohpc-agent, mode: "0750"}
+    - {path: /opt/nanohpc-agent, group: root, mode: "0755"}
+    - {path: /opt/nanohpc-agent/source, group: root, mode: "0755"}
+  when: not (ansible_check_mode and agent_account is changed)  # dry run: the account is not made yet
+
+- name: Create the agent's work folder for edits to the cluster.yml repository (its own account only)
+  ansible.builtin.file:
+    path: /var/lib/nanohpc-agent-work
+    state: directory
+    owner: nanohpc-agent
+    group: nanohpc-agent
+    mode: "0750"
+  when: not (ansible_check_mode and agent_account is changed)
+
+- name: Pin every compute machine's SSH host key for the runner
+  ansible.builtin.copy:
+    dest: /var/lib/nanohpc-agent-runner/machines_known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name in groups['role_compute'] %}
+      {{ nanohpc.machines[name].address }} ssh-ed25519 {{ hostvars[name].ansible_facts.ssh_host_key_ed25519_public }}
+      {% endfor %}
+
+- name: Make the runner's key for pushes to the cluster.yml repository (add it there with write access)
+  ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-agent-push@{{ inventory_hostname }}" -f /var/lib/nanohpc-agent-runner/repository_ed25519
+  args:
+    creates: /var/lib/nanohpc-agent-runner/repository_ed25519
+  when: nanohpc.agent.repository is not none
+
+- name: Install the agent
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-agent"
+    dest: /usr/local/bin/nanohpc-agent
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart the Slack agent
+
+- name: Install the agent's personality (the plain default, or the file named in cluster.yml)
+  ansible.builtin.copy:
+    src: "{{ nanohpc.agent.personality or 'personality.md' }}"
+    dest: /etc/nanohpc-agent/personality.md
+    owner: root
+    group: nanohpc-agent
+    mode: "0640"
+  when: not (ansible_check_mode and agent_account is changed)
+  notify: Restart the Slack agent
+
+- name: Install the people file named in cluster.yml (read when a person comes up)
+  ansible.builtin.copy:
+    src: "{{ nanohpc.agent.people }}"
+    dest: /etc/nanohpc-agent/people.md
+    owner: root
+    group: nanohpc-agent
+    mode: "0640"
+  when: nanohpc.agent.people is not none and not (ansible_check_mode and agent_account is changed)
+
+- name: Remove a people file no longer named in cluster.yml
+  ansible.builtin.file:
+    path: /etc/nanohpc-agent/people.md
+    state: absent
+  when: nanohpc.agent.people is none
+
+- name: Install the cluster's settings for the agent to read (no secrets)
+  ansible.builtin.copy:
+    src: "{{ nanohpc.files }}/agent-cluster.yml"
+    dest: /opt/nanohpc-agent/source/cluster.yml
+    owner: root
+    group: root
+    mode: "0644"
+  when: not (ansible_check_mode and agent_account is changed)
+
+- name: Write the secrets for Slack and Claude, readable only by root and the agent
+  ansible.builtin.copy:
+    dest: /etc/nanohpc-agent/env
+    owner: root
+    group: nanohpc-agent
+    mode: "0640"
+    content: |
+      SLACK_BOT_TOKEN={{ nanohpc_secrets.slack_bot_token }}
+      SLACK_APP_TOKEN={{ nanohpc_secrets.slack_app_token }}
+      ANTHROPIC_API_KEY={{ nanohpc_secrets.anthropic_api_key }}
+  no_log: true
+  when: not (ansible_check_mode and agent_account is changed)
+  notify: Restart the Slack agent
+
+- name: Write the runner's and the bot's settings
+  ansible.builtin.template:
+    src: "{{ item.name }}.json.j2"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {name: runner, dest: /var/lib/nanohpc-agent-runner/runner.json, group: root, mode: "0600"}
+    - {name: bot, dest: /etc/nanohpc-agent/bot.json, group: nanohpc-agent, mode: "0640"}
+  when: not (ansible_check_mode and agent_account is changed)
+  notify: Restart the Slack agent
+
+- name: Copy the agent's pinned Python dependencies
+  ansible.builtin.copy:
+    src: "env/{{ item }}"
+    dest: "/opt/nanohpc-agent/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [pyproject.toml, uv.lock]
+  register: agent_lock
+
+- name: Build the agent's environment from the lock (Python 3.12 from uv)
+  ansible.builtin.command:
+    cmd: /usr/local/bin/uv sync --locked --no-install-project --project /opt/nanohpc-agent
+    creates: "{{ omit if agent_lock is changed else '/opt/nanohpc-agent/venv/bin/python' }}"
+  environment:
+    UV_PROJECT_ENVIRONMENT: /opt/nanohpc-agent/venv
+    UV_PYTHON_INSTALL_DIR: /opt/nanohpc-agent/python
+    UV_CACHE_DIR: /opt/nanohpc-agent/cache
+    UV_PYTHON_PREFERENCE: only-managed
+  when: not ansible_check_mode
+  notify: Restart the Slack agent
+
+- name: Install the agent's services
+  ansible.builtin.template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [nanohpc-agent-runner, nanohpc-agent]
+  register: agent_units
+  notify: Restart the Slack agent
+
+- name: Enable and start the agent's services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: "{{ agent_units is changed }}"
+  loop: [nanohpc-agent-runner, nanohpc-agent]
+  when: not (ansible_check_mode and agent_units is changed)  # dry run: the services are not installed yet
+
+- name: Read the push key's public half
+  ansible.builtin.slurp:
+    src: /var/lib/nanohpc-agent-runner/repository_ed25519.pub
+  register: agent_push_key
+  when: nanohpc.agent.repository is not none and not ansible_check_mode
+
+# Read-only: can the push key reach the repository yet? (Write access shows only at the first push.)
+- name: Check that the push key can reach the cluster.yml repository
+  ansible.builtin.command:
+    argv: [git, ls-remote, --heads, "{{ nanohpc.agent.repository.remote }}", "{{ nanohpc.agent.repository.branch }}"]
+  environment:
+    GIT_SSH_COMMAND: >-
+      ssh -i /var/lib/nanohpc-agent-runner/repository_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes
+      -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/nanohpc/auto-deploy/repository_known_hosts
+  register: agent_push_reachable
+  changed_when: false
+  failed_when: false
+  when: nanohpc.agent.repository is not none and not ansible_check_mode
+
+- name: Say how to let the Slack agent push to the cluster.yml repository
+  ansible.builtin.debug:
+    msg: >-
+      The Slack agent cannot reach {{ nanohpc.agent.repository.remote }} yet. Add this key to that repository with
+      write access (on GitHub: Settings, Deploy keys, Allow write access), so pushes an approver approves can land:
+      {{ agent_push_key.content | b64decode | trim }}
+  when: >-
+    nanohpc.agent.repository is not none and not ansible_check_mode and agent_push_reachable.rc != 0
