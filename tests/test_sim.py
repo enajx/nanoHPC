@@ -2369,15 +2369,21 @@ class SimSlackTest(SimUsersBase):
                 " --wrap 'srun hostname'"
             ).strip()
             self.assertEqual(self.finished_job(job), ("COMPLETED", "gpu4"))
-            self.assertNotIn("You are on", self.on_front("cat /tmp/prolog-batch.out"))
+            # The batch script runs on gpu4, so its output file is there.
+            output = self.ssh("gpu4", "cat /tmp/prolog-batch.out")
+            self.assertEqual(output.returncode, 0, output.stdout + output.stderr)
+            self.assertNotIn("You are on", output.stdout)
 
         with self.subTest("a 1-hour job gets the short-job bonus (4792 of 5000) and no waiting-time points"):
-            job = self.on_front(
-                "cd /tmp && sudo -u alice sbatch --parsable --begin=now+1hour -t 60 -o /dev/null -p main --wrap true"
-            ).strip()
+            # sprio lists only jobs that could start now, so a job that holds all of gpu4's memory (4096 MB)
+            # keeps the 1-hour job waiting.
+            submit = "cd /tmp && sudo -u alice sbatch --parsable -o /dev/null -p main -w gpu4"
+            holder = self.on_front(f"{submit} --mem=4096 --wrap 'sleep 600'").strip()
+            self.addCleanup(self.ssh, "front", f"sudo scancel {holder}")
+            job = self.on_front(f"{submit} -t 60 --wrap true").strip()
             self.addCleanup(self.ssh, "front", f"sudo scancel {job}")
             self.assertEqual(self.on_front(f"sprio -n -h -j {job} -o '%.20S %.20A'").split(), ["4792", "0"])
-            self.on_front(f"sudo scancel {job}")
+            self.on_front(f"sudo scancel {job} {holder}")
 
         with self.subTest("a batch job with --mail-user=slack gets one private message when it ends; no email"):
             script = (
