@@ -44,41 +44,22 @@ class TaskPrologTest(unittest.TestCase):
         return result.stdout
 
     def test_only_the_interactive_shell_gets_the_two_lines(self) -> None:
-        shell = {"SLURM_STEP_ID": "0"}
-        interactive = f"echo '{JOB.format(batch=0)}'"
+        shell = {"SLURM_STEP_ID": "0", "SLURM_PTY_PORT": "40405"}
+        job = f"echo '{JOB.format(batch=0)}'"
+        never = "echo called >&2; exit 1"  # scontrol must not be asked outside the shell
         cases = [
-            (
-                "shell, 1 GPU",
-                {**shell, "SLURM_GPUS_ON_NODE": "1"},
-                interactive,
-                GREETING.format(gpus="1 GPU", end="17:11"),
-            ),
-            (
-                "shell, 2 GPUs",
-                {**shell, "SLURM_GPUS_ON_NODE": "2"},
-                interactive,
-                GREETING.format(gpus="2 GPUs", end="17:11"),
-            ),
-            ("shell, no GPU", shell, interactive, GREETING.format(gpus="no GPU", end="17:11")),
+            ("shell, 1 GPU", {**shell, "SLURM_GPUS_ON_NODE": "1"}, job, GREETING.format(gpus="1 GPU", end="17:11")),
+            ("shell, 2 GPUs", {**shell, "SLURM_GPUS_ON_NODE": "2"}, job, GREETING.format(gpus="2 GPUs", end="17:11")),
+            ("shell, no GPU", shell, job, GREETING.format(gpus="no GPU", end="17:11")),
             (
                 "shell, scontrol fails",
                 {**shell, "SLURM_GPUS_ON_NODE": "1"},
                 "exit 1",
                 GREETING.format(gpus="1 GPU", end="an end time Slurm could not give"),
             ),
-            ("second step in the shell", {"SLURM_STEP_ID": "1", "SLURM_GPUS_ON_NODE": "1"}, interactive, ""),
-            (
-                "batch script",
-                {"SLURM_STEP_ID": "4294967291", "SLURM_GPUS_ON_NODE": "1"},
-                f"echo '{JOB.format(batch=1)}'",
-                "",
-            ),
-            (
-                "srun in a batch job",
-                {"SLURM_STEP_ID": "0", "SLURM_GPUS_ON_NODE": "1"},
-                f"echo '{JOB.format(batch=1)}'",
-                "",
-            ),
+            ("second step in the shell", {**shell, "SLURM_STEP_ID": "1", "SLURM_GPUS_ON_NODE": "1"}, never, ""),
+            ("batch script", {"SLURM_STEP_ID": "4294967291", "SLURM_GPUS_ON_NODE": "1"}, never, ""),
+            ("srun in a batch job or salloc", {"SLURM_STEP_ID": "0", "SLURM_GPUS_ON_NODE": "1"}, never, ""),
         ]
         for name, variables, scontrol, expected in cases:
             with self.subTest(name):

@@ -116,7 +116,11 @@ class ShortJobBonusTest(unittest.TestCase):
         self.assertEqual(
             site["priority_rule"], "Waiting time also adds priority, up to 1000 points after 7-00:00:00 of waiting."
         )
-        self.assertTrue(site["resubmit_rule"].startswith("Yes:"))
+        self.assertTrue(
+            site["resubmit_rule"].startswith(
+                "Yes: priority comes from the GPU-hours you used over time (fair share) and how long the job has waited."
+            )
+        )
         self.assertIn("loses the waiting-time priority", site["resubmit_rule"])
         self.assertNotIn("--time", site["resubmit_rule"])
 

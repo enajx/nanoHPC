@@ -146,7 +146,13 @@ class AlertRulesTests(unittest.TestCase):
         """Every alert leaves out machines under maintenance, also when they are off, so Slack gets nothing."""
         for rule in yaml.safe_load(ALERT_RULES.read_text())["groups"][0]["rules"]:
             if "alert" in rule:
-                self.assertIn("unless on(machine) cluster_machine_maintenance", rule["expr"], rule["alert"])
+                # MachineBackOnline leaves out machines under maintenance in the last 7 days.
+                window = (
+                    "max_over_time(cluster_machine_maintenance[7d])"
+                    if rule["alert"] == "MachineBackOnline"
+                    else "cluster_machine_maintenance"
+                )
+                self.assertIn(f"unless on(machine) {window}", rule["expr"], rule["alert"])
 
     def test_health_checks_not_running_waits_for_the_first_run_after_boot(self) -> None:
         """A machine back from a long outage shows its old health file until its checks run, 2 minutes after boot."""

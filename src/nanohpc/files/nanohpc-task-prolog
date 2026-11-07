@@ -1,15 +1,12 @@
 #!/bin/sh
 # Slurm task prolog (TaskProlog in slurm.conf), run as the job's user before each task. Slurm writes each
-# "print" line to the task's output. Step 0 of a job that is not a batch job is the interactive shell
-# (srun --pty bash -l): it says where the user is, so they do not run srun again inside it.
+# "print" line to the task's output. The first step of a job run with a terminal (srun --pty, which sets
+# SLURM_PTY_PORT) is the interactive shell: it says where the user is, so they do not run srun again inside it.
+# Batch jobs, their srun steps, and srun without --pty print nothing and do not ask the controller anything.
 # Always exits 0: a failing task prolog would stop the task.
-[ "$SLURM_STEP_ID" = 0 ] || exit 0
+[ "$SLURM_STEP_ID" = 0 ] && [ -n "$SLURM_PTY_PORT" ] || exit 0
 end="an end time Slurm could not give"
 if job=$(scontrol show job -o "$SLURM_JOB_ID" 2>/dev/null); then
-  case " $job " in
-    *" BatchFlag=0 "*) ;;
-    *) exit 0 ;;
-  esac
   value=$(printf '%s\n' "$job" | sed -n 's/.* EndTime=[0-9-]*T\([0-9]*:[0-9]*\):[0-9]* .*/\1/p')
   [ -n "$value" ] && end=$value
 fi

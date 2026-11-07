@@ -201,7 +201,7 @@ tests:
               job: node
               machine: front
             exp_annotations:
-              summary: "The last successful /home backup from front is 7d 1h 0m 0s old."
+              summary: "The last successful /home backup from front was at 1970-01-01 01:00:00 +0000 UTC."
       # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
       - eval_time: 205h
         alertname: BackupOld
@@ -211,7 +211,7 @@ tests:
               job: node
               machine: front
             exp_annotations:
-              summary: "The last successful /home backup from front is 8d 6h 0m 0s old."
+              summary: "The last successful /home backup from front was at 1970-01-01 01:00:00 +0000 UTC."
 
   # The health check's 26-hour backup warning shows on the website but is not posted: BackupOld posts backup age.
   - interval: 1m
@@ -409,6 +409,12 @@ tests:
         values: '1 1 0 0 0 0 0 0 0 0 1 1 1 1 1'
       - series: 'cluster_node_maintenance{job="node",machine="front",node="c3"}'
         values: '0x8 1x6'
+      # Down from minute 2 (offline posted at minute 7), under maintenance at minutes 8 to 10, back at minute 12,
+      # after its maintenance ended: still no post.
+      - series: 'up{job="node-c4",machine="c4"}'
+        values: '1 1 0 0 0 0 0 0 0 0 0 0 1 1 1'
+      - series: 'cluster_node_maintenance{job="node",machine="front",node="c4"}'
+        values: '0x7 1x2 0x5'
     alert_rule_test:
       - eval_time: 9m
         alertname: MachineBackOnline
@@ -446,6 +452,11 @@ tests:
         values: '30x75'
       - series: 'cluster_machine_speed_timestamp_seconds{job="node-c2",machine="c2"}'
         values: '7200x75'
+      # Slow at hour 2, no run at hour 26 (a missed night), slow at hour 50: not two nights in a row.
+      - series: 'cluster_machine_speed_mb_per_second{job="node-c3",machine="c3",test="home_large_read"}'
+        values: '30x75'
+      - series: 'cluster_machine_speed_timestamp_seconds{job="node-c3",machine="c3"}'
+        values: '7200x49 180000x25'
     alert_rule_test:
       # One slow night.
       - eval_time: 40h

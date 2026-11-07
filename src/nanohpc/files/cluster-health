@@ -270,6 +270,9 @@ if has home; then
     last_exit=$(awk '$1 == "cluster_backup_last_exit_code" { print int($2) }' "$backup_metrics" 2>/dev/null)
     # No age warning before the backup's first night: only once the backup was set up more than 26 hours ago.
     if test -n "$(find "$root/etc/nanohpc/backup/started" -mmin +1560 2>/dev/null)"; then
+      # Posted to Slack (the age warning below is not: BackupOld posts the age after alerts.backup_old_days), so a
+      # backup that never ran or never worked is not missed.
+      note "the /home backup has worked at least once" test "${last_success:-0}" -gt 0
       note "the last successful /home backup is less than 26 hours old" \
         test "$(( $(date +%s) - ${last_success:-0} ))" -lt 93600
     fi

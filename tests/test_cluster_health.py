@@ -30,6 +30,7 @@ BROKEN_HOME_REPORT = [
     "ok    largest home folders timer",
     "ok    the largest home folders measurement's last run worked",
     "WARN  disk /home: 95% space, 95% inodes used (warning from 90%)",
+    "ok    the /home backup has worked at least once",
     "WARN  the last successful /home backup is less than 26 hours old",
     "WARN  the last /home backup run worked",
 ]
@@ -48,6 +49,7 @@ BROKEN_HOME_STATES = {
     "largest home folders timer": "0",
     "the largest home folders measurement's last run worked": "0",
     "disk /home": "1",
+    "the /home backup has worked at least once": "0",
     "the last successful /home backup is less than 26 hours old": "1",
     "the last /home backup run worked": "1",
 }
@@ -196,7 +198,19 @@ class ClusterHealthMetricsTests(unittest.TestCase):
                 2,
                 0,
                 [
+                    "ok    the /home backup has worked at least once",
                     "ok    the last successful /home backup is less than 26 hours old",
+                    "ok    the last /home backup run worked",
+                ],
+            ),
+            # Set up 27 hours ago and never written its result (its timer never ran).
+            (
+                27,
+                None,
+                None,
+                [
+                    "WARN  the /home backup has worked at least once",
+                    "WARN  the last successful /home backup is less than 26 hours old",
                     "ok    the last /home backup run worked",
                 ],
             ),

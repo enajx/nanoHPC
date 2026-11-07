@@ -611,7 +611,8 @@ def resubmit_rule(config: dict[str, Any]) -> str:
     if policy["age_weight"] > 0:
         parts.append("how long the job has waited")
         return (
-            f"Yes: priority comes from {', '.join(parts[:-1])}, and {parts[-1]}. A resubmitted job starts waiting "
+            f"Yes: priority comes from {', '.join(parts[:-1])}{',' if len(parts) > 2 else ''} and {parts[-1]}. A "
+            "resubmitted job starts waiting "
             "again from zero, so it loses the waiting-time priority the cancelled job had gained. Your fair share "
             "does not change."
         )
