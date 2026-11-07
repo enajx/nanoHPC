@@ -36,6 +36,7 @@ TOP_FIELDS = (
     "announcements",
     "time_zone",
     "faq",
+    "agent",
 )
 
 POLICY_DEFAULTS: dict[str, Any] = {
@@ -72,6 +73,20 @@ USER_CHECK_PROGRAMS = frozenset(
         "ssh -w",
     }
 )
+# The optional Slack agent: answers @-mentions in one channel, runs changes and pushes after an approver's Approve.
+AGENT_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "channel": None,
+    "approvers": [],
+    "daily_usd": 1.0,
+    "request_usd": 1.0,
+    "requests_per_person": 10,
+    "personality": None,
+    "people": None,
+    "repository": None,
+}
+SLACK_CHANNEL = re.compile(r"C[A-Z0-9]{2,}")
+SLACK_MEMBER = re.compile(r"[UW][A-Z0-9]{2,}")
 AUTO_DEPLOY_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "repository": None,
@@ -433,7 +448,7 @@ def check_monitor_machines(checker: Checker, value: Any) -> dict[str, dict[str, 
 
 def check_monitor_config(checker: Checker, raw: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the monitoring-only configuration and fill shared website and alert defaults."""
-    top = checker.mapping(raw, "", ("cluster", "machines", "users"), ("alerts",))
+    top = checker.mapping(raw, "", ("cluster", "machines", "users"), ("alerts", "agent"))
     if top is None:
         return {}
     users = check_monitor_users(checker, top.get("users"))
@@ -446,7 +461,8 @@ def check_monitor_config(checker: Checker, raw: Mapping[str, Any]) -> dict[str, 
         cluster["mode"] = "monitor"
     alerts = with_defaults(checker, top.get("alerts"), "alerts", ALERTS_DEFAULTS)
     checker.boolean(alerts["slack"], "alerts.slack")
-    return {"cluster": cluster, "machines": machines, "users": users, "alerts": alerts}
+    agent = check_agent(checker, top.get("agent"), "monitor")
+    return {"cluster": cluster, "machines": machines, "users": users, "alerts": alerts, "agent": agent}
 
 
 def check_users(checker: Checker, value: Any) -> list[dict[str, Any]]:
@@ -487,7 +503,7 @@ def check_users(checker: Checker, value: Any) -> list[dict[str, Any]]:
         if "slack_id" in user:
             checker.matches(
                 user["slack_id"],
-                re.compile(r"[UW][A-Z0-9]{2,}"),
+                SLACK_MEMBER,
                 f"{path}.slack_id",
                 "a Slack member ID such as U123ABC",
             )
@@ -918,6 +934,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "nanohpc_version": top.get("nanohpc_version"),
         "announcements": check_announcements(checker, top.get("announcements"), users),
         "time_zone": check_time_zone(checker, top.get("time_zone")),
+        "agent": check_agent(checker, top.get("agent"), "slurm"),
         "faq": check_faq(checker, top.get("faq")),
     }
     check_capacity(checker, machines, partitions, config["policy"])
@@ -1049,6 +1066,56 @@ def check_faq(checker: Checker, value: Any) -> list[dict[str, Any]]:
     return entries
 
 
+def check_agent(checker: Checker, value: Any, mode: str) -> dict[str, Any]:
+    """Check the optional Slack agent: its channel, the Slack users who approve changes and pushes, the usage
+    limits, its optional personality and people files, and (monitor mode) the repository it pushes to."""
+    agent = with_defaults(checker, value, "agent", AGENT_DEFAULTS)
+    enabled = checker.boolean(agent["enabled"], "agent.enabled")
+    for key in ("daily_usd", "request_usd"):
+        amount = agent[key]
+        if not (isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount > 0):
+            checker.fail(f"agent.{key}", "must be a positive number of US dollars")
+    checker.positive(agent["requests_per_person"], "agent.requests_per_person")
+    for key in ("personality", "people"):
+        if agent[key] is not None and not isinstance(agent[key], str):
+            checker.fail(f"agent.{key}", "must be a file path next to cluster.yml")
+    if agent["repository"] is not None:
+        if mode != "monitor":
+            checker.fail("agent.repository", "is for monitor mode; in Slurm mode the agent uses auto_deploy.repository")
+        elif not (isinstance(agent["repository"], str) and GIT_SSH_URL.fullmatch(agent["repository"])):
+            checker.fail(
+                "agent.repository", "must be a Git repository over SSH, like git@github.com:lab/cluster-config.git"
+            )
+    approvers = agent["approvers"]
+    if not isinstance(approvers, list):
+        checker.fail("agent.approvers", "must be a list of Slack users, each with a name and a slack_id")
+        approvers = []
+    seen: set[str] = set()
+    for index, item in enumerate(approvers):
+        path = f"agent.approvers[{index}]"
+        approver = checker.mapping(item, path, ("name", "slack_id"), ())
+        if approver is None:
+            continue
+        if "name" in approver and not (isinstance(approver["name"], str) and approver["name"].strip()):
+            checker.fail(f"{path}.name", "must be a name")
+        if "slack_id" in approver and checker.matches(
+            approver["slack_id"], SLACK_MEMBER, f"{path}.slack_id", "a Slack member ID such as U123ABC"
+        ):
+            if approver["slack_id"] in seen:
+                checker.fail(f"{path}.slack_id", f"{approver['slack_id']} is listed twice")
+            seen.add(approver["slack_id"])
+    if enabled:
+        if agent["channel"] is None:
+            checker.fail("agent.channel", "is required when agent.enabled is true")
+        else:
+            checker.matches(agent["channel"], SLACK_CHANNEL, "agent.channel", "a Slack channel ID such as C0123ABC")
+        if not approvers:
+            checker.fail("agent.approvers", "must list at least one Slack user when agent.enabled is true")
+    elif agent["channel"] is not None:
+        checker.matches(agent["channel"], SLACK_CHANNEL, "agent.channel", "a Slack channel ID such as C0123ABC")
+    return agent
+
+
 def check_auto_deploy(checker: Checker, config: dict[str, Any]) -> None:
     """Check automatic deploys: a Git repository over SSH, a branch, minutes between checks, the optional
     webhook, and the nanoHPC version the front node installs."""
@@ -1092,7 +1159,11 @@ def load_config(path: Path, check_files: bool, automatic: bool) -> tuple[dict[st
         config["cluster"]["website"]["certificate"] = None
         config["cluster"]["website"]["certificate_key"] = None
     if check_files and not errors:
-        errors = website_files(config["cluster"]["website"], path.parent) + secrets(config, path.parent)
+        errors = (
+            website_files(config["cluster"]["website"], path.parent)
+            + agent_files(config["agent"], path.parent)
+            + secrets(config, path.parent)
+        )
     return config, loader.duplicates + errors
 
 
@@ -1120,8 +1191,28 @@ def secrets(config: dict[str, Any], folder: Path) -> list[str]:
     webhook = env.get("NANOHPC_SLACK_WEBHOOK")
     bot_token = env.get("NANOHPC_SLACK_BOT_TOKEN")
     deploy_secret = env.get("NANOHPC_DEPLOY_WEBHOOK_SECRET")
-    config["secrets"] = {"slack_webhook": webhook, "slack_bot_token": bot_token, "deploy_webhook": deploy_secret}
+    app_token = env.get("NANOHPC_SLACK_APP_TOKEN")
+    anthropic_key = env.get("NANOHPC_ANTHROPIC_API_KEY")
+    config["secrets"] = {
+        "slack_webhook": webhook,
+        "slack_bot_token": bot_token,
+        "deploy_webhook": deploy_secret,
+        "slack_app_token": app_token,
+        "anthropic_api_key": anthropic_key,
+    }
     errors = []
+    if config["agent"]["enabled"] is True:
+        for key, value in (
+            ("NANOHPC_SLACK_BOT_TOKEN", bot_token),
+            ("NANOHPC_SLACK_APP_TOKEN", app_token),
+            ("NANOHPC_ANTHROPIC_API_KEY", anthropic_key),
+        ):
+            if not value:
+                errors.append(f"agent.enabled is true but {env_path} has no {key}")
+    if app_token is not None and not re.fullmatch(r"xapp-[A-Za-z0-9-]+", app_token):
+        errors.append("NANOHPC_SLACK_APP_TOKEN in .env must be a Slack app-level token starting xapp-")
+    if anthropic_key is not None and not re.fullmatch(r"sk-ant-[A-Za-z0-9_-]+", anthropic_key):
+        errors.append("NANOHPC_ANTHROPIC_API_KEY in .env must be an Anthropic API key starting sk-ant-")
     if config["alerts"]["slack"] is True and not webhook:
         errors.append(f"alerts.slack is true but {env_path} has no NANOHPC_SLACK_WEBHOOK")
     if webhook is not None and not re.fullmatch(r"https?://[^\s'\"]+", webhook):
@@ -1144,6 +1235,20 @@ def secrets(config: dict[str, Any], folder: Path) -> list[str]:
 
 
 LOGO_TYPES = (".png", ".svg", ".jpg", ".webp")
+
+
+def agent_files(agent: dict[str, Any], folder: Path) -> list[str]:
+    """Resolve the Slack agent's optional personality and people files (relative to cluster.yml's folder) to
+    absolute paths, and report missing ones."""
+    errors = []
+    for key in ("personality", "people"):
+        if agent[key] is None:
+            continue
+        path = (folder / Path(agent[key]).expanduser()).resolve()
+        agent[key] = str(path)
+        if not path.is_file():
+            errors.append(f"agent.{key}: {path} not found")
+    return errors
 
 
 def website_files(website: dict[str, Any], folder: Path) -> list[str]:

@@ -31,6 +31,7 @@ from nanohpc.config import (
     SCRATCH_DEFAULTS,
     TOP_FIELDS,
     UniqueKeyLoader,
+    agent_files,
     check_config,
     secrets,
     website_files,
@@ -345,7 +346,11 @@ class ClusterFile:
         config, errors = self.checked()
         if errors:
             return errors
-        return website_files(config["cluster"]["website"], folder) + secrets(config, folder)
+        return (
+            website_files(config["cluster"]["website"], folder)
+            + agent_files(config["agent"], folder)
+            + secrets(config, folder)
+        )
 
     def get(self, path: Sequence[str | int]) -> Any:
         """Return the value at `path` (keys, or indexes in lists) as plain Python data; None when it or one

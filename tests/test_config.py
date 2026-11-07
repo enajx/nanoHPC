@@ -643,6 +643,8 @@ class SecretsTest(unittest.TestCase):
                     "slack_webhook": "https://hooks.slack.com/services/T/B/x",
                     "slack_bot_token": None,
                     "deploy_webhook": None,
+                    "slack_app_token": None,
+                    "anthropic_api_key": None,
                 },
             )
 
@@ -669,6 +671,8 @@ class SecretsTest(unittest.TestCase):
                     "slack_webhook": "https://hooks.slack.com/services/T/B/x",
                     "slack_bot_token": "xoxb-test",
                     "deploy_webhook": secret,
+                    "slack_app_token": None,
+                    "anthropic_api_key": None,
                 },
             )
 
@@ -677,7 +681,14 @@ class SecretsTest(unittest.TestCase):
             config, errors = load_config(self.write(Path(directory), False, None), True, False)
             self.assertEqual(errors, [])
             self.assertEqual(
-                config["secrets"], {"slack_webhook": None, "slack_bot_token": None, "deploy_webhook": None}
+                config["secrets"],
+                {
+                    "slack_webhook": None,
+                    "slack_bot_token": None,
+                    "deploy_webhook": None,
+                    "slack_app_token": None,
+                    "anthropic_api_key": None,
+                },
             )
 
     def test_slack_member_id_is_optional_and_validated(self) -> None:
