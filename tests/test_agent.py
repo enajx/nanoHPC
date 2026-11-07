@@ -633,6 +633,7 @@ class Prompts(unittest.TestCase):
     def test_people_file_and_monitor_mode(self) -> None:
         prompt = self.agent.system_prompt(bot_settings("monitor", False, "/etc/nanohpc-agent/people.md"), "c", "")
         self.assertIn("read /etc/nanohpc-agent/people.md first", prompt)
+        self.assertIn("never state anything from it as a fact, even inside a joke", prompt)
         self.assertIn("front is the monitoring machine", prompt)
         self.assertNotIn("Slurm", prompt)
 

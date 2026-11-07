@@ -995,7 +995,8 @@ blocks. Never print tokens, keys, or passwords."""
 
 PEOPLE_PROMPT = """
 When a person comes up, read {people} first and let it shape how you react to them, as a colleague who knows
-them would; never recite its facts or quote it.
+them would: never state anything from it as a fact, even inside a joke; at most one allusion per reply, and often
+none. Follow its rules and examples.
 """
 
 DEEP_PROMPT = """You take over requests that need care: a change, or a problem the first checks did not explain.
