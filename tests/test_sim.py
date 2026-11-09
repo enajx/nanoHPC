@@ -4913,7 +4913,10 @@ class SimLoginNodeTest(SimUsersBase):
             banner = self.as_user("bob", "login1", "nanohpc-hello", False)
             self.assertEqual(banner.returncode, 0, banner.stdout + banner.stderr)
             self.assertNotIn("run nanohpc-hello on the front node", banner.stdout)
-            self.assertIn(box.splitlines()[0], banner.stdout)
+            # The banner redraws the box at its own width: compare its text, not its border.
+            self.assertIn("Home usage:", box)
+            self.assertIn("Home usage:", banner.stdout)
+            self.assertIn("Cluster is running", banner.stdout)
             # Each box stays private: alice cannot read bob's.
             self.assertNotEqual(
                 self.as_user("alice", "login1", "cat /var/lib/nanohpc-home-notices/bob", False).returncode, 0
