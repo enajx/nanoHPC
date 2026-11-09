@@ -8,6 +8,7 @@
  *     "logo": str | null,           // relative URL of the logo next to index.html, such as "logo.png";
  *                                   // null shows a small generic mark
  *     "login_address": str,         // host name users SSH to
+ *     "login_note": str             // the other front nodes (login nodes) and whether they share /home; "" if none
  *     "home_quota_soft_gb": int,    // per-user /home notice threshold
  *     "home_quota_hard_gb": int,
  *     "scratch_cleanup_days": int   // staged scratch data unused this long is deleted
@@ -26,6 +27,7 @@ export type SiteSettings = {
   cluster_name: string
   logo: string | null
   login_address: string
+  login_note?: string
   home_quota_soft_gb: number
   home_quota_hard_gb: number
   scratch_cleanup_days: number
@@ -49,8 +51,8 @@ export type MonitorSiteSettings = {
 
 export type LoadedSiteSettings = SiteSettings | MonitorSiteSettings
 
-const settingNames = ['cluster_name', 'logo', 'login_address', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'interactive_machine_rule', 'priority_rule', 'resubmit_rule', 'faq', 'demo']
-const requiredNames = settingNames.filter(name => name !== 'demo' && name !== 'interactive_machine_rule' && name !== 'faq')
+const settingNames = ['cluster_name', 'logo', 'login_address', 'login_note', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'interactive_machine_rule', 'priority_rule', 'resubmit_rule', 'faq', 'demo']
+const requiredNames = settingNames.filter(name => name !== 'demo' && name !== 'interactive_machine_rule' && name !== 'faq' && name !== 'login_note')
 
 /** Check site.json's content against the contract above and name the first problem. */
 export function checkSiteSettings(value: unknown): LoadedSiteSettings {
@@ -83,6 +85,7 @@ export function checkSiteSettings(value: unknown): LoadedSiteSettings {
     if (!Number.isInteger(settings[name])) throw new Error(`site.json: ${name} must be a whole number`)
   }
   if (settings.interactive_machine_rule !== undefined && typeof settings.interactive_machine_rule !== 'string') throw new Error('site.json: interactive_machine_rule must be text')
+  if (settings.login_note !== undefined && typeof settings.login_note !== 'string') throw new Error('site.json: login_note must be text')
   if (settings.faq !== undefined && !(Array.isArray(settings.faq) && settings.faq.every(isFaqEntry))) throw new Error('site.json: faq must be a list of {question, answer} texts')
   if (settings.demo !== undefined && typeof settings.demo !== 'boolean') throw new Error('site.json: demo must be a boolean')
   const logo = settings.logo

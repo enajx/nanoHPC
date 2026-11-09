@@ -63,7 +63,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(sorted(groups["role_home"]["hosts"]), ["front"])
         self.assertEqual(sorted(groups["role_backup"]["hosts"]), ["store"])
         self.assertEqual(sorted(groups["role_compute"]["hosts"]), ["cpu1", "gpu2", "gpu4", "gpu4i"])
-        self.assertEqual(sorted(groups["role_slurm"]["children"]), ["role_compute", "role_front"])
+        self.assertEqual(sorted(groups["role_slurm"]["children"]), ["role_compute", "role_front", "role_login"])
         for role in ("role_front", "role_home", "role_backup", "role_compute"):
             self.assertEqual(groups[role]["vars"]["ansible_remote_tmp"], "$XDG_RUNTIME_DIR/ansible-tmp")
         self.assertNotIn("vars", yaml.safe_load((self.work / "inventory.yml").read_text())["all"])
@@ -198,6 +198,7 @@ class PrepareTest(unittest.TestCase):
                 "cluster_name": "labcluster",
                 "logo": None,
                 "login_address": "cluster.example.org",
+                "login_note": "",
                 "home_quota_soft_gb": 300,
                 "home_quota_hard_gb": 400,
                 "scratch_cleanup_days": 14,

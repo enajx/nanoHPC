@@ -1,0 +1,9 @@
+# Simulated test cluster: test-only file, never used on a real cluster.
+# A front node, a compute machine, and a login node on Ubuntu 24.04, for SimLoginNodeTest.
+cluster: cluster-login.yml
+ubuntu: "24.04"
+fake_gpus: []
+vms:
+  default: {cpus: 1, memory_gb: 1, disk_gb: 10}
+  front: {cpus: 2, memory_gb: 3, disk_gb: 20}
+extra_disk_gb: 10

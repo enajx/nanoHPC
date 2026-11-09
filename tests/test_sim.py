@@ -1795,36 +1795,39 @@ class SimDeployTest(SimUsersBase):
                 time.sleep(5)
             self.assertGreaterEqual(jobs, 1)
 
-        with self.subTest("nightly /home mirror to the backup machine: owners kept, deletions mirrored, restore"):
+        with self.subTest("nightly /home mirror of the listed files: owners kept, other files left out, restore"):
             backup = config["machines"]["store"]["backup"]["path"].rstrip("/") + "/home"
             self.on_front(
-                "sudo -u alice sh -c 'mkdir -p ~/keep && echo precious > ~/keep/data.txt && echo old > ~/gone.txt'"
+                "sudo -u alice sh -c 'mkdir -p ~/.config/git ~/keep && echo precious > ~/.config/git/config"
+                " && echo old > ~/.bash_aliases && echo data > ~/keep/data.txt'"
             )
             self.on_front("sudo systemctl start nanohpc-backup.service")
             self.assertIn(
                 "cluster_backup_last_exit_code 0", self.on_front("cat /var/lib/nanohpc/metrics-textfile/backup.prom")
             )
-            stored = self.ssh("store", f"sudo cat {backup}/alice/keep/data.txt")
+            stored = self.ssh("store", f"sudo cat {backup}/alice/.config/git/config")
             self.assertEqual(stored.stdout.strip(), "precious", stored.stderr)
+            # Only the listed files: the rest of /home is not backed up.
+            self.assertEqual(self.ssh("store", f"sudo test -e {backup}/alice/keep").returncode, 1)
             # The unprivileged account owns the copy; the real owner is kept as an extended attribute.
             self.assertEqual(
-                self.ssh("store", f"sudo stat -c %U {backup}/alice/keep/data.txt").stdout.strip(), "nanohpc-backup"
+                self.ssh("store", f"sudo stat -c %U {backup}/alice/.config/git/config").stdout.strip(), "nanohpc-backup"
             )
             attributes = self.ssh(
-                "store", f"sudo python3 -c 'import os; print(os.listxattr(\"{backup}/alice/keep/data.txt\"))'"
+                "store", f"sudo python3 -c 'import os; print(os.listxattr(\"{backup}/alice/.config/git/config\"))'"
             )
             self.assertIn("user.rsync.%stat", attributes.stdout, attributes.stderr)
             # One mirror: a file deleted from /home is deleted from the copy at the next run.
-            self.on_front("sudo -u alice rm ~alice/gone.txt && sudo systemctl start nanohpc-backup.service")
-            self.assertEqual(self.ssh("store", f"sudo test -e {backup}/alice/gone.txt").returncode, 1)
+            self.on_front("sudo -u alice rm ~alice/.bash_aliases && sudo systemctl start nanohpc-backup.service")
+            self.assertEqual(self.ssh("store", f"sudo test -e {backup}/alice/.bash_aliases").returncode, 1)
             # Restore one user's folder with the same key: owners come back.
             ssh_options = "ssh -i /etc/nanohpc/backup/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/etc/nanohpc/backup/known_hosts"
             store = config["machines"]["store"]["address"]
             self.on_front(
                 f"sudo rsync -a --numeric-ids --rsync-path='rsync --fake-super' -e '{ssh_options}' "
-                f"nanohpc-backup@{store}:{backup}/alice/keep/ /tmp/restored/"
+                f"nanohpc-backup@{store}:{backup}/alice/.config/git/ /tmp/restored/"
             )
-            self.assertEqual(self.on_front("stat -c %U /tmp/restored/data.txt").strip(), "alice")
+            self.assertEqual(self.on_front("stat -c %U /tmp/restored/config").strip(), "alice")
             # The key can only run rsync on the backup folder.
             shell = self.ssh("front", f"sudo {ssh_options} nanohpc-backup@{store} id")
             self.assertNotEqual(shell.returncode, 0)
@@ -4857,6 +4860,76 @@ class SimSlackAgentMonitorTest(unittest.TestCase):
                 self.assertIn("[exit 0]", answer["output"], answer["output"][-3000:])
             checkout = self.on_host("sudo tail -n 1 /var/lib/nanohpc-agent-runner/deploy/cluster.yml")
             self.assertEqual(checkout.strip(), "# checked by the agent")
+
+
+class SimLoginNodeTest(SimUsersBase):
+    """Several front nodes: a login node (role `login`) where users log in and submit jobs as on the front node,
+    with its own /home because /home is on the front node; the controller, monitoring and website stay on the
+    front node. Three Ubuntu 24.04 VMs."""
+
+    sim = SIM / "login.yml"
+    state = ROOT / ".nanohpc-sim" / "login"
+
+    def test_users_log_in_and_submit_jobs_on_the_login_node(self) -> None:
+        cluster, config, public_key = self.up_with_test_key()
+        config["users"].append({"name": "bob", "uid": 2001, "ssh_keys": [public_key]})
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        login = config["machines"]["login1"]["address"]
+
+        with self.subTest("a user logs in to the login node; only administrators reach the compute machine"):
+            logged_in = self.as_user("bob", "login1", "hostname", False)
+            self.assertEqual(logged_in.returncode, 0, logged_in.stdout + logged_in.stderr)
+            self.assertIn("login1", logged_in.stdout)
+            self.assertNotEqual(self.as_user("bob", "cpu1", "true", False).returncode, 0)
+
+        with self.subTest("a job submitted on the login node runs on the compute machine"):
+            submitted = self.as_user(
+                "bob", "login1", "sbatch --parsable --wait -p main --chdir /tmp -o /dev/null --wrap hostname", False
+            )
+            self.assertEqual(submitted.returncode, 0, submitted.stdout + submitted.stderr)
+            job = submitted.stdout.strip().splitlines()[-1]
+            self.assertEqual(self.finished_job(job), ("COMPLETED", "cpu1"))
+            self.assertEqual(self.ssh("login1", "systemctl is-active slurmd").stdout.strip(), "inactive")
+
+        with self.subTest("the login node keeps its own /home, and its health checks pass"):
+            self.assertEqual(self.ssh("login1", "test -f /etc/nanohpc/home-local").returncode, 0)
+            self.assertEqual(self.ssh("login1", "sudo test -d /home/bob").returncode, 0)
+            mounted = self.ssh("login1", "findmnt -n -t nfs4 --mountpoint /home").stdout.strip()
+            self.assertEqual(mounted, "")
+            health = self.ssh("login1", "sudo cluster-health")
+            self.assertEqual(health.returncode, 0, health.stdout + health.stderr)
+
+        with self.subTest("the login banner shows the usage box and the cluster summary, copied from the front node"):
+            for _ in range(40):  # the front node measures /home every 5 minutes
+                if self.ssh("front", "sudo test -f /var/lib/nanohpc-home-notices/bob").returncode == 0:
+                    break
+                time.sleep(15)
+            self.on_front("sudo systemctl start nanohpc-login-copy.service")
+            self.assertEqual(self.ssh("login1", "sudo test -f /var/lib/nanohpc/monitor/status.json").returncode, 0)
+            box = self.ssh("login1", "sudo cat /var/lib/nanohpc-home-notices/bob").stdout.strip()
+            self.assertEqual(box, self.on_front("sudo cat /var/lib/nanohpc-home-notices/bob").strip())
+            banner = self.as_user("bob", "login1", "nanohpc-hello", False)
+            self.assertEqual(banner.returncode, 0, banner.stdout + banner.stderr)
+            self.assertNotIn("run nanohpc-hello on the front node", banner.stdout)
+            # The banner redraws the box at its own width: compare its text, not its border.
+            self.assertIn("Home usage:", box)
+            self.assertIn("Home usage:", banner.stdout)
+            self.assertIn("Cluster is running", banner.stdout)
+            # Each box stays private: alice cannot read bob's.
+            self.assertNotEqual(
+                self.as_user("alice", "login1", "cat /var/lib/nanohpc-home-notices/bob", False).returncode, 0
+            )
+
+        with self.subTest("the website's user guide names the login node, and nanohpc check passes"):
+            site = json.loads(self.on_front("cat /srv/nanohpc-web/config/site.json"))
+            self.assertIn(login, site["login_note"])
+            self.assertIn("Each one has its own /home", site["login_note"])
+            checked = self.run_command(
+                "uv", "run", "nanohpc", "check", str(cluster), "--ssh-config", str(self.state / "ssh_config")
+            )
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
 
 
 if __name__ == "__main__":

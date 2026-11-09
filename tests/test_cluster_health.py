@@ -189,6 +189,21 @@ class ClusterHealthMetricsTests(unittest.TestCase):
             self.assertIn("FAIL  service nfs-server", result.stdout)
             self.assertIn("disk /shared", result.stdout)
 
+    def test_login_node_checks_munge_and_its_home(self) -> None:
+        """A login node runs munge; with its own /home (marker /etc/nanohpc/home-local) it does not check the NFS
+        mount, and with the shared /home it does."""
+        with tempfile.TemporaryDirectory(prefix="cluster-health-") as directory:
+            folder = Path(directory)
+            environment = make_machine(folder, "login", "munge")
+            (folder / "root/etc/nanohpc/home-local").write_text("")
+            result = run([], environment)
+            self.assertIn("FAIL  service munge", result.stdout)
+            self.assertNotIn("/home is the shared NFS mount", result.stdout)
+        with tempfile.TemporaryDirectory(prefix="cluster-health-") as directory:
+            result = run([], make_machine(Path(directory), "login", ""))
+            self.assertIn("ok    service munge", result.stdout)
+            self.assertIn("/home is the shared NFS mount", result.stdout)
+
     def test_backup_checks(self) -> None:
         """A recent good backup is ok; before the first night there is no age check; no backup configured: no check."""
         cases = [

@@ -14,7 +14,7 @@
 #   the user lists of the status collector (front node) and the quota reader (home machine); the website's
 #   site.json and the user guide and policy pages filled from it (front node); Slack user mentions and
 #   private-message recipients (front node).
-# - policy, partitions: slurm.conf (and gres.conf) on every Slurm machine, job_submit.lua and Slurm's QoS on the
+# - policy, partitions: slurm.conf (and gres.conf) on every Slurm machine (login nodes too), job_submit.lua and Slurm's QoS on the
 #   front node, Slurm restarted where its configuration changed (as a full deploy does), then a fresh status
 #   snapshot for the website.
 # - node: everything on the machine in the only_node group (inventory), as site.yml would set up a compute
@@ -87,6 +87,12 @@
         tasks_from: key
       when: nanohpc.agent.enabled
 
+    - name: Make or read the login copy key
+      ansible.builtin.include_role:
+        name: login_node
+        tasks_from: copy_key
+      when: groups['role_login'] | default([]) | length > 0
+
 # --only users
 
 - name: Users, SSH keys, sudo keys, and who may log in, on every machine
@@ -112,6 +118,16 @@
       ansible.builtin.import_role:
         name: home_server
         tasks_from: users
+
+- name: The users' home folders on login nodes with their own /home
+  hosts: role_login
+  become: true
+  tags: [users]
+  tasks:
+    - name: Home folders
+      ansible.builtin.import_role:
+        name: login_node
+        tasks_from: homes
 
 - name: The users' scratch folders and caches on the compute machines
   hosts: role_compute
@@ -257,6 +273,16 @@
     - name: slurm.conf, cgroup.conf, and gres.conf (slurmd restarts when they change)
       ansible.builtin.import_role:
         name: slurm_compute
+        tasks_from: slurm_config
+
+- name: Slurm's configuration on the login nodes
+  hosts: role_login
+  become: true
+  tags: [policy, partitions, node]
+  tasks:
+    - name: slurm.conf and cgroup.conf
+      ansible.builtin.import_role:
+        name: login_node
         tasks_from: slurm_config
 
 - name: Slurm, scratch, job modes, uv, and Apptainer on the new machine

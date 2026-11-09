@@ -380,12 +380,12 @@ class NanohpcHelloPartsTests(unittest.TestCase):
 class LoginBannerRoleTests(unittest.TestCase):
     """Deploy installs the banner on the front node in Slurm mode only, with private personal messages."""
 
-    def test_front_node_role(self) -> None:
+    def test_front_and_login_node_role(self) -> None:
         import yaml
 
         ansible = ROOT / "src/nanohpc/ansible"
         plays = yaml.safe_load((ansible / "site.yml").read_text())
-        self.assertIn(("role_front", ["login_banner"]), [(play.get("hosts"), play.get("roles")) for play in plays])
+        self.assertIn(("role_front:role_login", ["login_banner"]), [(play.get("hosts"), play.get("roles")) for play in plays])
         self.assertNotIn("login_banner", (ansible / "monitor.yml").read_text())
         tasks = (ansible / "roles/login_banner/tasks/main.yml").read_text()
         for text in (

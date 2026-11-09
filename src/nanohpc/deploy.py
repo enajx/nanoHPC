@@ -178,7 +178,7 @@ class Part:
 
 # Each `--only` part. policy and partitions run the same plays: both live in slurm.conf, job_submit.lua, and the
 # QoS. `node NAME` runs everything on NAME, and only the shared parts on the other machines.
-EVERY_ROLE = ("front", "home", "backup", "compute", "shared")
+EVERY_ROLE = ("front", "login", "home", "backup", "compute", "shared")
 ONLY: dict[str, Part] = {
     "users": Part(
         "users",
@@ -189,13 +189,13 @@ ONLY: dict[str, Part] = {
     ),
     "policy": Part(
         "policy",
-        ("front", "compute"),
+        ("front", "login", "compute"),
         "QoS, fair-share, the short-job bonus, and limits (slurm.conf, job_submit.lua, Slurm's QoS); Slurm restarts"
         " where they changed; the website's site data (priority rules) and the pages filled from it",
     ),
     "partitions": Part(
         "partitions",
-        ("front", "compute"),
+        ("front", "login", "compute"),
         "partitions and GPUs (slurm.conf and gres.conf on every Slurm machine, job_submit.lua, Slurm's QoS; Slurm"
         " restarts where they changed), and the website's policy data and site data (priority rules)",
     ),
@@ -269,8 +269,9 @@ def deployed_problems(config: dict[str, Any], only: Only, deployed: dict[str, li
 
 
 def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
-    """Return the Ansible inventory: one group per role (role_front, ...), role_slurm for front and compute, and
-    only_node: the machine of `--only node` (empty otherwise)."""
+    """Return the Ansible inventory: one group per role (role_front, ...), role_slurm for the front node, login
+    nodes and compute machines, home_client for the machines that mount /home, and only_node: the machine of
+    `--only node` (empty otherwise)."""
     # Ansible's temporary files on the cluster machines go to the login session's private runtime folder:
     # not the home folder (the shared /home or the home disk can hide it), and not a predictable /tmp path
     # another user could create first. Set on the role groups, which every machine is in, and not on `all`,
@@ -281,9 +282,12 @@ def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
             "hosts": {name: None for name, machine in config["machines"].items() if role in machine["roles"]},
             "vars": machine_vars,
         }
-        for role in ("front", "home", "backup", "compute", "shared")
+        for role in ("front", "login", "home", "backup", "compute", "shared")
     }
-    groups["role_slurm"] = {"children": {"role_front": None, "role_compute": None}}
+    # Login nodes run Slurm's commands (no slurmd), so they are Slurm machines too.
+    groups["role_slurm"] = {"children": {"role_front": None, "role_login": None, "role_compute": None}}
+    # The machines that mount the shared /home (see home_clients).
+    groups["home_client"] = {"hosts": {name: None for name in home_clients(config)}}
     groups["only_node"] = {"hosts": {} if node is None else {node: None}}
     return {"all": {"children": groups}}
 
@@ -629,6 +633,7 @@ def site_data(config: dict[str, Any]) -> dict[str, Any]:
         "cluster_name": config["cluster"]["name"],
         "logo": None if website["logo"] is None else "logo" + Path(website["logo"]).suffix.lower(),
         "login_address": website["login_address"],
+        "login_note": login_note(config),
         "home_quota_soft_gb": config["home"]["quota_soft_gb"],
         "home_quota_hard_gb": config["home"]["quota_hard_gb"],
         "scratch_cleanup_days": config["scratch"]["cleanup_days"],
@@ -637,6 +642,29 @@ def site_data(config: dict[str, Any]) -> dict[str, Any]:
         "resubmit_rule": resubmit_rule(config),
         "faq": config["faq"],
     }
+
+
+def login_note(config: dict[str, Any]) -> str:
+    """Return the user guide's sentences on the other front nodes (login nodes): where they are, and whether they
+    share /home; empty when there are none."""
+    logins = [
+        (machine.get("aliases") or [machine["address"]])[0]
+        for machine in config["machines"].values()
+        if "login" in machine["roles"]
+    ]
+    if not logins:
+        return ""
+    shared = any(name in home_clients(config) for name, m in config["machines"].items() if "login" in m["roles"])
+    home = (
+        "They share your /home."
+        if shared
+        else "Each one has its own /home: files you put on one are not on the others, nor in your jobs, which use "
+        "the main front node's /home."
+    )
+    return (
+        f"You can also log in to the other front nodes: {', '.join(logins)}. They work the same way: use one as "
+        f"HostName instead. {home}"
+    )
 
 
 def priority_rule(config: dict[str, Any]) -> str:
@@ -722,6 +750,9 @@ def monitor_machines(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if "front" in roles:
             units = ["slurmctld.service", "slurmdbd.service", "munge.service", "mariadb.service", *nfs]
             result[name] = {"role": "front", "units": units, "mounts": ["/", *home, *shared_mount]}
+        elif "login" in roles:
+            # A login node: Slurm's commands need munge; /home is the shared one or its own.
+            result[name] = {"role": "login", "units": ["munge.service"], "mounts": ["/", *home, *shared_mount]}
         elif "compute" in roles:
             units = ["slurmd.service", "munge.service"]
             result[name] = {"role": "compute", "units": units, "mounts": ["/", *home, "/scratch", *shared_mount]}

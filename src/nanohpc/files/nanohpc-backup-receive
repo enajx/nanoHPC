@@ -32,7 +32,7 @@ SAFE_FOLDER = re.compile(r"(/[A-Za-z0-9._-]+)+")
 SHORT_OPTIONS = re.compile(r"-[vqnlHogDtpAXrzcuWIxSdOJNU]*e\.[A-Za-z]*")
 LONG_OPTIONS = re.compile(
     r"--(numeric-ids|partial|delete|delete-excluded|delete-before|delete-during|delete-after|delete-delay"
-    r"|timeout=[0-9]+|bwlimit=[0-9]+)"
+    r"|timeout=[0-9]+|bwlimit=[0-9]+|max-size=[0-9]+)"
 )
 
 
@@ -63,10 +63,18 @@ def allowed(command: str, folder: str) -> list[str]:
     options = words[4 if sending else 3 : -2]
     if not options or not SHORT_OPTIONS.fullmatch(options[0]):
         refuse("the short rsync options are missing or not allowed")
-    for option in options[1:]:
+    # The backup's size limit: rsync sends it as "--max-size BYTES" (or "--max-size=BYTES"), digits only.
+    rest = options[1:]
+    index = 0
+    while index < len(rest):
+        option = rest[index]
+        if option == "--max-size" and index + 1 < len(rest) and rest[index + 1].isdigit():
+            index += 2
+            continue
         # --list-only (the deploy's read-only check) only reads, so only when sending.
         if not (LONG_OPTIONS.fullmatch(option) or (sending and option == "--list-only")):
             refuse("rsync option not allowed: " + option)
+        index += 1
     if words[-2] != ".":
         refuse("the command does not end with '. PATH'")
     if not inside(words[-1], folder, sending):

@@ -7,6 +7,9 @@ machine. They need rsync 3.x for both ends: the macOS `rsync` (openrsync) has no
 support. Set NANOHPC_TEST_RSYNC to an rsync 3.x program, or have one on PATH, /opt/homebrew/bin, or /usr/local/bin.
 """
 
+import argparse
+import importlib.machinery
+import importlib.util
 import os
 import re
 import shutil
@@ -134,43 +137,55 @@ class Cluster:
 class ClusterBackupTests(unittest.TestCase):
     """Mirror, metrics, failures, and restore, through the real scripts and a real rsync."""
 
-    def test_mirror_excludes_deletes_and_restores(self) -> None:
-        """/home is mirrored with owners kept as xattrs, excludes and deleted files leave the copy, restore works."""
+    def test_mirror_keeps_only_the_listed_files_deletes_and_restores(self) -> None:
+        """Each home's listed files are mirrored with owners kept as xattrs; anything else, a file over 10 MB, and
+        deleted files leave the copy; a restore works."""
         assert RSYNC is not None
         with tempfile.TemporaryDirectory(prefix="cluster-backup-") as directory:
             cluster = Cluster(Path(directory), RSYNC)
             alice = cluster.home / "alice"
-            for folder in [alice / ".cache", alice / ".venv/bin", alice / "project/__pycache__", cluster.home / "bob"]:
+            for folder in [alice / ".ssh", alice / ".config/git", alice / ".config/other", alice / ".cache/huggingface",
+                           alice / "project", alice / ".ipython/profile/__pycache__", cluster.home / "bob"]:  # fmt: skip
                 folder.mkdir(parents=True)
-            (alice / "notes.txt").write_text("notes\n")
-            (alice / ".cache/blob").write_text("cache\n")
-            (alice / ".venv/bin/python").write_text("venv\n")
+            (alice / ".bashrc").write_text("alias ll='ls -l'\n")
+            (alice / ".ipython/profile/config.py").write_text("c = 1\n")
+            (alice / ".ipython/profile/__pycache__/config.pyc").write_text("pyc\n")
+            (alice / ".ssh/authorized_keys").write_text("ssh-ed25519 AAAA alice\n")
+            (alice / ".config/git/config").write_text("[user]\n")
+            (alice / ".config/other/settings").write_text("not listed\n")
+            (alice / ".cache/huggingface/token").write_text("hf\n")
+            (alice / ".cache/huggingface/model.bin").write_text("cache\n")
             (alice / "project/run.py").write_text("print(1)\n")
-            (alice / "project/__pycache__/run.pyc").write_text("pyc\n")
-            (alice / "linked").hardlink_to(alice / "notes.txt")
-            (alice / "read-only").write_text("keep this mode\n")
-            (alice / "read-only").chmod(0o400)
-            (cluster.home / "bob/data").write_text("bob\n")
-            # Left from earlier runs: a file deleted from /home since, and a folder excluded since.
+            (alice / "notes.txt").write_text("notes\n")
+            (alice / ".bash_history").write_bytes(b"x" * (11 * 1024 * 1024))
+            (alice / ".bash_aliases").hardlink_to(alice / ".bashrc")
+            (alice / ".netrc").write_text("machine x\n")
+            (alice / ".netrc").chmod(0o400)
+            (cluster.home / "bob/.zshrc").write_text("bob\n")
+            # Left from earlier runs: a file that is no longer listed, and a user who left.
             (cluster.folder / "carol").mkdir()
-            (cluster.folder / "carol/old").write_text("old\n")
-            (cluster.folder / "alice/.cache").mkdir(parents=True)
-            (cluster.folder / "alice/.cache/old").write_text("old\n")
+            (cluster.folder / "carol/.bashrc").write_text("old\n")
+            (cluster.folder / "alice").mkdir(parents=True)
+            (cluster.folder / "alice/notes.txt").write_text("old\n")
 
             before = time.time()
             completed = cluster.run_backup(cluster.destination(), True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
             copy = cluster.folder / "alice"
-            self.assertEqual((copy / "notes.txt").read_text(), "notes\n")
-            self.assertEqual((copy / "project/run.py").read_text(), "print(1)\n")
-            self.assertEqual((cluster.folder / "bob/data").read_text(), "bob\n")
-            self.assertEqual((copy / "linked").stat().st_ino, (copy / "notes.txt").stat().st_ino)
-            for excluded in [".cache", ".venv", "project/__pycache__"]:
-                self.assertFalse((copy / excluded).exists(), excluded)
+            self.assertEqual((copy / ".bashrc").read_text(), "alias ll='ls -l'\n")
+            self.assertEqual((copy / ".ssh/authorized_keys").read_text(), "ssh-ed25519 AAAA alice\n")
+            self.assertEqual((copy / ".config/git/config").read_text(), "[user]\n")
+            # The cluster's own exclude .cache/ applies first, so the listed token in it is left out too.
+            self.assertFalse((copy / ".cache").exists())
+            self.assertEqual((cluster.folder / "bob/.zshrc").read_text(), "bob\n")
+            self.assertEqual((copy / ".bash_aliases").stat().st_ino, (copy / ".bashrc").stat().st_ino)
+            self.assertEqual((copy / ".ipython/profile/config.py").read_text(), "c = 1\n")
+            for left_out in ["notes.txt", "project", ".config/other", ".bash_history", ".ipython/profile/__pycache__"]:
+                self.assertFalse((copy / left_out).exists(), left_out)
             self.assertFalse((cluster.folder / "carol").exists())
             # --fake-super: the unprivileged copy is kept writable by its owner; the real mode is in an xattr.
-            self.assertEqual(stat.S_IMODE((copy / "read-only").stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((copy / ".netrc").stat().st_mode), 0o600)
 
             ssh_arguments = cluster.ssh_log.read_text().splitlines()
             self.assertEqual(ssh_arguments[ssh_arguments.index("-i") + 1], str(cluster.identity))
@@ -197,11 +212,11 @@ class ClusterBackupTests(unittest.TestCase):
             self.assertEqual(list(cluster.metrics.parent.iterdir()), [cluster.metrics])
 
             # A file deleted from /home is deleted from the copy on the next run.
-            (alice / "project/run.py").unlink()
+            (alice / ".config/git/config").unlink()
             completed = cluster.run_backup(cluster.destination(), True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertFalse((copy / "project/run.py").exists())
-            self.assertTrue((copy / "notes.txt").exists())
+            self.assertFalse((copy / ".config/git/config").exists())
+            self.assertTrue((copy / ".bashrc").exists())
 
             # Restore one user's folder the documented way: rsync from the backup account with the same key.
             restored = cluster.root / "restored-alice"
@@ -231,9 +246,9 @@ class ClusterBackupTests(unittest.TestCase):
                 env=environment,
             )
             self.assertEqual(restore.returncode, 0, restore.stderr)
-            self.assertEqual((restored / "notes.txt").read_text(), "notes\n")
-            self.assertEqual(stat.S_IMODE((restored / "read-only").stat().st_mode), 0o400)
-            self.assertEqual((restored / "linked").stat().st_ino, (restored / "notes.txt").stat().st_ino)
+            self.assertEqual((restored / ".bashrc").read_text(), "alias ll='ls -l'\n")
+            self.assertEqual(stat.S_IMODE((restored / ".netrc").stat().st_mode), 0o400)
+            self.assertEqual((restored / ".bash_aliases").stat().st_ino, (restored / ".bashrc").stat().st_ino)
 
     def test_failure_keeps_last_success_and_shows_the_error(self) -> None:
         """A failed run records its exit code, keeps the previous success time, and prints rsync's error."""
@@ -295,6 +310,26 @@ class ClusterBackupTests(unittest.TestCase):
 
 class ClusterBackupArgumentTests(unittest.TestCase):
     """Arguments that would copy into the wrong place are refused before rsync runs."""
+
+    def test_only_the_listed_files_of_each_home_are_copied(self) -> None:
+        """rsync gets the fixed list (each parent folder let in on its own, a folder with all it holds), no file
+        over 10 MB, and everything else left out; the list comes before the cluster's own excludes."""
+        loader = importlib.machinery.SourceFileLoader("cluster_backup", str(BACKUP))
+        spec = importlib.util.spec_from_loader("cluster_backup", loader)
+        assert spec is not None
+        backup = importlib.util.module_from_spec(spec)
+        loader.exec_module(backup)
+        arguments = argparse.Namespace(identity="k", known_hosts="h", exclude=[".cache/"], fake_super=True,
+                                       source="/home/", destination="u@h:/b/home/")  # fmt: skip
+        command = backup.rsync_command(arguments)
+        for rule in ("--include=/*/", "--include=/*/.ssh/***", "--include=/*/.bashrc", "--include=/*/.config/",
+                     "--include=/*/.config/git/***", "--include=/*/.cache/", "--include=/*/.cache/huggingface/",
+                     "--include=/*/.cache/huggingface/token", "--max-size=10M"):  # fmt: skip
+            self.assertIn(rule, command)
+        self.assertEqual(command.count("--include=/*/.config/"), 1)
+        # rsync takes the first rule that matches: the cluster's own excludes come first, so they apply.
+        self.assertLess(command.index("--exclude=.cache/"), command.index("--include=/*/.cache/huggingface/token"))
+        self.assertEqual(command[-3:], ["--exclude=*", "/home/", "u@h:/b/home/"])
 
     def test_source_and_destination_need_a_final_slash(self) -> None:
         """Without a final slash rsync would make /home/home inside the copy, so both must end with '/'."""

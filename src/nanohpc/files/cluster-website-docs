@@ -26,6 +26,7 @@ PLACEHOLDERS = (
     "interactive_machine_rule",
     "priority_rule",
     "resubmit_rule",
+    "login_note",
 )
 
 

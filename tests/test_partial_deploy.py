@@ -117,7 +117,7 @@ class OnlyMachinesTest(unittest.TestCase):
 
     def test_the_new_machine_gets_what_a_full_deploy_gives_a_compute_machine(self) -> None:
         """--only node runs, on the new machine, the roles site.yml runs on a compute machine, in the same order."""
-        compute_groups = {"all", "role_compute", "role_slurm", "all:!role_home:!role_backup"}
+        compute_groups = {"all", "role_compute", "role_slurm", "home_client"}
         full = [role for play in plays("site.yml") if play["hosts"] in compute_groups for role in roles_of(play)]
         node = [
             role for play in plays("partial.yml") if "only_node" in play["hosts"].split(":") for role in roles_of(play)

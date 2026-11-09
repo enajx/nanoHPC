@@ -38,6 +38,15 @@ CAPTURED_RESTORE_NO_SLASH = (
     "rsync --fake-super --server --sender -lHogDtpAXre.iLsfxCIvu --numeric-ids . /srv/backup/home/alice"
 )
 CAPTURED_LIST_ALL = "rsync --fake-super --server --sender -lHogDtpAXre.iLsfxCIvu --numeric-ids . /srv/backup/home/"
+# The nightly backup's size limit (--max-size=10M), as rsync sends it to the receiving side.
+BACKUP_MAX_SIZE = (
+    "rsync --fake-super --server -lHogDtpAXre.iLsfxCIvu --timeout=600 --delete-excluded --partial --numeric-ids"
+    " --max-size 10485760 . /srv/backup/home/"
+)
+BACKUP_MAX_SIZE_EQUALS = (
+    "rsync --fake-super --server -lHogDtpAXre.iLsfxCIvu --timeout=600 --delete-excluded --partial --numeric-ids"
+    " --max-size=10485760 . /srv/backup/home/"
+)
 # Captured lines that must be refused.
 CAPTURED_DEPLOY_CHECK = "rsync --fake-super --server --sender -de.LsfxCIvu --list-only --timeout=30 . /srv/backup/home/"
 CAPTURED_WITHOUT_FAKE_SUPER = "rsync --server -lHogDtpAXre.iLsfxCIvu --numeric-ids . /srv/backup/home/"
@@ -83,6 +92,8 @@ class BackupReceiveTests(unittest.TestCase):
             CAPTURED_RESTORE_FILE,
             CAPTURED_RESTORE_NO_SLASH,
             CAPTURED_LIST_ALL,
+            BACKUP_MAX_SIZE,
+            BACKUP_MAX_SIZE_EQUALS,
             "rsync --fake-super --server --sender -lHogDtpAXre.iLsfxCIvu --numeric-ids . /srv/backup/home/alice/.ssh/",
             # The deploy's read-only check (rsync --list-only), as rsync 3.2.7 sends it.
             CAPTURED_DEPLOY_CHECK,

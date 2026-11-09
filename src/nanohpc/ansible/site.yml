@@ -164,6 +164,12 @@
         tasks_from: key
       when: nanohpc.agent.enabled
 
+    - name: Make or read the login copy key
+      ansible.builtin.include_role:
+        name: login_node
+        tasks_from: copy_key
+      when: groups['role_login'] | default([]) | length > 0
+
 - name: Base setup, users, and SSH access
   hosts: all
   become: true
@@ -179,8 +185,8 @@
   become: true
   roles: [home_server]
 
-- name: The shared /home on the other machines (not the backup machine)
-  hosts: all:!role_home:!role_backup
+- name: The shared /home on the other machines (not the backup machine, nor login nodes when /home is on the front node)
+  hosts: home_client
   become: true
   roles: [home_client]
 
@@ -218,12 +224,17 @@
   become: true
   roles: [slurm_compute]
 
+- name: Slurm's commands and home folders on the login nodes
+  hosts: role_login
+  become: true
+  roles: [login_node]
+
 - name: Local scratch on the compute machines
   hosts: role_compute
   become: true
   roles: [scratch]
 
-- name: Job modes (cluster-submit), uv, and Apptainer on the front node and compute machines
+- name: Job modes (cluster-submit), uv, and Apptainer on the front node, login nodes, and compute machines
   hosts: role_slurm
   become: true
   roles: [job_modes, uv, apptainer]
@@ -248,10 +259,19 @@
   become: true
   roles: [monitoring]
 
-- name: Login banner on the front node
-  hosts: role_front
+- name: Login banner on the front node and the login nodes
+  hosts: role_front:role_login
   become: true
   roles: [login_banner]
+
+- name: The login banner's data copied from the front node to the login nodes
+  hosts: role_front
+  become: true
+  tasks:
+    - name: Copy timer, or remove it when there are no login nodes
+      ansible.builtin.include_role:
+        name: login_node
+        tasks_from: send
 
 # Nightly /home mirror: the key on the home machine, the receiving account on the backup machine (for a
 # backup machine in the cluster), then the timer and a check that the destination accepts the key.

@@ -141,6 +141,19 @@ class RootKeysTest(unittest.TestCase):
         )
         self.assertNotIn("runner", root_keys(["alice"], None))
 
+    def test_login_copy_key_only_from_the_front_node_for_its_receiving_command(self) -> None:
+        keys = render(
+            "root_authorized_keys.j2",
+            {"users": USERS, "admins": ["alice"], "auto_deploy_key": None, "agent_runner_key": "",
+             "login_copy_key": "ssh-ed25519 AAAAcopy nanohpc-login-copy@front", "front_address": "10.0.0.10"},
+        )  # fmt: skip
+        self.assertEqual(
+            key_lines(keys)[-1],
+            'from="10.0.0.10",command="/usr/local/sbin/nanohpc-login-copy-receive",restrict '
+            "ssh-ed25519 AAAAcopy nanohpc-login-copy@front",
+        )
+        self.assertNotIn("login-copy", root_keys(["alice"], None))
+
     def test_automatic_deploy_key_keeps_its_front_only_limit(self) -> None:
         lines = key_lines(root_keys(["alice"], "ssh-ed25519 AAAAfront nanohpc-auto-deploy@front"))
         self.assertEqual(

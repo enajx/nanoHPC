@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-ROLES = ("Front node", "Compute", "Storage", "Monitor", "Machine")
+ROLES = ("Front node", "Login node", "Compute", "Storage", "Monitor", "Machine")
 HEALTH_QUERY = '{__name__=~"up|node_systemd_unit_state|node_filesystem_(readonly|avail_bytes|free_bytes|size_bytes|files_free)|node_boot_time_seconds|node_memory_MemTotal_bytes|cluster_machine_.*|cluster_gpu_collection_timestamp_seconds",job=~"node|node-.+"}'
 GPU_QUERY = "cluster_gpu_utilization_percent and on(machine) (time() - cluster_gpu_collection_timestamp_seconds < 90)"
 HOME_SPEED_TESTS = ("home_large_read", "home_large_write", "home_small_read", "home_small_write")

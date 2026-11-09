@@ -23,7 +23,7 @@ from typing import Any
 
 from nanohpc.config import load_config
 from nanohpc.probe import account_problems, run_remote, ssh_failure
-from nanohpc.render import front_machine, gpu_count, home_server
+from nanohpc.render import front_machine, gpu_count, home_clients, home_server
 
 CHECK_TIMEOUT = 300  # seconds for the whole SSH call to one machine (more than all the limits below together)
 HEALTH_TIMEOUT = 150  # seconds for cluster-health on the machine (it limits its own slow checks to 10 seconds each)
@@ -238,7 +238,7 @@ def mounts_result(facts: dict[str, Any], config: dict[str, Any], name: str, repo
             problems.append("/home is not mounted (cluster.yml: this machine serves /home)")
         elif home[1].startswith("nfs"):
             problems.append(f"/home is the NFS mount {home[0]}, but cluster.yml says this machine serves /home")
-    elif "backup" not in roles:
+    elif name in home_clients(config):
         if home is None:
             problems.append(f"/home is not mounted (cluster.yml: the NFS mount {shared})")
         elif home != (shared, "nfs4"):
@@ -246,7 +246,7 @@ def mounts_result(facts: dict[str, Any], config: dict[str, Any], name: str, repo
     if "compute" in roles and "/scratch" not in mounts:
         problems.append("/scratch is not mounted")
     report.problems.extend(problems)
-    checked = "home" in roles or "backup" not in roles or "compute" in roles
+    checked = "home" in roles or name in home_clients(config) or "compute" in roles
     report.cells["mounts"] = "FAIL" if problems else "ok" if checked else "-"
 
 

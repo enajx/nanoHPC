@@ -267,7 +267,7 @@ function App({ site }: { site: SiteSettings }) {
         <OverviewJobs jobs={stale || failed ? null : data?.jobs ?? null}/>
       </>}
       {page === 'queue' && <div className="queue-dashboards">{dashboard('Running Jobs and Queue', 'queue', `${graph('nanohpc-queue', 'now-6h')}&var-state=${encodeURIComponent(queueFilter)}`)}{dashboard('Queue history', 'queue-history', graph('nanohpc-queue-history', 'now-7d'))}</div>}
-      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh} demo={demo}/>}<MachineTable data={data} stale={stale || failed} link={null} demo={demo} embedded={false}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed} roles={['Front node', 'Compute', 'Storage']} demo={demo}/></>}
+      {page === 'machines' && <>{mapShown && <ClusterMap nodes={data?.nodes ?? []} jobs={data?.jobs ?? []} pendingJobs={data?.pending_jobs ?? 0} stale={stale || failed} refreshSeconds={refresh} demo={demo}/>}<MachineTable data={data} stale={stale || failed} link={null} demo={demo} embedded={false}/><MachineCards nodes={data?.nodes ?? []} stale={stale || failed} roles={['Front node', 'Login node', 'Compute', 'Storage']} demo={demo}/></>}
       {page === 'users' && <>
         <div className="users-top">
           {dashboard('GPU usage history per user', 'usage', graph('nanohpc-usage', 'now-7d'))}

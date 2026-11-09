@@ -1,0 +1,80 @@
+# On the front node: copy the login banner's data to the login nodes every 2 minutes (nanohpc-login-copy), or
+# stop when there are none.
+- name: Pin the login nodes' SSH host keys for the copy
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/login-copy/known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name in groups['role_login'] %}
+      {{ nanohpc.machines[name].address }} ssh-ed25519 {{ hostvars[name].ansible_facts.ssh_host_key_ed25519_public }}
+      {% endfor %}
+  when: groups['role_login'] | default([]) | length > 0
+
+- name: Install the copy command
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-login-copy"
+    dest: /usr/local/sbin/nanohpc-login-copy
+    owner: root
+    group: root
+    mode: "0755"
+  when: groups['role_login'] | default([]) | length > 0
+
+- name: Install the copy service and timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/nanohpc-login-copy.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if item == 'service' %}
+      [Unit]
+      Description=Copy the login banner's data to the login nodes (nanoHPC)
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/nanohpc-login-copy {% for name in groups['role_login'] %}--login {{ name }}={{ nanohpc.machines[name].address }} {% endfor %}--key /etc/nanohpc/login-copy/id_ed25519 --known-hosts /etc/nanohpc/login-copy/known_hosts
+      TimeoutStartSec=10min
+      {% else %}
+      [Unit]
+      Description=Copy the login banner's data to the login nodes every 2 minutes (nanoHPC)
+
+      [Timer]
+      OnActiveSec=1min
+      OnUnitInactiveSec=2min
+
+      [Install]
+      WantedBy=timers.target
+      {% endif %}
+  loop: [service, timer]
+  register: login_copy_units
+  when: groups['role_login'] | default([]) | length > 0
+
+- name: Run the copy timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-login-copy.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ login_copy_units is changed }}"
+  when: groups['role_login'] | default([]) | length > 0 and not (ansible_check_mode and login_copy_units is changed)
+
+- name: Look for an earlier copy timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-login-copy.timer
+  register: login_copy_timer
+  when: groups['role_login'] | default([]) | length == 0
+
+- name: Stop the copy timer when there are no login nodes
+  ansible.builtin.systemd_service:
+    name: nanohpc-login-copy.timer
+    enabled: false
+    state: stopped
+  when: groups['role_login'] | default([]) | length == 0 and login_copy_timer.stat.exists
+
+- name: Remove the copy units when there are no login nodes
+  ansible.builtin.file:
+    path: "/etc/systemd/system/nanohpc-login-copy.{{ item }}"
+    state: absent
+  loop: [service, timer]
+  when: groups['role_login'] | default([]) | length == 0
