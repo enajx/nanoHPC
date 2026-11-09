@@ -23,6 +23,8 @@ Host {{cluster_name}}
     IdentityFile ~/.ssh/id_ed25519_{{cluster_name}}
 ```
 
+{{login_note}}
+
 ## 1. SSH into {{cluster_name}}
 
 ```bash

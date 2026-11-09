@@ -1,0 +1,8 @@
+# A login node (role `login`): users log in and run Slurm's commands here, as on the front node, but the Slurm
+# controller, monitoring and website stay on the front node. slurmd does not run here (no jobs).
+
+- name: Slurm's configuration
+  ansible.builtin.import_tasks: slurm_config.yml
+
+- name: Home folders
+  ansible.builtin.import_tasks: homes.yml

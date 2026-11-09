@@ -16,7 +16,7 @@ from typing import Any
 
 import yaml
 
-ROLES = ("front", "home", "backup", "compute", "shared")
+ROLES = ("front", "login", "home", "backup", "compute", "shared")
 JOB_TYPES = ("batch", "interactive", "any")  # batch: sbatch only; interactive: only the documented shell
 COMPUTE_FIELDS = ("cpu", "memory_mb", "gpu", "partitions", "scratch")
 MACHINE_FIELDS = ("address", "aliases", "roles", "home", "backup", "shared", *COMPUTE_FIELDS)
@@ -698,9 +698,11 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
                 checker.fail(f"{path}.roles:", f"unknown role {role} (known: {', '.join(ROLES)})")
         if len(set(map(str, roles))) != len(roles):
             checker.fail(f"{path}.roles", "has duplicates")
-        for role in ("front", "home", "backup", "shared"):
+        for role in ("front", "login", "home", "backup", "shared"):
             if role in roles and "compute" in roles:
                 checker.fail(f"{path}:", f"the {role} role cannot be combined with compute")
+        if "front" in roles and "login" in roles:
+            checker.fail(f"{path}:", "the front node is already a login node; login is for the other ones")
         if "front" in roles and "shared" in roles:
             checker.fail(f"{path}:", "the shared role must be on a storage machine, not the front node")
         if "home" in roles and "shared" in roles:

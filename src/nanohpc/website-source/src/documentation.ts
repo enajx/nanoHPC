@@ -26,6 +26,7 @@ export type GuideTopic = { title: string; panel: GuidePanel; group?: string; tex
 export type GuideValues = {
   cluster_name: string
   login_address: string
+  login_note: string
   home_quota_soft_gb: string
   home_quota_hard_gb: string
   scratch_cleanup_days: string
@@ -38,6 +39,7 @@ export type GuideValues = {
 export const templateValues: GuideValues = {
   cluster_name: '{{cluster_name}}',
   login_address: '{{login_address}}',
+  login_note: '{{login_note}}',
   home_quota_soft_gb: '{{home_quota_soft_gb}}',
   home_quota_hard_gb: '{{home_quota_hard_gb}}',
   scratch_cleanup_days: '{{scratch_cleanup_days}}',
@@ -51,6 +53,7 @@ export function siteValues(site: SiteSettings): GuideValues {
   return {
     cluster_name: site.cluster_name,
     login_address: site.login_address,
+    login_note: site.login_note ?? '',
     home_quota_soft_gb: String(site.home_quota_soft_gb),
     home_quota_hard_gb: String(site.home_quota_hard_gb),
     scratch_cleanup_days: String(site.scratch_cleanup_days),
@@ -70,6 +73,7 @@ export function guideSteps(values: GuideValues): GuideStep[] {
       { kind: 'code', text: `ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_${name}` },
       { kind: 'paragraph', text: `Send the public key (.pub) to the cluster admin and ask for an account on the ${name} front node. Keep the private key on your laptop. Add your assigned username and key path to ~/.ssh/config:` },
       { kind: 'code', text: `Host ${name}\n    HostName ${values.login_address}\n    User USER\n    IdentityFile ~/.ssh/id_ed25519_${name}` },
+      ...(values.login_note ? [{ kind: 'paragraph' as const, text: values.login_note }] : []),
     ] },
     { title: `1. SSH into ${name}`, column: 'right', blocks: [
       { kind: 'code', text: `ssh -A ${name}` },

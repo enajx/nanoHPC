@@ -18,6 +18,7 @@ SITE = {
     "interactive_machine_rule": "A main job asking for more than 4 hours avoids gpu4.",
     "priority_rule": "Waiting time does not add priority.",
     "resubmit_rule": "No.",
+    "login_note": "",
 }
 
 

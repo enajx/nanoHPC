@@ -1,0 +1,28 @@
+# With /home on the front node, this login node keeps its own /home (it does not mount the front node's).
+- name: Create private home folders on this login node's own /home
+  ansible.builtin.file:
+    path: "/home/{{ item.name }}"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0700"
+  loop: "{{ nanohpc.users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: inventory_hostname not in nanohpc.home.clients and not ansible_check_mode
+
+# cluster-health checks the shared /home mount everywhere else; this marker tells it this /home is the machine's own.
+- name: Record that this login node keeps its own /home
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/home-local
+    content: ""
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname not in nanohpc.home.clients
+
+- name: Remove that record when this login node mounts the shared /home
+  ansible.builtin.file:
+    path: /etc/nanohpc/home-local
+    state: absent
+  when: inventory_hostname in nanohpc.home.clients

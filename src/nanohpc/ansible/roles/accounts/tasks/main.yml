@@ -268,7 +268,7 @@
   ansible.builtin.set_fact:
     # root is always allowed (added by the template): only the keys in /etc/ssh/authorized_keys/root work for it.
     ssh_allowed: >-
-      {{ (((nanohpc.users | map(attribute='name') | list) if inventory_hostname in groups['role_front'] else nanohpc.admins)
+      {{ (((nanohpc.users | map(attribute='name') | list) if inventory_hostname in ((groups['role_front'] | default([])) + (groups['role_login'] | default([]))) else nanohpc.admins)
           + deploy_account_names + service_account_names + [nanohpc_login_user]) | unique | reject('equalto', 'root') | list }}
 
 - name: List compute destinations allowed through the front node
@@ -283,11 +283,11 @@
         {%- endfor -%}
       {%- endfor -%}
       {{ destinations | join(' ') }}
-  when: inventory_hostname in groups['role_front']
+  when: inventory_hostname in ((groups['role_front'] | default([])) + (groups['role_login'] | default([])))
 
 - name: Change SSH access, and put the old file back unless the effective settings are right
   block:
-    - name: Allow all users on the front node, only administrators on the other machines, and root by key
+    - name: Allow all users on the front and login nodes, only administrators on the other machines, and root by key
       ansible.builtin.template:
         src: sshd_nanohpc.conf.j2
         dest: /etc/ssh/sshd_config.d/10-nanohpc.conf
@@ -339,7 +339,7 @@
       register: ssh_effective_users
       changed_when: false
       check_mode: false
-      when: inventory_hostname in (groups['role_front'] | default([])) and not (ansible_check_mode and ssh_access is changed)
+      when: inventory_hostname in ((groups['role_front'] | default([])) + (groups['role_login'] | default([]))) and not (ansible_check_mode and ssh_access is changed)
 
     - name: Require compute-only local forwarding for ordinary front node users
       ansible.builtin.assert:
@@ -359,7 +359,7 @@
       loop: "{{ ssh_effective_users.results | default([]) | rejectattr('skipped', 'defined') | list }}"
       loop_control:
         label: "{{ item.item.name }}"
-      when: inventory_hostname in (groups['role_front'] | default([])) and not (ansible_check_mode and ssh_access is changed)
+      when: inventory_hostname in ((groups['role_front'] | default([])) + (groups['role_login'] | default([]))) and not (ansible_check_mode and ssh_access is changed)
 
     # Administrators log in as root from anywhere; the address here is this machine's own.
     - name: Read the effective SSH settings for root

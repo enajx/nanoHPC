@@ -238,9 +238,15 @@ def home_server(config: dict[str, Any]) -> str:
 
 
 def home_clients(config: dict[str, Any]) -> list[str]:
-    """Return the machines that mount /home: all but the home machine and the backup machine."""
+    """Return the machines that mount /home: all but the home machine and the backup machine. Login nodes mount it
+    only when /home is on its own machine; with /home on the front node, each login node keeps its own /home."""
     server = home_server(config)
-    return [name for name, m in config["machines"].items() if name != server and "backup" not in m["roles"]]
+    on_front = "front" in config["machines"][server]["roles"]
+    return [
+        name
+        for name, m in config["machines"].items()
+        if name != server and "backup" not in m["roles"] and not ("login" in m["roles"] and on_front)
+    ]
 
 
 def render_home_exports(config: dict[str, Any]) -> str:

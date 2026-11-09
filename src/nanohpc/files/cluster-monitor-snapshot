@@ -22,7 +22,7 @@ Arguments (all set by the operator, never from the website):
   --cluster-name NAME        the cluster's name, for the machines.md heading.
   --machines PATH            JSON file of every machine to check, by machine name (Prometheus's `machine`
                              label, and Slurm's node name for compute machines):
-                               {"NAME": {"role": "front" | "compute" | "storage",
+                               {"NAME": {"role": "front" | "login" | "compute" | "storage",
                                          "units": ["slurmd.service", ...],
                                          "mounts": ["/", "/home", "/scratch", ...],
                                          "building": "optional area name",
@@ -68,7 +68,7 @@ from cluster_machine_status import (
 
 UTC = timezone.utc  # noqa: UP017 (datetime.UTC needs Python 3.11; Ubuntu 22.04 has 3.10)
 QUOTA_QUERY = '{__name__=~"cluster_home_quota_(used_bytes|soft_bytes|hard_bytes|collected_timestamp_seconds)"}'
-ROLE_NAMES = {"front": "Front node", "compute": "Compute", "storage": "Storage"}
+ROLE_NAMES = {"front": "Front node", "login": "Login node", "compute": "Compute", "storage": "Storage"}
 MONITOR_ROLE_NAMES = {"monitor": "Monitor", "machine": "Machine"}
 
 
@@ -733,6 +733,7 @@ def collect(
             apply_maintenance(compute, reason)
             under_maintenance.add(node["NodeName"])
         compute_nodes.append(compute)
+    login_nodes = [status(name, "", 0) for name, machine in machines.items() if machine["role"] == "login"]
     storage_nodes = [status(name, "", 0) for name, machine in machines.items() if machine["role"] == "storage"]
     total_gpus, allocated_gpus = counted_gpus(nodes, compute_nodes)
     result = {
@@ -749,7 +750,7 @@ def collect(
         "allocated_gpus": allocated_gpus,
         "queue_paused": queue_paused,
         "jobs": overview_jobs(queue["jobs"], int(now.timestamp())),
-        "nodes": [status(controller, "", 0)] + compute_nodes + storage_nodes,
+        "nodes": [status(controller, "", 0)] + login_nodes + compute_nodes + storage_nodes,
         "ranking": ranking,
         "users": user_cards,
         "priorities": [

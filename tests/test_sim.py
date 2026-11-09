@@ -4862,5 +4862,54 @@ class SimSlackAgentMonitorTest(unittest.TestCase):
             self.assertEqual(checkout.strip(), "# checked by the agent")
 
 
+class SimLoginNodeTest(SimUsersBase):
+    """Several front nodes: a login node (role `login`) where users log in and submit jobs as on the front node,
+    with its own /home because /home is on the front node; the controller, monitoring and website stay on the
+    front node. Three Ubuntu 24.04 VMs."""
+
+    sim = SIM / "login.yml"
+    state = ROOT / ".nanohpc-sim" / "login"
+
+    def test_users_log_in_and_submit_jobs_on_the_login_node(self) -> None:
+        cluster, config, public_key = self.up_with_test_key()
+        config["users"].append({"name": "bob", "uid": 2001, "ssh_keys": [public_key]})
+        cluster.write_text(yaml.safe_dump(config))
+        result = self.run_command("uv", "run", "nanohpc", "sim", "deploy", str(self.sim))
+        self.assertEqual(result.returncode, 0, self.failure(result))
+        login = config["machines"]["login1"]["address"]
+
+        with self.subTest("a user logs in to the login node; only administrators reach the compute machine"):
+            logged_in = self.as_user("bob", "login1", "hostname", False)
+            self.assertEqual(logged_in.returncode, 0, logged_in.stdout + logged_in.stderr)
+            self.assertIn("login1", logged_in.stdout)
+            self.assertNotEqual(self.as_user("bob", "cpu1", "true", False).returncode, 0)
+
+        with self.subTest("a job submitted on the login node runs on the compute machine"):
+            submitted = self.as_user(
+                "bob", "login1", "sbatch --parsable --wait -p main --chdir /tmp -o /dev/null --wrap hostname", False
+            )
+            self.assertEqual(submitted.returncode, 0, submitted.stdout + submitted.stderr)
+            job = submitted.stdout.strip().splitlines()[-1]
+            self.assertEqual(self.finished_job(job), ("COMPLETED", "cpu1"))
+            self.assertEqual(self.ssh("login1", "systemctl is-active slurmd").stdout.strip(), "inactive")
+
+        with self.subTest("the login node keeps its own /home, and its health checks pass"):
+            self.assertEqual(self.ssh("login1", "test -f /etc/nanohpc/home-local").returncode, 0)
+            self.assertEqual(self.ssh("login1", "sudo test -d /home/bob").returncode, 0)
+            mounted = self.ssh("login1", "findmnt -n -t nfs4 --mountpoint /home").stdout.strip()
+            self.assertEqual(mounted, "")
+            health = self.ssh("login1", "sudo cluster-health")
+            self.assertEqual(health.returncode, 0, health.stdout + health.stderr)
+
+        with self.subTest("the website's user guide names the login node, and nanohpc check passes"):
+            site = json.loads(self.on_front("cat /srv/nanohpc-web/config/site.json"))
+            self.assertIn(login, site["login_note"])
+            self.assertIn("Each one has its own /home", site["login_note"])
+            checked = self.run_command(
+                "uv", "run", "nanohpc", "check", str(cluster), "--ssh-config", str(self.state / "ssh_config")
+            )
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
