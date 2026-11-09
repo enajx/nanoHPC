@@ -1,0 +1,31 @@
+# The login banner's data on a login node: the front node copies its monitoring snapshot and the users' home usage
+# boxes into /var/lib/nanohpc-login-copy (nanohpc-login-copy-receive); the banner reads them at its usual paths.
+- name: Install the receiving command for the front node's copies
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-login-copy-receive"
+    dest: /usr/local/sbin/nanohpc-login-copy-receive
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the folders the copies land in
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+  loop: [/var/lib/nanohpc-login-copy, /var/lib/nanohpc-login-copy/home-notices, /var/lib/nanohpc/monitor]
+
+- name: Point the login banner's usual paths at the copies
+  ansible.builtin.file:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    state: link
+    force: true
+    owner: root
+    group: root
+  loop:
+    - {src: /var/lib/nanohpc-login-copy/status.json, dest: /var/lib/nanohpc/monitor/status.json}
+    - {src: /var/lib/nanohpc-login-copy/home-notices, dest: /var/lib/nanohpc-home-notices}
+  when: not ansible_check_mode

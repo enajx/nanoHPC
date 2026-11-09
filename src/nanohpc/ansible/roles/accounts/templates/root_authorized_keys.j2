@@ -14,3 +14,7 @@ from="{{ front_address }}",no-agent-forwarding,no-X11-forwarding {{ auto_deploy_
 # The Slack agent's runner (on the front node): read-only checks, and changes an approver asked for or approved.
 from="{{ front_address }}",no-agent-forwarding,no-port-forwarding,no-X11-forwarding {{ agent_runner_key }}
 {% endif %}
+{% if login_copy_key | default('') %}
+# The front node's copies of the login banner's data (this is a login node): only that receiving command.
+from="{{ front_address }}",command="/usr/local/sbin/nanohpc-login-copy-receive",restrict {{ login_copy_key }}
+{% endif %}

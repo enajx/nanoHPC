@@ -247,6 +247,10 @@
     agent_runner_key: >-
       {{ hostvars[groups['role_front'][0]].agent_runner_public_key
          if nanohpc.agent.enabled and inventory_hostname in groups['role_compute'] else '' }}
+    # Login nodes take the front node's copies of the login banner's data, for that command only.
+    login_copy_key: >-
+      {{ hostvars[groups['role_front'][0]].login_copy_public_key
+         if inventory_hostname in (groups['role_login'] | default([])) else '' }}
     front_address: "{{ nanohpc.metrics.front_address }}"
 
 - name: List the installed SSH key files

@@ -1,0 +1,28 @@
+# The front node's key for copying the login banner's data to the login nodes (nanohpc-login-copy). Made before
+# the accounts role runs, so the login nodes' root key file can accept it (from the front node only, for
+# nanohpc-login-copy-receive).
+- name: Create the login copy folder
+  ansible.builtin.file:
+    path: /etc/nanohpc/login-copy
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Make the login copy key
+  ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-login-copy@{{ inventory_hostname }}" -f /etc/nanohpc/login-copy/id_ed25519
+  args:
+    creates: /etc/nanohpc/login-copy/id_ed25519
+  register: login_copy_keygen
+
+- name: Read the login copy key's public half
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/login-copy/id_ed25519.pub
+  register: login_copy_key_file
+  when: not (ansible_check_mode and login_copy_keygen is changed)  # dry run: the key is not made yet
+
+- name: Keep the public key for the login nodes
+  ansible.builtin.set_fact:
+    login_copy_public_key: >-
+      {{ (login_copy_key_file.content | b64decode | trim) if login_copy_key_file.content is defined
+         else '(the key this deploy makes)' }}

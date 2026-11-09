@@ -6,3 +6,6 @@
 
 - name: Home folders
   ansible.builtin.import_tasks: homes.yml
+
+- name: The login banner's data from the front node
+  ansible.builtin.import_tasks: receive.yml

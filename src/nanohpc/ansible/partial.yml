@@ -87,6 +87,12 @@
         tasks_from: key
       when: nanohpc.agent.enabled
 
+    - name: Make or read the login copy key
+      ansible.builtin.include_role:
+        name: login_node
+        tasks_from: copy_key
+      when: groups['role_login'] | default([]) | length > 0
+
 # --only users
 
 - name: Users, SSH keys, sudo keys, and who may log in, on every machine

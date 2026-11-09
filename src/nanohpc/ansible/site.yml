@@ -164,6 +164,12 @@
         tasks_from: key
       when: nanohpc.agent.enabled
 
+    - name: Make or read the login copy key
+      ansible.builtin.include_role:
+        name: login_node
+        tasks_from: copy_key
+      when: groups['role_login'] | default([]) | length > 0
+
 - name: Base setup, users, and SSH access
   hosts: all
   become: true
@@ -257,6 +263,15 @@
   hosts: role_front:role_login
   become: true
   roles: [login_banner]
+
+- name: The login banner's data copied from the front node to the login nodes
+  hosts: role_front
+  become: true
+  tasks:
+    - name: Copy timer, or remove it when there are no login nodes
+      ansible.builtin.include_role:
+        name: login_node
+        tasks_from: send
 
 # Nightly /home mirror: the key on the home machine, the receiving account on the backup machine (for a
 # backup machine in the cluster), then the timer and a check that the destination accepts the key.

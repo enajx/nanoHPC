@@ -4901,6 +4901,24 @@ class SimLoginNodeTest(SimUsersBase):
             health = self.ssh("login1", "sudo cluster-health")
             self.assertEqual(health.returncode, 0, health.stdout + health.stderr)
 
+        with self.subTest("the login banner shows the usage box and the cluster summary, copied from the front node"):
+            for _ in range(40):  # the front node measures /home every 5 minutes
+                if self.ssh("front", "sudo test -f /var/lib/nanohpc-home-notices/bob").returncode == 0:
+                    break
+                time.sleep(15)
+            self.on_front("sudo systemctl start nanohpc-login-copy.service")
+            self.assertEqual(self.ssh("login1", "sudo test -f /var/lib/nanohpc/monitor/status.json").returncode, 0)
+            box = self.ssh("login1", "sudo cat /var/lib/nanohpc-home-notices/bob").stdout.strip()
+            self.assertEqual(box, self.on_front("sudo cat /var/lib/nanohpc-home-notices/bob").strip())
+            banner = self.as_user("bob", "login1", "nanohpc-hello", False)
+            self.assertEqual(banner.returncode, 0, banner.stdout + banner.stderr)
+            self.assertNotIn("run nanohpc-hello on the front node", banner.stdout)
+            self.assertIn(box.splitlines()[0], banner.stdout)
+            # Each box stays private: alice cannot read bob's.
+            self.assertNotEqual(
+                self.as_user("alice", "login1", "cat /var/lib/nanohpc-home-notices/bob", False).returncode, 0
+            )
+
         with self.subTest("the website's user guide names the login node, and nanohpc check passes"):
             site = json.loads(self.on_front("cat /srv/nanohpc-web/config/site.json"))
             self.assertIn(login, site["login_note"])
