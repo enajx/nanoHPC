@@ -20,8 +20,9 @@ Metrics (gauges, in a textfile replaced whole, mode 0644):
                                                    file when a run fails, absent until a run has succeeded
   cluster_backup_duration_seconds                  how long the last run took
 
-Restore one user's folder (as root on the home machine, with the same key; add --delete to also remove files
-created since the backup):
+Restore one user's listed files (as root on the home machine, with the same key). Never add --delete: the copy
+holds only the listed files, so --delete would remove the user's code and data. The first run after the list was
+introduced deletes from the copy every file that is not listed.
   rsync --archive --hard-links --acls --xattrs --numeric-ids \\
     --rsh "ssh -i KEY -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=FILE" \\
     --rsync-path "rsync --fake-super" nanohpc-backup@BACKUP:/srv/backup/home/USER/ /home/USER/
@@ -106,9 +107,10 @@ def rsync_command(arguments: argparse.Namespace) -> list[str]:
         "--timeout=600",
         "--rsh=" + " ".join(ssh),
     ]
-    # The listed files first, then the cluster's own excludes (inside listed folders), then nothing else.
-    command += file_rules()
+    # rsync takes the first rule that matches: the cluster's own excludes first (they apply inside listed folders,
+    # and an excluded parent such as .cache/ also leaves out a listed file in it), then the list, then nothing else.
     command += ["--exclude=" + pattern for pattern in arguments.exclude]
+    command += file_rules()
     command += ["--max-size=" + MAX_FILE_SIZE]
     if arguments.fake_super:
         command.append("--rsync-path=rsync --fake-super")

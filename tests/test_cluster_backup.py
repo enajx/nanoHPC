@@ -145,9 +145,11 @@ class ClusterBackupTests(unittest.TestCase):
             cluster = Cluster(Path(directory), RSYNC)
             alice = cluster.home / "alice"
             for folder in [alice / ".ssh", alice / ".config/git", alice / ".config/other", alice / ".cache/huggingface",
-                           alice / "project", cluster.home / "bob"]:  # fmt: skip
+                           alice / "project", alice / ".ipython/profile/__pycache__", cluster.home / "bob"]:  # fmt: skip
                 folder.mkdir(parents=True)
             (alice / ".bashrc").write_text("alias ll='ls -l'\n")
+            (alice / ".ipython/profile/config.py").write_text("c = 1\n")
+            (alice / ".ipython/profile/__pycache__/config.pyc").write_text("pyc\n")
             (alice / ".ssh/authorized_keys").write_text("ssh-ed25519 AAAA alice\n")
             (alice / ".config/git/config").write_text("[user]\n")
             (alice / ".config/other/settings").write_text("not listed\n")
@@ -174,10 +176,12 @@ class ClusterBackupTests(unittest.TestCase):
             self.assertEqual((copy / ".bashrc").read_text(), "alias ll='ls -l'\n")
             self.assertEqual((copy / ".ssh/authorized_keys").read_text(), "ssh-ed25519 AAAA alice\n")
             self.assertEqual((copy / ".config/git/config").read_text(), "[user]\n")
-            self.assertEqual((copy / ".cache/huggingface/token").read_text(), "hf\n")
+            # The cluster's own exclude .cache/ applies first, so the listed token in it is left out too.
+            self.assertFalse((copy / ".cache").exists())
             self.assertEqual((cluster.folder / "bob/.zshrc").read_text(), "bob\n")
             self.assertEqual((copy / ".bash_aliases").stat().st_ino, (copy / ".bashrc").stat().st_ino)
-            for left_out in ["notes.txt", "project", ".config/other", ".cache/huggingface/model.bin", ".bash_history"]:
+            self.assertEqual((copy / ".ipython/profile/config.py").read_text(), "c = 1\n")
+            for left_out in ["notes.txt", "project", ".config/other", ".bash_history", ".ipython/profile/__pycache__"]:
                 self.assertFalse((copy / left_out).exists(), left_out)
             self.assertFalse((cluster.folder / "carol").exists())
             # --fake-super: the unprivileged copy is kept writable by its owner; the real mode is in an xattr.
@@ -323,7 +327,8 @@ class ClusterBackupArgumentTests(unittest.TestCase):
                      "--include=/*/.cache/huggingface/token", "--max-size=10M"):  # fmt: skip
             self.assertIn(rule, command)
         self.assertEqual(command.count("--include=/*/.config/"), 1)
-        self.assertLess(command.index("--include=/*/.cache/huggingface/token"), command.index("--exclude=.cache/"))
+        # rsync takes the first rule that matches: the cluster's own excludes come first, so they apply.
+        self.assertLess(command.index("--exclude=.cache/"), command.index("--include=/*/.cache/huggingface/token"))
         self.assertEqual(command[-3:], ["--exclude=*", "/home/", "u@h:/b/home/"])
 
     def test_source_and_destination_need_a_final_slash(self) -> None:

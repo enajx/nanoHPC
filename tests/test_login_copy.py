@@ -12,11 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SEND = ROOT / "src/nanohpc/files/nanohpc-login-copy"
 RECEIVE = ROOT / "src/nanohpc/files/nanohpc-login-copy-receive"
-SNAPSHOT_LINE = (
-    "rsync --server -logDtpre.iLsfxCIvu --timeout=60 --numeric-ids . /var/lib/nanohpc-login-copy/status.json"
-)
+SNAPSHOT_LINE = "rsync --server -ogtpre.iLsfxCIvu --timeout=60 --numeric-ids . /var/lib/nanohpc-login-copy/status.json"
 NOTICES_LINE = (
-    "rsync --server -logDtpre.iLsfxCIvu --timeout=60 --delete --numeric-ids . /var/lib/nanohpc-login-copy/home-notices/"
+    "rsync --server -ogtpre.iLsfxCIvu --timeout=60 --delete-during --numeric-ids"
+    " . /var/lib/nanohpc-login-copy/home-notices/"
 )
 
 
@@ -37,6 +36,27 @@ class ReceiveTest(unittest.TestCase):
             return subprocess.run([sys.executable, str(RECEIVE)], env=environment, capture_output=True, text=True,
                                   check=False)  # fmt: skip
 
+    def test_received_files_are_plain_and_never_setuid(self) -> None:
+        """After rsync, anything in the folder that is not a plain file or folder is removed, and setuid and setgid
+        bits are dropped (whatever the sender sent)."""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory) / "copy"
+            (folder / "home-notices").mkdir(parents=True)
+            box = folder / "home-notices/alice"
+            box.write_text("box\n")
+            box.chmod(0o4755)
+            (folder / "home-notices/escape").symlink_to("/etc/shadow")
+            environment = {
+                **fake_rsync(Path(directory), 0),
+                "SSH_ORIGINAL_COMMAND": NOTICES_LINE.replace("/var/lib/nanohpc-login-copy", str(folder)),
+                "NANOHPC_LOGIN_COPY_FOLDER": str(folder),
+            }
+            result = subprocess.run([sys.executable, str(RECEIVE)], env=environment, capture_output=True, text=True,
+                                    check=False)  # fmt: skip
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(box.stat().st_mode & 0o7777, 0o755)
+            self.assertFalse((folder / "home-notices/escape").is_symlink())
+
     def test_the_two_copies_are_received(self) -> None:
         for command in (SNAPSHOT_LINE, NOTICES_LINE):
             with self.subTest(command):
@@ -52,6 +72,9 @@ class ReceiveTest(unittest.TestCase):
             "rsync --server --sender -logDtpre.iLsfxCIvu . /var/lib/nanohpc-login-copy/status.json",
             SNAPSHOT_LINE.replace("--timeout=60", "--temp-dir=/tmp"),
             SNAPSHOT_LINE + "; id",
+            # Links and device files are never received.
+            SNAPSHOT_LINE.replace("-ogtpre", "-logtpre"),
+            SNAPSHOT_LINE.replace("-ogtpre", "-ogDtpre"),
             "rsync --server . /var/lib/nanohpc-login-copy/status.json",
         ):
             with self.subTest(command):
@@ -82,6 +105,8 @@ class SendTest(unittest.TestCase):
             self.assertEqual(len(calls), 4)
             self.assertTrue(calls[0].endswith("root@10.0.0.51:/var/lib/nanohpc-login-copy/status.json"))
             self.assertIn("--delete", calls[1])
+            self.assertNotIn("--archive", calls[0])
+            self.assertIn("--recursive --times --perms --owner --group", calls[1])
             self.assertTrue(calls[1].endswith("notices/ root@10.0.0.51:/var/lib/nanohpc-login-copy/home-notices/"))
             self.assertIn("StrictHostKeyChecking=yes", calls[0])
 

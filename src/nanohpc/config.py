@@ -701,6 +701,9 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
         for role in ("front", "login", "home", "backup", "shared"):
             if role in roles and "compute" in roles:
                 checker.fail(f"{path}:", f"the {role} role cannot be combined with compute")
+        for role in ("home", "backup"):
+            if "login" in roles and role in roles:
+                checker.fail(f"{path}:", f"the login role cannot be combined with {role}")
         if "front" in roles and "login" in roles:
             checker.fail(f"{path}:", "the front node is already a login node; login is for the other ones")
         if "front" in roles and "shared" in roles:

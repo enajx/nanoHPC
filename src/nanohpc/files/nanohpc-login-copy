@@ -23,7 +23,9 @@ def copies(address: str, key: str, known_hosts: str, snapshot: Path, notices: Pa
     """The rsync commands for one login node."""
     ssh = (f"ssh -i {key} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "
            f"-o UserKnownHostsFile={known_hosts} -o ConnectTimeout=15")
-    common = ["rsync", "--archive", "--numeric-ids", "--timeout=60", "--rsh=" + ssh]
+    # Plain files and folders only (no links or device files): the login node refuses anything else.
+    common = ["rsync", "--recursive", "--times", "--perms", "--owner", "--group", "--numeric-ids", "--timeout=60",
+              "--rsh=" + ssh]  # fmt: skip
     commands = []
     if snapshot.is_file():
         commands.append([*common, str(snapshot), f"root@{address}:{DESTINATION}/status.json"])

@@ -4,20 +4,25 @@ address only): receive the front node's monitoring snapshot and the users' home 
 
 Allowed: the rsync server command line, as rsync 3.2 and 3.4 clients send it, writing only to FOLDER/status.json
 or FOLDER/home-notices/ (FOLDER: /var/lib/nanohpc-login-copy), with short options from a fixed list and the long
-options --numeric-ids, --delete (and rsync's --delete-before/during/after/delay forms) and --timeout=N. Words may hold only letters, digits and `._/=-`. Anything else
-prints a message on stderr and exits 1; an allowed command is run directly (exec, no shell). Root receives, so each
-usage box keeps its owner and stays private.
+options --numeric-ids, --delete (and rsync's --delete-before/during/after/delay forms) and --timeout=N; never links
+or device files (no l or D option). Words may hold only letters, digits and `._/=-`. Anything else prints a message
+on stderr and exits 1. An allowed command is run without a shell; root receives, so each usage box keeps its owner
+and stays private. Afterwards anything in the folder that is not a plain file or folder is removed and setuid and
+setgid bits are dropped, whatever the sender sent. Exits with rsync's code. NANOHPC_LOGIN_COPY_FOLDER is for tests.
 """
 
 import os
 import re
+import stat
+import subprocess
 import sys
+from pathlib import Path
 
-FOLDER = "/var/lib/nanohpc-login-copy"
+FOLDER = os.environ.get("NANOHPC_LOGIN_COPY_FOLDER", "/var/lib/nanohpc-login-copy")
 TARGETS = (FOLDER + "/status.json", FOLDER + "/home-notices/")
 SAFE_COMMAND = re.compile(r"[A-Za-z0-9._/= -]+")
 # One short option group: flags without arguments, then rsync's "e." capability letters.
-SHORT_OPTIONS = re.compile(r"-[vqlogDtprcuWIxSdOJNU]*e\.[A-Za-z]*")
+SHORT_OPTIONS = re.compile(r"-[vqogtprcuWIxSdOJNU]*e\.[A-Za-z]*")
 LONG_OPTIONS = re.compile(r"--(numeric-ids|delete|delete-before|delete-during|delete-after|delete-delay|timeout=[0-9]+)")
 
 
@@ -45,10 +50,23 @@ def allowed(command: str) -> list[str]:
     return words
 
 
+def clean(folder: Path) -> None:
+    """Remove anything that is not a plain file or folder, and drop setuid and setgid bits."""
+    for path in sorted(folder.rglob("*"), reverse=True):
+        details = path.lstat()
+        if stat.S_ISREG(details.st_mode) or stat.S_ISDIR(details.st_mode):
+            if details.st_mode & (stat.S_ISUID | stat.S_ISGID):
+                os.chmod(path, stat.S_IMODE(details.st_mode) & ~(stat.S_ISUID | stat.S_ISGID))
+        else:
+            path.unlink()
+
+
 def main() -> None:
-    """Check the client's command, then run it without a shell."""
+    """Check the client's command, run it without a shell, then clean what it wrote."""
     words = allowed(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
-    os.execvp(words[0], words)
+    code = subprocess.run(words, check=False).returncode
+    clean(Path(FOLDER))
+    sys.exit(code)
 
 
 if __name__ == "__main__":

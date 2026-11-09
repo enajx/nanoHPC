@@ -301,7 +301,8 @@ fi
 # With login nodes, the front node copies the login banner's data to them (nanohpc-login-copy).
 if has front && test -f "$root/etc/systemd/system/nanohpc-login-copy.timer"; then
   check "login node copy timer" systemctl is-active --quiet nanohpc-login-copy.timer
-  check "the login node copy's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-login-copy.service'
+  # A warning: one login node that is off must not fail the front node.
+  note "the login node copy's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-login-copy.service'
 fi
 
 if has front; then

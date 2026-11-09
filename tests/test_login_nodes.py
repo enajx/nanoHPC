@@ -11,7 +11,7 @@ import yaml
 
 from nanohpc.check import Report, mounts_result
 from nanohpc.config import check_config
-from nanohpc.deploy import inventory, monitor_machines, site_data
+from nanohpc.deploy import Only, inventory, monitor_machines, only_machines, site_data
 from nanohpc.render import home_clients, render
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +40,14 @@ class LoginConfigTest(unittest.TestCase):
         raw["machines"][compute]["roles"] = ["compute", "login"]
         _, errors = check_config(raw)
         self.assertIn(f"machines.{compute}: the login role cannot be combined with compute", errors)
+
+    def test_a_login_node_is_not_the_home_or_backup_machine(self) -> None:
+        for role in ("home", "backup"):
+            with self.subTest(role):
+                raw = with_login(example(), "login1", "10.0.0.51")
+                raw["machines"]["login1"]["roles"].append(role)
+                _, errors = check_config(raw)
+                self.assertIn(f"machines.login1: the login role cannot be combined with {role}", errors)
 
     def test_a_login_node_is_not_the_front_node(self) -> None:
         raw = example()
@@ -90,11 +98,21 @@ class LoginDeployTest(unittest.TestCase):
         mounts_result(local, self.config(False), "login1", report)
         self.assertEqual(report.problems, ["/home is not mounted (cluster.yml: the NFS mount 10.0.0.60:/home)"])
 
+    def test_partial_deploys_reach_login_nodes(self) -> None:
+        """--only users adds accounts and home folders there; policy and partitions update slurm.conf; a new node
+        reaches their /etc/hosts and slurm.conf."""
+        config = self.config(True)
+        compute = next(name for name, m in config["machines"].items() if "compute" in m["roles"])
+        for only in (Only("users", None), Only("policy", None), Only("partitions", None), Only("node", compute)):
+            with self.subTest(only.part):
+                self.assertIn("login1", only_machines(config, only))
+
     def test_the_status_page_checks_login_nodes(self) -> None:
         shared = monitor_machines(self.config(False))["login1"]
         self.assertEqual(shared, {"role": "login", "units": ["munge.service"], "mounts": ["/", "/home"]})
+        # Its own /home is a folder on its root disk, not a mount.
         own = monitor_machines(self.config(True))["login1"]
-        self.assertEqual(own, {"role": "login", "units": ["munge.service"], "mounts": ["/", "/home"]})
+        self.assertEqual(own, {"role": "login", "units": ["munge.service"], "mounts": ["/"]})
 
     def test_the_website_lists_every_login_address(self) -> None:
         site = site_data(self.config(False))

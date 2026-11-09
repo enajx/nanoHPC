@@ -178,7 +178,7 @@ class Part:
 
 # Each `--only` part. policy and partitions run the same plays: both live in slurm.conf, job_submit.lua, and the
 # QoS. `node NAME` runs everything on NAME, and only the shared parts on the other machines.
-EVERY_ROLE = ("front", "home", "backup", "compute", "shared")
+EVERY_ROLE = ("front", "login", "home", "backup", "compute", "shared")
 ONLY: dict[str, Part] = {
     "users": Part(
         "users",
@@ -189,13 +189,13 @@ ONLY: dict[str, Part] = {
     ),
     "policy": Part(
         "policy",
-        ("front", "compute"),
+        ("front", "login", "compute"),
         "QoS, fair-share, the short-job bonus, and limits (slurm.conf, job_submit.lua, Slurm's QoS); Slurm restarts"
         " where they changed; the website's site data (priority rules) and the pages filled from it",
     ),
     "partitions": Part(
         "partitions",
-        ("front", "compute"),
+        ("front", "login", "compute"),
         "partitions and GPUs (slurm.conf and gres.conf on every Slurm machine, job_submit.lua, Slurm's QoS; Slurm"
         " restarts where they changed), and the website's policy data and site data (priority rules)",
     ),
@@ -752,7 +752,7 @@ def monitor_machines(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
             result[name] = {"role": "front", "units": units, "mounts": ["/", *home, *shared_mount]}
         elif "login" in roles:
             # A login node: Slurm's commands need munge; /home is the shared one or its own.
-            result[name] = {"role": "login", "units": ["munge.service"], "mounts": ["/", "/home", *shared_mount]}
+            result[name] = {"role": "login", "units": ["munge.service"], "mounts": ["/", *home, *shared_mount]}
         elif "compute" in roles:
             units = ["slurmd.service", "munge.service"]
             result[name] = {"role": "compute", "units": units, "mounts": ["/", *home, "/scratch", *shared_mount]}
