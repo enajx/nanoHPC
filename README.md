@@ -42,7 +42,7 @@ See a [demo of nanoHPC](https://najarro.science/nanoHPC/).
 
 You need:
 
-- Machines running Ubuntu 22.04, 24.04, or 26.04. Slurm mode supports NVIDIA GPU and CPU-only compute machines;
+- Machines running Linux (tested on Ubuntu 22.04/24.04/26.04). Slurm mode supports NVIDIA GPU and CPU-only compute machines;
   monitor mode also works with CPU-only machines.
 - SSH access to every machine as an administrator with sudo.
 - [uv](https://docs.astral.sh/uv/) installed.
