@@ -2279,7 +2279,7 @@ class SimSlackTest(SimUsersBase):
     """Slack on three Ubuntu 24.04 VMs (sim file slack.yml), with a stand-in Slack on the front node for the
     channel webhook and the private message API: private job-end messages for --mail-user=slack; a failing check
     posted once, not its end or its return; no post about a machine under maintenance and only the offline post
-    for a machine that is off. About 40 minutes, mostly waiting for alert rules. Real Lima VMs."""
+    for a machine that is off. About 70 minutes, mostly waiting for alert rules. Real Lima VMs."""
 
     def setUp(self) -> None:
         self.sim = SIM / "slack.yml"
@@ -2468,7 +2468,12 @@ class SimSlackTest(SimUsersBase):
             time.sleep(330)
             self.health("front", "true")
             self.health("cpu1", "true")
-            time.sleep(330)
+            # The offline post waits 30 minutes (a restart takes longer than 5), then Alertmanager's group wait.
+            for _ in range(40):
+                if any("cannot read the metrics of gpu4" in post for post in self.channel()[before:]):
+                    break
+                time.sleep(60)
+            time.sleep(60)  # anything else would come with it
             new = self.channel()[before:]
             self.assertEqual(len(new), 1, new)
             self.assertIn("cannot read the metrics of gpu4", new[0])

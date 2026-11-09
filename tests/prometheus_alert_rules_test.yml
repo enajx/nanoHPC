@@ -112,22 +112,24 @@ tests:
             exp_annotations:
               summary: "The health checks on c1 have not run for more than 15 minutes."
 
-  # A machine whose metrics cannot be read for 5 minutes; Prometheus's own job does not count.
+  # A machine whose metrics cannot be read for 30 minutes (a restart takes longer than 5); Prometheus's own job
+  # does not count.
   - interval: 1m
     input_series:
-      # Down from minute 2 to 9, back at minute 10.
+      # Down from minute 2 to 33, back at minute 34.
       - series: 'up{job="node-c2",machine="c2"}'
-        values: '1 1 0 0 0 0 0 0 0 0 1 1 1'
-      # Down for 3 minutes only.
+        values: '1 1 0x31 1x5'
+      # Down for 29 minutes only (a restart): never posted.
       - series: 'up{job="node",machine="front"}'
-        values: '1 0 0 0 1 1 1 1 1 1 1 1 1'
+        values: '1 0x28 1x10'
       - series: 'up{job="prometheus",machine="front"}'
-        values: '0x12'
+        values: '0x39'
     alert_rule_test:
-      - eval_time: 5m
+      - eval_time: 31m
         alertname: MachineMetricsMissing
         exp_alerts: []
-      - eval_time: 8m
+      # Exactly 30 minutes down (since minute 2): posted.
+      - eval_time: 32m
         alertname: MachineMetricsMissing
         exp_alerts:
           - exp_labels:
@@ -135,9 +137,18 @@ tests:
               job: node-c2
               machine: c2
             exp_annotations:
-              summary: "Prometheus cannot read the metrics of c2 for 5 minutes, so its health checks are unknown; the machine may be down."
+              summary: "Prometheus cannot read the metrics of c2 for 30 minutes, so its health checks are unknown; the machine may be down."
+      - eval_time: 33m
+        alertname: MachineMetricsMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-c2
+              machine: c2
+            exp_annotations:
+              summary: "Prometheus cannot read the metrics of c2 for 30 minutes, so its health checks are unknown; the machine may be down."
       # It ended, but keeps firing for 7 days: Slack gets nothing new if it comes back.
-      - eval_time: 11m
+      - eval_time: 37m
         alertname: MachineMetricsMissing
         exp_alerts:
           - exp_labels:
@@ -145,7 +156,7 @@ tests:
               job: node-c2
               machine: c2
             exp_annotations:
-              summary: "Prometheus cannot read the metrics of c2 for 5 minutes, so its health checks are unknown; the machine may be down."
+              summary: "Prometheus cannot read the metrics of c2 for 30 minutes, so its health checks are unknown; the machine may be down."
 
   # A failed backup run alerts until a later run works, and 7 days after.
   - interval: 1m
@@ -398,28 +409,29 @@ tests:
   # Not for a short outage that never posted, and not while the machine is under maintenance.
   - interval: 1m
     input_series:
-      # Down from minute 2 to 9 (offline posted at minute 7), back at minute 10.
+      # Down from minute 2 to 34 (offline posted at minute 32), back at minute 35.
       - series: 'up{job="node-c2",machine="c2"}'
-        values: '1 1 0 0 0 0 0 0 0 0 1 1 1 1 1'
-      # Down for 3 minutes only: never posted as offline.
+        values: '1 1 0x32 1x5'
+      # Down for 2 minutes only: never posted as offline.
       - series: 'up{job="node-c1",machine="c1"}'
-        values: '1 0 0 0 1 1 1 1 1 1 1 1 1 1 1'
-      # Down from minute 2, under maintenance from minute 9, back at minute 10.
+        values: '1 0x1 1x37'
+      # Down from minute 2 (offline posted at minute 32), under maintenance from minute 33, back at minute 35
+      # while still under maintenance.
       - series: 'up{job="node-c3",machine="c3"}'
-        values: '1 1 0 0 0 0 0 0 0 0 1 1 1 1 1'
+        values: '1 1 0x32 1x5'
       - series: 'cluster_node_maintenance{job="node",machine="front",node="c3"}'
-        values: '0x8 1x6'
-      # Down from minute 2 (offline posted at minute 7), under maintenance at minutes 8 to 10, back at minute 12,
+        values: '0x32 1x6'
+      # Down from minute 2 (offline posted at minute 32), under maintenance at minutes 33 to 35, back at minute 37,
       # after its maintenance ended: still no post.
       - series: 'up{job="node-c4",machine="c4"}'
-        values: '1 1 0 0 0 0 0 0 0 0 0 0 1 1 1'
+        values: '1 1 0x34 1x3'
       - series: 'cluster_node_maintenance{job="node",machine="front",node="c4"}'
-        values: '0x7 1x2 0x5'
+        values: '0x32 1x2 0x5'
     alert_rule_test:
-      - eval_time: 9m
+      - eval_time: 34m
         alertname: MachineBackOnline
         exp_alerts: []
-      - eval_time: 11m
+      - eval_time: 36m
         alertname: MachineBackOnline
         exp_alerts:
           - exp_labels:
@@ -428,7 +440,7 @@ tests:
               machine: c2
             exp_annotations:
               summary: "c2 is back online."
-      - eval_time: 14m
+      - eval_time: 39m
         alertname: MachineBackOnline
         exp_alerts:
           - exp_labels:

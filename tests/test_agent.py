@@ -453,9 +453,34 @@ class Approval(unittest.TestCase):
         return {"ok": True, "output": "Pushed abc123 to main"}
 
     def ask(self, requester: str, risky: bool) -> str:
-        return self.approvals.ask(
-            ["systemctl", "restart", "slurmd"], "gpu1", "slurmd is stuck", risky, requester, self.slack, CHANNEL, "1.0"
-        )
+        return self.ask_argv(["systemctl", "restart", "slurmd"], requester, risky)
+
+    def ask_argv(self, argv: list[str], requester: str, risky: bool) -> str:
+        """Ask for a change, then post what was held back, as handle_event does after its reply."""
+        held: list = []
+        told = self.approvals.ask(argv, "gpu1", "slurmd is stuck", risky, requester, self.slack, CHANNEL, "1.0", held)
+        for later in held:
+            later()
+        return told
+
+    def test_a_change_posts_one_plain_line_not_its_output(self) -> None:
+        self.ask(ALICE, False)
+        self.assertEqual(len(self.slack.posts), 1)
+        self.assertEqual(self.slack.posts[0]["text"], "Done: `systemctl restart slurmd` on gpu1.")
+
+    def test_a_failed_or_refused_change_says_so(self) -> None:
+        self.approvals.run = lambda argv, requester, host, mode, approver: {"ran": True, "output": "oops\n[exit 2]"}
+        self.ask(ALICE, False)
+        self.assertIn("Failed (exit 2)", self.slack.posts[0]["text"])
+        self.approvals.run = lambda argv, requester, host, mode, approver: {"ran": False, "output": "refused: no."}
+        self.ask(ALICE, False)
+        self.assertEqual(self.slack.posts[1]["text"], "Not done: `systemctl restart slurmd` on gpu1. refused: no.")
+
+    def test_a_dry_run_is_not_posted(self) -> None:
+        told = self.ask_argv(["nanohpc", "deploy", "--dry-run"], ALICE, False)
+        self.assertEqual(len(self.ran), 1)
+        self.assertIn("done", told)
+        self.assertEqual(self.slack.posts, [])
 
     def click(self, user: str, action: str) -> None:
         with_buttons = [post for post in self.slack.posts if "blocks" in post][-1]
@@ -475,12 +500,12 @@ class Approval(unittest.TestCase):
             [(run["requester"], run["mode"], run["approver"]) for run in self.ran],
             [(ALICE, "change", None), (SAM, "change", None)],
         )
-        self.assertIn("done", self.slack.posts[0]["text"])
+        self.assertIn("Done", self.slack.posts[0]["text"])
 
     def test_a_change_from_anyone_else_waits_and_mentions_the_approvers(self) -> None:
         told = self.ask(BOB, False)
         self.assertEqual(self.ran, [])
-        self.assertIn("waiting", told)
+        self.assertIn("waits for their Approve", told)
         message = self.slack.posts[0]
         self.assertEqual(message["thread_ts"], "1.0")
         self.assertIn(f"<@{ALICE}> <@{SAM}>: <@{BOB}> asks", message["text"])
@@ -504,7 +529,8 @@ class Approval(unittest.TestCase):
               "approver": SAM}],
         )  # fmt: skip
         self.assertIn("sam", self.slack.updates[0]["text"])
-        self.assertIn("done", self.slack.posts[-1]["text"])
+        self.assertIn("Done", self.slack.posts[-1]["text"])
+        self.assertNotIn("```", self.slack.posts[-1]["text"])
 
     def test_deny_drops_the_change(self) -> None:
         self.ask(BOB, False)
@@ -515,11 +541,16 @@ class Approval(unittest.TestCase):
 
     def propose(self, requester: str) -> str:
         staged = {"ok": True, "tree": "t1", "stat": " cluster.yml | 2 +-", "diff": "-users: [alice]\n+users: [bob]"}
-        return self.approvals.ask_push(staged, "Add bob", requester, self.slack, CHANNEL, "1.0")
+        held: list = []
+        told = self.approvals.ask_push(staged, "Add bob", requester, self.slack, CHANNEL, "1.0", held)
+        self.assertEqual(self.slack.posts, [])
+        for later in held:
+            later()
+        return told
 
     def test_a_push_shows_the_diff_and_waits_even_when_an_approver_asked(self) -> None:
         told = self.propose(ALICE)
-        self.assertIn("waiting", told)
+        self.assertIn("waits for their Approve", told)
         self.assertEqual(self.code_requests, [])
         shown = " ".join(post["text"] for post in self.slack.posts)
         self.assertIn("+users: [bob]", shown)
@@ -537,7 +568,9 @@ class Approval(unittest.TestCase):
         self.assertIn("Pushed", self.slack.posts[-1]["text"])
 
     def test_in_a_private_chat_nobody_is_mentioned(self) -> None:
-        self.approvals.ask(["rm", "/tmp/x"], "gpu1", "test", True, ALICE, self.slack, "D2", "1.0")
+        held: list = []
+        self.approvals.ask(["rm", "/tmp/x"], "gpu1", "test", True, ALICE, self.slack, "D2", "1.0", held)
+        held[0]()
         self.assertNotIn("<@", self.slack.posts[0]["text"])
         self.assertIn("Approve", json.dumps(self.slack.posts[0]["blocks"]))
 
@@ -662,15 +695,18 @@ class Notes(unittest.TestCase):
     def tearDown(self) -> None:
         self.folder.cleanup()
 
+    def test_notes_up_to_4_kb_are_saved_and_may_hold_people_and_events(self) -> None:
+        self.assertIsNone(self.agent.save_notes(self.notes, "x" * 4096))
+        self.assertEqual(len(self.notes.read_text()), 4096)
+        prompt = self.agent.system_prompt(bot_settings("slurm", True, None), "c", "")
+        self.assertIn("events worth remembering", prompt)
+        self.assertIn("Nobody is told when you write", prompt)
+
     def test_notes_over_the_cap_are_refused_and_the_old_ones_kept(self) -> None:
         self.assertIsNone(self.agent.save_notes(self.notes, "short"))
-        refused = self.agent.save_notes(self.notes, "x" * 1025)
-        self.assertIn("1024", refused)
+        refused = self.agent.save_notes(self.notes, "x" * 4097)
+        self.assertIn("4096", refused)
         self.assertEqual(self.notes.read_text(), "short")
-
-    def test_long_output_is_cut_to_five_lines_in_the_thread(self) -> None:
-        output = "\n".join(f"line {n}" for n in range(1, 21))
-        self.assertEqual(self.agent.thread_excerpt(output), "line 1\nline 2\nline 3\nline 4\nline 5\n(15 more lines)")
 
 
 class Routing(unittest.TestCase):
@@ -689,8 +725,12 @@ class Routing(unittest.TestCase):
     def tearDown(self) -> None:
         self.folder.cleanup()
 
-    def fake_answer(self, prompt: str, budget: float, requester: str, post, change, push) -> tuple[str, float]:
+    def fake_answer(self, prompt: str, budget: float, requester: str, post, status, change, push) -> tuple[str, float]:
         self.asked.append({"prompt": prompt, "budget": budget, "requester": requester})
+        if "check" in prompt:
+            status("the queue")
+            status("gpu1")
+            status("the queue")
         if "restart" in prompt:
             change(["systemctl", "restart", "slurmd"], "gpu1", "slurmd is stuck", False)
         return "all machines idle, token xoxb-1-2", 0.25
@@ -709,9 +749,29 @@ class Routing(unittest.TestCase):
     def test_a_change_asked_in_a_request_waits_for_approval_in_its_thread(self) -> None:
         self.handle({"type": "app_mention", "channel": CHANNEL, "user": BOB, "ts": "1.0", "text": "restart slurmd"})
         self.assertEqual(self.ran, [])
-        waiting = self.slack.posts[0]
+        waiting = self.slack.posts[-1]
         self.assertEqual((waiting["channel"], waiting["thread_ts"]), (CHANNEL, "1.0"))
         self.assertIn("Approve", json.dumps(waiting["blocks"]))
+
+    def test_the_approve_message_comes_after_the_reply(self) -> None:
+        self.handle({"type": "app_mention", "channel": CHANNEL, "user": BOB, "ts": "1.0", "text": "restart slurmd"})
+        self.assertEqual(len(self.slack.posts), 2)
+        self.assertIn("all machines idle", self.slack.posts[0]["text"])
+        self.assertIn("blocks", self.slack.posts[1])
+
+    def test_checks_show_as_one_status_line_edited_in_place(self) -> None:
+        self.handle({"type": "app_mention", "channel": CHANNEL, "user": BOB, "ts": "1.0", "text": "<@UBOT> check"})
+        self.assertEqual(len(self.slack.posts), 2)
+        self.assertIn("Checking the queue", self.slack.posts[0]["text"])
+        self.assertEqual(self.slack.posts[0]["thread_ts"], "1.0")
+        self.assertIn("all machines idle", self.slack.posts[1]["text"])
+        self.assertEqual([update["ts"] for update in self.slack.updates], ["2.0"] * 3)
+        self.assertIn("Checking gpu1", self.slack.updates[0]["text"])
+        self.assertEqual(self.slack.updates[-1]["text"], "_Checked the queue, gpu1._")
+
+    def test_the_rules_say_to_speak_as_the_clusters_manager(self) -> None:
+        prompt = self.agent.system_prompt(bot_settings("slurm", True, None), "c", "")
+        self.assertIn("You speak as the cluster's manager", prompt)
 
     def test_mention_in_the_channel_is_answered_in_its_thread(self) -> None:
         self.handle({"type": "app_mention", "channel": CHANNEL, "user": BOB, "ts": "1.0", "text": "<@UBOT> status"})

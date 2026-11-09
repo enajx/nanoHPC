@@ -70,12 +70,12 @@ groups:
       # A machine that is down stops reporting its health checks, so their alerts would look resolved.
       - alert: MachineMetricsMissing
         expr: (up{job=~"node|node-.+"} == 0) unless on(machine) cluster_machine_maintenance
-        for: 5m
+        for: 30m  # a restart takes longer than 5 minutes
         keep_firing_for: 7d
         labels:
           severity: critical
         annotations:
-          summary: "Prometheus cannot read the metrics of {{ $labels.machine }} for 5 minutes, so its health checks are unknown; the machine may be down."
+          summary: "Prometheus cannot read the metrics of {{ $labels.machine }} for 30 minutes, so its health checks are unknown; the machine may be down."
 
       # A machine whose offline post was sent (MachineMetricsMissing firing, also in its 7 days after) reports again:
       # posted once, as good news. Not for a short outage that never posted, and not for a machine under maintenance
