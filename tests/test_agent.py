@@ -131,7 +131,9 @@ class ReadOnlyRule(unittest.TestCase):
                      ["ss", "-tlnp"], ["ip", "-br", "addr"], ["top", "-b", "-n", "1"], ["stat", "/etc/x"],
                      ["test", "-f", "/etc/x"], ["cat", "/etc/ssh/ssh_host_ed25519_key.pub"],
                      ["git", "-C", "/var/lib/nanohpc/auto-deploy/config", "log", "-5", "--oneline"], ["git", "status"],
-                     ["hostname"], ["ping", "-c", "2", "-W", "2", "gpu1"]):  # fmt: skip
+                     ["hostname"], ["ping", "-c", "2", "-W", "2", "gpu1"], ["git", "branch", "-a", "-v"],
+                     ["git", "tag", "--list"], ["git", "remote", "-v"], ["git", "reflog", "-5"],
+                     ["journalctl", "--since=today"]):  # fmt: skip
             self.assertFalse(self.refused(argv), argv)
 
     def test_changes_and_endless_commands_are_refused(self) -> None:
@@ -158,7 +160,13 @@ class ReadOnlyRule(unittest.TestCase):
                      # Recursive reads, which could reach files with secrets.
                      ["grep", "-r", "munge", "/var/log"], ["grep", "-d", "recurse", "x", "/etc"],
                      ["grep", "--directories=recurse", "x", "/etc"], ["diff", "-r", "/etc", "/opt"],
-                     ["cat", "line\nbreak"]):  # fmt: skip
+                     ["cat", "line\nbreak"],
+                     # Long options shortened as programs accept them, and git that writes or reads outside a repository.
+                     ["journalctl", "--cursor-f=/etc/nologin"], ["journalctl", "--vac=1d"], ["grep", "--rec", "x", "/etc"],
+                     ["date", "--se=2020-01-01"], ["git", "grep", "--no-index", "xoxb", "/etc"],
+                     ["git", "reflog", "expire", "--all"], ["git", "reflog", "delete", "HEAD@{0}"],
+                     ["git", "branch", "--delete", "main"], ["git", "branch", "--set-upstream-to=x"],
+                     ["git", "tag", "--delete", "v1"], ["git", "remote", "-v", "rename", "a", "b"]):  # fmt: skip
             self.assertTrue(self.refused(argv), argv)
 
     def test_files_with_secrets_are_never_read(self) -> None:

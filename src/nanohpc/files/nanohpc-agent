@@ -125,6 +125,10 @@ IPTABLES_LONG = {"--list", "--list-rules", "--numeric", "--verbose", "--exact", 
 # so another account's repository cannot make it run a program (diff drivers, filters).
 GIT_READS = {"log", "show", "diff", "status", "blame", "rev-parse", "branch", "describe", "shortlog", "ls-files",
              "remote", "grep", "reflog", "tag", "cat-file"}  # fmt: skip
+# The options git branch, tag and remote may take here: listing ones only.
+GIT_LISTING_OPTIONS = {"-a", "-r", "-v", "-vv", "-l", "--list", "--all", "--remotes", "--verbose", "--contains",
+                       "--no-contains", "--merged", "--no-merged", "--sort", "--format", "--points-at",
+                       "--show-current", "--no-color", "--color", "--column", "--no-column"}  # fmt: skip
 # Files that hold secrets, never read or changed for anyone: folders, exact files, and names anywhere.
 SECRET_DIRS = ("/etc/nanohpc-agent", "/var/lib/nanohpc-agent-runner", "/etc/nanohpc/auto-deploy",
                "/etc/nanohpc/alertmanager", "/etc/nanohpc/metrics-ca", "/etc/nanohpc/metrics-tls",
@@ -226,19 +230,26 @@ def git_refusal(args: list[str]) -> str | None:
     if any(arg.startswith(("-c", "--output", "--ext-diff", "--textconv", "--exec", "--upload-pack", "--config", "-O",
                            "--open-files-in-pager")) for arg in rest):  # fmt: skip
         return "that git option can run a program or write a file"
+    if "--no-index" in rest:
+        return "git --no-index reads outside a repository (a recursive read)"
     if rest[0] in ("branch", "tag", "remote") and any(
-        not arg.startswith("-") or arg in ("-d", "-D", "-m", "-M") for arg in rest[1:]
+        not arg.startswith("-") or arg.split("=", 1)[0] not in GIT_LISTING_OPTIONS for arg in rest[1:]
     ):
         return f"git {rest[0]} only lists here"
+    if rest[0] == "reflog" and {"expire", "delete", "drop"} & set(rest[1:]):
+        return "git reflog only shows here"
     return None
 
 
 def uses_option(args: list[str], options: tuple[str, ...]) -> str | None:
-    """The first argument that uses one of these options (also as --option=value, or a one-letter option inside
-    a group like -abc), or None."""
+    """The first argument that uses one of these options (also as --option=value, shortened as programs accept it
+    (--rec for --recursive), or a one-letter option inside a group like -abc), or None."""
     for arg in args:
+        name = arg.split("=", 1)[0]
         for option in options:
-            if arg == option or (option.startswith("--") and arg.startswith(option + "=")):
+            if arg == option or (
+                option.startswith("--") and name.startswith("--") and len(name) > 2 and option.startswith(name)
+            ):
                 return arg
             if len(option) == 2 and arg.startswith("-") and not arg.startswith("--") and option[1] in arg[1:]:
                 return arg
@@ -296,12 +307,9 @@ def recursive(program: str, args: list[str]) -> bool:
     """True for a grep or diff that walks folders (refused: it could reach files with secrets)."""
     if program not in ("grep", "zgrep", "diff"):
         return False
-    for arg in args:
-        if arg in ("--recursive", "--dereference-recursive") or arg.startswith(("--directories", "-d")):
-            return True
-        if arg.startswith("-") and not arg.startswith("--") and ("r" in arg or "R" in arg):
-            return True
-    return False
+    options = ("--recursive", "--dereference-recursive", "--directories", "-r", "-R")
+    # grep's -d takes recurse as its value (also in a group: -nd recurse); diff's -d is something else.
+    return uses_option(args, options + (("-d",) if program != "diff" else ())) is not None
 
 
 def command_refusal(argv: list[str], slurm: bool) -> str | None:
