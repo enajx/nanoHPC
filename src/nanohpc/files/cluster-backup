@@ -47,8 +47,8 @@ import sys
 import time
 from pathlib import Path
 
-# The files copied from each home (a folder ends in /): the same list SLURM-REAL's standby front nodes get
-# (front_copy_home_files, user 2026-11-09: "only those whitelist files").
+# The files copied from each home (a folder ends in /): SSH keys, shell settings and history, git, editor and tool
+# settings, and login tokens (user, 2026-11-09: "only those whitelist files").
 HOME_FILES = [
     ".ssh/",
     ".profile", ".bashrc", ".bash_profile", ".bash_aliases", ".bash_logout", ".zshrc", ".zshenv", ".zprofile",
