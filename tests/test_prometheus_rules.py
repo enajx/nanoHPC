@@ -167,6 +167,18 @@ class AlertRulesTests(unittest.TestCase):
                     if "alert" in rule:
                         self.assertEqual(rule.get("keep_firing_for"), "7d", f"{path.name}: {rule['alert']}")
 
+    def test_an_offline_machine_is_posted_after_30_minutes(self) -> None:
+        """A restart takes longer than 5 minutes: MachineMetricsMissing waits 30 in both modes."""
+        for path in (ALERT_RULES, MONITOR_ALERT_RULES):
+            rules = {
+                rule["alert"]: rule
+                for group in yaml.safe_load(path.read_text())["groups"]
+                for rule in group["rules"]
+                if "alert" in rule
+            }
+            self.assertEqual(rules["MachineMetricsMissing"]["for"], "30m", path.name)
+            self.assertIn("for 30 minutes", rules["MachineMetricsMissing"]["annotations"]["summary"], path.name)
+
     def test_slack_posts_only_the_start_of_a_problem(self) -> None:
         """Alertmanager posts a problem once, when it starts: no post when it ends and no repeat while it lasts."""
         tasks = yaml.safe_load((REPO / "src/nanohpc/ansible/roles/alerts/tasks/main.yml").read_text())

@@ -42,12 +42,12 @@ groups:
 
       - alert: MachineMetricsMissing
         expr: up{job=~"node|node-.+"} == 0
-        for: 5m
+        for: 30m  # a restart takes longer than 5 minutes
         keep_firing_for: 7d
         labels:
           severity: critical
         annotations:
-          summary: 'Prometheus cannot read metrics from {{ $labels.machine }} for 5 minutes.'
+          summary: 'Prometheus cannot read metrics from {{ $labels.machine }} for 30 minutes.'
 
       # A machine whose offline post was sent (MachineMetricsMissing firing, also in its 7 days after) reports again:
       # posted once, as good news. Not for a short outage that never posted.
