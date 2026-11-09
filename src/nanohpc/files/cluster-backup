@@ -6,6 +6,9 @@ the source, and files that match an exclude pattern, are deleted from the copy. 
 vanished while they were being copied, normal on a /home in use) counts as success. rsync's own messages go to
 stderr (the journal); on failure a last line gives the exit code.
 
+Only a fixed list of files from each home is copied (HOME_FILES: SSH keys, shell settings and history, git, editor
+and tool settings, login tokens), without any file over MAX_FILE_SIZE; everything else in /home is not backed up.
+
 rsync runs with --archive --hard-links --acls --xattrs --numeric-ids --delete --delete-excluded --partial
 --timeout=600, and SSH with the given key only (IdentitiesOnly), never asking for input (BatchMode), and only to the
 host key pinned in --known-hosts (StrictHostKeyChecking, UserKnownHostsFile).
@@ -43,7 +46,36 @@ import sys
 import time
 from pathlib import Path
 
+# The files copied from each home (a folder ends in /): the same list SLURM-REAL's standby front nodes get
+# (front_copy_home_files, user 2026-11-09: "only those whitelist files").
+HOME_FILES = [
+    ".ssh/",
+    ".profile", ".bashrc", ".bash_profile", ".bash_aliases", ".bash_logout", ".zshrc", ".zshenv", ".zprofile",
+    ".inputrc", ".p10k.zsh", ".oh-my-zsh/", ".bash-preexec.sh", ".iterm2_shell_integration.zsh", ".config/zsh/",
+    ".config/fish/", ".bash_history", ".zsh_history",
+    ".gitconfig", ".config/git/", ".git-credentials",
+    ".vimrc", ".vim/", ".config/nvim/", ".tmux.conf", ".config/uv/", ".config/htop/", ".config/matplotlib/",
+    ".jupyter/", ".ipython/", ".gnupg/",
+    ".netrc", ".config/wandb/", ".config/gh/", ".cache/huggingface/token", ".huggingface/token", ".kaggle/", ".aws/",
+    ".claude/.credentials.json", ".claude.json", ".codex/auth.json", ".codex/config.toml", ".copilot/config.json",
+]  # fmt: skip
+# No copied file is larger than this.
+MAX_FILE_SIZE = "10M"
 SUCCESS_METRIC = "cluster_backup_last_success_timestamp_seconds"
+
+
+def file_rules() -> list[str]:
+    """rsync rules that take only HOME_FILES from each home folder in the source (/home/USER/...): each parent folder
+    is let in on its own, so its other files stay out; a listed folder comes with all it holds."""
+    rules = ["--include=/*/"]
+    for path in HOME_FILES:
+        parts = path.strip("/").split("/")
+        for depth in range(1, len(parts)):
+            parent = f"--include=/*/{'/'.join(parts[:depth])}/"
+            if parent not in rules:
+                rules.append(parent)
+        rules.append(f"--include=/*/{'/'.join(parts)}{'/***' if path.endswith('/') else ''}")
+    return rules
 
 
 def rsync_command(arguments: argparse.Namespace) -> list[str]:
@@ -74,10 +106,13 @@ def rsync_command(arguments: argparse.Namespace) -> list[str]:
         "--timeout=600",
         "--rsh=" + " ".join(ssh),
     ]
+    # The listed files first, then the cluster's own excludes (inside listed folders), then nothing else.
+    command += file_rules()
     command += ["--exclude=" + pattern for pattern in arguments.exclude]
+    command += ["--max-size=" + MAX_FILE_SIZE]
     if arguments.fake_super:
         command.append("--rsync-path=rsync --fake-super")
-    return command + [arguments.source, arguments.destination]
+    return command + ["--exclude=*", arguments.source, arguments.destination]
 
 
 def previous_success(path: Path) -> str | None:

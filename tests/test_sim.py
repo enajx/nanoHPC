@@ -1795,36 +1795,39 @@ class SimDeployTest(SimUsersBase):
                 time.sleep(5)
             self.assertGreaterEqual(jobs, 1)
 
-        with self.subTest("nightly /home mirror to the backup machine: owners kept, deletions mirrored, restore"):
+        with self.subTest("nightly /home mirror of the listed files: owners kept, other files left out, restore"):
             backup = config["machines"]["store"]["backup"]["path"].rstrip("/") + "/home"
             self.on_front(
-                "sudo -u alice sh -c 'mkdir -p ~/keep && echo precious > ~/keep/data.txt && echo old > ~/gone.txt'"
+                "sudo -u alice sh -c 'mkdir -p ~/.config/git ~/keep && echo precious > ~/.config/git/config"
+                " && echo old > ~/.bash_aliases && echo data > ~/keep/data.txt'"
             )
             self.on_front("sudo systemctl start nanohpc-backup.service")
             self.assertIn(
                 "cluster_backup_last_exit_code 0", self.on_front("cat /var/lib/nanohpc/metrics-textfile/backup.prom")
             )
-            stored = self.ssh("store", f"sudo cat {backup}/alice/keep/data.txt")
+            stored = self.ssh("store", f"sudo cat {backup}/alice/.config/git/config")
             self.assertEqual(stored.stdout.strip(), "precious", stored.stderr)
+            # Only the listed files: the rest of /home is not backed up.
+            self.assertEqual(self.ssh("store", f"sudo test -e {backup}/alice/keep").returncode, 1)
             # The unprivileged account owns the copy; the real owner is kept as an extended attribute.
             self.assertEqual(
-                self.ssh("store", f"sudo stat -c %U {backup}/alice/keep/data.txt").stdout.strip(), "nanohpc-backup"
+                self.ssh("store", f"sudo stat -c %U {backup}/alice/.config/git/config").stdout.strip(), "nanohpc-backup"
             )
             attributes = self.ssh(
-                "store", f"sudo python3 -c 'import os; print(os.listxattr(\"{backup}/alice/keep/data.txt\"))'"
+                "store", f"sudo python3 -c 'import os; print(os.listxattr(\"{backup}/alice/.config/git/config\"))'"
             )
             self.assertIn("user.rsync.%stat", attributes.stdout, attributes.stderr)
             # One mirror: a file deleted from /home is deleted from the copy at the next run.
-            self.on_front("sudo -u alice rm ~alice/gone.txt && sudo systemctl start nanohpc-backup.service")
-            self.assertEqual(self.ssh("store", f"sudo test -e {backup}/alice/gone.txt").returncode, 1)
+            self.on_front("sudo -u alice rm ~alice/.bash_aliases && sudo systemctl start nanohpc-backup.service")
+            self.assertEqual(self.ssh("store", f"sudo test -e {backup}/alice/.bash_aliases").returncode, 1)
             # Restore one user's folder with the same key: owners come back.
             ssh_options = "ssh -i /etc/nanohpc/backup/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/etc/nanohpc/backup/known_hosts"
             store = config["machines"]["store"]["address"]
             self.on_front(
                 f"sudo rsync -a --numeric-ids --rsync-path='rsync --fake-super' -e '{ssh_options}' "
-                f"nanohpc-backup@{store}:{backup}/alice/keep/ /tmp/restored/"
+                f"nanohpc-backup@{store}:{backup}/alice/.config/git/ /tmp/restored/"
             )
-            self.assertEqual(self.on_front("stat -c %U /tmp/restored/data.txt").strip(), "alice")
+            self.assertEqual(self.on_front("stat -c %U /tmp/restored/config").strip(), "alice")
             # The key can only run rsync on the backup folder.
             shell = self.ssh("front", f"sudo {ssh_options} nanohpc-backup@{store} id")
             self.assertNotEqual(shell.returncode, 0)
