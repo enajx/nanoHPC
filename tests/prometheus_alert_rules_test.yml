@@ -128,6 +128,16 @@ tests:
       - eval_time: 31m
         alertname: MachineMetricsMissing
         exp_alerts: []
+      # Exactly 30 minutes down (since minute 2): posted.
+      - eval_time: 32m
+        alertname: MachineMetricsMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-c2
+              machine: c2
+            exp_annotations:
+              summary: "Prometheus cannot read the metrics of c2 for 30 minutes, so its health checks are unknown; the machine may be down."
       - eval_time: 33m
         alertname: MachineMetricsMissing
         exp_alerts:
@@ -402,14 +412,15 @@ tests:
       # Down from minute 2 to 34 (offline posted at minute 32), back at minute 35.
       - series: 'up{job="node-c2",machine="c2"}'
         values: '1 1 0x32 1x5'
-      # Down for 3 minutes only: never posted as offline.
+      # Down for 2 minutes only: never posted as offline.
       - series: 'up{job="node-c1",machine="c1"}'
-        values: '1 0x2 1x36'
-      # Down from minute 2, under maintenance from minute 31, back at minute 35.
+        values: '1 0x1 1x37'
+      # Down from minute 2 (offline posted at minute 32), under maintenance from minute 33, back at minute 35
+      # while still under maintenance.
       - series: 'up{job="node-c3",machine="c3"}'
         values: '1 1 0x32 1x5'
       - series: 'cluster_node_maintenance{job="node",machine="front",node="c3"}'
-        values: '0x30 1x8'
+        values: '0x32 1x6'
       # Down from minute 2 (offline posted at minute 32), under maintenance at minutes 33 to 35, back at minute 37,
       # after its maintenance ended: still no post.
       - series: 'up{job="node-c4",machine="c4"}'
