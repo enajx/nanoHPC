@@ -794,9 +794,7 @@ class Approvals:
         return " or ".join(f"<@{member}>" for member in self.approvers)
 
     def post_result(self, client, channel: str, thread: str, argv: list[str], host: str, result: dict) -> None:
-        shown = thread_excerpt(result["output"])
-        client.chat_postMessage(channel=channel, thread_ts=thread, text=mask(
-            f"`{shlex.join(argv)}` on {host}{'' if result['ran'] else ' (refused)'}:\n```{shown}```"))
+        client.chat_postMessage(channel=channel, thread_ts=thread, text=mask(result_line(argv, host, result)))
 
     def who(self, channel: str, requester: str) -> str:
         """Who a waiting request names: nobody in a private chat (ID starting with D), where the approvers are
@@ -821,33 +819,44 @@ class Approvals:
         ])
 
     def ask(self, argv: list[str], host: str, reason: str, risky: bool, requester: str, client, channel: str,
-            thread: str) -> str:
-        """Run the change or post it for approval; return what Claude is told."""
+            thread: str, held: list[Callable[[], None]]) -> str:
+        """Run the change, or hold its Approve message in `held` (posted after the reply); return what Claude is
+        told. A change that ran gets one plain line in the thread; a dry run (--dry-run) gets none."""
         if requester in self.approvers and not risky:
             result = self.run(argv, requester, host, "change", None)
-            self.post_result(client, channel, thread, argv, host, result)
+            if "--dry-run" not in argv:
+                self.post_result(client, channel, thread, argv, host, result)
             return result["output"]
         why = " It could cut remote access." if risky else ""
         text = mask(f"{self.who(channel, requester)} to run `{shlex.join(argv)}` on {host}.\n"
                     f"Reason: {reason}.{why}")
-        self.post_buttons(client, channel, thread, text, "change", {"argv": argv, "host": host, "requester": requester})
-        return ("Posted for approval; waiting for a click on Approve by an approver. It runs when approved and its "
-                "output is posted in the thread. Stop here and tell the person.")
+        held.append(lambda: self.post_buttons(client, channel, thread, text, "change",
+                                              {"argv": argv, "host": host, "requester": requester}))
+        return ("Not run yet. Its Approve and Deny buttons are posted in the thread right after your reply; it runs "
+                "only after a click on Approve by an approver, and its result is then posted in the thread. Stop "
+                "here and tell the person it waits for their Approve below.")
 
-    def ask_push(self, staged: dict, message: str, requester: str, client, channel: str, thread: str) -> str:
-        """Show a staged code change and wait for an approver's click; a push always waits, whoever asked."""
+    def ask_push(self, staged: dict, message: str, requester: str, client, channel: str, thread: str,
+                 held: list[Callable[[], None]]) -> str:
+        """Hold a staged code change's diff and Approve message in `held` (posted after the reply); a push always
+        waits for an approver's click, whoever asked."""
         diff = staged["diff"]
         parts = [diff[start : start + DIFF_SHOWN] for start in range(0, len(diff), DIFF_SHOWN)][:DIFF_MESSAGES]
-        for part in parts:
-            client.chat_postMessage(channel=channel, thread_ts=thread, text=f"```{part}```")
-        if len(diff) > DIFF_SHOWN * DIFF_MESSAGES:
-            client.chat_postMessage(channel=channel, thread_ts=thread, text=(
-                f"_The diff is cut: {len(diff) - DIFF_SHOWN * DIFF_MESSAGES} more characters are not shown._"))
         text = mask(f"{self.who(channel, requester)} to commit and push:\n```{message}\n\n{staged['stat']}```")
-        self.post_buttons(client, channel, thread, text, "push",
-                          {"tree": staged["tree"], "message": message, "requester": requester})
-        return ("The diff is posted; waiting for a click on Approve by an approver. When approved, it is committed "
-                "and pushed. Stop here and tell the person.")
+
+        def show() -> None:
+            for part in parts:
+                client.chat_postMessage(channel=channel, thread_ts=thread, text=f"```{part}```")
+            if len(diff) > DIFF_SHOWN * DIFF_MESSAGES:
+                client.chat_postMessage(channel=channel, thread_ts=thread, text=(
+                    f"_The diff is cut: {len(diff) - DIFF_SHOWN * DIFF_MESSAGES} more characters are not shown._"))
+            self.post_buttons(client, channel, thread, text, "push",
+                              {"tree": staged["tree"], "message": message, "requester": requester})
+
+        held.append(show)
+        return ("Not pushed yet. The diff and its Approve and Deny buttons are posted in the thread right after your "
+                "reply; when an approver clicks Approve, it is committed and pushed. Stop here and tell the person "
+                "it waits for their Approve below.")
 
     def click(self, body: dict, client) -> None:
         """An Approve or Deny click: only an approver's counts, and each change is decided once."""
@@ -886,15 +895,28 @@ class Approvals:
         self.post_result(client, change["channel"], change["thread"], change["argv"], change["host"], result)
 
 
+def result_line(argv: list[str], host: str, result: dict) -> str:
+    """One plain line for a change: Done or Failed, from the runner's last "[exit N]" line, or the runner's first
+    line when it refused or stopped the command. The full output stays in the runner's log."""
+    command = f"`{shlex.join(argv)}` on {host}"
+    lines = result["output"].strip().splitlines() or [""]
+    exit_code = re.fullmatch(r"\[exit (-?\d+)\]", lines[-1].strip())
+    if result["ran"] and exit_code is not None:
+        if exit_code.group(1) == "0":
+            return f"Done: {command}."
+        return f"Failed (exit {exit_code.group(1)}): {command}. Ask me here to look at why."
+    return f"Not done: {command}. {lines[0]}"
+
+
 # ---------------------------------------------------------------- bot: Slack routing
 
 # change(argv, host, reason, could_cut_access) -> what Claude is told (Approvals.ask for this request).
 Change = Callable[[list[str], str, str, bool], str]
 # push(message) -> what Claude is told (stage the work folder and show it for approval).
 Push = Callable[[str], str]
-# answer(prompt, budget, requester, post, change, push) -> (reply text, cost in USD); post(text) writes to the
-# thread.
-Answer = Callable[[str, float, str, Callable[[str], None], Change, Push], tuple[str, float]]
+# answer(prompt, budget, requester, post, status, change, push) -> (reply text, cost in USD); post(text) writes to
+# the thread; status(doing) shows what is being checked in the thread's one status line.
+Answer = Callable[[str, float, str, Callable[[str], None], Callable[[str], None], Change, Push], tuple[str, float]]
 
 PRIVATE_CONTEXT = 10  # earlier messages of a private chat given as context
 
@@ -943,19 +965,41 @@ def handle_event(event: dict, config: dict, ledger: Ledger, client, answer: Answ
     prompt = (f"Request from Slack member {user} ({name}) {place}, their request {number} today:\n{event['text']}"
               + (f"\n\nEarlier messages in this {'chat' if flat else 'thread'}:\n{history}" if history else ""))
 
+    # Approve messages wait until the reply is posted, so the reply never comes after the click.
+    held: list[Callable[[], None]] = []
+    # One status line per request, posted at the first check and edited after that.
+    checked: list[str] = []
+    status_ts: list[str] = []
+
+    def status(doing: str) -> None:
+        if doing not in checked:
+            checked.append(doing)
+        text = mask(f"_Checking {doing}…_")
+        if status_ts:
+            client.chat_update(channel=channel, ts=status_ts[0], text=text)
+        else:
+            status_ts.append(client.chat_postMessage(channel=channel, thread_ts=thread, text=text)["ts"])
+
     def change(argv: list[str], host: str, reason: str, risky: bool) -> str:
-        return approvals.ask(argv, host, reason, risky, user, client, channel, thread)
+        return approvals.ask(argv, host, reason, risky, user, client, channel, thread, held)
 
     def push(message: str) -> str:
         staged = approvals.code({"code": "stage", "requester": user})
         if not staged["ok"]:
             post(mask(f"_Could not prepare the change:_ {staged['output']}"))
             return staged["output"]
-        return approvals.ask_push(staged, message, user, client, channel, thread)
+        return approvals.ask_push(staged, message, user, client, channel, thread, held)
 
-    reply, cost = answer(prompt, ledger.budget(now), user, post, change, push)
-    ledger.record(user, cost, now)
-    post(reply)
+    try:
+        reply, cost = answer(prompt, ledger.budget(now), user, post, status, change, push)
+        ledger.record(user, cost, now)
+        if status_ts:
+            client.chat_update(channel=channel, ts=status_ts[0], text=mask(f"_Checked {', '.join(checked)}._"))
+        post(reply)
+    finally:
+        # Posted even if the request failed, since Claude was told they are in the thread.
+        for later in held:
+            later()
     if ledger.cap_notice_due(now):
         client.chat_postMessage(channel=channel, text=(
             f"The daily limit of ${ledger.limits['daily_usd']:.2f} for the agent is reached. "
@@ -988,6 +1032,10 @@ yourself: status, {status_examples}, reading logs, questions about the docs, wha
 You may keep a few notes about yourself with write_notes: a running joke, how you see the machines, what you
 like. Never events or people's private details. write_notes replaces all your notes, at most 1024 bytes; when
 they are full, rewrite them shorter. Your current notes are below.
+
+You speak as the cluster's manager: say what you found, what you did or will do, and what you need from the
+person, in plain words. The commands you run and their output are not shown in the thread; give commands, output,
+logs or other technical detail only when the person asks for them.
 
 Write in simple, plain English. For cluster questions: short, the answer first, then 3 to 5 bullets at most.
 For small talk: one to three short sentences of plain text, no bullets. Slack formatting: *bold*, `code`, ```
@@ -1035,18 +1083,7 @@ NO_CODE_PROMPT = """This cluster has no repository for its cluster.yml, so you c
 deploy; tell the person an administrator does that with nanohpc deploy."""
 
 NOTES_LIMIT = 1024
-THREAD_LINES = 5
 MAX_TURNS = 30
-
-
-def thread_excerpt(output: str) -> str:
-    """The first THREAD_LINES lines of a command's output for the thread, and how many more there are."""
-    lines = output.strip("\n").splitlines()
-    if len(lines) <= THREAD_LINES:
-        return "\n".join(lines)
-    return "\n".join(lines[:THREAD_LINES]) + f"\n({len(lines) - THREAD_LINES} more lines)"
-
-
 def save_notes(path: Path, text: str) -> str | None:
     """Replace the notes, or return why not (over NOTES_LIMIT bytes); old notes stay when refused."""
     size = len(text.encode())
@@ -1127,15 +1164,16 @@ def make_answer(config: dict) -> Answer:
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                        "permissionDecisionReason": f"Only files under {', '.join(folders)} may be read."}}
 
-    def answer(prompt: str, budget: float, requester: str, post: Callable[[str], None],
+    def answer(prompt: str, budget: float, requester: str, post: Callable[[str], None], status: Callable[[str], None],
                change: Change, push: Push) -> tuple[str, float]:
         @tool("run_command", "Run one read-only command through the runner. argv is the program and its "
-              f"arguments, no shell; host is one of: {machines}.", {"argv": list[str], "host": str})
+              f"arguments, no shell; host is one of: {machines}; doing: what you are checking, in two to four plain "
+              'words for the thread\'s status line (for example "the queue", "gpu1\'s GPUs"). The command and its '
+              "output are not shown in the thread.", {"argv": list[str], "host": str, "doing": str})
         async def run_command(args: dict) -> dict:
             argv, host = [str(part) for part in args["argv"]], str(args["host"])
+            status(str(args["doing"]))
             result = ask_runner(config["socket"], argv, requester, host, "read", None)
-            shown = thread_excerpt(result["output"])
-            post(f"`{shlex.join(argv)}` on {host}{'' if result['ran'] else ' (refused)'}:\n```{shown}```")
             return {"content": [{"type": "text", "text": result["output"]}]}
 
         @tool("run_change", "Run one command that changes something, through the runner. It runs at once for an "
