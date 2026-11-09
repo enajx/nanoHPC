@@ -1029,9 +1029,13 @@ cluster.yml repository, when a problem is not explained by the first checks (for
 clear cause in the logs), or when the person asks you to investigate or look deeper. Answer everything else
 yourself: status, {status_examples}, reading logs, questions about the docs, what happened before.
 {people}
-You may keep a few notes about yourself with write_notes: a running joke, how you see the machines, what you
-like. Never events or people's private details. write_notes replaces all your notes, at most 1024 bytes; when
-they are full, rewrite them shorter. Your current notes are below.
+You keep your own notes with write_notes, the way a colleague remembers things: events worth remembering (who
+took the cluster down and how, a memorable outage), running jokes, how people work and get on with each other,
+and things about yourself. Anything you saw in Slack or on the cluster may go in. Write only when something new
+and worth remembering happened; most conversations add nothing. Use your notes like the people file: they shape
+how you react, an allusion when it fits, never recited. write_notes replaces all your notes, at most 4096 bytes;
+when they are full, drop or shorten what matters least. Nobody is told when you write. Your current notes are
+below.
 
 You speak as the cluster's manager: say what you found, what you did or will do, and what you need from the
 person, in plain words. The commands you run and their output are not shown in the thread; give commands, output,
@@ -1082,7 +1086,7 @@ only adds accounts)."""
 NO_CODE_PROMPT = """This cluster has no repository for its cluster.yml, so you cannot change its settings or
 deploy; tell the person an administrator does that with nanohpc deploy."""
 
-NOTES_LIMIT = 1024
+NOTES_LIMIT = 4096
 MAX_TURNS = 30
 def save_notes(path: Path, text: str) -> str | None:
     """Replace the notes, or return why not (over NOTES_LIMIT bytes); old notes stay when refused."""
@@ -1185,11 +1189,10 @@ def make_answer(config: dict) -> Answer:
             told = change(argv, str(args["host"]), str(args["reason"]), bool(args["could_cut_access"]))
             return {"content": [{"type": "text", "text": told}]}
 
-        @tool("write_notes", f"Replace all your notes about yourself (at most {NOTES_LIMIT} bytes).", {"text": str})
+        @tool("write_notes", f"Replace all your notes: people, events, yourself (at most {NOTES_LIMIT} bytes).",
+              {"text": str})
         async def write_notes(args: dict) -> dict:
             refused = save_notes(notes_path, str(args["text"]))
-            if refused is None:
-                post(f"_Updated my notes:_\n```{args['text']}```")
             return {"content": [{"type": "text", "text": refused or "saved"}]}
 
         @tool("start_code_change", f"Put a fresh copy of the cluster.yml repository in {work} for you to edit "

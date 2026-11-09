@@ -695,10 +695,17 @@ class Notes(unittest.TestCase):
     def tearDown(self) -> None:
         self.folder.cleanup()
 
+    def test_notes_up_to_4_kb_are_saved_and_may_hold_people_and_events(self) -> None:
+        self.assertIsNone(self.agent.save_notes(self.notes, "x" * 4096))
+        self.assertEqual(len(self.notes.read_text()), 4096)
+        prompt = self.agent.system_prompt(bot_settings("slurm", True, None), "c", "")
+        self.assertIn("events worth remembering", prompt)
+        self.assertIn("Nobody is told when you write", prompt)
+
     def test_notes_over_the_cap_are_refused_and_the_old_ones_kept(self) -> None:
         self.assertIsNone(self.agent.save_notes(self.notes, "short"))
-        refused = self.agent.save_notes(self.notes, "x" * 1025)
-        self.assertIn("1024", refused)
+        refused = self.agent.save_notes(self.notes, "x" * 4097)
+        self.assertIn("4096", refused)
         self.assertEqual(self.notes.read_text(), "short")
 
 
