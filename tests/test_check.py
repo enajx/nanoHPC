@@ -206,6 +206,15 @@ class CheckTest(unittest.TestCase):
         pings = (self.cluster / "front" / "ping.log").read_text().splitlines()
         self.assertEqual(sorted(pings), ["-c 3 -W 2 192.168.104.111", "-c 3 -W 2 192.168.104.113"])
 
+    def test_ping_that_fails_is_not_reported_as_a_bmc_down(self) -> None:
+        self.with_bmc(False)
+        write_command(self.cluster / "front" / "bin", "ping", 'echo "ping: unknown host" >&2\nexit 2\n')
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("ping failed on front (exit code 2)", result.stdout)
+        self.assertIn("ping: unknown host", result.stdout)
+        self.assertNotIn("does not answer", result.stdout)
+
     def test_bmc_that_answers_is_no_problem(self) -> None:
         self.with_bmc(False)
         result = self.check()

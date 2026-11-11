@@ -14,6 +14,7 @@ import threading
 import unittest
 from pathlib import Path
 
+import yaml
 from textual.pilot import Pilot
 from textual.widgets import Button, Checkbox, DataTable, Input, Label, ListView, Select, Static, Switch, TextArea
 
@@ -303,6 +304,25 @@ class BmcAddressWizardTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.state.file.machines()["gpu4"]["bmc_address"], "192.168.104.111")
                 await self.edit(pilot, "")
                 self.assertNotIn("bmc_address", app.state.file.machines()["gpu4"])
+
+    async def test_saved_file_has_it_and_reopens_with_it(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await self.edit(pilot, "gpu4-bmc.example.org")
+                app.state.file.save(path)
+            self.assertEqual(
+                yaml.safe_load(path.read_text())["machines"]["gpu4"]["bmc_address"], "gpu4-bmc.example.org"
+            )
+            reopened = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with reopened.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await select_row(pilot, "#machine-table", "gpu4")
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(reopened.screen.query_one("#bmc-address", Input).value, "gpu4-bmc.example.org")
 
 
 class MonitorWizardTest(unittest.IsolatedAsyncioTestCase):

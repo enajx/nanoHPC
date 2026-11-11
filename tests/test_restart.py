@@ -124,7 +124,9 @@ elif "sacct" in command:
     else:
         output = state["job_state"] + "|" + state["machine"] + "\\n"
 elif command.startswith("ping "):
-    code = 1 if state.get("bmc_down") else 0
+    code = state.get("ping_code", 1 if state.get("bmc_down") else 0)
+    if code > 1:
+        sys.stderr.write("ping: unknown host\\n")
 elif command.strip() == "true":
     if login == state.get("fail_login"):
         code = 255
@@ -247,6 +249,16 @@ class RestartFlowTest(unittest.TestCase):
         calls = [(target, command) for target, command in state["calls"]]
         self.assertTrue(any(target == "front" and command.startswith("ping ") for target, command in calls))
         self.assertFalse(any("state=drain" in command for _, command in calls))
+
+    def test_ping_that_fails_is_not_reported_as_a_bmc_down(self) -> None:
+        self.with_bmc()
+        self.state["ping_code"] = 127
+        self.state_path.write_text(json.dumps(self.state))
+        result = self.restart("gpu4")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ping failed on front (exit code 127)", result.stderr)
+        self.assertNotIn("does not answer", result.stderr)
+        self.assertEqual(json.loads(self.state_path.read_text())["node_state"], "IDLE")
 
     def test_no_bmc_ok_restarts_anyway_and_says_so(self) -> None:
         self.with_bmc()

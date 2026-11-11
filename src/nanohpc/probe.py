@@ -88,8 +88,13 @@ def bmc_problem(front: str, ssh_config: Path | None, bmc_address: str) -> str | 
     failure = ssh_failure(front, result)
     if failure is not None:
         return f"cannot ping the BMC {bmc_address} from {front}: {failure}"
-    if result.returncode:
+    if result.returncode == 1:  # ping's exit code for "no reply"
         return f"the BMC {bmc_address} does not answer a ping from {front}"
+    if result.returncode:
+        output = result.stderr.strip() or result.stdout.strip() or "no output"
+        return (
+            f"ping failed on {front} (exit code {result.returncode}), so the BMC {bmc_address} was not tested: {output}"
+        )
     return None
 
 

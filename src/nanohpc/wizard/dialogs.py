@@ -192,7 +192,7 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
                         value=address if address in facts.addresses else Select.NULL,
                         id="probed-address",
                     )
-                yield Label("BMC address (IPMI, optional; an IP address or host name; empty: none):")
+                yield Label("BMC address (IPMI, optional; an IPv4 address or host name; empty: none):")
                 yield Input(field_text(machine.get("bmc_address")), id="bmc-address")
                 yield Label("Roles:")
                 with Horizontal(classes="roles"):
