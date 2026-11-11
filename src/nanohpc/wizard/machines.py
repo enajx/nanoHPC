@@ -440,7 +440,10 @@ class StorageStep(Step):
             roles = roles_of(machine)
             if "home" in roles:
                 self.state.file.set_machine(name, with_roles(machine or {}, [role for role in roles if role != "home"]))
-        machine = machines[chosen] or {}
+        machine = dict(machines[chosen] or {})
+        if machine.get("home_mount") == "own":
+            # Its disk held its own /home, not the shared one: the home disk is chosen below as usual.
+            machine.pop("home", None)
         self.state.file.set_machine(chosen, with_roles(machine, [*roles_of(machine), "home"]))
         self.changed()
         await self.reload()

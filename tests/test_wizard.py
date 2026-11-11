@@ -978,6 +978,35 @@ class StorageTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(config["machines"]["login1"]["home"], {"device": None})
             self.assertNotIn("home:", path.read_text().split("login1:")[1].split("\n\n")[0])
 
+    async def test_an_own_home_disk_is_not_the_home_disk(self) -> None:
+        """A front node with home_mount: own and a disk for it, made the home machine: its home_mount and that disk
+        go (that disk held its own /home, not the shared one), so the home disk is chosen as usual."""
+        with tempfile.TemporaryDirectory() as folder:
+            app = WizardApp(example_copy(folder), None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await go(pilot, 1)
+                app.screen.query_one("#home-machine", Select).value = "store"
+                await settle(pilot)
+                await go(pilot, 0)
+                await select_row(pilot, "#machine-table", "front")
+                await pilot.press("enter")
+                await pilot.pause()
+                app.screen.query_one("#home-mount", Select).value = "own"
+                await pilot.pause()
+                app.screen.query_one("#own-home-device", Input).value = "/dev/vdc"
+                await pilot.click("#ok")
+                await settle(pilot)
+                self.assertEqual(app.state.file.get(["machines", "front", "home", "device"]), "/dev/vdc")
+                await go(pilot, 1)
+                app.screen.query_one("#home-machine", Select).value = "front"
+                await settle(pilot)
+                front = app.state.file.machines()["front"]
+                self.assertIn("home", front["roles"])
+                self.assertNotIn("home_mount", front)
+                self.assertNotIn("home", front)
+                self.assertEqual(app.screen.query_one("#home-device", Select).value, "root")
+
     async def test_shared_dataset_server_and_disk(self) -> None:
         store_facts = facts("store", ["192.168.104.20"], [], None)
         fakes = Fakes({"store": [store_facts]}, {})
