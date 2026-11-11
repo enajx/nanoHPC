@@ -65,6 +65,11 @@ def agent_fields(state: WizardState, monitor: bool) -> Iterator[Widget]:
     yield field("enabled", BoundSwitch(state, ["agent", "enabled"], "agent-enabled"))
     yield field("channel ID", BoundInput(state, ["agent", "channel"], "optional", "C0123ABC", "agent-channel"))
     yield field("approvers", ApproversInput(state))
+    yield field(
+        "personality file",
+        BoundInput(state, ["agent", "personality"], "optional", "personality.md", "agent-personality"),
+    )
+    yield field("people file", BoundInput(state, ["agent", "people"], "optional", "people.md", "agent-people"))
     if monitor:
         yield field(
             "repository (SSH)",
@@ -82,6 +87,7 @@ def agent_fields(state: WizardState, monitor: bool) -> Iterator[Widget]:
         "Answers @-mentions in that channel. Approvers' changes run at once; anyone else's wait for an approver's "
         "Approve. With a repository (monitor mode), it pushes edits of this file there after an Approve and deploys "
         "them when asked, installing the nanoHPC version above. "
+        "Personality and people files are optional paths next to this file; empty uses the default personality. "
         "Limits: $1 a day, $1 a request, 10 requests a person (agent.daily_usd, request_usd, "
         f"requests_per_person). Put NANOHPC_SLACK_BOT_TOKEN, NANOHPC_SLACK_APP_TOKEN, and NANOHPC_ANTHROPIC_API_KEY "
         f"in .env next to {state.path.name}.",
