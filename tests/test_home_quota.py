@@ -1,5 +1,7 @@
 """Verify the root-run quota reader publishes only the named cluster users as node_exporter metrics (fake repquota)."""
 
+import getpass
+import os
 import stat
 import subprocess
 import sys
@@ -112,6 +114,47 @@ class HomeQuotaTests(unittest.TestCase):
             self.assertNotEqual(failed.returncode, 0)
             self.assertIn("Missing cluster user quota record", failed.stderr)
             self.assertFalse((root / "home-quotas.prom").exists())
+
+
+class OwnHomeUsageBoxTests(unittest.TestCase):
+    """On a front or login node with its own /home (home_mount: own), the reader writes each user's private usage
+    box for the login banner from this machine's own quotas, and no metrics: the front node's job hold reads only
+    the shared /home."""
+
+    def run_reader(self, root: Path, used_kib: int) -> subprocess.CompletedProcess[str]:
+        command = root / "repquota"
+        user = getpass.getuser()
+        command.write_text(f"#!/bin/sh\nprintf '{HEADER}\\n{user},ok,ok,{used_kib},0,0,,12,0,0,\\n'\n")
+        command.chmod(0o700)
+        args = [sys.executable, str(READER), "--notice-dir", str(root / "notices"), "--repquota", str(command),
+                "--filesystem", "/", "--soft-bytes", str(300 * 1024**3), "--hard-bytes", str(400 * 1024**3),
+                "--users", user]  # fmt: skip
+        return subprocess.run(args, capture_output=True, text=True, check=False)
+
+    def test_private_box_with_notice_above_soft_and_no_job_hold(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="home-quota-") as directory:
+            root = Path(directory)
+            (root / "notices").mkdir()
+            (root / "notices/removed-user").write_text("old\n")
+            completed = self.run_reader(root, 12 * 1024**2)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            box = root / "notices" / getpass.getuser()
+            self.assertEqual(stat.S_IMODE(box.stat().st_mode), 0o400)
+            self.assertEqual(box.stat().st_uid, os.getuid())
+            lines = [line.strip("|").strip() for line in box.read_text().splitlines()]
+            self.assertEqual(lines[1:3], ["Home usage on this machine: 12.00 GB / 400.00 GB limit.",
+                                          "Notice threshold: 300.00 GB."])  # fmt: skip
+            self.assertNotIn("Notice: home usage", box.read_text())
+            self.assertFalse((root / "notices/removed-user").exists())
+            self.assertEqual([path.name for path in root.iterdir() if path.suffix == ".prom"], [])
+            box.chmod(0o600)
+            completed = self.run_reader(root, 410 * 1024**2)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            text = box.read_text()
+            self.assertIn("Notice: home usage is at or above the notice threshold.", text)
+            self.assertIn("This /home is over its limit: remove files you do not need.", text)
+            self.assertIn("Your jobs use the shared /home and are not held.", text)
+            self.assertNotIn("New jobs wait", text)
 
 
 if __name__ == "__main__":

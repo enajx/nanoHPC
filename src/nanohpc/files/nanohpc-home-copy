@@ -1,0 +1,77 @@
+#!/usr/bin/python3
+"""Copy each user's listed files from the shared /home into the own /home of the front and login nodes that keep
+their own (home_mount: own), every night (run as root on the home machine by nanohpc-home-copy.timer).
+
+For each --to NAME=ADDRESS and each user: rsync SOURCE/USER/ to root@ADDRESS:/home/USER/ with the given key and the
+pinned host keys. Only the backup's file list goes (HOME_FILES and home_rules in cluster-backup, next to this
+program), with no file over MAX_FILE_SIZE. A listed file deleted here is deleted there; every other file in the
+node's home stays (rsync --delete without --delete-excluded). Plain files and folders only: no links, device files,
+owners, or groups, and no setuid or setgid bits. The node's root key file accepts this key only from the home
+machine's address, for nanohpc-home-copy-receive, which runs rsync as the owner of that home folder.
+
+A user without a home folder in SOURCE is not copied. rsync's exit code 24 (files that vanished while being copied)
+counts as success. Exits 1 when any copy failed, after trying every node and user; rsync's own messages go to stderr
+(the journal).
+"""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType
+
+
+def backup_module() -> ModuleType:
+    """Load cluster-backup from this program's folder, the one place the file list is written."""
+    path = Path(__file__).resolve().parent / "cluster-backup"
+    loader = importlib.machinery.SourceFileLoader("cluster_backup", str(path))
+    spec = importlib.util.spec_from_loader("cluster_backup", loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def command(backup: ModuleType, source: Path, user: str, address: str, key: str, known_hosts: str) -> list[str]:
+    """The rsync command that copies one user's listed files to one node."""
+    ssh = (
+        f"ssh -i {key} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "
+        f"-o UserKnownHostsFile={known_hosts} -o ConnectTimeout=20"
+    )
+    return ["rsync", "--recursive", "--times", "--perms", "--chmod=ug-s", "--delete", "--timeout=600",
+            "--rsh=" + ssh, *backup.home_rules("/"), "--max-size=" + backup.MAX_FILE_SIZE, "--exclude=*",
+            f"{source}/{user}/", f"root@{address}:/home/{user}/"]  # fmt: skip
+
+
+def main() -> None:
+    """Copy every user to every node, then report the copies that failed."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--source", type=Path, required=True, help="the shared /home")
+    parser.add_argument("--to", action="append", required=True, help="NAME=ADDRESS of a node with its own /home")
+    parser.add_argument("--users", nargs="+", required=True)
+    parser.add_argument("--key", required=True)
+    parser.add_argument("--known-hosts", required=True)
+    arguments = parser.parse_args()
+    backup = backup_module()
+    failed = []
+    for item in arguments.to:
+        name, address = item.split("=", 1)
+        for user in arguments.users:
+            if not (arguments.source / user).is_dir():
+                print(f"nanohpc-home-copy: {arguments.source}/{user} is not a folder; not copied", file=sys.stderr)
+                failed.append(f"{name}:{user}")
+                continue
+            rsync = command(backup, arguments.source, user, address, arguments.key, arguments.known_hosts)
+            code = subprocess.run(rsync, stdin=subprocess.DEVNULL, check=False).returncode
+            if code not in (0, 24):
+                print(f"nanohpc-home-copy: the copy of {user} to {name} failed (rsync exit {code})", file=sys.stderr)
+                failed.append(f"{name}:{user}")
+    if failed:
+        print(f"nanohpc-home-copy: failed for {', '.join(failed)}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

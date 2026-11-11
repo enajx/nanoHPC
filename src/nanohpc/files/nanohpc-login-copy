@@ -4,7 +4,8 @@ banner (run as root on the front node by nanohpc-login-copy.timer).
 
 For each --login NAME=ADDRESS: rsync /var/lib/nanohpc/monitor/status.json and /var/lib/nanohpc-home-notices/ to
 root@ADDRESS:/var/lib/nanohpc-login-copy/ with the given key and pinned host keys. The login node's root key file
-accepts this key only from the front node's address, for nanohpc-login-copy-receive. A missing snapshot is skipped
+accepts this key only from the front node's address, for nanohpc-login-copy-receive. A login node named with
+--own-home keeps its own /home and measures its usage boxes itself, so it gets only the snapshot. A missing snapshot is skipped
 (the collector has not run yet). Exits 1 when any copy failed, after trying every login node; rsync's own messages
 go to stderr (the journal).
 """
@@ -19,17 +20,19 @@ NOTICES = Path("/var/lib/nanohpc-home-notices")
 DESTINATION = "/var/lib/nanohpc-login-copy"
 
 
-def copies(address: str, key: str, known_hosts: str, snapshot: Path, notices: Path) -> list[list[str]]:
-    """The rsync commands for one login node."""
-    ssh = (f"ssh -i {key} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "
-           f"-o UserKnownHostsFile={known_hosts} -o ConnectTimeout=15")
+def copies(address: str, key: str, known_hosts: str, snapshot: Path, notices: Path | None) -> list[list[str]]:
+    """The rsync commands for one login node (notices None: the snapshot only)."""
+    ssh = (
+        f"ssh -i {key} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "
+        f"-o UserKnownHostsFile={known_hosts} -o ConnectTimeout=15"
+    )
     # Plain files and folders only (no links or device files): the login node refuses anything else.
     common = ["rsync", "--recursive", "--times", "--perms", "--owner", "--group", "--numeric-ids", "--timeout=60",
               "--rsh=" + ssh]  # fmt: skip
     commands = []
     if snapshot.is_file():
         commands.append([*common, str(snapshot), f"root@{address}:{DESTINATION}/status.json"])
-    if notices.is_dir():
+    if notices is not None and notices.is_dir():
         commands.append([*common, "--delete", str(notices) + "/", f"root@{address}:{DESTINATION}/home-notices/"])
     return commands
 
@@ -37,6 +40,7 @@ def copies(address: str, key: str, known_hosts: str, snapshot: Path, notices: Pa
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--login", action="append", required=True, help="NAME=ADDRESS of a login node (repeat)")
+    parser.add_argument("--own-home", action="append", default=[], help="NAME of a login node with its own /home")
     parser.add_argument("--key", required=True)
     parser.add_argument("--known-hosts", required=True)
     parser.add_argument("--snapshot", type=Path, default=SNAPSHOT)
@@ -45,7 +49,8 @@ def main() -> None:
     failed = []
     for item in arguments.login:
         name, address = item.split("=", 1)
-        for command in copies(address, arguments.key, arguments.known_hosts, arguments.snapshot, arguments.notices):
+        notices = None if name in arguments.own_home else arguments.notices
+        for command in copies(address, arguments.key, arguments.known_hosts, arguments.snapshot, notices):
             if subprocess.run(command, stdin=subprocess.DEVNULL, check=False).returncode != 0:
                 failed.append(name)
                 break

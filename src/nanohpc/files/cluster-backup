@@ -65,18 +65,24 @@ MAX_FILE_SIZE = "10M"
 SUCCESS_METRIC = "cluster_backup_last_success_timestamp_seconds"
 
 
-def file_rules() -> list[str]:
-    """rsync rules that take only HOME_FILES from each home folder in the source (/home/USER/...): each parent folder
-    is let in on its own, so its other files stay out; a listed folder comes with all it holds."""
-    rules = ["--include=/*/"]
+def home_rules(top: str) -> list[str]:
+    """rsync rules that take only HOME_FILES from a home folder whose paths start at `top` in the transfer ("/*/" for
+    each home folder in /home, "/" for one home folder): each parent folder is let in on its own, so its other files
+    stay out; a listed folder comes with all it holds. nanohpc-home-copy uses them too."""
+    rules = []
     for path in HOME_FILES:
         parts = path.strip("/").split("/")
         for depth in range(1, len(parts)):
-            parent = f"--include=/*/{'/'.join(parts[:depth])}/"
+            parent = f"--include={top}{'/'.join(parts[:depth])}/"
             if parent not in rules:
                 rules.append(parent)
-        rules.append(f"--include=/*/{'/'.join(parts)}{'/***' if path.endswith('/') else ''}")
+        rules.append(f"--include={top}{'/'.join(parts)}{'/***' if path.endswith('/') else ''}")
     return rules
+
+
+def file_rules() -> list[str]:
+    """rsync rules that take only HOME_FILES from each home folder in the source (/home/USER/...)."""
+    return ["--include=/*/", *home_rules("/*/")]
 
 
 def rsync_command(arguments: argparse.Namespace) -> list[str]:
