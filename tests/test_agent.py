@@ -673,7 +673,7 @@ class Prompts(unittest.TestCase):
 
     def test_plain_english_lets_the_personality_add_its_words(self) -> None:
         prompt = self.agent.system_prompt(bot_settings("slurm", True, None), "c", "")
-        self.assertIn("Write in plain English, with any words or style the personality describes.", prompt)
+        self.assertIn("Write in simple, plain English, with any words or style the personality describes.", prompt)
         self.assertNotIn("Write in simple, plain English.", prompt)
 
     def test_people_file_and_monitor_mode(self) -> None:
