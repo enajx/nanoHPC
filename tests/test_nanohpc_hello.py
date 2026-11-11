@@ -310,6 +310,18 @@ class NanohpcHelloTests(unittest.TestCase):
         shared = lines[label - 1 : label + 6]
         self.assertEqual(len({len(line) for line in shared if line.startswith(("+", "|"))}), 1, shared)
 
+    def test_shared_box_with_a_notice_shows_before_the_own_box_is_measured(self) -> None:
+        self.own_usage.mkdir()
+        (self.usage / self.user).write_text(
+            "+------------------------------------------------------------+\n"
+            "| Notice: home usage is at or above the notice threshold.    |\n"
+            "+------------------------------------------------------------+\n"
+        )
+        output = self.plain()
+        self.assertIn("Disk usage: not measured yet; it is measured every 5 minutes.", output)
+        self.assertIn("Shared /home (your jobs use it):", output)
+        self.assertLess(output.index("not measured yet"), output.index("Shared /home (your jobs use it):"))
+
     def test_largest_folders_inside_the_usage_box(self) -> None:
         """The home machine's list of largest folders is shown inside the usage box, with the box redrawn
         around it; before the first measurement the box says when it is measured."""

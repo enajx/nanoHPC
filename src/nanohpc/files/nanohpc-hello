@@ -222,24 +222,34 @@ def labelled(box: list[str], label: str) -> list[str]:
     return [border, *["| " + line.ljust(width) + " |" for line in lines], border]
 
 
+def shared_notice_box(user: str) -> list[str]:
+    """The shared /home's box, labelled, when it has a notice (at or above the notice threshold, or new jobs wait);
+    else nothing."""
+    shared = USAGE_DIR / user
+    if not shared.is_file():
+        return []
+    box = ESCAPE.sub("", shared.read_text().strip("\n")).splitlines()
+    if not any(word in line for line in box for word in ("Notice:", "New jobs wait")):
+        return []
+    return labelled(box, "Shared /home (your jobs use it):")
+
+
 def disk_lines(user: str, colors: list[int] | None) -> list[str]:
     """The user's latest home usage box in a calm tone, or why it is missing. On a machine with its own /home: this
-    machine's box, then the shared /home's box when it has a notice (at or above the notice threshold, or new jobs
-    wait). Elsewhere: the shared /home's box."""
+    machine's box (or why it is missing), then the shared /home's box when it has a notice. Elsewhere: the shared
+    /home's box."""
     own = OWN_USAGE_DIR.is_dir()
     usage_dir = OWN_USAGE_DIR if own else USAGE_DIR
     box = usage_dir / user
-    if not box.is_file():
-        if usage_dir.is_dir():
-            return ["Disk usage: not measured yet; it is measured every 5 minutes."]
+    if box.is_file():
+        plain = with_folders(ESCAPE.sub("", box.read_text().strip("\n")).splitlines(), FOLDERS_DIR / user)
+    elif usage_dir.is_dir():
+        plain = ["Disk usage: not measured yet; it is measured every 5 minutes."]
+    else:
         return ["Disk usage: run nanohpc-hello on the front node to see it."]
-    plain = with_folders(ESCAPE.sub("", box.read_text().strip("\n")).splitlines(), FOLDERS_DIR / user)
-    shared = USAGE_DIR / user
-    if own and shared.is_file():
-        shared_box = ESCAPE.sub("", shared.read_text().strip("\n")).splitlines()
-        if any(word in line for line in shared_box for word in ("Notice:", "New jobs wait")):
-            plain = [*plain, *labelled(shared_box, "Shared /home (your jobs use it):")]
-    if colors is None:
+    if own:
+        plain = [*plain, *shared_notice_box(user)]
+    if colors is None or not box.is_file() and len(plain) == 1:
         return plain
     tone = box_tone(colors, any("New jobs wait" in line for line in plain))
     return [f"\033[38;5;{tone}m{line}\033[0m" for line in plain]

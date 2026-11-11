@@ -1,0 +1,17 @@
+# A front or login node switched back to the shared /home (home_mount: shared) that still has its own /home (the
+# marker /etc/nanohpc/home-local, read by main.yml as own_home_marker) and does not mount the shared one yet
+# (home_mount, read with -t nfs4): stop before any change and say what to do, instead of listing every user's files
+# that the shared /home would hide.
+- name: Stop if a machine that now mounts the shared /home still has its own
+  ansible.builtin.assert:
+    that: >-
+      inventory_hostname not in nanohpc.home.clients
+      or not own_home_marker.stat.exists
+      or home_mount.stdout | trim != ''
+    fail_msg: >-
+      {{ inventory_hostname }}: this machine still has its own /home, and cluster.yml now says home_mount: shared.
+      Nothing was changed on this machine. To mount the shared /home here: copy what users want to keep to the shared
+      /home (on {{ nanohpc.home.server }}), unmount the own /home (umount /home: its disk, or its bind mount on the
+      root disk), remove its /home line from /etc/fstab, move or remove what is left in the local /home, then
+      rm /etc/nanohpc/home-local and deploy again.
+    quiet: true
