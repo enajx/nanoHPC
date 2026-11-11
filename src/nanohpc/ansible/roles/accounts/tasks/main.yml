@@ -251,6 +251,12 @@
     login_copy_key: >-
       {{ hostvars[groups['role_front'][0]].login_copy_public_key
          if inventory_hostname in (groups['role_login'] | default([])) else '' }}
+    # Machines with their own /home take the home machine's nightly copy of the listed files, for that command only.
+    home_copy_key: >-
+      {{ hostvars[nanohpc.home.server].home_copy_public_key
+         if inventory_hostname in nanohpc.home.own else '' }}
+    home_address: "{{ nanohpc.home.server_address }}"
+    home_copy_device: "{{ nanohpc.home.disks[inventory_hostname] if inventory_hostname in nanohpc.home.own else none }}"
     front_address: "{{ nanohpc.metrics.front_address }}"
 
 - name: List the installed SSH key files

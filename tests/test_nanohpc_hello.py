@@ -75,6 +75,7 @@ class NanohpcHelloTests(unittest.TestCase):
         self.usage = self.directory / "usage"
         self.usage.mkdir()
         (self.usage / self.user).write_text("+----------+\n| BOX-LINE |\n+----------+\n")
+        self.own_usage = self.directory / "own-usage"
         self.announcements = self.directory / "announcements"
         self.folders = self.directory / "folders"
         self.folders.mkdir()
@@ -83,6 +84,7 @@ class NanohpcHelloTests(unittest.TestCase):
             ("/home/.nanohpc-home-folders", self.folders),
             ("/var/lib/nanohpc/monitor/status.json", self.snapshot),
             ("/etc/nanohpc/login-banner.json", settings),
+            ("/var/lib/nanohpc-own-home-notices", self.own_usage),
             ("/var/lib/nanohpc-home-notices", self.usage),
             ("/var/lib/nanohpc/announcements", self.announcements),
             ('"last"', f'"{last}"'),
@@ -278,6 +280,48 @@ class NanohpcHelloTests(unittest.TestCase):
         self.usage.rmdir()
         self.assertIn("Disk usage: run nanohpc-hello on the front node to see it.", self.plain())
 
+    def test_own_home_box_is_measured_on_this_machine(self) -> None:
+        """On a machine with its own /home, the usage box is the one measured there, not the front node's copy."""
+        self.own_usage.mkdir()
+        (self.own_usage / self.user).write_text("+-----------+\n| OWN-LINE  |\n+-----------+\n")
+        output = self.plain()
+        self.assertIn("OWN-LINE", output)
+        self.assertNotIn("BOX-LINE", output)
+        (self.own_usage / self.user).unlink()
+        self.assertIn("Disk usage: not measured yet; it is measured every 5 minutes.", self.plain())
+
+    def test_own_home_shows_the_shared_box_too_when_it_has_a_notice(self) -> None:
+        """On a machine with its own /home, the shared /home's box follows this machine's box when it says something
+        (at or above the notice threshold, or new jobs wait), labelled as the shared /home your jobs use."""
+        self.own_usage.mkdir()
+        (self.own_usage / self.user).write_text("+----------+\n| OWN-LINE |\n+----------+\n")
+        (self.usage / self.user).write_text(
+            "+------------------------------------------------------------+\n"
+            "| Home usage: 420.00 GB / 400.00 GB job-wait threshold.      |\n"
+            "| Notice: home usage is at or above the notice threshold.    |\n"
+            "| New jobs wait until home usage is below the job-wait threshold. |\n"
+            "+------------------------------------------------------------+\n"
+        )
+        lines = [line.strip() for line in self.plain().splitlines()]
+        own = next(index for index, line in enumerate(lines) if "OWN-LINE" in line)
+        label = next(index for index, line in enumerate(lines) if "Shared /home (your jobs use it):" in line)
+        self.assertLess(own, label)
+        self.assertIn("New jobs wait", " ".join(lines[label:]))
+        shared = lines[label - 1 : label + 6]
+        self.assertEqual(len({len(line) for line in shared if line.startswith(("+", "|"))}), 1, shared)
+
+    def test_shared_box_with_a_notice_shows_before_the_own_box_is_measured(self) -> None:
+        self.own_usage.mkdir()
+        (self.usage / self.user).write_text(
+            "+------------------------------------------------------------+\n"
+            "| Notice: home usage is at or above the notice threshold.    |\n"
+            "+------------------------------------------------------------+\n"
+        )
+        output = self.plain()
+        self.assertIn("Disk usage: not measured yet; it is measured every 5 minutes.", output)
+        self.assertIn("Shared /home (your jobs use it):", output)
+        self.assertLess(output.index("not measured yet"), output.index("Shared /home (your jobs use it):"))
+
     def test_largest_folders_inside_the_usage_box(self) -> None:
         """The home machine's list of largest folders is shown inside the usage box, with the box redrawn
         around it; before the first measurement the box says when it is measured."""
@@ -385,7 +429,9 @@ class LoginBannerRoleTests(unittest.TestCase):
 
         ansible = ROOT / "src/nanohpc/ansible"
         plays = yaml.safe_load((ansible / "site.yml").read_text())
-        self.assertIn(("role_front:role_login", ["login_banner"]), [(play.get("hosts"), play.get("roles")) for play in plays])
+        self.assertIn(
+            ("role_front:role_login", ["login_banner"]), [(play.get("hosts"), play.get("roles")) for play in plays]
+        )
         self.assertNotIn("login_banner", (ansible / "monitor.yml").read_text())
         tasks = (ansible / "roles/login_banner/tasks/main.yml").read_text()
         for text in (

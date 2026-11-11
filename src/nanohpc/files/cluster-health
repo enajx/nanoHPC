@@ -255,16 +255,22 @@ if has front || has login || has compute; then
   check "service munge" systemctl is-active --quiet munge
 fi
 
-if has home; then
+# A front or login node with its own /home (home_mount: own) records it in /etc/nanohpc/home-local; it measures its
+# quotas and largest folders as the home machine does, without NFS.
+own_home=false
+test -f "$root/etc/nanohpc/home-local" && own_home=true
+if has home || $own_home; then
   check "/home is mounted" mountpoint -q /home
-  check "service nfs-server" systemctl is-active --quiet nfs-server
+  if has home; then
+    check "service nfs-server" systemctl is-active --quiet nfs-server
+  fi
   check "home quota reader timer" systemctl is-active --quiet nanohpc-home-quotas.timer
   check "the home quota reader's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-home-quotas.service'
   check "largest home folders timer" systemctl is-active --quiet nanohpc-home-folders.timer
   check "the largest home folders measurement's last run worked" sh -c '! systemctl is-failed --quiet nanohpc-home-folders.service'
   disk /home
   # The nightly backup writes its result as metrics; only once a backup is configured.
-  if test -f "$root/etc/nanohpc/backup/enabled"; then
+  if has home && test -f "$root/etc/nanohpc/backup/enabled"; then
     backup_metrics=$root/var/lib/nanohpc/metrics-textfile/backup.prom
     last_success=$(awk '$1 == "cluster_backup_last_success_timestamp_seconds" { print int($2) }' "$backup_metrics" 2>/dev/null)
     last_exit=$(awk '$1 == "cluster_backup_last_exit_code" { print int($2) }' "$backup_metrics" 2>/dev/null)
@@ -278,9 +284,9 @@ if has home; then
     fi
     note "the last /home backup run worked" test "${last_exit:-0}" = 0
   fi
-elif ! has backup && ! test -f "$root/etc/nanohpc/home-local"; then
-  # A login node with /home on the front node keeps its own /home (/etc/nanohpc/home-local); every other machine
-  # mounts the shared one. A hung NFS server makes /home hang rather than fail; the timeout turns that into a failure.
+elif ! has backup; then
+  # Every other machine mounts the shared /home. A hung NFS server makes /home hang rather than fail; the timeout
+  # turns that into a failure.
   check "/home answers within 10 seconds" timeout 10 stat -t /home/.
   check "/home is the shared NFS mount" sh -c 'findmnt -n -t nfs4 -o FSTYPE --mountpoint /home | grep -qx nfs4'
 fi
@@ -296,6 +302,14 @@ fi
 if test -f "$root/etc/nanohpc/shared-datasets"; then
   check "/shared/datasets is the shared NFS mount" sh -c 'findmnt -n -o FSTYPE --mountpoint /shared/datasets | grep -qx nfs4'
   check "/shared/datasets answers within 10 seconds" timeout 10 stat -t /shared/datasets/.
+fi
+
+# With front or login nodes that keep their own /home, the home machine copies each user's listed files into them
+# every night (nanohpc-home-copy). A warning: one node that is off must not fail the home machine.
+if has home && test -f "$root/etc/systemd/system/nanohpc-home-copy.timer"; then
+  check "own /home copy timer" systemctl is-active --quiet nanohpc-home-copy.timer
+  note "the last copy of the listed files to the own /home folders worked" \
+    sh -c '! systemctl is-failed --quiet nanohpc-home-copy.service'
 fi
 
 # With login nodes, the front node copies the login banner's data to them (nanohpc-login-copy).

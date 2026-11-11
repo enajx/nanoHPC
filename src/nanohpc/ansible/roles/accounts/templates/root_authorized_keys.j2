@@ -18,3 +18,8 @@ from="{{ front_address }}",no-agent-forwarding,no-port-forwarding,no-X11-forward
 # The front node's copies of the login banner's data (this is a login node): only that receiving command.
 from="{{ front_address }}",command="/usr/local/sbin/nanohpc-login-copy-receive",restrict {{ login_copy_key }}
 {% endif %}
+{% if home_copy_key | default('') %}
+# The home machine's nightly copy of each user's listed files (this machine keeps its own /home): only that receiving
+# command, which writes as the user into their own home folder (and checks that /home is its disk, if it has one).
+from="{{ home_address }}",command="/usr/local/sbin/nanohpc-home-copy-receive{{ (' ' ~ home_copy_device) if home_copy_device else '' }}",restrict {{ home_copy_key }}
+{% endif %}

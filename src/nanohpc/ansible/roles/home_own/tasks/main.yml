@@ -1,0 +1,41 @@
+# A front or login node with its own /home (home_mount: own): /home with user quotas, as on the home machine (its
+# disk from cluster.yml, or the root disk's /home mounted onto itself without setuid or device files), but not
+# exported. Its quota reader and largest-folders measurement are in the monitoring role. Every night the home machine
+# copies each user's listed files here (send.yml there, nanohpc-home-copy-receive here).
+
+- name: /home with user quotas
+  ansible.builtin.include_role:
+    name: home_server
+    tasks_from: disk
+
+# cluster-health checks the shared /home mount everywhere else; this marker tells it this /home is the machine's own.
+- name: Record that this machine keeps its own /home
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/home-local
+    content: ""
+    owner: root
+    group: root
+    mode: "0644"
+
+# The login banner shows the box from here when this folder exists (nanohpc-hello).
+- name: Create the folder of the usage boxes measured here (users can read only their own)
+  ansible.builtin.file:
+    path: /var/lib/nanohpc-own-home-notices
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+
+- name: Install rsync, for the home machine's nightly copy
+  ansible.builtin.apt:
+    name: rsync
+    state: present
+    install_recommends: false
+
+- name: Install the receiving command for the home machine's nightly copy
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/nanohpc-home-copy-receive"
+    dest: /usr/local/sbin/nanohpc-home-copy-receive
+    owner: root
+    group: root
+    mode: "0755"

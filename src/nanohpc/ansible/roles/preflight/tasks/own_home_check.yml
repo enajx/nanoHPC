@@ -1,0 +1,14 @@
+# A front or login node switched to its own /home (home_mount: own) while the shared /home (NFS, or its systemd
+# automount) is still mounted there: stop before any change and say what to do. home_mount: what /home is now
+# (findmnt SOURCE FSTYPE, read by main.yml).
+- name: Stop if the shared /home is still mounted on a machine that now keeps its own
+  ansible.builtin.assert:
+    that: >-
+      inventory_hostname not in nanohpc.home.own
+      or not (home_mount.stdout.split() | select('match', '^(nfs4?|autofs)$') | list)
+    fail_msg: >-
+      {{ inventory_hostname }}: /home is still the shared /home ({{ (home_mount.stdout.split() + ['?'])[0] }}), and
+      cluster.yml now says home_mount: own. Nothing was changed on this machine. To give it its own /home: copy any
+      files it needs from the shared /home, stop the logins and jobs that use /home here, unmount it
+      (umount /home), remove the /home line from /etc/fstab, then deploy again.
+    quiet: true

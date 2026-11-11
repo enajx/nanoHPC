@@ -316,7 +316,8 @@ class StorageStep(Step):
         job_retention = state.file.get(["scratch", "job_retention_days"])
         yield self.heading()
         yield Static("/home", classes="subheading")
-        candidates = [name for name, machine in machines.items() if "compute" not in roles_of(machine)]
+        # Not a compute machine nor a login node (neither can serve /home).
+        candidates = [name for name, machine in machines.items() if not {"compute", "login"} & set(roles_of(machine))]
         home = next((name for name, machine in machines.items() if "home" in roles_of(machine)), None)
         yield field(
             "served by",
@@ -439,8 +440,11 @@ class StorageStep(Step):
             roles = roles_of(machine)
             if "home" in roles:
                 self.state.file.set_machine(name, with_roles(machine or {}, [role for role in roles if role != "home"]))
-        machine = machines[chosen] or {}
-        self.state.file.set_machine(chosen, {**machine, "roles": [*roles_of(machine), "home"]})
+        machine = dict(machines[chosen] or {})
+        if machine.get("home_mount") == "own":
+            # Its disk held its own /home, not the shared one: the home disk is chosen below as usual.
+            machine.pop("home", None)
+        self.state.file.set_machine(chosen, with_roles(machine, [*roles_of(machine), "home"]))
         self.changed()
         await self.reload()
 

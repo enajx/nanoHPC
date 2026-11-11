@@ -4867,8 +4867,9 @@ class SimSlackAgentMonitorTest(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimLoginNodeTest(SimUsersBase):
     """Several front nodes: a login node (role `login`) where users log in and submit jobs as on the front node,
-    with its own /home because /home is on the front node; the controller, monitoring and website stay on the
-    front node. Three Ubuntu 24.04 VMs."""
+    with its own /home (home_mount: own); the controller, monitoring and website stay on the front node, which is
+    the home machine. The home machine copies each user's listed files into the login node's own /home every night.
+    Three Ubuntu 24.04 VMs."""
 
     sim = SIM / "login.yml"
     state = ROOT / ".nanohpc-sim" / "login"
@@ -4918,17 +4919,25 @@ class SimLoginNodeTest(SimUsersBase):
             self.assertNotIn("run nanohpc-hello on the front node", banner.stdout)
             # The banner redraws the box at its own width: compare its text, not its border.
             self.assertIn("Home usage:", box)
-            self.assertIn("Home usage:", banner.stdout)
+            self.assertIn("Home usage on this machine:", banner.stdout)  # its own /home's box, measured there
             self.assertIn("Cluster is running", banner.stdout)
             # Each box stays private: alice cannot read bob's.
             self.assertNotEqual(
                 self.as_user("alice", "login1", "cat /var/lib/nanohpc-home-notices/bob", False).returncode, 0
             )
 
+        with self.subTest("the nightly copy brings a listed file into the own /home, and other files there stay"):
+            self.assertEqual(self.as_user("bob", "front", "echo copied-from-shared > ~/.bashrc", False).returncode, 0)
+            self.assertEqual(self.as_user("bob", "login1", "echo own > ~/unlisted.txt", False).returncode, 0)
+            self.on_front("sudo systemctl start nanohpc-home-copy.service")
+            self.assertEqual(self.ssh("login1", "sudo cat /home/bob/.bashrc").stdout.strip(), "copied-from-shared")
+            self.assertEqual(self.ssh("login1", "sudo cat /home/bob/unlisted.txt").stdout.strip(), "own")
+            self.assertEqual(self.ssh("login1", "sudo stat -c %U /home/bob/.bashrc").stdout.strip(), "bob")
+
         with self.subTest("the website's user guide names the login node, and nanohpc check passes"):
             site = json.loads(self.on_front("cat /srv/nanohpc-web/config/site.json"))
             self.assertIn(login, site["login_note"])
-            self.assertIn("Each one has its own /home", site["login_note"])
+            self.assertIn(f"{login} has its own /home", site["login_note"])
             checked = self.run_command(
                 "uv", "run", "nanohpc", "check", str(cluster), "--ssh-config", str(self.state / "ssh_config")
             )

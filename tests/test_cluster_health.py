@@ -204,6 +204,40 @@ class ClusterHealthMetricsTests(unittest.TestCase):
             self.assertIn("ok    service munge", result.stdout)
             self.assertIn("/home is the shared NFS mount", result.stdout)
 
+    def test_own_home_is_checked_like_the_home_machines_disk(self) -> None:
+        """A front or login node with its own /home (marker /etc/nanohpc/home-local) checks its mount, its quota
+        reader (the usage boxes), its largest-folders measurement, and its disk; not NFS."""
+        with tempfile.TemporaryDirectory(prefix="cluster-health-") as directory:
+            folder = Path(directory)
+            environment = make_machine(folder, "login", "nanohpc-home-quotas.service")
+            (folder / "root/etc/nanohpc/home-local").write_text("")
+            result = run([], environment)
+            lines = result.stdout.splitlines()
+            for line in (
+                "ok    /home is mounted",
+                "ok    home quota reader timer",
+                "FAIL  the home quota reader's last run worked",
+                "ok    largest home folders timer",
+                "WARN  disk /home: 95% space, 95% inodes used (warning from 90%)",
+            ):
+                self.assertIn(line, lines)
+            self.assertNotIn("service nfs-server", result.stdout)
+            self.assertNotIn("/home is the shared NFS mount", result.stdout)
+
+    def test_home_machine_checks_the_nightly_copy_to_own_homes(self) -> None:
+        """With nodes that keep their own /home, the home machine checks the copy's timer, and a failed last copy
+        is a warning (a node that is off must not fail the home machine)."""
+        with tempfile.TemporaryDirectory(prefix="cluster-health-") as directory:
+            folder = Path(directory)
+            environment = make_machine(folder, "front home", "nanohpc-home-copy.service")
+            result = run([], environment)
+            self.assertNotIn("own /home copy", result.stdout)
+            (folder / "root/etc/systemd/system").mkdir(parents=True)
+            (folder / "root/etc/systemd/system/nanohpc-home-copy.timer").write_text("")
+            lines = run([], environment).stdout.splitlines()
+            self.assertIn("ok    own /home copy timer", lines)
+            self.assertIn("WARN  the last copy of the listed files to the own /home folders worked", lines)
+
     def test_backup_checks(self) -> None:
         """A recent good backup is ok; before the first night there is no age check; no backup configured: no check."""
         cases = [

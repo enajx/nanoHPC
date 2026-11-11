@@ -17,6 +17,7 @@ machines:
     - cluster.example.org
     roles:
     - front
+    home_mount: shared
   gpu4:
     address: 192.168.104.11
     roles:

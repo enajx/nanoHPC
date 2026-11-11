@@ -34,6 +34,7 @@ from nanohpc.render import (
     home_clients,
     home_server,
     interactive_machine_limits,
+    own_home_machines,
     render,
     render_prometheus,
 )
@@ -270,7 +271,8 @@ def deployed_problems(config: dict[str, Any], only: Only, deployed: dict[str, li
 
 def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
     """Return the Ansible inventory: one group per role (role_front, ...), role_slurm for the front node, login
-    nodes and compute machines, home_client for the machines that mount /home, and only_node: the machine of
+    nodes and compute machines, home_client for the machines that mount /home, home_own for the front and login
+    nodes with their own /home, and only_node: the machine of
     `--only node` (empty otherwise)."""
     # Ansible's temporary files on the cluster machines go to the login session's private runtime folder:
     # not the home folder (the shared /home or the home disk can hide it), and not a predictable /tmp path
@@ -286,8 +288,9 @@ def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
     }
     # Login nodes run Slurm's commands (no slurmd), so they are Slurm machines too.
     groups["role_slurm"] = {"children": {"role_front": None, "role_login": None, "role_compute": None}}
-    # The machines that mount the shared /home (see home_clients).
+    # The machines that mount the shared /home (see home_clients), and the front and login nodes that keep their own.
     groups["home_client"] = {"hosts": {name: None for name in home_clients(config)}}
+    groups["home_own"] = {"hosts": {name: None for name in own_home_machines(config)}}
     groups["only_node"] = {"hosts": {} if node is None else {node: None}}
     return {"all": {"children": groups}}
 
@@ -308,13 +311,18 @@ def monitor_inventory(config: dict[str, Any], node: str | None) -> dict[str, Any
 
 
 def home_variables(config: dict[str, Any]) -> dict[str, Any]:
-    """Return where /home is served, who mounts it, and users whose filesystem write limits must be cleared."""
+    """Return where /home is served, who mounts it, who keeps their own (`own`), the disk that holds each machine's
+    /home with quotas (`disks`: the home machine and the own ones; None for the root disk), and users whose
+    filesystem write limits must be cleared."""
     server = home_server(config)
+    own = own_home_machines(config)
     return {
         "server": server,
         "server_address": config["machines"][server]["address"],
         "device": config["machines"][server]["home"]["device"],
         "clients": home_clients(config),
+        "own": own,
+        "disks": {name: config["machines"][name]["home"]["device"] for name in [server, *own]},
         "quotas": [{"name": user["name"]} for user in config["users"]],
         "policy_user_args": " ".join(f"--user {user['name']}:{user['uid']}" for user in config["users"]),
         "soft_bytes": config["home"]["quota_soft_gb"] * 1024**3,
@@ -658,26 +666,38 @@ def site_data(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def login_note(config: dict[str, Any]) -> str:
-    """Return the user guide's sentences on the other front nodes (login nodes): where they are, and whether they
-    share /home; empty when there are none."""
-    logins = [
-        (machine.get("aliases") or [machine["address"]])[0]
-        for machine in config["machines"].values()
-        if "login" in machine["roles"]
-    ]
-    if not logins:
-        return ""
-    shared = any(name in home_clients(config) for name, m in config["machines"].items() if "login" in m["roles"])
-    home = (
-        "They share your /home."
-        if shared
-        else "Each one has its own /home: files you put on one are not on the others, nor in your jobs, which use "
-        "the main front node's /home."
-    )
-    return (
-        f"You can also log in to the other front nodes: {', '.join(logins)}. They work the same way: use one as "
-        f"HostName instead. {home}"
-    )
+    """Return the user guide's sentences on the other front nodes (login nodes): where they are, and which share
+    /home or keep their own (home_mount; the front node too, when it keeps its own); empty when there are none."""
+
+    def shown(name: str) -> str:
+        machine = config["machines"][name]
+        return "The front node" if "front" in machine["roles"] else (machine.get("aliases") or [machine["address"]])[0]
+
+    def listed(names: list[str]) -> str:
+        return ", ".join(shown(name) for name in names)
+
+    logins = [name for name, machine in config["machines"].items() if "login" in machine["roles"]]
+    own = own_home_machines(config)
+    shared = [name for name in logins if name not in own]
+    sentences = []
+    if logins:
+        sentences.append(
+            f"You can also log in to the other front nodes: {listed(logins)}. They work the same way: use one as "
+            "HostName instead."
+        )
+    if shared and not own:
+        sentences.append("They share your /home.")
+    elif shared:
+        sentences.append(f"{listed(shared)} {'shares' if len(shared) == 1 else 'share'} your /home.")
+    if own:
+        sentences.append(
+            f"{listed(own)} {'has its' if len(own) == 1 else 'have their'} own /home: files you put there are not on "
+            "the other front nodes. Jobs you submit there see only the shared /home, so keep your projects and data "
+            "in the shared /home. Every night, your listed settings files there (SSH keys, shell settings and "
+            "history, git, editor and tool settings, login tokens) are replaced by their copy from the shared /home, "
+            "so change them on the shared /home; your other files there stay."
+        )
+    return " ".join(sentences)
 
 
 def priority_rule(config: dict[str, Any]) -> str:
@@ -753,7 +773,9 @@ def monitor_machines(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for name, machine in config["machines"].items():
         roles = machine["roles"]
         nfs = ["nfs-server.service"] if name == server or (shared is not None and name == shared["server"]) else []
-        home = ["/home"] if name == server or name in clients else []
+        # The home machine's /home, the shared one, or a machine's own (its disk, or the root disk's /home mounted
+        # onto itself).
+        home = ["/home"] if name == server or name in clients or machine.get("home_mount") == "own" else []
         shared_mount = []
         if shared is not None:
             if name == shared["server"]:

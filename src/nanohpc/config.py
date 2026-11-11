@@ -19,7 +19,20 @@ import yaml
 ROLES = ("front", "login", "home", "backup", "compute", "shared")
 JOB_TYPES = ("batch", "interactive", "any")  # batch: sbatch only; interactive: only the documented shell
 COMPUTE_FIELDS = ("cpu", "memory_mb", "gpu", "partitions", "scratch")
-MACHINE_FIELDS = ("address", "bmc_address", "aliases", "roles", "home", "backup", "shared", *COMPUTE_FIELDS)
+MACHINE_FIELDS = (
+    "address",
+    "bmc_address",
+    "aliases",
+    "roles",
+    "home_mount",
+    "home",
+    "backup",
+    "shared",
+    *COMPUTE_FIELDS,
+)
+# home_mount on a front or login node that is not the home machine: shared mounts the cluster's /home, own keeps its
+# own /home on that machine.
+HOME_MOUNTS = ("shared", "own")
 TOP_FIELDS = (
     "cluster",
     "machines",
@@ -721,14 +734,28 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
             for key in COMPUTE_FIELDS:
                 if key in machine:
                     checker.fail(f"{path}.{key}", "is only for compute machines")
-        if "home" in roles:
+        if ("front" in roles or "login" in roles) and "home" not in roles:
+            if "home_mount" not in machine:
+                checker.fail(
+                    f"{path}.home_mount",
+                    "is required on a front or login node that is not the home machine: shared (it mounts the "
+                    "cluster's /home) or own (it keeps its own /home). Before home_mount, a login node kept its own "
+                    "/home when /home was on the front node (own), and mounted the shared /home when /home was on a "
+                    "storage machine (shared), as a front node without the home role did (shared)",
+                )
+            elif machine["home_mount"] not in HOME_MOUNTS:
+                checker.fail(f"{path}.home_mount", "must be shared or own")
+        elif "home_mount" in machine:
+            checker.fail(f"{path}.home_mount", "is only for a front or login node that is not the home machine")
+        # The home machine's disk, or the disk of a machine's own /home (optional: else the root disk).
+        if "home" in roles or machine.get("home_mount") == "own":
             home = checker.mapping(machine.get("home") or {}, f"{path}.home", (), ("device",)) or {}
             device = home.get("device")
             if device is not None:
                 checker.matches(device, DEVICE, f"{path}.home.device", "a device path under /dev/")
             machine["home"] = {"device": device}
         elif "home" in machine:
-            checker.fail(f"{path}.home", "is only for the home machine")
+            checker.fail(f"{path}.home", "is only for the home machine, or a front or login node with home_mount: own")
         if "backup" in roles:
             if "backup" not in machine:
                 checker.fail(f"{path}.backup.path", "is required")

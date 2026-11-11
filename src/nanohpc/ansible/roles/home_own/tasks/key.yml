@@ -1,0 +1,28 @@
+# On the home machine: the key for the nightly copy of each user's listed files into the own /home of the front and
+# login nodes with home_mount: own (nanohpc-home-copy). Made before the accounts role runs, so their root key file
+# can accept it (from the home machine only, for nanohpc-home-copy-receive).
+- name: Create the home copy folder
+  ansible.builtin.file:
+    path: /etc/nanohpc/home-copy
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Make the home copy key
+  ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-home-copy@{{ inventory_hostname }}" -f /etc/nanohpc/home-copy/id_ed25519
+  args:
+    creates: /etc/nanohpc/home-copy/id_ed25519
+  register: home_copy_keygen
+
+- name: Read the home copy key's public half
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/home-copy/id_ed25519.pub
+  register: home_copy_key_file
+  when: not (ansible_check_mode and home_copy_keygen is changed)  # dry run: the key is not made yet
+
+- name: Keep the public key for the machines with their own /home
+  ansible.builtin.set_fact:
+    home_copy_public_key: >-
+      {{ (home_copy_key_file.content | b64decode | trim) if home_copy_key_file.content is defined
+         else '(the key this deploy makes)' }}

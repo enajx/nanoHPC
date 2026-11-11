@@ -9,8 +9,14 @@ and cluster_home_quota_collected_timestamp_seconds (when repquota was read, in U
 The file is replaced whole, and only when every named user has a valid quota record: any failure leaves the
 last good file (its timestamp then shows how old it is).
 
-Arguments:
+On a front or login node with its own /home (home_mount: own), it runs with --notice-dir instead of --output: it
+writes no metrics (the front node's job hold reads only the shared /home), and writes each named user's private
+usage box for the login banner (mode 0400, owned by that user, replaced whole), with a notice at or above the soft
+threshold. Going over the hard threshold there holds no jobs. Boxes of users not named are removed.
+
+Arguments (one of --output and --notice-dir):
   --output PATH            the .prom file to write, in node_exporter's textfile folder.
+  --notice-dir PATH        the folder of the usage boxes (root-owned, users may enter it but not list it).
   --repquota PATH          the repquota program (for example /usr/sbin/repquota).
   --filesystem PATH        mount point of the filesystem that holds /home and its quotas: /home when it is
                            its own mount, / when /home is a folder on the root disk.
@@ -23,8 +29,10 @@ import argparse
 import csv
 import json
 import os
+import pwd
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -96,10 +104,48 @@ def publish(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
+def usage_box(path: Path, uid: int, used: int, notice: int, hard: int) -> None:
+    """Publish one private usage box of this machine's own /home, owned by its user, with an atomic rename."""
+    lines = [
+        f"Home usage on this machine: {used / 1024**3:.2f} GB / {hard / 1024**3:.2f} GB limit.",
+        f"Notice threshold: {notice / 1024**3:.2f} GB.",
+    ]
+    if used >= notice:
+        lines.append("Notice: home usage is at or above the notice threshold.")
+    if used >= hard:
+        lines.extend(
+            ["This /home is over its limit: remove files you do not need.",
+             "Your jobs use the shared /home and are not held."]
+        )  # fmt: skip
+    width = max(len(line) for line in lines)
+    border = "+" + "-" * (width + 2) + "+"
+    content = "\n".join([border, *["| " + line.ljust(width) + " |" for line in lines], border]) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fchown(stream.fileno(), uid, -1)
+        os.fchmod(stream.fileno(), 0o400)
+        os.fsync(stream.fileno())
+    Path(temporary_name).replace(path)
+
+
+def publish_boxes(folder: Path, quotas: dict[str, dict[str, int]]) -> None:
+    """Write every named user's box, then remove the boxes of users no longer named."""
+    for user, values in quotas.items():
+        usage_box(folder / user, pwd.getpwnam(user).pw_uid, values["used_bytes"], values["soft_bytes"],
+                  values["hard_bytes"])  # fmt: skip
+    for old in folder.iterdir():
+        if old.name not in quotas:
+            old.unlink()
+
+
 def main() -> None:
     """Read fixed operator supplied paths and user names."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, required=True)
+    where = parser.add_mutually_exclusive_group(required=True)
+    where.add_argument("--output", type=Path)
+    where.add_argument("--notice-dir", type=Path)
     parser.add_argument("--repquota", required=True)
     parser.add_argument("--filesystem", required=True)
     parser.add_argument("--soft-bytes", type=int, required=True)
@@ -109,7 +155,10 @@ def main() -> None:
     quotas = collect(
         arguments.repquota, arguments.filesystem, arguments.users, arguments.soft_bytes, arguments.hard_bytes
     )
-    publish(arguments.output, metrics(quotas, time.time()))
+    if arguments.output is not None:
+        publish(arguments.output, metrics(quotas, time.time()))
+    else:
+        publish_boxes(arguments.notice_dir, quotas)
 
 
 if __name__ == "__main__":

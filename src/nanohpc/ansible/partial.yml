@@ -10,8 +10,8 @@
 #
 # Tags (one per part; `always` runs in every part):
 # - users: accounts, SSH keys, sudo keys, and AllowUsers on every machine; the administrators' exemptions from
-#   the login limits (front and login nodes); home folders and quotas on the home
-#   machine; scratch folders and caches on the compute machines; Slurm accounting users on the front node;
+#   the login limits (front and login nodes); home folders and quotas on the home machine and on the front and
+#   login nodes with their own /home; scratch folders and caches on the compute machines; Slurm accounting users on the front node;
 #   the user lists of the status collector (front node) and the quota reader (home machine); the website's
 #   site.json and the user guide and policy pages filled from it (front node); Slack user mentions and
 #   private-message recipients (front node).
@@ -94,6 +94,20 @@
         tasks_from: copy_key
       when: groups['role_login'] | default([]) | length > 0
 
+# The home machine's key for the nightly copy into the own /home of the front and login nodes with home_mount: own,
+# made before the accounts role so their root key file can accept it.
+- name: Home copy key on the home machine
+  hosts: role_home
+  become: true
+  any_errors_fatal: true
+  tags: [always]
+  tasks:
+    - name: Make or read the home copy key
+      ansible.builtin.include_role:
+        name: home_own
+        tasks_from: key
+      when: nanohpc.home.own | length > 0
+
 # --only users
 
 - name: Users, SSH keys, sudo keys, and who may log in, on every machine
@@ -114,8 +128,8 @@
   tags: [users]
   roles: [login_limits]
 
-- name: The users' home folders and quotas on the home machine
-  hosts: role_home
+- name: The users' home folders and quotas on the home machine and on the front and login nodes with their own /home
+  hosts: role_home:home_own
   become: true
   tags: [users]
   vars:
@@ -126,15 +140,15 @@
         name: home_server
         tasks_from: users
 
-- name: The users' home folders on login nodes with their own /home
-  hosts: role_login
+- name: The user list of the nightly copy into the own /home folders, on the home machine
+  hosts: role_home
   become: true
   tags: [users]
   tasks:
-    - name: Home folders
-      ansible.builtin.import_role:
-        name: login_node
-        tasks_from: homes
+    - name: Copy units with the new user list
+      ansible.builtin.include_role:
+        name: home_own
+        tasks_from: send
 
 - name: The users' scratch folders and caches on the compute machines
   hosts: role_compute
@@ -158,8 +172,8 @@
         name: slurm_controller
         tasks_from: users
 
-- name: The user lists of the status collector and the home quota reader
-  hosts: role_front:role_home
+- name: The user lists of the status collector and the home quota readers
+  hosts: role_front:role_home:home_own
   become: true
   tags: [users]
   roles: [monitoring]

@@ -26,6 +26,9 @@ from pathlib import Path
 SETTINGS = Path("/etc/nanohpc/login-banner.json")
 SNAPSHOT = Path("/var/lib/nanohpc/monitor/status.json")
 USAGE_DIR = Path("/var/lib/nanohpc-home-notices")
+# On a machine with its own /home (home_mount: own), the usage boxes measured there; deploy removes the folder
+# otherwise.
+OWN_USAGE_DIR = Path("/var/lib/nanohpc-own-home-notices")
 # The user's largest folders, measured every hour on the home machine; readable only by that user.
 FOLDERS_DIR = Path("/home/.nanohpc-home-folders")
 # Messages from cluster.yml: everyone.json, and users/<user>.json readable only by that user.
@@ -211,18 +214,45 @@ def with_folders(box: list[str], folders: Path) -> list[str]:
     return [border, *["| " + line.ljust(width) + " |" for line in lines], border]
 
 
+def labelled(box: list[str], label: str) -> list[str]:
+    """Redraw a usage box (+---+ borders, | line | rows) with a first line naming which /home it is about."""
+    lines = [label, *[line[2:-2].rstrip() for line in box[1:-1]]]
+    width = max(len(line) for line in lines)
+    border = "+" + "-" * (width + 2) + "+"
+    return [border, *["| " + line.ljust(width) + " |" for line in lines], border]
+
+
+def shared_notice_box(user: str) -> list[str]:
+    """The shared /home's box, labelled, when it has a notice (at or above the notice threshold, or new jobs wait);
+    else nothing."""
+    shared = USAGE_DIR / user
+    if not shared.is_file():
+        return []
+    box = ESCAPE.sub("", shared.read_text().strip("\n")).splitlines()
+    if not any(word in line for line in box for word in ("Notice:", "New jobs wait")):
+        return []
+    return labelled(box, "Shared /home (your jobs use it):")
+
+
 def disk_lines(user: str, colors: list[int] | None) -> list[str]:
-    """The user's latest home usage box in a calm tone, or why it is missing."""
-    box = USAGE_DIR / user
+    """The user's latest home usage box in a calm tone, or why it is missing. On a machine with its own /home: this
+    machine's box (or why it is missing), then the shared /home's box when it has a notice. Elsewhere: the shared
+    /home's box."""
+    own = OWN_USAGE_DIR.is_dir()
+    usage_dir = OWN_USAGE_DIR if own else USAGE_DIR
+    box = usage_dir / user
     if box.is_file():
         plain = with_folders(ESCAPE.sub("", box.read_text().strip("\n")).splitlines(), FOLDERS_DIR / user)
-        if colors is None:
-            return plain
-        tone = box_tone(colors, any("New jobs wait" in line for line in plain))
-        return [f"\033[38;5;{tone}m{line}\033[0m" for line in plain]
-    if USAGE_DIR.is_dir():
-        return ["Disk usage: not measured yet; it is measured every 5 minutes."]
-    return ["Disk usage: run nanohpc-hello on the front node to see it."]
+    elif usage_dir.is_dir():
+        plain = ["Disk usage: not measured yet; it is measured every 5 minutes."]
+    else:
+        return ["Disk usage: run nanohpc-hello on the front node to see it."]
+    if own:
+        plain = [*plain, *shared_notice_box(user)]
+    if colors is None or not box.is_file() and len(plain) == 1:
+        return plain
+    tone = box_tone(colors, any("New jobs wait" in line for line in plain))
+    return [f"\033[38;5;{tone}m{line}\033[0m" for line in plain]
 
 
 def shown_messages(path: Path, today: date) -> list[str]:

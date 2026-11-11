@@ -13,6 +13,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from typing import Any
 
 import yaml
 from textual.pilot import Pilot
@@ -867,6 +868,144 @@ class StorageTest(unittest.IsolatedAsyncioTestCase):
                 app.screen.query_one("#shared-device", Select).value = "/dev/vdb"
                 await settle(pilot)
                 self.assertEqual(app.state.file.get(["machines", "datasets", "shared", "device"]), "/dev/vdb")
+
+    async def test_front_and_login_nodes_say_how_they_get_home(self) -> None:
+        """A front or login node that is not the home machine gets home_mount (asked in its dialog, shared by
+        default), so the wizard writes a valid file; the home machine and compute machines have none."""
+        fakes = Fakes({"login1": [facts("login1", ["192.168.104.30"], [], None)]}, {})
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            app = WizardApp(path, None, fakes.dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await add_machine(pilot, "login1", "login1")
+                await select_row(pilot, "#machine-table", "login1")
+                await pilot.press("enter")
+                await pilot.pause()
+                app.screen.query_one("#role-compute", Checkbox).value = False
+                app.screen.query_one("#role-login", Checkbox).value = True
+                await pilot.pause()
+                self.assertTrue(app.screen.query_one("#home-mount-fields").display)
+                self.assertEqual(app.screen.query_one("#home-mount", Select).value, "shared")
+                app.screen.query_one("#home-mount", Select).value = "own"
+                await pilot.click("#ok")
+                await settle(pilot)
+                machine = app.state.file.machines()["login1"]
+                self.assertEqual(machine["roles"], ["login"])
+                self.assertEqual(machine["home_mount"], "own")
+                self.assertNotIn("cpu", machine)
+                await select_row(pilot, "#machine-table", "front")
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertFalse(app.screen.query_one("#home-mount-fields").display)
+                await pilot.press("escape")
+                await settle(pilot)
+                # /home moved to a storage machine: the front node now mounts it.
+                await go(pilot, 1)
+                app.screen.query_one("#home-machine", Select).value = "store"
+                await settle(pilot)
+                self.assertEqual(app.state.file.get(["machines", "front", "home_mount"]), "shared")
+                self.assertNotIn("home_mount", app.state.file.machines()["store"])
+                app.screen.query_one("#home-machine", Select).value = "front"
+                await settle(pilot)
+                self.assertNotIn("home_mount", app.state.file.machines()["front"])
+
+    async def test_own_home_disk_is_asked_saved_and_removed(self) -> None:
+        """With home_mount: own, the dialog asks for an optional disk for that machine's /home (home.device); empty
+        removes it, and so does switching to shared or a role without home_mount. Saved and read back."""
+        fakes = Fakes({"login1": [facts("login1", ["192.168.104.30"], [], None)]}, {})
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+
+            async def edit(pilot: Pilot, changes: dict[str, Any]) -> None:
+                await select_row(pilot, "#machine-table", "login1")
+                await pilot.press("enter")
+                await pilot.pause()
+                for selector, value in changes.items():
+                    widget = pilot.app.screen.query_one(selector)
+                    assert isinstance(widget, Checkbox | Select | Input)
+                    widget.value = value
+                    await pilot.pause()
+                await pilot.click("#ok")
+                await settle(pilot)
+
+            app = WizardApp(path, None, fakes.dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await add_machine(pilot, "login1", "login1")
+                await select_row(pilot, "#machine-table", "login1")
+                await pilot.press("enter")
+                await pilot.pause()
+                app.screen.query_one("#role-compute", Checkbox).value = False
+                app.screen.query_one("#role-login", Checkbox).value = True
+                await pilot.pause()
+                self.assertFalse(app.screen.query_one("#own-home-device-fields").display)
+                app.screen.query_one("#home-mount", Select).value = "own"
+                await pilot.pause()
+                self.assertTrue(app.screen.query_one("#own-home-device-fields").display)
+                app.screen.query_one("#own-home-device", Input).value = "/dev/vdb"
+                await pilot.click("#ok")
+                await settle(pilot)
+                await pilot.press("escape", "ctrl+s")
+                await settle(pilot)
+            config, errors = load_config(path, False, False)
+            self.assertEqual(errors, [])
+            self.assertEqual(config["machines"]["login1"]["home"], {"device": "/dev/vdb"})
+            app = WizardApp(path, None, fakes.dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await select_row(pilot, "#machine-table", "login1")
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(app.screen.query_one("#own-home-device", Input).value, "/dev/vdb")
+                await pilot.press("escape")
+                await settle(pilot)
+                await edit(pilot, {"#own-home-device": ""})
+                self.assertNotIn("home", app.state.file.machines()["login1"])
+                await edit(pilot, {"#own-home-device": "/dev/vdc"})
+                self.assertEqual(app.state.file.get(["machines", "login1", "home", "device"]), "/dev/vdc")
+                await edit(pilot, {"#home-mount": "shared"})
+                self.assertNotIn("home", app.state.file.machines()["login1"])
+                await edit(pilot, {"#home-mount": "own", "#own-home-device": "/dev/vdc"})
+                await edit(pilot, {"#role-login": False, "#role-compute": True})
+                self.assertNotIn("home", app.state.file.machines()["login1"])
+                self.assertNotIn("home_mount", app.state.file.machines()["login1"])
+                await edit(pilot, {"#role-compute": False, "#role-login": True, "#home-mount": "own"})
+                await pilot.press("escape", "ctrl+s")
+                await settle(pilot)
+            config, errors = load_config(path, False, False)
+            self.assertEqual(errors, [])
+            self.assertEqual(config["machines"]["login1"]["home"], {"device": None})
+            self.assertNotIn("home:", path.read_text().split("login1:")[1].split("\n\n")[0])
+
+    async def test_an_own_home_disk_is_not_the_home_disk(self) -> None:
+        """A front node with home_mount: own and a disk for it, made the home machine: its home_mount and that disk
+        go (that disk held its own /home, not the shared one), so the home disk is chosen as usual."""
+        with tempfile.TemporaryDirectory() as folder:
+            app = WizardApp(example_copy(folder), None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await go(pilot, 1)
+                app.screen.query_one("#home-machine", Select).value = "store"
+                await settle(pilot)
+                await go(pilot, 0)
+                await select_row(pilot, "#machine-table", "front")
+                await pilot.press("enter")
+                await pilot.pause()
+                app.screen.query_one("#home-mount", Select).value = "own"
+                await pilot.pause()
+                app.screen.query_one("#own-home-device", Input).value = "/dev/vdc"
+                await pilot.click("#ok")
+                await settle(pilot)
+                self.assertEqual(app.state.file.get(["machines", "front", "home", "device"]), "/dev/vdc")
+                await go(pilot, 1)
+                app.screen.query_one("#home-machine", Select).value = "front"
+                await settle(pilot)
+                front = app.state.file.machines()["front"]
+                self.assertIn("home", front["roles"])
+                self.assertNotIn("home_mount", front)
+                self.assertNotIn("home", front)
+                self.assertEqual(app.screen.query_one("#home-device", Select).value, "root")
 
     async def test_shared_dataset_server_and_disk(self) -> None:
         store_facts = facts("store", ["192.168.104.20"], [], None)
