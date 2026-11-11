@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from nanohpc.config import load_config
-from nanohpc.probe import account_problems, run_remote, ssh_failure
+from nanohpc.probe import account_problems, bmc_problem, run_remote, ssh_failure
 from nanohpc.render import front_machine, gpu_count, home_clients, home_server
 
 CHECK_TIMEOUT = 300  # seconds for the whole SSH call to one machine (more than all the limits below together)
@@ -465,6 +465,16 @@ def check(config: dict[str, Any], ssh_config: Path | None) -> int:
     reports = {name: machine_report(config, name, *found[name], states) for name in names}
     if sinfo_failure is not None:
         reports[front_name].problems.append(sinfo_failure)
+    # A BMC is pinged from the front node; when the front node cannot be reached, its own problem is enough.
+    bmcs = [name for name in names if config["machines"][name].get("bmc_address") is not None]
+    if found[front_name][0] is not None and bmcs:
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            answers = pool.map(
+                lambda name: bmc_problem(front_name, ssh_config, config["machines"][name]["bmc_address"]), bmcs
+            )
+            for name, problem in zip(bmcs, answers, strict=True):
+                if problem is not None:
+                    reports[name].problems.append(problem)
     ordered = [reports[n] for n in names if reports[n].problems] + [
         reports[n] for n in names if not reports[n].problems
     ]

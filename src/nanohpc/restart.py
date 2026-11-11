@@ -11,7 +11,7 @@ from typing import Any
 
 from nanohpc import maintenance_lock, restart_check
 from nanohpc.config import load_config
-from nanohpc.probe import run_remote, ssh_args, ssh_failure
+from nanohpc.probe import bmc_problem, run_remote, ssh_args, ssh_failure
 from nanohpc.render import front_machine, gpu_count, home_server
 
 UPDATE_RESTART_REASON = "nanohpc-update-restart-required"
@@ -345,12 +345,20 @@ def smoke_job(config: dict[str, Any], front: str, machine: str, name: str, admin
     raise RestartError(f"{machine}: test job {job_id} finished as {state or 'unknown'}")
 
 
-def execute(config: dict[str, Any], machine: str, ssh_config: Path | None) -> int:
-    """Drain, wait, check, reboot, verify, and smoke-test one compute machine."""
+def execute(config: dict[str, Any], machine: str, ssh_config: Path | None, no_bmc_ok: bool) -> int:
+    """Drain, wait, check, reboot, verify, and smoke-test one compute machine. A machine with a BMC address must
+    have a BMC that answers a ping from the front node, before anything changes (`no_bmc_ok`: go on without it)."""
     front = front_machine(config)[0]
     verify_address(config, front, ssh_config)
     verify_address(config, machine, ssh_config)
     admin = invoking_admin(config, machine, ssh_config)
+    bmc_address = config["machines"][machine].get("bmc_address")
+    if bmc_address is not None:
+        problem = bmc_problem(front, ssh_config, bmc_address)
+        if problem is not None and not no_bmc_ok:
+            raise RestartError(f"{problem}; nothing was changed. Fix it, or restart with --no-bmc-ok")
+        if problem is not None:
+            print(f"{machine}: {problem}; going on because of --no-bmc-ok", file=sys.stderr)
     drained = False
     reserved: str | None = None
     success = False
@@ -425,7 +433,7 @@ def valid_target(config: dict[str, Any], machine: str, confirm: str) -> str | No
     return None
 
 
-def run(path: Path, machine: str, confirm: str, ssh_config: Path | None) -> int:
+def run(path: Path, machine: str, confirm: str, ssh_config: Path | None, no_bmc_ok: bool) -> int:
     """Validate the cluster and confirmed compute target before any remote action."""
     if not path.is_file():
         print(f"{path}: file not found", file=sys.stderr)
@@ -441,7 +449,7 @@ def run(path: Path, machine: str, confirm: str, ssh_config: Path | None) -> int:
         print(problem, file=sys.stderr)
         return 1
     try:
-        return execute(config, machine, ssh_config)
+        return execute(config, machine, ssh_config, no_bmc_ok)
     except (RestartError, maintenance_lock.MaintenanceLockError) as failure:
         print(f"{machine}: {failure}", file=sys.stderr)
         return 1

@@ -4599,6 +4599,7 @@ ALICE_SLACK = "U0ALICE"  # the approver
 BOB_SLACK = "U0BOB"  # not an approver
 
 
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimSlackAgentTest(SimUsersBase):
     """The Slack agent on the front node, without Slack or Claude: its environment is built and its runner, asked
     through its socket as the agent's account (as the bot asks it), reads on the front node and, as root with its
@@ -4734,6 +4735,7 @@ class SimSlackAgentTest(SimUsersBase):
             self.assertEqual(checkout.strip(), "# checked by the agent")
 
 
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimSlackAgentMonitorTest(unittest.TestCase):
     """The Slack agent in monitor mode, without Slack or Claude: its runner, asked through its socket as the agent's
     account, reaches every machine as root with its key; runs a change only after an approver's click; pushes an
@@ -4862,6 +4864,7 @@ class SimSlackAgentMonitorTest(unittest.TestCase):
             self.assertEqual(checkout.strip(), "# checked by the agent")
 
 
+@unittest.skipUnless(os.environ.get("NANOHPC_SIM") == "1", "starts real Lima VMs: set NANOHPC_SIM=1 to run")
 class SimLoginNodeTest(SimUsersBase):
     """Several front nodes: a login node (role `login`) where users log in and submit jobs as on the front node,
     with its own /home because /home is on the front node; the controller, monitoring and website stay on the

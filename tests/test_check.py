@@ -183,6 +183,44 @@ class CheckTest(unittest.TestCase):
             self.assertIn("-A", line.split())
             self.assertIn("BatchMode=yes", line)
 
+    def with_bmc(self, down: bool) -> None:
+        """Give gpu4 and cpu1 a BMC address; the front node's fake ping fails for gpu4's BMC when `down`."""
+        path = self.folder / "cluster.yml"
+        text = path.read_text()
+        for address, bmc in (("192.168.104.11", "192.168.104.111"), ("192.168.104.13", "192.168.104.113")):
+            text = text.replace(f"    address: {address}\n", f"    address: {address}\n    bmc_address: {bmc}\n", 1)
+        path.write_text(text)
+        write_command(
+            self.cluster / "front" / "bin",
+            "ping",
+            'echo "$@" >> "$FAKE_ROOT/ping.log"\ncase "$*" in *192.168.104.111) exit '
+            + ("1" if down else "0")
+            + " ;; esac\n",
+        )
+
+    def test_bmc_that_does_not_answer_is_a_problem_of_its_machine(self) -> None:
+        self.with_bmc(True)
+        result = self.check()
+        self.assert_problem_first(result, "gpu4", "the BMC 192.168.104.111 does not answer a ping from front")
+        self.assertEqual(result.stdout.count("BMC"), 1, result.stdout)
+        pings = (self.cluster / "front" / "ping.log").read_text().splitlines()
+        self.assertEqual(sorted(pings), ["-c 3 -W 2 192.168.104.111", "-c 3 -W 2 192.168.104.113"])
+
+    def test_ping_that_fails_is_not_reported_as_a_bmc_down(self) -> None:
+        self.with_bmc(False)
+        write_command(self.cluster / "front" / "bin", "ping", 'echo "ping: unknown host" >&2\nexit 2\n')
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("ping failed on front (exit code 2)", result.stdout)
+        self.assertIn("ping: unknown host", result.stdout)
+        self.assertNotIn("does not answer", result.stdout)
+
+    def test_bmc_that_answers_is_no_problem(self) -> None:
+        self.with_bmc(False)
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("BMC", result.stdout)
+
     def test_unreachable_machine(self) -> None:
         (self.cluster / "gpu2" / "unreachable").touch()
         result = self.check()

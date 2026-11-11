@@ -48,6 +48,54 @@ class MachineGpuLimitTest(unittest.TestCase):
         self.assertTrue(any("policy.max_gpus_per_user 9 is more than the 8 GPUs" in error for error in errors), errors)
 
 
+class BmcAddressTest(unittest.TestCase):
+    """A machine can list the address of its BMC; it is optional and must be an address or host name."""
+
+    def test_valid_and_unset(self) -> None:
+        self.assertEqual(check_config(example())[1], [])
+        raw = example()
+        raw["machines"]["gpu4"]["bmc_address"] = "192.168.104.111"
+        raw["machines"]["gpu2"]["bmc_address"] = "gpu2-bmc.example.org"
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["machines"]["gpu4"]["bmc_address"], "192.168.104.111")
+
+    def test_invalid_values_are_rejected(self) -> None:
+        for value in (
+            "not an address!",
+            "",
+            7,
+            "192.168.104.11",  # the machine's own address
+            "192.168.104.12",  # another machine's address
+            "127.0.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "localhost",
+            "gpu4",  # the machine's own name
+            "gpu2",  # another machine's name
+            "192.168.104.300",  # not an IPv4 address, not a host name
+            "1.2.3",
+        ):
+            raw = example()
+            raw["machines"]["gpu4"]["bmc_address"] = value
+            _, errors = check_config(raw)
+            self.assertTrue(any("machines.gpu4.bmc_address" in error for error in errors), (value, errors))
+
+
+class BmcAliasTest(unittest.TestCase):
+    """A BMC address cannot be one of the machines' aliases."""
+
+    def test_alias_is_rejected(self) -> None:
+        raw = example()
+        raw["machines"]["gpu4"]["aliases"] = ["gpu4-alias"]
+        raw["machines"]["gpu2"]["bmc_address"] = "GPU4-alias"
+        _, errors = check_config(raw)
+        self.assertTrue(any("machines.gpu2.bmc_address" in error for error in errors), errors)
+        raw["machines"]["gpu4"]["bmc_address"] = "gpu4-alias"
+        _, errors = check_config(raw)
+        self.assertTrue(any("machines.gpu4.bmc_address" in error for error in errors), errors)
+
+
 class MonitorConfigTest(unittest.TestCase):
     """Monitor configs describe machines and names, without Slurm or managed accounts."""
 

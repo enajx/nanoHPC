@@ -19,7 +19,17 @@ import yaml
 ROLES = ("front", "login", "home", "backup", "compute", "shared")
 JOB_TYPES = ("batch", "interactive", "any")  # batch: sbatch only; interactive: only the documented shell
 COMPUTE_FIELDS = ("cpu", "memory_mb", "gpu", "partitions", "scratch")
-MACHINE_FIELDS = ("address", "aliases", "roles", "home_mount", "home", "backup", "shared", *COMPUTE_FIELDS)
+MACHINE_FIELDS = (
+    "address",
+    "bmc_address",
+    "aliases",
+    "roles",
+    "home_mount",
+    "home",
+    "backup",
+    "shared",
+    *COMPUTE_FIELDS,
+)
 # home_mount on a front or login node that is not the home machine: shared mounts the cluster's /home, own keeps its
 # own /home on that machine.
 HOME_MOUNTS = ("shared", "own")
@@ -33,6 +43,7 @@ TOP_FIELDS = (
     "scratch",
     "backup",
     "alerts",
+    "login_limits",
     "user_check",
     "auto_deploy",
     "nanohpc_version",
@@ -58,6 +69,8 @@ SCRATCH_DEFAULTS: dict[str, Any] = {"cleanup_days": 14, "job_retention_days": 7}
 ALERTS_DEFAULTS: dict[str, Any] = {"slack": False}
 # Slurm mode only: BackupOld posts after this many days; HomeLinkSlow below this large-file /home read, two nights.
 SLURM_ALERTS_DEFAULTS: dict[str, Any] = {**ALERTS_DEFAULTS, "backup_old_days": 7, "slow_home_mb_per_second": 50}
+# Slurm mode: every user's login processes together on a front or login node (administrators and root are exempt).
+LOGIN_LIMITS_DEFAULTS: dict[str, Any] = {"cpu_cores": 4, "memory_gb": 8}
 USER_CHECK_DEFAULTS: dict[str, Any] = {"allowed_tunnels": []}
 USER_CHECK_PROGRAMS = frozenset(
     {
@@ -776,7 +789,31 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
         ]
         if not members:
             checker.fail(f"partitions.{partition}", "has no compute machines")
+    for name, machine in machines.items():
+        if "bmc_address" in machine:
+            check_bmc_address(checker, f"machines.{name}.bmc_address", machine["bmc_address"], addresses, hostnames)
     return machines
+
+
+def check_bmc_address(
+    checker: Checker, path: str, bmc: Any, addresses: dict[str, str], hostnames: dict[str, str]
+) -> None:
+    """Check a BMC address: an IPv4 address or host name that no machine already uses and that cannot be local."""
+    if not isinstance(bmc, str):
+        checker.fail(path, "must be an IPv4 address or a host name")
+    elif all(part.isdigit() for part in bmc.split(".")) and bmc.count(".") > 0:
+        if not is_ipv4(bmc):
+            checker.fail(path, "must be an IPv4 address or a host name (this is not a valid IPv4 address)")
+        elif bmc.startswith(("127.", "0.")) or bmc == "255.255.255.255":
+            checker.fail(path, "must be the BMC's network address, not a loopback or placeholder")
+        elif bmc in addresses:
+            checker.fail(path, f"{bmc} is the address of machines.{addresses[bmc]}, not of a BMC")
+    elif not HOST_NAME.fullmatch(bmc):
+        checker.fail(path, "must be an IPv4 address or a host name")
+    elif bmc.lower() in ("localhost", "localhost.localdomain"):
+        checker.fail(path, f"{bmc} is reserved")
+    elif bmc.lower() in hostnames:
+        checker.fail(path, f"{bmc} is a name of machines.{hostnames[bmc.lower()]}, not of a BMC")
 
 
 def is_ipv4(text: str) -> bool:
@@ -964,6 +1001,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "scratch": with_defaults(checker, top.get("scratch"), "scratch", SCRATCH_DEFAULTS),
         "backup": check_backup(checker, top.get("backup"), machines),
         "alerts": with_defaults(checker, top.get("alerts"), "alerts", SLURM_ALERTS_DEFAULTS),
+        "login_limits": with_defaults(checker, top.get("login_limits"), "login_limits", LOGIN_LIMITS_DEFAULTS),
         "user_check": check_user_check(checker, top.get("user_check"), users, machines),
         "auto_deploy": with_defaults(checker, top.get("auto_deploy"), "auto_deploy", AUTO_DEPLOY_DEFAULTS),
         "nanohpc_version": top.get("nanohpc_version"),
@@ -982,6 +1020,8 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         and home["quota_soft_gb"] > home["quota_hard_gb"]
     ):
         checker.fail("home.quota_soft_gb", "must not be larger than home.quota_hard_gb")
+    checker.positive(config["login_limits"]["cpu_cores"], "login_limits.cpu_cores")
+    checker.positive(config["login_limits"]["memory_gb"], "login_limits.memory_gb")
     checker.positive(config["scratch"]["cleanup_days"], "scratch.cleanup_days")
     checker.positive(config["scratch"]["job_retention_days"], "scratch.job_retention_days")
     checker.boolean(config["alerts"]["slack"], "alerts.slack")

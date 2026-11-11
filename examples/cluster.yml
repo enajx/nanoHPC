@@ -29,6 +29,7 @@ machines:
 
   gpu4:
     address: 192.168.104.11
+    # bmc_address: 192.168.104.111   # optional: the machine's BMC (IPMI); restart and check ping it from the front node
     roles: [compute]
     cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
     memory_mb: 4096
@@ -141,6 +142,10 @@ alerts:
 #   requests_per_person: 10       # approvers have no per-person limit
 #   personality: agent/personality.md   # optional file next to this one
 #   people: agent/people.md       # optional
+
+login_limits:                   # each user's login processes together (SSH sessions, things started by hand) on a
+  cpu_cores: 4                  # front or login node; root and the administrators are not limited
+  memory_gb: 8
 
 user_check:
   allowed_tunnels: []           # exceptions: [{user: bob, program: cloudflared, machines: [gpu4]}]
