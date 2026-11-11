@@ -671,6 +671,11 @@ class Prompts(unittest.TestCase):
         self.assertIn("NOTES: gpu2 is loud", prompt)
         self.assertNotIn("let it shape", prompt)
 
+    def test_plain_english_lets_the_personality_add_its_words(self) -> None:
+        prompt = self.agent.system_prompt(bot_settings("slurm", True, None), "c", "")
+        self.assertIn("Write in plain English, with any words or style the personality describes.", prompt)
+        self.assertNotIn("Write in simple, plain English.", prompt)
+
     def test_people_file_and_monitor_mode(self) -> None:
         prompt = self.agent.system_prompt(bot_settings("monitor", False, "/etc/nanohpc-agent/people.md"), "c", "")
         self.assertIn("read /etc/nanohpc-agent/people.md first", prompt)
