@@ -53,9 +53,11 @@ def allowed(command: str) -> tuple[list[str], os.stat_result]:
     user = target.removeprefix(ROOT + "/").removesuffix("/")
     if len(words) < 5 or words[-2] != "." or target != f"{ROOT}/{user}/" or not USER.fullmatch(user):
         refuse(f"the command must end with '. {ROOT}/USER/'")
-    if not os.path.lexists(target):
+    # Without the final slash, so a link is seen as a link, not as the folder it points to.
+    folder = target.removesuffix("/")
+    if not os.path.lexists(folder):
         refuse("no such home folder: " + target)
-    details = os.lstat(target)
+    details = os.lstat(folder)
     if not stat.S_ISDIR(details.st_mode) or details.st_uid == 0:
         refuse("not a user's own home folder: " + target)
     if pwd.getpwuid(details.st_uid).pw_name != user:

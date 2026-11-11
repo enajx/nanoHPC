@@ -16,7 +16,11 @@ user only), then runs ssh with the key and the pinned host keys, its input and o
 root key file accepts the key only from the home machine's address, for nanohpc-home-copy-receive, which runs rsync
 there as the owner of that home folder.
 
-A user whose home folder here is missing, a link, or not theirs is not copied. rsync's exit code 24 (files that
+Each copy (one user to one node) has a time limit (--copy-timeout): after it, its rsync and ssh are stopped and that
+copy counts as failed, so a user who stops or slows their own rsync, or a node that stops answering (ssh checks
+every 30 seconds), never holds up the other copies. The relay runs as isolated Python (-I) in a clean environment,
+so nothing in the user's home runs in it. A user whose home folder here is missing, a link, or not theirs is not
+copied. rsync's exit code 24 (files that
 vanished while being copied) counts as success. Exits 1 when any copy failed, after trying every node and user;
 rsync's and ssh's own messages go to stderr (the journal).
 """
@@ -33,6 +37,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -52,7 +57,8 @@ def backup_module() -> ModuleType:
 
 def rsync_command(backup: ModuleType, source: Path, user: str, address: str, excludes: list[str], fd: int) -> list[str]:
     """The user's rsync command for one node: its transport is this program's relay on file descriptor `fd`."""
-    relay = f"{sys.executable} {Path(__file__).resolve()} --relay {fd}"
+    # -I: isolated Python, so nothing in the user's home (a user site folder, PYTHON* variables) runs in the relay.
+    relay = f"{sys.executable} -I {Path(__file__).resolve()} --relay {fd}"
     return ["rsync", "--recursive", "--times", "--perms", "--chmod=ug-s", "--delete", "--timeout=600",
             "--rsh=" + relay, *["--exclude=" + pattern for pattern in excludes], *backup.home_rules("/"),
             "--max-size=" + backup.MAX_FILE_SIZE, "--exclude=*", f"{source}/{user}/", f"root@{address}:/home/{user}/"]  # fmt: skip
@@ -72,14 +78,16 @@ def relay(fd: int, arguments: list[str]) -> None:
 
     threading.Thread(target=upload, daemon=True).start()
     while data := channel.recv(65536):
-        os.write(1, data)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(1, view) :]
 
 
-def first_line(channel: socket.socket) -> str | None:
-    """Read the relay's command line (up to 4096 bytes, 2 minutes); None when it does not come."""
+def first_line(channel: socket.socket, deadline: float) -> str | None:
+    """Read the relay's command line (up to 4096 bytes, before the copy's deadline); None when it does not come."""
     line = b""
     while not line.endswith(b"\n") and len(line) < 4096:
-        if not select.select([channel], [], [], 120)[0]:
+        if not select.select([channel], [], [], max(0.0, deadline - time.monotonic()))[0]:
             return None
         byte = channel.recv(1)
         if not byte:
@@ -100,6 +108,14 @@ def allowed(command: str, user: str) -> bool:
     )
 
 
+def stop(processes: list[subprocess.Popen[bytes]]) -> None:
+    """Kill the processes of a copy that took too long, and wait for them."""
+    for process in processes:
+        process.kill()
+    for process in processes:
+        process.wait()
+
+
 def copy(arguments: argparse.Namespace, backup: ModuleType, name: str, address: str, user: str) -> bool:
     """Copy one user's listed files to one node; return whether it worked."""
     folder = arguments.source / user
@@ -108,29 +124,42 @@ def copy(arguments: argparse.Namespace, backup: ModuleType, name: str, address: 
     if details is None or owner is None or not stat.S_ISDIR(details.st_mode) or details.st_uid != owner.pw_uid:
         print(f"nanohpc-home-copy: {folder} is not {user}'s own folder; not copied", file=sys.stderr)
         return False
+    deadline = time.monotonic() + arguments.copy_timeout
     root_end, user_end = socket.socketpair()
     rsync = subprocess.Popen(
         ["setpriv", f"--reuid={owner.pw_uid}", f"--regid={owner.pw_gid}", "--init-groups", "--no-new-privs", "--",
          *rsync_command(backup, arguments.source, user, address, arguments.exclude, user_end.fileno())],
-        stdin=subprocess.DEVNULL, pass_fds=[user_end.fileno()],
+        stdin=subprocess.DEVNULL, pass_fds=[user_end.fileno()], env={"PATH": os.environ["PATH"], "LANG": "C.UTF-8"},
     )  # fmt: skip
     user_end.close()
-    command = first_line(root_end)
+    command = first_line(root_end, deadline)
+    if command is None and time.monotonic() >= deadline:
+        root_end.close()
+        stop([rsync])
+        print(f"nanohpc-home-copy: the copy of {user} to {name} took longer than {arguments.copy_timeout} seconds; "
+              "stopped", file=sys.stderr)  # fmt: skip
+        return False
     if command is None or not allowed(command, user):
         print(f"nanohpc-home-copy: refused the remote command for {user} on {name}: {command!r}", file=sys.stderr)
         root_end.close()
-        rsync.kill()
-        rsync.wait()
+        stop([rsync])
         return False
     ssh = subprocess.Popen(
         ["ssh", "-i", arguments.key, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o",
          "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + arguments.known_hosts, "-o", "ConnectTimeout=20",
-         "-e", "none", "-T", f"root@{address}", command],
+         "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4", "-e", "none", "-T", f"root@{address}",
+         command],
         stdin=root_end, stdout=root_end,
     )  # fmt: skip
     root_end.close()
-    ssh.wait()
-    code = rsync.wait()
+    try:
+        ssh.wait(timeout=max(0.0, deadline - time.monotonic()))
+        code = rsync.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        stop([ssh, rsync])
+        print(f"nanohpc-home-copy: the copy of {user} to {name} took longer than {arguments.copy_timeout} seconds; "
+              "stopped", file=sys.stderr)  # fmt: skip
+        return False
     if code not in (0, 24):
         print(f"nanohpc-home-copy: the copy of {user} to {name} failed (rsync exit {code})", file=sys.stderr)
         return False
@@ -147,6 +176,7 @@ def main() -> None:
     parser.add_argument("--to", action="append", required=True, help="NAME=ADDRESS of a node with its own /home")
     parser.add_argument("--users", nargs="+", required=True)
     parser.add_argument("--exclude", action="append", default=[], help="the backup's exclude patterns")
+    parser.add_argument("--copy-timeout", type=int, required=True, help="seconds one user's copy to one node may take")
     parser.add_argument("--key", required=True)
     parser.add_argument("--known-hosts", required=True)
     arguments = parser.parse_args()

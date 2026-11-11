@@ -48,8 +48,9 @@
 
       [Service]
       Type=oneshot
-      ExecStart=/usr/local/bin/nanohpc-home-copy --source /home {% for name in nanohpc.home.own %}--to {{ name }}={{ nanohpc.machines[name].address }} {% endfor %}--users {{ nanohpc.users | map(attribute='name') | join(' ') }} {% for pattern in (nanohpc.backup.exclude if nanohpc.backup else []) %}--exclude {{ pattern | quote }} {% endfor %}--key /etc/nanohpc/home-copy/id_ed25519 --known-hosts /etc/nanohpc/home-copy/known_hosts
-      TimeoutStartSec=3h
+      ExecStart=/usr/local/bin/nanohpc-home-copy --source /home {% for name in nanohpc.home.own %}--to {{ name }}={{ nanohpc.machines[name].address }} {% endfor %}--users {{ nanohpc.users | map(attribute='name') | join(' ') }} {% for pattern in (nanohpc.backup.exclude if nanohpc.backup else []) %}--exclude {{ pattern | quote }} {% endfor %}--copy-timeout 1800 --key /etc/nanohpc/home-copy/id_ed25519 --known-hosts /etc/nanohpc/home-copy/known_hosts
+      # Each copy is limited to 30 minutes (--copy-timeout); the whole run ends before the next night.
+      TimeoutStartSec=20h
       Nice=10
       IOSchedulingClass=idle
       ProtectSystem=strict

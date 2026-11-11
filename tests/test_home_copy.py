@@ -12,6 +12,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,7 @@ def fake_programs(folder: Path, exit_code: int) -> dict[str, str]:
     calls = folder / "calls"
     (bin_folder / "rsync").write_text(f"#!/bin/sh\necho \"rsync $*\" >> '{calls}'\nexit {exit_code}\n")
     (bin_folder / "setpriv").write_text(
-        f'#!/bin/sh\necho "setpriv $*" >> \'{calls}\'\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n'
+        f'#!/bin/sh\necho "setpriv $*" >> \'{calls}\'\nenv > \'{folder / "setpriv-env"}\'\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n'
     )
     for name in ("rsync", "setpriv"):
         (bin_folder / name).chmod(0o755)
@@ -48,13 +49,17 @@ def fake_programs(folder: Path, exit_code: int) -> dict[str, str]:
 # A FAKE rsync client for the sending side: like rsync, it starts its --rsh program (without closing other open
 # files) as `RSH -l root ADDRESS rsync --server ... . PATH`, sends a few bytes, and records what comes back.
 FAKE_CLIENT = """#!/usr/bin/env python3
-import os, shlex, subprocess, sys
-calls = os.environ["FAKE_CALLS"]
+import json, os, shlex, subprocess, sys
+settings = json.loads(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fake.json")).read())
+calls = settings["calls"]
 with open(calls, "a") as out:
     out.write("rsync " + " ".join(sys.argv[1:]) + "\\n")
 rsh = next(arg for arg in sys.argv if arg.startswith("--rsh=")).removeprefix("--rsh=")
 address, path = sys.argv[-1].removeprefix("root@").split(":", 1)
-path = os.environ.get("FAKE_REMOTE_PATH", path)
+if settings.get("stall") == "before":
+    import time
+    time.sleep(1000)
+path = settings.get("remote_path", path)
 child = subprocess.Popen(
     [*shlex.split(rsh), "-l", "root", address, "rsync", "--server", "-tpre.iLsfxCIvu", "--timeout=600", ".", path],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, close_fds=False,
@@ -62,19 +67,25 @@ child = subprocess.Popen(
 answer, _ = child.communicate(b"payload from " + sys.argv[-2].encode() + b"\\n")
 with open(calls, "a") as out:
     out.write("got " + answer.decode().strip() + "\\n")
-sys.exit(int(os.environ.get("FAKE_EXIT", "0")) if child.returncode == 0 else 12)
+sys.exit(settings["exit"] if child.returncode == 0 else 12)
 """
 
 
-def fake_sender_side(folder: Path, exit_code: int) -> dict[str, str]:
+def fake_sender_side(folder: Path, exit_code: int, settings: dict[str, str]) -> dict[str, str]:
     """The home machine's side, FAKE: setpriv (records, then runs the rest), the rsync client above, and ssh, which
     records its arguments and answers with what it received (as the node's rsync would talk back)."""
     environment = fake_programs(folder, 0)
     bin_folder = folder / "bin"
     (bin_folder / "rsync").write_text(FAKE_CLIENT)
-    (bin_folder / "ssh").write_text(f"#!/bin/sh\necho \"ssh $*\" >> '{folder / 'calls'}'\nsed 's/^/remote /'\n")
+    (bin_folder / "ssh").write_text(
+        f"#!/bin/sh\necho \"ssh $*\" >> '{folder / 'calls'}'\n"
+        'if [ "$FAKE_STALL" = ssh ]; then exec sleep 1000; fi\n'
+        "sed 's/^/remote /'\n"
+    )
     (bin_folder / "ssh").chmod(0o755)
-    return {**environment, "FAKE_CALLS": str(folder / "calls"), "FAKE_EXIT": str(exit_code)}
+    # The user's rsync runs with a clean environment, so the fake reads its settings from a file.
+    (folder / "fake.json").write_text(json.dumps({"calls": str(folder / "calls"), "exit": exit_code, **settings}))
+    return {**environment, "FAKE_CALLS": str(folder / "calls"), "FAKE_STALL": settings.get("stall", "")}
 
 
 def calls(folder: Path) -> list[str]:
@@ -90,7 +101,8 @@ class SendTest(unittest.TestCase):
         (folder / "home" / USER).mkdir(parents=True, exist_ok=True)
         return subprocess.run(
             [sys.executable, str(SEND), "--source", str(folder / "home"), "--to", "login1=10.0.0.51", "--to",
-             "front=10.0.0.10", "--users", USER, "--key", str(folder / "root-key"), "--known-hosts", "h", *extra],
+             "front=10.0.0.10", "--users", USER, "--key", str(folder / "root-key"), "--known-hosts", "h",
+             "--copy-timeout", "30", *extra],
             env=environment, capture_output=True, text=True, check=False, timeout=60,
         )  # fmt: skip
 
@@ -102,7 +114,7 @@ class SendTest(unittest.TestCase):
         without --delete-excluded, so the node's other files stay."""
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            result = self.send(folder, fake_sender_side(folder, 0), ["--exclude", ".cache/"])
+            result = self.send(folder, fake_sender_side(folder, 0, {}), ["--exclude", ".cache/"])
             self.assertEqual(result.returncode, 0, result.stderr)
             lines = calls(folder)
             self.assertEqual(len(lines), 8, lines)
@@ -117,6 +129,13 @@ class SendTest(unittest.TestCase):
             ssh = lines[2]
             self.assertIn(f"-i {folder}/root-key", ssh)
             self.assertIn("StrictHostKeyChecking=yes", ssh)
+            # A node that stops answering mid-copy ends the copy within minutes.
+            self.assertIn("-o ServerAliveInterval=30 -o ServerAliveCountMax=4", ssh)
+            # The relay runs as the user: isolated Python (no user site in their home), and a clean environment.
+            self.assertIn(f"--rsh={sys.executable} -I ", client)
+            environment = (folder / "setpriv-env").read_text()
+            self.assertNotIn("PYTHONPATH", environment)
+            self.assertNotIn("FAKE_CALLS", environment)
             self.assertTrue(
                 ssh.endswith(f"root@10.0.0.51 rsync --server -tpre.iLsfxCIvu --timeout=600 . /home/{USER}/"), ssh
             )
@@ -137,12 +156,32 @@ class SendTest(unittest.TestCase):
             self.assertLess(words.index("--exclude=.cache/"), words.index(rules[0]))
             self.assertEqual(words[-3], "--exclude=*")
 
+    def test_a_stalled_copy_is_stopped_and_the_others_continue(self) -> None:
+        """The user can stop or slow their own rsync (or the node can stop answering): each copy has a time limit,
+        after which both programs are stopped and that copy counts as failed, and the next copies still run."""
+        for stall in ("before", "ssh"):
+            with self.subTest(stall), tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory)
+                environment = fake_sender_side(folder, 0, {"stall": stall})
+                (folder / "home" / USER).mkdir(parents=True)
+                started = time.monotonic()
+                result = subprocess.run(
+                    [sys.executable, str(SEND), "--source", str(folder / "home"), "--to", "login1=10.0.0.51", "--to",
+                     "front=10.0.0.10", "--users", USER, "--key", "k", "--known-hosts", "h", "--copy-timeout", "2"],
+                    env=environment, capture_output=True, text=True, check=False, timeout=60,
+                )  # fmt: skip
+                self.assertLess(time.monotonic() - started, 20)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("took longer than 2 seconds", result.stderr)
+                self.assertIn(f"login1:{USER}, front:{USER}", result.stderr)
+                self.assertEqual(len([line for line in calls(folder) if line.startswith("rsync ")]), 2)
+
     def test_a_command_for_another_home_is_never_sent(self) -> None:
         """The user's rsync (which the user could change) asks root's ssh to run a command: anything but an rsync
         server into that user's own home is refused before ssh runs."""
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            environment = {**fake_sender_side(folder, 0), "FAKE_REMOTE_PATH": "/home/someone-else/"}
+            environment = fake_sender_side(folder, 0, {"remote_path": "/home/someone-else/"})
             result = self.send(folder, environment, [])
             self.assertEqual(result.returncode, 1)
             self.assertFalse([line for line in calls(folder) if line.startswith("ssh ")])
@@ -151,7 +190,7 @@ class SendTest(unittest.TestCase):
     def test_a_failed_copy_fails_the_run_after_trying_every_node(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            result = self.send(folder, fake_sender_side(folder, 12), [])
+            result = self.send(folder, fake_sender_side(folder, 12, {}), [])
             self.assertEqual(result.returncode, 1)
             self.assertEqual(len([line for line in calls(folder) if line.startswith("ssh ")]), 2)
             self.assertIn(f"login1:{USER}, front:{USER}", result.stderr)
@@ -159,7 +198,7 @@ class SendTest(unittest.TestCase):
     def test_files_that_vanished_while_copying_are_fine(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            result = self.send(folder, fake_sender_side(folder, 24), [])
+            result = self.send(folder, fake_sender_side(folder, 24, {}), [])
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_a_missing_or_linked_home_folder_is_not_copied(self) -> None:
@@ -172,8 +211,8 @@ class SendTest(unittest.TestCase):
             (folder / "home" / USER).symlink_to(folder / "elsewhere")
             result = subprocess.run(
                 [sys.executable, str(SEND), "--source", str(folder / "home"), "--to", "login1=10.0.0.51",
-                 "--users", USER, "carol", "--key", "k", "--known-hosts", "h"],
-                env=fake_sender_side(folder, 0), capture_output=True, text=True, check=False, timeout=60,
+                 "--users", USER, "carol", "--key", "k", "--known-hosts", "h", "--copy-timeout", "30"],
+                env=fake_sender_side(folder, 0, {}), capture_output=True, text=True, check=False, timeout=60,
             )  # fmt: skip
             self.assertEqual(result.returncode, 1)
             self.assertEqual(calls(folder), [])
@@ -209,6 +248,18 @@ class ReceiveTest(unittest.TestCase):
                 f"setpriv --reuid={owner.st_uid} --regid={owner.st_gid} --init-groups --no-new-privs",
             )
             self.assertEqual(lines[1], LINE.format(user=USER).replace("/home/", f"{folder}/home/"))
+
+    def test_a_home_folder_that_is_a_link_is_refused(self) -> None:
+        """/home/USER must be the folder itself: a link to a folder the user owns elsewhere is refused."""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "elsewhere").mkdir()
+            (folder / "home").mkdir()
+            (folder / "home" / USER).symlink_to(folder / "elsewhere")
+            result = self.receive(folder, LINE.format(user=USER), [])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("not a user's own home folder", result.stderr)
+            self.assertEqual(calls(folder), [])
 
     def test_a_folder_owned_by_someone_else_is_refused(self) -> None:
         """/home/NAME/ must belong to the user NAME, so a copy for one user never writes as another."""
@@ -290,13 +341,15 @@ class WiringTest(unittest.TestCase):
         service = rendered(content["ansible.builtin.copy"]["content"], {**self.values(), "item": "service"})
         self.assertIn(
             "ExecStart=/usr/local/bin/nanohpc-home-copy --source /home --to login2=10.0.0.52 --users alice bob "
-            "--exclude .cache/ --exclude '*.ckpt' --key /etc/nanohpc/home-copy/id_ed25519 "
+            "--exclude .cache/ --exclude '*.ckpt' --copy-timeout 1800 --key /etc/nanohpc/home-copy/id_ed25519 "
             "--known-hosts /etc/nanohpc/home-copy/known_hosts",
             service,
         )
         without_backup = {**self.values(), "item": "service"}
         without_backup["nanohpc"] = {**without_backup["nanohpc"], "backup": None}
-        self.assertIn("--users alice bob --key", rendered(content["ansible.builtin.copy"]["content"], without_backup))
+        self.assertIn(
+            "--users alice bob --copy-timeout", rendered(content["ansible.builtin.copy"]["content"], without_backup)
+        )
         self.assertIn("RequiresMountsFor=/home", service)
         timer = rendered(content["ansible.builtin.copy"]["content"], {**self.values(), "item": "timer"})
         self.assertIn("OnCalendar=*-*-* 02:30:00", timer)
