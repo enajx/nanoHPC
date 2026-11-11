@@ -56,28 +56,36 @@
     label: "{{ item.path }}"
   register: login_limits_removed
 
+# Always reload before the check (cheap): a run that was interrupted after writing the files must not leave the
+# next run failing.
 - name: Apply the limits to running sessions
   ansible.builtin.systemd_service:
     daemon_reload: true
-  when: login_limits_general.changed or login_limits_exempt.changed or login_limits_removed.changed
+  changed_when: false
+  when: not ansible_check_mode
 
-# A slice number no account has (and no exemption) shows the general limits; root's slice shows none.
-- name: Read the limits in force for root and for a slice that is not exempt
+# One line per slice, "CPUQuotaPerSecUSec=... MemoryMax=...": first a slice number no account has (it shows the
+# general limits), then the slice of root and of each administrator.
+- name: Read the limits in force
   ansible.builtin.shell: |
     set -eu
-    systemctl show user-0.slice -p CPUQuotaPerSecUSec -p MemoryMax --value | tr '\n' ' '
-    echo
-    systemctl show user-4000000.slice -p CPUQuotaPerSecUSec -p MemoryMax --value | tr '\n' ' '
+    for slice in user-4000000.slice{% for uid in nanohpc.login_limits.exempt_uids %} user-{{ uid }}.slice{% endfor %}; do
+      systemctl show "$slice" -p CPUQuotaPerSecUSec -p MemoryMax | sort | tr '\n' ' '
+      echo
+    done
   register: login_limits_effective
   changed_when: false
   check_mode: false
   when: not ansible_check_mode
 
-- name: Require root unlimited and other users limited
+- name: Require the configured limits for users and none for root and the administrators
   ansible.builtin.assert:
     that:
-      - login_limits_effective.stdout_lines[0].split() == ['infinity', 'infinity']
-      - login_limits_effective.stdout_lines[1].split()[0] == (nanohpc.login_limits.cpu_quota_percent // 100) | string ~ 's'
-      - login_limits_effective.stdout_lines[1].split()[1] != 'infinity'
-    fail_msg: "The login limits are not in force: {{ login_limits_effective.stdout_lines }}"
+      - login_limits_effective.stdout_lines[0].split() == ['CPUQuotaPerSecUSec=' ~ (nanohpc.login_limits.cpu_quota_percent // 100) ~ 's', 'MemoryMax=' ~ (nanohpc.login_limits.memory_max_gb * 1073741824)]
+      - login_limits_effective.stdout_lines[1:] | map('trim') | unique | list == ['CPUQuotaPerSecUSec=infinity MemoryMax=infinity']
+    fail_msg: >-
+      The login limits are not in force. Wanted for users: {{ nanohpc.login_limits.cpu_quota_percent // 100 }}s CPU and
+      {{ nanohpc.login_limits.memory_max_gb * 1073741824 }} bytes of memory; wanted for root and the administrators
+      (UIDs {{ nanohpc.login_limits.exempt_uids }}): infinity. Read, a user slice first, then those UIDs in order:
+      {{ login_limits_effective.stdout_lines }}
   when: not ansible_check_mode

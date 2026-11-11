@@ -2,6 +2,8 @@
 
 import copy
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,6 +51,12 @@ class LoginLimitsConfigTest(unittest.TestCase):
                 raw["login_limits"] = value
                 _, errors = check_config(raw)
                 self.assertTrue(any(error.startswith(field) for error in errors), errors)
+
+    def test_monitor_mode_refuses_the_section(self) -> None:
+        raw = yaml.safe_load((ROOT / "examples" / "monitor.yml").read_text())
+        raw["login_limits"] = {"cpu_cores": 2}
+        _, errors = check_config(raw)
+        self.assertTrue(any("login_limits" in error for error in errors), errors)
 
     def test_the_example_shows_the_section(self) -> None:
         self.assertIn("login_limits", yaml.safe_load(EXAMPLE.read_text()))
@@ -115,6 +123,61 @@ class LoginLimitsDeployTest(unittest.TestCase):
             "state: absent",
         ):
             self.assertIn(text, tasks)
+
+    def removal_task(self) -> dict[str, Any]:
+        tasks = yaml.safe_load(self.tasks())
+        return next(task for task in tasks if task["name"].startswith("Remove exemptions"))
+
+    def test_removal_selects_only_files_of_people_who_are_no_longer_administrators(self) -> None:
+        """Run the removal task's loop expression with Ansible on sample file lists."""
+        base = "/etc/systemd/system"
+        name = "50-nanohpc-login-limits.conf"
+        found = [
+            f"{base}/user-.slice.d/{name}",
+            f"{base}/user-0.slice.d/{name}",
+            f"{base}/user-1001.slice.d/{name}",
+            f"{base}/user-100.slice.d/{name}",  # not an administrator: 100 is not 1001
+            f"{base}/user-10010.slice.d/{name}",  # not an administrator: 1001 is not 10010
+            f"{base}/user-1002.slice.d/{name}",  # an old administrator
+        ]
+        play = [
+            {
+                "hosts": "localhost",
+                "gather_facts": False,
+                "vars": {
+                    "nanohpc": {"login_limits": {"exempt_uids": [0, 1001]}},
+                    "login_limits_files": {"files": [{"path": path} for path in found]},
+                },
+                "tasks": [
+                    {
+                        "ansible.builtin.copy": {
+                            "dest": "{{ playbook_dir }}/selected.json",
+                            "content": self.removal_task()["loop"],
+                        }
+                    }
+                ],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "play.yml").write_text(yaml.safe_dump(play))
+            ansible = Path(sys.executable).parent / "ansible-playbook"
+            result = subprocess.run([str(ansible), "play.yml"], cwd=folder, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            selected = [item["path"] for item in json.loads((Path(folder) / "selected.json").read_text())]
+        self.assertEqual(selected, found[3:])
+
+    def test_the_limits_are_reloaded_and_checked_on_every_real_run(self) -> None:
+        """An interrupted run must not leave the next one failing: the reload does not depend on a change."""
+        tasks = yaml.safe_load(self.tasks())
+        reload = next(task for task in tasks if "ansible.builtin.systemd_service" in task)
+        self.assertNotIn("changed", str(reload.get("when", "")))
+        self.assertEqual(reload["when"], "not ansible_check_mode")
+
+    def test_the_check_reads_every_exempt_slice_and_compares_the_configured_values(self) -> None:
+        text = self.tasks()
+        self.assertIn("exempt_uids", text.split("Read the limits in force")[1])
+        self.assertIn("1073741824", text)
+        self.assertIn("MemoryMax=", text)
 
     def test_plays_run_it_on_front_and_login_nodes_for_full_and_users_deploys(self) -> None:
         site = yaml.safe_load((ANSIBLE / "site.yml").read_text())
