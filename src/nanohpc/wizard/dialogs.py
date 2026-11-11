@@ -228,6 +228,16 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
                         "every night.",
                         classes="hint",
                     )
+                    with Vertical(id="own-home-device-fields"):
+                        yield Label("Disk for its own /home (optional; empty: the root disk), for example /dev/vdb:")
+                        yield Input(
+                            field_text(
+                                ((machine.get("home") or {}) if machine.get("home_mount") == "own" else {}).get(
+                                    "device"
+                                )
+                            ),
+                            id="own-home-device",
+                        )
                 with Vertical(id="backup-fields"):
                     yield Label("Backup folder on this machine:")
                     yield Input((machine.get("backup") or {}).get("path") or DEFAULT_BACKUP_PATH, id="backup-path")
@@ -249,6 +259,12 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
         self.query_one("#compute-fields").display = self.query_one("#role-compute", Checkbox).value
         self.query_one("#backup-fields").display = self.query_one("#role-backup", Checkbox).value
         self.query_one("#home-mount-fields").display = needs_home_mount(self.checked_roles())
+        self.show_own_home_disk()
+
+    @on(Select.Changed, "#home-mount")
+    def show_own_home_disk(self) -> None:
+        """Show the own /home's disk field only with home_mount: own."""
+        self.query_one("#own-home-device-fields").display = self.query_one("#home-mount", Select).value == "own"
 
     def checked_roles(self) -> list[str]:
         """Return the roles checked in the dialog."""
@@ -270,6 +286,11 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
         machine = with_roles(self.machine, roles)
         if needs_home_mount(roles):
             machine["home_mount"] = str(self.query_one("#home-mount", Select).value)
+            device = self.value("#own-home-device")
+            if machine["home_mount"] == "own" and device:
+                machine["home"] = {"device": device}
+            else:
+                machine.pop("home", None)
         machine["address"] = self.value("#address")
         bmc_address = self.value("#bmc-address")
         if bmc_address:
