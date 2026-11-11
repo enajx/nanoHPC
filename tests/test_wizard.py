@@ -555,6 +555,39 @@ class SlackAgentTest(unittest.IsolatedAsyncioTestCase):
                 errors = [str(item.name) for item in app.screen.query_one("#errors", ListView).query("ListItem")]
                 self.assertTrue(any(error.startswith("agent.approvers") for error in errors), errors)
 
+    async def test_personality_and_people_files(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            (Path(folder) / "mood.md").write_text("be dry\n")
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await go(pilot, 5)
+                await fill(pilot, {"#agent-personality": "mood.md", "#agent-people": "nobody.md"})
+                self.assertEqual(app.state.file.get(["agent", "personality"]), "mood.md")
+                self.assertEqual(app.state.file.get(["agent", "people"]), "nobody.md")
+                await go(pilot, 6)
+                errors = [str(item.name) for item in app.screen.query_one("#errors", ListView).query("ListItem")]
+                self.assertTrue(
+                    any(error.startswith("agent.people") and "not found" in error for error in errors), errors
+                )
+                self.assertFalse(any(error.startswith("agent.personality") for error in errors), errors)
+                await go(pilot, 5)
+                await fill(pilot, {"#agent-personality": "", "#agent-people": ""})
+                self.assertIsNone(app.state.file.get(["agent", "personality"]))
+                self.assertIsNone(app.state.file.get(["agent", "people"]))
+
+    async def test_monitor_mode_asks_for_personality_and_people(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "monitor.yml"
+            shutil.copy(ROOT / "examples" / "monitor.yml", path)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await go(pilot, 3)
+                await fill(pilot, {"#agent-personality": "mood.md"})
+                self.assertEqual(app.state.file.get(["agent", "personality"]), "mood.md")
+                await pilot.press("q")
+                await settle(pilot)
+
     async def test_monitor_mode_asks_for_the_agent_and_its_repository(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "monitor.yml"

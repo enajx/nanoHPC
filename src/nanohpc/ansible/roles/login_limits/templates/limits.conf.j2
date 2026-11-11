@@ -1,0 +1,5 @@
+# Managed by nanoHPC (roles/login_limits): every user's login processes together on this machine.
+[Slice]
+CPUQuota={{ nanohpc.login_limits.cpu_quota_percent }}%
+MemoryHigh={{ nanohpc.login_limits.memory_high_mb }}M
+MemoryMax={{ nanohpc.login_limits.memory_max_gb }}G

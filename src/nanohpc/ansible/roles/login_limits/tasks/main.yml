@@ -1,0 +1,91 @@
+# Login limits (Slurm mode, front and login nodes): every user's login processes (SSH sessions and anything
+# started by hand) share a CPU and memory cap. Slurm, NFS, the website and other services run in system.slice
+# and are not affected. Root and the administrators are exempt: a drop-in of the same name in their own
+# user-<uid>.slice.d replaces the general one. Also run by --only users, which refreshes the exemptions.
+- name: Create the drop-in folder for the general limits
+  ansible.builtin.file:
+    path: /etc/systemd/system/user-.slice.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the drop-in folders of root and the administrators
+  ansible.builtin.file:
+    path: "/etc/systemd/system/user-{{ item }}.slice.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ nanohpc.login_limits.exempt_uids }}"
+
+- name: Limit every user's login processes
+  ansible.builtin.template:
+    src: limits.conf.j2
+    dest: /etc/systemd/system/user-.slice.d/50-nanohpc-login-limits.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: login_limits_general
+
+- name: Do not limit root and the administrators
+  ansible.builtin.template:
+    src: exempt.conf.j2
+    dest: "/etc/systemd/system/user-{{ item }}.slice.d/50-nanohpc-login-limits.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nanohpc.login_limits.exempt_uids }}"
+  register: login_limits_exempt
+
+- name: List the exemption files
+  ansible.builtin.find:
+    paths: /etc/systemd/system
+    patterns: 50-nanohpc-login-limits.conf
+    recurse: true
+  register: login_limits_files
+
+# A person who is no longer an administrator loses the exemption.
+- name: Remove exemptions of people who are no longer administrators
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  # The folder name has the UID (or nothing, for the general limits): keep those that are still wanted.
+  loop: "{{ login_limits_files.files | rejectattr('path', 'search', '/user-(' ~ ([''] + nanohpc.login_limits.exempt_uids | map('string') | list) | join('|') ~ ')[.]slice[.]d/') | list }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: login_limits_removed
+
+# Always reload before the check (cheap): a run that was interrupted after writing the files must not leave the
+# next run failing.
+- name: Apply the limits to running sessions
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  changed_when: false
+  when: not ansible_check_mode
+
+# One line per slice, "CPUQuotaPerSecUSec=... MemoryMax=...": first a slice number no account has (it shows the
+# general limits), then the slice of root and of each administrator.
+- name: Read the limits in force
+  ansible.builtin.shell: |
+    set -eu
+    for slice in user-4000000.slice{% for uid in nanohpc.login_limits.exempt_uids %} user-{{ uid }}.slice{% endfor %}; do
+      systemctl show "$slice" -p CPUQuotaPerSecUSec -p MemoryMax | sort | tr '\n' ' '
+      echo
+    done
+  register: login_limits_effective
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Require the configured limits for users and none for root and the administrators
+  ansible.builtin.assert:
+    that:
+      - login_limits_effective.stdout_lines[0].split() == ['CPUQuotaPerSecUSec=' ~ (nanohpc.login_limits.cpu_quota_percent // 100) ~ 's', 'MemoryMax=' ~ (nanohpc.login_limits.memory_max_gb * 1073741824)]
+      - login_limits_effective.stdout_lines[1:] | map('trim') | unique | list == ['CPUQuotaPerSecUSec=infinity MemoryMax=infinity']
+    fail_msg: >-
+      The login limits are not in force. Wanted for users: {{ nanohpc.login_limits.cpu_quota_percent // 100 }}s CPU and
+      {{ nanohpc.login_limits.memory_max_gb * 1073741824 }} bytes of memory; wanted for root and the administrators
+      (UIDs {{ nanohpc.login_limits.exempt_uids }}): infinity. Read, a user slice first, then those UIDs in order:
+      {{ login_limits_effective.stdout_lines }}
+  when: not ansible_check_mode
