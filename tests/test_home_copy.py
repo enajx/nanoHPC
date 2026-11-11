@@ -5,12 +5,17 @@ and a fake setpriv that record their arguments."""
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+
+import jinja2
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SEND = ROOT / "src/nanohpc/files/nanohpc-home-copy"
@@ -164,6 +169,58 @@ class ReceiveTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 1, result.stderr)
                     self.assertIn("refused", result.stderr)
             self.assertEqual(calls(folder), [])
+
+
+ANSIBLE = ROOT / "src/nanohpc/ansible"
+
+
+def task(path: Path, name: str) -> dict[str, Any]:
+    return next(item for item in yaml.safe_load(path.read_text()) if item["name"] == name)
+
+
+def rendered(text: str, values: dict[str, Any]) -> str:
+    """Render a task's content as Ansible does (trim_blocks)."""
+    return jinja2.Environment(trim_blocks=True, undefined=jinja2.StrictUndefined).from_string(text).render(**values)
+
+
+class WiringTest(unittest.TestCase):
+    """The playbooks run these programs on the right machines, with the right arguments (rendered from the tasks)."""
+
+    def values(self) -> dict[str, Any]:
+        machines = {"login1": {"address": "10.0.0.51"}, "login2": {"address": "10.0.0.52"}}
+        nanohpc = {"home": {"own": ["login2"]}, "machines": machines, "users": [{"name": "alice"}, {"name": "bob"}]}
+        return {"nanohpc": nanohpc, "groups": {"role_login": ["login1", "login2"]}}
+
+    def test_the_home_machine_copies_to_every_own_home_at_night(self) -> None:
+        content = task(ANSIBLE / "roles/home_own/tasks/send.yml", "Install the copy service and its nightly timer")
+        service = rendered(content["ansible.builtin.copy"]["content"], {**self.values(), "item": "service"})
+        self.assertIn(
+            "ExecStart=/usr/local/bin/nanohpc-home-copy --source /home --to login2=10.0.0.52 --users alice bob "
+            "--key /etc/nanohpc/home-copy/id_ed25519 --known-hosts /etc/nanohpc/home-copy/known_hosts",
+            service,
+        )
+        self.assertIn("RequiresMountsFor=/home", service)
+        timer = rendered(content["ansible.builtin.copy"]["content"], {**self.values(), "item": "timer"})
+        self.assertIn("OnCalendar=*-*-* 02:30:00", timer)
+
+    def test_the_front_node_sends_only_the_snapshot_to_an_own_home_login_node(self) -> None:
+        content = task(ANSIBLE / "roles/login_node/tasks/send.yml", "Install the copy service and timer")
+        service = rendered(content["ansible.builtin.copy"]["content"], {**self.values(), "item": "service"})
+        self.assertIn("--login login1=10.0.0.51 --login login2=10.0.0.52 --own-home login2 --key", service)
+
+    def test_plays_reach_the_machines_with_their_own_home(self) -> None:
+        site = {play["name"]: play for play in yaml.safe_load((ANSIBLE / "site.yml").read_text())}
+        own = [play for play in site.values() if play["hosts"] == "home_own"]
+        self.assertEqual([play.get("roles") for play in own], [["home_own"]])
+        # The cleanup never runs on the home machine, whose quota units it would remove.
+        cleanup = [play for play in site.values() if "home_own" in json.dumps(play.get("tasks", [])) and
+                   "off" in json.dumps(play.get("tasks", []))]  # fmt: skip
+        self.assertEqual([play["hosts"] for play in cleanup], ["role_front:role_login:!home_own:!role_home"])
+        self.assertIn("home_own", next(p for p in site.values() if p.get("roles") == ["monitoring"])["hosts"])
+        partial = yaml.safe_load((ANSIBLE / "partial.yml").read_text())
+        users = [play for play in partial if "home_server" in json.dumps(play.get("tasks", []))
+                 and "users" in play.get("tags", [])]  # fmt: skip
+        self.assertEqual([play["hosts"] for play in users], ["role_home:home_own"])
 
 
 if __name__ == "__main__":

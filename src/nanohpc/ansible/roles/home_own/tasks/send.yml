@@ -1,0 +1,98 @@
+# On the home machine: copy each user's listed files into the own /home of the front and login nodes with
+# home_mount: own every night at 02:30 (nanohpc-home-copy), or stop when there are none. A failed copy shows in
+# cluster-health (a warning), never silently.
+- name: Pin the SSH host keys of the machines with their own /home
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/home-copy/known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name in nanohpc.home.own %}
+      {{ nanohpc.machines[name].address }} ssh-ed25519 {{ hostvars[name].ansible_facts.ssh_host_key_ed25519_public }}
+      {% endfor %}
+  when: nanohpc.home.own | length > 0
+
+- name: Install rsync
+  ansible.builtin.apt:
+    name: rsync
+    state: present
+    install_recommends: false
+  when: nanohpc.home.own | length > 0
+
+# nanohpc-home-copy reads the file list from cluster-backup in its own folder (one list for both).
+- name: Install the copy command and the file list it reads
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [nanohpc-home-copy, cluster-backup]
+  when: nanohpc.home.own | length > 0
+
+- name: Install the copy service and its nightly timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/nanohpc-home-copy.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if item == 'service' %}
+      [Unit]
+      Description=Copy each user's listed files into the own /home of {{ nanohpc.home.own | join(', ') }} (nanoHPC)
+      After=network-online.target
+      Wants=network-online.target
+      RequiresMountsFor=/home
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/nanohpc-home-copy --source /home {% for name in nanohpc.home.own %}--to {{ name }}={{ nanohpc.machines[name].address }} {% endfor %}--users {{ nanohpc.users | map(attribute='name') | join(' ') }} --key /etc/nanohpc/home-copy/id_ed25519 --known-hosts /etc/nanohpc/home-copy/known_hosts
+      TimeoutStartSec=3h
+      Nice=10
+      IOSchedulingClass=idle
+      ProtectSystem=strict
+      ProtectHome=read-only
+      PrivateTmp=true
+      {% else %}
+      [Unit]
+      Description=Copy each user's listed files into the own /home folders every night at 02:30 (nanoHPC)
+
+      [Timer]
+      OnCalendar=*-*-* 02:30:00
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+      {% endif %}
+  loop: [service, timer]
+  register: home_copy_units
+  when: nanohpc.home.own | length > 0
+
+- name: Run the copy timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-home-copy.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ home_copy_units is changed }}"
+  when: nanohpc.home.own | length > 0 and not (ansible_check_mode and home_copy_units is changed)
+
+- name: Look for an earlier copy timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-home-copy.timer
+  register: home_copy_timer
+  when: nanohpc.home.own | length == 0
+
+- name: Stop the copy timer when no machine keeps its own /home
+  ansible.builtin.systemd_service:
+    name: nanohpc-home-copy.timer
+    enabled: false
+    state: stopped
+  when: nanohpc.home.own | length == 0 and home_copy_timer.stat.exists
+
+- name: Remove the copy units when no machine keeps its own /home
+  ansible.builtin.file:
+    path: "/etc/systemd/system/nanohpc-home-copy.{{ item }}"
+    state: absent
+  loop: [service, timer]
+  when: nanohpc.home.own | length == 0

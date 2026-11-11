@@ -1,0 +1,36 @@
+# A front or login node that is not the home machine and mounts the shared /home (home_mount: shared): remove what
+# an earlier own /home set up here (the marker, the usage boxes, and the quota and largest-folders timers). The
+# files in the earlier own /home are not touched.
+- name: Remove the record of an own /home and its usage boxes
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: [/etc/nanohpc/home-local, /var/lib/nanohpc-own-home-notices]
+
+- name: Look for the own /home's quota and largest-folders timers
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/nanohpc-{{ item }}.timer"
+  loop: [home-quotas, home-folders]
+  register: own_home_timers
+
+- name: Stop the own /home's timers
+  ansible.builtin.systemd_service:
+    name: "nanohpc-{{ item.item }}.timer"
+    enabled: false
+    state: stopped
+  loop: "{{ own_home_timers.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
+
+- name: Remove the own /home's quota and largest-folders units
+  ansible.builtin.file:
+    path: "/etc/systemd/system/nanohpc-{{ item[0] }}.{{ item[1] }}"
+    state: absent
+  loop: "{{ ['home-quotas', 'home-folders'] | product(['service', 'timer']) | list }}"
+  register: own_home_units_removed
+
+- name: Forget the removed units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: own_home_units_removed is changed and not ansible_check_mode

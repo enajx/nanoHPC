@@ -5,9 +5,16 @@
 # - Home machine: every 5 minutes, cluster-home-quotas reads the users' /home quotas (as root, since
 #   repquota reads the disk) and writes them as metrics, so the front node gets them through Prometheus
 #   wherever /home is.
+# - Front and login nodes with their own /home (home_mount: own): the same reader writes each user's usage box
+#   for the login banner from that machine's own quotas instead, and no metrics (the job hold reads only the
+#   shared /home).
 
-- name: Install the quota reader on the home machine
-  when: nanohpc.mode | default('slurm') != 'monitor' and inventory_hostname == nanohpc.home.server
+- name: Install the quota reader on the home machine and on the machines with their own /home
+  when: >-
+    nanohpc.mode | default('slurm') != 'monitor'
+    and (inventory_hostname == nanohpc.home.server or inventory_hostname in nanohpc.home.own)
+  vars:
+    own_home: "{{ inventory_hostname in nanohpc.home.own }}"
   block:
     - name: Install cluster-home-quotas
       ansible.builtin.copy:
@@ -32,8 +39,9 @@
 
           [Service]
           Type=oneshot
-          ExecStart=/usr/local/bin/cluster-home-quotas --output /var/lib/nanohpc/metrics-textfile/home-quotas.prom \
-            --repquota /usr/sbin/repquota --filesystem {{ '/home' if nanohpc.home.device else '/' }} \
+          ExecStart=/usr/local/bin/cluster-home-quotas \
+            {{ '--notice-dir /var/lib/nanohpc-own-home-notices' if own_home else '--output /var/lib/nanohpc/metrics-textfile/home-quotas.prom' }} \
+            --repquota /usr/sbin/repquota --filesystem {{ '/home' if nanohpc.home.disks[inventory_hostname] else '/' }} \
             --soft-bytes {{ nanohpc.home.soft_bytes }} --hard-bytes {{ nanohpc.home.hard_bytes }} \
             --users {{ nanohpc.users | map(attribute='name') | join(' ') }}
           TimeoutStartSec=40
@@ -46,7 +54,7 @@
           ProtectControlGroups=true
           RestrictSUIDSGID=true
           RestrictAddressFamilies=AF_UNIX
-          ReadWritePaths=/var/lib/nanohpc/metrics-textfile
+          ReadWritePaths={{ '/var/lib/nanohpc-own-home-notices' if own_home else '/var/lib/nanohpc/metrics-textfile' }}
           MemoryMax=128M
           CPUQuota=25%
           {% else %}
@@ -79,17 +87,22 @@
         state: started
       when: not (ansible_check_mode and quota_units is changed)  # dry run: the timer is not installed yet
 
-    - name: Check that the quota reader wrote its metrics
+    - name: Check that the quota reader wrote its metrics (or, with its own /home, the first user's usage box)
       ansible.builtin.stat:
-        path: /var/lib/nanohpc/metrics-textfile/home-quotas.prom
+        path: >-
+          {{ ('/var/lib/nanohpc-own-home-notices/' ~ nanohpc.users[0].name) if own_home
+             else '/var/lib/nanohpc/metrics-textfile/home-quotas.prom' }}
       register: quota_output
       failed_when: not quota_output.stat.exists
       when: not ansible_check_mode  # checks this deploy's result
 
 # The users' largest folders (10 GB or more) for their private usage box at login. Measured where the disk is;
-# each user's file is in /home, so nanohpc-hello on the front node reads it as that user, wherever /home is.
-- name: Measure the users' largest home folders on the home machine
-  when: nanohpc.mode | default('slurm') != 'monitor' and inventory_hostname == nanohpc.home.server
+# each user's file is in /home, so nanohpc-hello on the front node reads it as that user, wherever /home is. A
+# machine with its own /home measures its own.
+- name: Measure the users' largest home folders on the home machine and on the machines with their own /home
+  when: >-
+    nanohpc.mode | default('slurm') != 'monitor'
+    and (inventory_hostname == nanohpc.home.server or inventory_hostname in nanohpc.home.own)
   block:
     - name: Install cluster-home-folders
       ansible.builtin.copy:

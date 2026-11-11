@@ -154,6 +154,22 @@ class RootKeysTest(unittest.TestCase):
         )
         self.assertNotIn("login-copy", root_keys(["alice"], None))
 
+    def test_home_copy_key_only_from_the_home_machine_for_its_receiving_command(self) -> None:
+        """A machine with its own /home accepts the home machine's nightly copy key from that machine only, for the
+        command that writes as each user into their own home folder."""
+        keys = render(
+            "root_authorized_keys.j2",
+            {"users": USERS, "admins": ["alice"], "auto_deploy_key": None, "agent_runner_key": "",
+             "home_copy_key": "ssh-ed25519 AAAAhome nanohpc-home-copy@store", "home_address": "10.0.0.60",
+             "front_address": "10.0.0.10"},
+        )  # fmt: skip
+        self.assertEqual(
+            key_lines(keys)[-1],
+            'from="10.0.0.60",command="/usr/local/sbin/nanohpc-home-copy-receive",restrict '
+            "ssh-ed25519 AAAAhome nanohpc-home-copy@store",
+        )
+        self.assertNotIn("home-copy", root_keys(["alice"], None))
+
     def test_automatic_deploy_key_keeps_its_front_only_limit(self) -> None:
         lines = key_lines(root_keys(["alice"], "ssh-ed25519 AAAAfront nanohpc-auto-deploy@front"))
         self.assertEqual(

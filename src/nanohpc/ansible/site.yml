@@ -170,6 +170,19 @@
         tasks_from: copy_key
       when: groups['role_login'] | default([]) | length > 0
 
+# The home machine's key for the nightly copy into the own /home of the front and login nodes with home_mount: own,
+# made before the accounts role so their root key file can accept it.
+- name: Home copy key on the home machine
+  hosts: role_home
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Make or read the home copy key
+      ansible.builtin.include_role:
+        name: home_own
+        tasks_from: key
+      when: nanohpc.home.own | length > 0
+
 - name: Base setup, users, and SSH access
   hosts: all
   become: true
@@ -185,10 +198,24 @@
   become: true
   roles: [home_server]
 
-- name: The shared /home on the other machines (not the backup machine, nor login nodes when /home is on the front node)
+- name: The shared /home on the other machines (not the backup machine, nor the front and login nodes with their own)
   hosts: home_client
   become: true
   roles: [home_client]
+
+- name: Their own /home with quotas on the front and login nodes with home_mount own
+  hosts: home_own
+  become: true
+  roles: [home_own]
+
+- name: No leftovers of an own /home on the front and login nodes that mount the shared one
+  hosts: role_front:role_login:!home_own:!role_home
+  become: true
+  tasks:
+    - name: Remove the own /home's marker, usage boxes, and timers
+      ansible.builtin.include_role:
+        name: home_own
+        tasks_from: "off"
 
 - name: Shared datasets on the storage machine
   hosts: role_shared
@@ -254,8 +281,8 @@
   become: true
   roles: [prometheus, alerts, grafana]
 
-- name: Status collector on the front node, home quota reader on the home machine
-  hosts: role_front:role_home
+- name: Status collector on the front node, home quota reader on the home machine and the machines with their own /home
+  hosts: role_front:role_home:home_own
   become: true
   roles: [monitoring]
 
@@ -271,6 +298,15 @@
     - name: Copy timer, or remove it when there are no login nodes
       ansible.builtin.include_role:
         name: login_node
+        tasks_from: send
+
+- name: The nightly copy of each user's listed files into the own /home folders
+  hosts: role_home
+  become: true
+  tasks:
+    - name: Copy timer, or remove it when no machine keeps its own /home
+      ansible.builtin.include_role:
+        name: home_own
         tasks_from: send
 
 # Nightly /home mirror: the key on the home machine, the receiving account on the backup machine (for a

@@ -1,8 +1,9 @@
-# The users' home folders and quotas on the home machine (also run alone by --only users).
+# The users' home folders and quotas on the home machine and on the front and login nodes with their own /home
+# (also run alone by --only users).
 # home_quota_pending: the dry run of a first deploy cannot read the quotas yet (see main.yml).
 
 - name: Read the quota mount point (the filesystem that holds /home)
-  ansible.builtin.command: "findmnt -n -o TARGET,FSTYPE --mountpoint {{ '/home' if nanohpc.home.device is not none else '/' }}"
+  ansible.builtin.command: "findmnt -n -o TARGET,FSTYPE --mountpoint {{ '/home' if nanohpc.home.disks[inventory_hostname] is not none else '/' }}"
   register: quota_target
   changed_when: false
   check_mode: false
