@@ -172,6 +172,9 @@
   check_mode: false
   failed_when: false
 
+- name: Stop if a machine that now keeps its own /home still mounts the shared one
+  ansible.builtin.import_tasks: own_home_check.yml
+
 - name: Read the home disk's ID
   ansible.builtin.command: "blkid -s UUID -o value {{ nanohpc.home.disks[inventory_hostname] }}"
   register: home_disk_uuid

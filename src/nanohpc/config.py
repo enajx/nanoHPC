@@ -739,7 +739,9 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
                 checker.fail(
                     f"{path}.home_mount",
                     "is required on a front or login node that is not the home machine: shared (it mounts the "
-                    "cluster's /home) or own (it keeps its own /home)",
+                    "cluster's /home) or own (it keeps its own /home). Before home_mount, a login node kept its own "
+                    "/home when /home was on the front node (own), and mounted the shared /home when /home was on a "
+                    "storage machine (shared), as a front node without the home role did (shared)",
                 )
             elif machine["home_mount"] not in HOME_MOUNTS:
                 checker.fail(f"{path}.home_mount", "must be shared or own")

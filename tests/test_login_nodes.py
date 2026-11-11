@@ -16,6 +16,12 @@ from nanohpc.render import home_clients, own_home_machines, render
 
 ROOT = Path(__file__).resolve().parents[1]
 ROLES = ROOT / "src/nanohpc/ansible/roles"
+# The guide's sentence on the listed files in an own /home.
+OWN_FILES = (
+    "Every night, your listed settings files there (SSH keys, shell settings and history, git, editor and tool "
+    "settings, login tokens) are replaced by their copy from the shared /home, so change them on the shared /home; "
+    "your other files there stay."
+)
 
 
 def example() -> dict[str, Any]:
@@ -148,9 +154,7 @@ class LoginDeployTest(unittest.TestCase):
             site["login_note"],
             "You can also log in to the other front nodes: 10.0.0.51. They work the same way: use one as HostName "
             "instead. 10.0.0.51 has its own /home: files you put there are not on the other front nodes. Jobs you "
-            "submit there see only the shared /home, so keep your projects and data in the shared /home. Every "
-            "night, your settings files (SSH keys, shell, git and editor settings, login tokens) are copied there "
-            "from the shared /home; your other files there stay.",
+            "submit there see only the shared /home, so keep your projects and data in the shared /home. " + OWN_FILES,
         )
         raw = example()
         config, _ = check_config(raw)
@@ -167,7 +171,9 @@ class HomeMountTest(unittest.TestCase):
         _, errors = check_config(raw)
         self.assertIn(
             "machines.login1.home_mount is required on a front or login node that is not the home machine: shared "
-            "(it mounts the cluster's /home) or own (it keeps its own /home)",
+            "(it mounts the cluster's /home) or own (it keeps its own /home). Before home_mount, a login node kept "
+            "its own /home when /home was on the front node (own), and mounted the shared /home when /home was on a "
+            "storage machine (shared), as a front node without the home role did (shared)",
             errors,
         )
         _, errors = check_config(home_on_storage(example(), "shared"))
@@ -254,16 +260,13 @@ class HomeMountTest(unittest.TestCase):
             "You can also log in to the other front nodes: 10.0.0.51, 10.0.0.52. They work the same way: use one as "
             "HostName instead. 10.0.0.51 shares your /home. 10.0.0.52 has its own /home: files you put there are not "
             "on the other front nodes. Jobs you submit there see only the shared /home, so keep your projects and "
-            "data in the shared /home. Every night, your settings files (SSH keys, shell, git and editor settings, "
-            "login tokens) are copied there from the shared /home; your other files there stay.",
+            "data in the shared /home. " + OWN_FILES,
         )
         config, _ = check_config(home_on_storage(example(), "own"))
         self.assertEqual(
             site_data(config)["login_note"],
             "The front node has its own /home: files you put there are not on the other front nodes. Jobs you submit "
-            "there see only the shared /home, so keep your projects and data in the shared /home. Every night, your "
-            "settings files (SSH keys, shell, git and editor settings, login tokens) are copied there from the "
-            "shared /home; your other files there stay.",
+            "there see only the shared /home, so keep your projects and data in the shared /home. " + OWN_FILES,
         )
 
 

@@ -693,8 +693,9 @@ def login_note(config: dict[str, Any]) -> str:
         sentences.append(
             f"{listed(own)} {'has its' if len(own) == 1 else 'have their'} own /home: files you put there are not on "
             "the other front nodes. Jobs you submit there see only the shared /home, so keep your projects and data "
-            "in the shared /home. Every night, your settings files (SSH keys, shell, git and editor settings, login "
-            "tokens) are copied there from the shared /home; your other files there stay."
+            "in the shared /home. Every night, your listed settings files there (SSH keys, shell settings and "
+            "history, git, editor and tool settings, login tokens) are replaced by their copy from the shared /home, "
+            "so change them on the shared /home; your other files there stay."
         )
     return " ".join(sentences)
 
