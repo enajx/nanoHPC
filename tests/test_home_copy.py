@@ -301,10 +301,12 @@ class WiringTest(unittest.TestCase):
         timer = rendered(content["ansible.builtin.copy"]["content"], {**self.values(), "item": "timer"})
         self.assertIn("OnCalendar=*-*-* 02:30:00", timer)
 
-    def test_the_front_node_sends_only_the_snapshot_to_an_own_home_login_node(self) -> None:
+    def test_the_front_node_sends_the_shared_boxes_to_every_login_node(self) -> None:
+        """A login node with its own /home shows the shared /home's box too (when it has a notice), so it gets the
+        same copies as the others."""
         content = task(ANSIBLE / "roles/login_node/tasks/send.yml", "Install the copy service and timer")
         service = rendered(content["ansible.builtin.copy"]["content"], {**self.values(), "item": "service"})
-        self.assertIn("--login login1=10.0.0.51 --login login2=10.0.0.52 --own-home login2 --key", service)
+        self.assertIn("--login login1=10.0.0.51 --login login2=10.0.0.52 --key", service)
 
     def test_plays_reach_the_machines_with_their_own_home(self) -> None:
         site = {play["name"]: play for play in yaml.safe_load((ANSIBLE / "site.yml").read_text())}

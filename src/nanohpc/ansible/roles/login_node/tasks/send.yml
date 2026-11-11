@@ -34,7 +34,7 @@
 
       [Service]
       Type=oneshot
-      ExecStart=/usr/local/sbin/nanohpc-login-copy {% for name in groups['role_login'] %}--login {{ name }}={{ nanohpc.machines[name].address }} {% if name in nanohpc.home.own %}--own-home {{ name }} {% endif %}{% endfor %}--key /etc/nanohpc/login-copy/id_ed25519 --known-hosts /etc/nanohpc/login-copy/known_hosts
+      ExecStart=/usr/local/sbin/nanohpc-login-copy {% for name in groups['role_login'] %}--login {{ name }}={{ nanohpc.machines[name].address }} {% endfor %}--key /etc/nanohpc/login-copy/id_ed25519 --known-hosts /etc/nanohpc/login-copy/known_hosts
       TimeoutStartSec=10min
       {% else %}
       [Unit]

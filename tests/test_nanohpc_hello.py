@@ -290,6 +290,26 @@ class NanohpcHelloTests(unittest.TestCase):
         (self.own_usage / self.user).unlink()
         self.assertIn("Disk usage: not measured yet; it is measured every 5 minutes.", self.plain())
 
+    def test_own_home_shows_the_shared_box_too_when_it_has_a_notice(self) -> None:
+        """On a machine with its own /home, the shared /home's box follows this machine's box when it says something
+        (at or above the notice threshold, or new jobs wait), labelled as the shared /home your jobs use."""
+        self.own_usage.mkdir()
+        (self.own_usage / self.user).write_text("+----------+\n| OWN-LINE |\n+----------+\n")
+        (self.usage / self.user).write_text(
+            "+------------------------------------------------------------+\n"
+            "| Home usage: 420.00 GB / 400.00 GB job-wait threshold.      |\n"
+            "| Notice: home usage is at or above the notice threshold.    |\n"
+            "| New jobs wait until home usage is below the job-wait threshold. |\n"
+            "+------------------------------------------------------------+\n"
+        )
+        lines = [line.strip() for line in self.plain().splitlines()]
+        own = next(index for index, line in enumerate(lines) if "OWN-LINE" in line)
+        label = next(index for index, line in enumerate(lines) if "Shared /home (your jobs use it):" in line)
+        self.assertLess(own, label)
+        self.assertIn("New jobs wait", " ".join(lines[label:]))
+        shared = lines[label - 1 : label + 6]
+        self.assertEqual(len({len(line) for line in shared if line.startswith(("+", "|"))}), 1, shared)
+
     def test_largest_folders_inside_the_usage_box(self) -> None:
         """The home machine's list of largest folders is shown inside the usage box, with the box redrawn
         around it; before the first measurement the box says when it is measured."""

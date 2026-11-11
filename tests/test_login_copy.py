@@ -110,24 +110,6 @@ class SendTest(unittest.TestCase):
             self.assertTrue(calls[1].endswith("notices/ root@10.0.0.51:/var/lib/nanohpc-login-copy/home-notices/"))
             self.assertIn("StrictHostKeyChecking=yes", calls[0])
 
-    def test_a_login_node_with_its_own_home_gets_only_the_snapshot(self) -> None:
-        """Its usage boxes are measured on it (its own /home), so the front node's boxes are not sent there."""
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            notices = folder / "notices"
-            notices.mkdir()
-            (folder / "status.json").write_text("{}")
-            result = subprocess.run(
-                [sys.executable, str(SEND), "--login", "login1=10.0.0.51", "--login", "login2=10.0.0.52",
-                 "--own-home", "login2", "--key", "k", "--known-hosts", "h", "--snapshot", str(folder / "status.json"),
-                 "--notices", str(notices)],
-                env=fake_rsync(folder, 0), capture_output=True, text=True, check=False,
-            )  # fmt: skip
-            self.assertEqual(result.returncode, 0, result.stderr)
-            calls = (folder / "calls").read_text().splitlines()
-            self.assertEqual(len(calls), 3)
-            self.assertTrue(calls[2].endswith("root@10.0.0.52:/var/lib/nanohpc-login-copy/status.json"))
-
     def test_no_snapshot_yet_sends_only_the_usage_boxes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.send(Path(directory), 0, False)

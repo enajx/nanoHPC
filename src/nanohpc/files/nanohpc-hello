@@ -214,20 +214,35 @@ def with_folders(box: list[str], folders: Path) -> list[str]:
     return [border, *["| " + line.ljust(width) + " |" for line in lines], border]
 
 
+def labelled(box: list[str], label: str) -> list[str]:
+    """Redraw a usage box (+---+ borders, | line | rows) with a first line naming which /home it is about."""
+    lines = [label, *[line[2:-2].rstrip() for line in box[1:-1]]]
+    width = max(len(line) for line in lines)
+    border = "+" + "-" * (width + 2) + "+"
+    return [border, *["| " + line.ljust(width) + " |" for line in lines], border]
+
+
 def disk_lines(user: str, colors: list[int] | None) -> list[str]:
-    """The user's latest home usage box in a calm tone, or why it is missing: this machine's own /home when it has
-    one, else the shared /home."""
-    usage_dir = OWN_USAGE_DIR if OWN_USAGE_DIR.is_dir() else USAGE_DIR
+    """The user's latest home usage box in a calm tone, or why it is missing. On a machine with its own /home: this
+    machine's box, then the shared /home's box when it has a notice (at or above the notice threshold, or new jobs
+    wait). Elsewhere: the shared /home's box."""
+    own = OWN_USAGE_DIR.is_dir()
+    usage_dir = OWN_USAGE_DIR if own else USAGE_DIR
     box = usage_dir / user
-    if box.is_file():
-        plain = with_folders(ESCAPE.sub("", box.read_text().strip("\n")).splitlines(), FOLDERS_DIR / user)
-        if colors is None:
-            return plain
-        tone = box_tone(colors, any("New jobs wait" in line for line in plain))
-        return [f"\033[38;5;{tone}m{line}\033[0m" for line in plain]
-    if usage_dir.is_dir():
-        return ["Disk usage: not measured yet; it is measured every 5 minutes."]
-    return ["Disk usage: run nanohpc-hello on the front node to see it."]
+    if not box.is_file():
+        if usage_dir.is_dir():
+            return ["Disk usage: not measured yet; it is measured every 5 minutes."]
+        return ["Disk usage: run nanohpc-hello on the front node to see it."]
+    plain = with_folders(ESCAPE.sub("", box.read_text().strip("\n")).splitlines(), FOLDERS_DIR / user)
+    shared = USAGE_DIR / user
+    if own and shared.is_file():
+        shared_box = ESCAPE.sub("", shared.read_text().strip("\n")).splitlines()
+        if any(word in line for line in shared_box for word in ("Notice:", "New jobs wait")):
+            plain = [*plain, *labelled(shared_box, "Shared /home (your jobs use it):")]
+    if colors is None:
+        return plain
+    tone = box_tone(colors, any("New jobs wait" in line for line in plain))
+    return [f"\033[38;5;{tone}m{line}\033[0m" for line in plain]
 
 
 def shown_messages(path: Path, today: date) -> list[str]:
