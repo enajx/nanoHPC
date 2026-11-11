@@ -1,0 +1,83 @@
+# Login limits (Slurm mode, front and login nodes): every user's login processes (SSH sessions and anything
+# started by hand) share a CPU and memory cap. Slurm, NFS, the website and other services run in system.slice
+# and are not affected. Root and the administrators are exempt: a drop-in of the same name in their own
+# user-<uid>.slice.d replaces the general one. Also run by --only users, which refreshes the exemptions.
+- name: Create the drop-in folder for the general limits
+  ansible.builtin.file:
+    path: /etc/systemd/system/user-.slice.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the drop-in folders of root and the administrators
+  ansible.builtin.file:
+    path: "/etc/systemd/system/user-{{ item }}.slice.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ nanohpc.login_limits.exempt_uids }}"
+
+- name: Limit every user's login processes
+  ansible.builtin.template:
+    src: limits.conf.j2
+    dest: /etc/systemd/system/user-.slice.d/50-nanohpc-login-limits.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: login_limits_general
+
+- name: Do not limit root and the administrators
+  ansible.builtin.template:
+    src: exempt.conf.j2
+    dest: "/etc/systemd/system/user-{{ item }}.slice.d/50-nanohpc-login-limits.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nanohpc.login_limits.exempt_uids }}"
+  register: login_limits_exempt
+
+- name: List the exemption files
+  ansible.builtin.find:
+    paths: /etc/systemd/system
+    patterns: 50-nanohpc-login-limits.conf
+    recurse: true
+  register: login_limits_files
+
+# A person who is no longer an administrator loses the exemption.
+- name: Remove exemptions of people who are no longer administrators
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  # The folder name has the UID (or nothing, for the general limits): keep those that are still wanted.
+  loop: "{{ login_limits_files.files | rejectattr('path', 'search', '/user-(' ~ ([''] + nanohpc.login_limits.exempt_uids | map('string') | list) | join('|') ~ ')[.]slice[.]d/') | list }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: login_limits_removed
+
+- name: Apply the limits to running sessions
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: login_limits_general.changed or login_limits_exempt.changed or login_limits_removed.changed
+
+# A slice number no account has (and no exemption) shows the general limits; root's slice shows none.
+- name: Read the limits in force for root and for a slice that is not exempt
+  ansible.builtin.shell: |
+    set -eu
+    systemctl show user-0.slice -p CPUQuotaPerSecUSec -p MemoryMax --value | tr '\n' ' '
+    echo
+    systemctl show user-4000000.slice -p CPUQuotaPerSecUSec -p MemoryMax --value | tr '\n' ' '
+  register: login_limits_effective
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Require root unlimited and other users limited
+  ansible.builtin.assert:
+    that:
+      - login_limits_effective.stdout_lines[0].split() == ['infinity', 'infinity']
+      - login_limits_effective.stdout_lines[1].split()[0] == (nanohpc.login_limits.cpu_quota_percent // 100) | string ~ 's'
+      - login_limits_effective.stdout_lines[1].split()[1] != 'infinity'
+    fail_msg: "The login limits are not in force: {{ login_limits_effective.stdout_lines }}"
+  when: not ansible_check_mode

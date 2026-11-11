@@ -259,6 +259,11 @@
   become: true
   roles: [monitoring]
 
+- name: Login limits on the front node and the login nodes
+  hosts: role_front:role_login
+  become: true
+  roles: [login_limits]
+
 - name: Login banner on the front node and the login nodes
   hosts: role_front:role_login
   become: true

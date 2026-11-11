@@ -138,6 +138,10 @@ alerts:
 #   personality: agent/personality.md   # optional file next to this one
 #   people: agent/people.md       # optional
 
+login_limits:                   # each user's login processes together (SSH sessions, things started by hand) on a
+  cpu_cores: 4                  # front or login node; root and the administrators are not limited
+  memory_gb: 8
+
 user_check:
   allowed_tunnels: []           # exceptions: [{user: bob, program: cloudflared, machines: [gpu4]}]
                                 # known programs: tailscale, tailscaled, cloudflared, ngrok, frpc,
