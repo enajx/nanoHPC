@@ -2,25 +2,41 @@
 """Copy each user's listed files from the shared /home into the own /home of the front and login nodes that keep
 their own (home_mount: own), every night (run as root on the home machine by nanohpc-home-copy.timer).
 
-For each --to NAME=ADDRESS and each user: rsync SOURCE/USER/ to root@ADDRESS:/home/USER/ with the given key and the
-pinned host keys. Only the backup's file list goes (HOME_FILES and home_rules in cluster-backup, next to this
-program), with no file over MAX_FILE_SIZE. A listed file deleted here is deleted there; every other file in the
-node's home stays (rsync --delete without --delete-excluded). Plain files and folders only: no links, device files,
-owners, or groups, and no setuid or setgid bits. The node's root key file accepts this key only from the home
-machine's address, for nanohpc-home-copy-receive, which runs rsync as the owner of that home folder.
+For each --to NAME=ADDRESS and each user: rsync SOURCE/USER/ to root@ADDRESS:/home/USER/. Only the backup's file
+list goes (HOME_FILES and home_rules in cluster-backup, next to this program), after the cluster's --exclude
+patterns as in the backup, with no file over MAX_FILE_SIZE. A listed file deleted here is deleted there; every other
+file in the node's home stays (rsync --delete without --delete-excluded). Plain files and folders only: no links,
+device files, owners, or groups, and no setuid or setgid bits.
 
-A user without a home folder in SOURCE is not copied. rsync's exit code 24 (files that vanished while being copied)
-counts as success. Exits 1 when any copy failed, after trying every node and user; rsync's own messages go to stderr
-(the journal).
+The sending rsync runs as the user (setpriv with the user's IDs and groups, no new privileges), so it reads only
+what that user can: a link in their home to a file only root may read gives them nothing. The copy key stays with
+root: rsync's transport (--rsh) is this program's relay, which passes rsync's remote command line and then the
+data over a socket pair to this root process. Root checks the command (an rsync server into /home/USER/ of that
+user only), then runs ssh with the key and the pinned host keys, its input and output on that socket. The node's
+root key file accepts the key only from the home machine's address, for nanohpc-home-copy-receive, which runs rsync
+there as the owner of that home folder.
+
+A user whose home folder here is missing, a link, or not theirs is not copied. rsync's exit code 24 (files that
+vanished while being copied) counts as success. Exits 1 when any copy failed, after trying every node and user;
+rsync's and ssh's own messages go to stderr (the journal).
 """
 
 import argparse
 import importlib.machinery
 import importlib.util
+import os
+import pwd
+import re
+import select
+import socket
+import stat
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType
+
+SAFE_COMMAND = re.compile(r"[A-Za-z0-9._/= -]+")
 
 
 def backup_module() -> ModuleType:
@@ -34,23 +50,103 @@ def backup_module() -> ModuleType:
     return module
 
 
-def command(backup: ModuleType, source: Path, user: str, address: str, key: str, known_hosts: str) -> list[str]:
-    """The rsync command that copies one user's listed files to one node."""
-    ssh = (
-        f"ssh -i {key} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "
-        f"-o UserKnownHostsFile={known_hosts} -o ConnectTimeout=20"
-    )
+def rsync_command(backup: ModuleType, source: Path, user: str, address: str, excludes: list[str], fd: int) -> list[str]:
+    """The user's rsync command for one node: its transport is this program's relay on file descriptor `fd`."""
+    relay = f"{sys.executable} {Path(__file__).resolve()} --relay {fd}"
     return ["rsync", "--recursive", "--times", "--perms", "--chmod=ug-s", "--delete", "--timeout=600",
-            "--rsh=" + ssh, *backup.home_rules("/"), "--max-size=" + backup.MAX_FILE_SIZE, "--exclude=*",
-            f"{source}/{user}/", f"root@{address}:/home/{user}/"]  # fmt: skip
+            "--rsh=" + relay, *["--exclude=" + pattern for pattern in excludes], *backup.home_rules("/"),
+            "--max-size=" + backup.MAX_FILE_SIZE, "--exclude=*", f"{source}/{user}/", f"root@{address}:/home/{user}/"]  # fmt: skip
+
+
+def relay(fd: int, arguments: list[str]) -> None:
+    """The transport rsync starts (as the user): send rsync's remote command line, then pass data both ways
+    between rsync (standard input and output) and root's ssh (the socket)."""
+    channel = socket.socket(fileno=fd)
+    command = arguments[arguments.index("rsync") :]
+    channel.sendall((" ".join(command) + "\n").encode())
+
+    def upload() -> None:
+        while data := os.read(0, 65536):
+            channel.sendall(data)
+        channel.shutdown(socket.SHUT_WR)
+
+    threading.Thread(target=upload, daemon=True).start()
+    while data := channel.recv(65536):
+        os.write(1, data)
+
+
+def first_line(channel: socket.socket) -> str | None:
+    """Read the relay's command line (up to 4096 bytes, 2 minutes); None when it does not come."""
+    line = b""
+    while not line.endswith(b"\n") and len(line) < 4096:
+        if not select.select([channel], [], [], 120)[0]:
+            return None
+        byte = channel.recv(1)
+        if not byte:
+            return None
+        line += byte
+    return line.decode(errors="replace").strip()
+
+
+def allowed(command: str, user: str) -> bool:
+    """Whether the command is an rsync server that receives into that user's home on the node, and nothing else."""
+    words = command.split(" ")
+    return (
+        SAFE_COMMAND.fullmatch(command) is not None
+        and words[:2] == ["rsync", "--server"]
+        and "--sender" not in words
+        and len(words) >= 5
+        and words[-2:] == [".", f"/home/{user}/"]
+    )
+
+
+def copy(arguments: argparse.Namespace, backup: ModuleType, name: str, address: str, user: str) -> bool:
+    """Copy one user's listed files to one node; return whether it worked."""
+    folder = arguments.source / user
+    details = os.lstat(folder) if os.path.lexists(folder) else None
+    owner = pwd.getpwnam(user) if details is not None else None
+    if details is None or owner is None or not stat.S_ISDIR(details.st_mode) or details.st_uid != owner.pw_uid:
+        print(f"nanohpc-home-copy: {folder} is not {user}'s own folder; not copied", file=sys.stderr)
+        return False
+    root_end, user_end = socket.socketpair()
+    rsync = subprocess.Popen(
+        ["setpriv", f"--reuid={owner.pw_uid}", f"--regid={owner.pw_gid}", "--init-groups", "--no-new-privs", "--",
+         *rsync_command(backup, arguments.source, user, address, arguments.exclude, user_end.fileno())],
+        stdin=subprocess.DEVNULL, pass_fds=[user_end.fileno()],
+    )  # fmt: skip
+    user_end.close()
+    command = first_line(root_end)
+    if command is None or not allowed(command, user):
+        print(f"nanohpc-home-copy: refused the remote command for {user} on {name}: {command!r}", file=sys.stderr)
+        root_end.close()
+        rsync.kill()
+        rsync.wait()
+        return False
+    ssh = subprocess.Popen(
+        ["ssh", "-i", arguments.key, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o",
+         "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + arguments.known_hosts, "-o", "ConnectTimeout=20",
+         "-e", "none", "-T", f"root@{address}", command],
+        stdin=root_end, stdout=root_end,
+    )  # fmt: skip
+    root_end.close()
+    ssh.wait()
+    code = rsync.wait()
+    if code not in (0, 24):
+        print(f"nanohpc-home-copy: the copy of {user} to {name} failed (rsync exit {code})", file=sys.stderr)
+        return False
+    return True
 
 
 def main() -> None:
-    """Copy every user to every node, then report the copies that failed."""
+    """Copy every user to every node, then report the copies that failed. With --relay FD: be rsync's transport."""
+    if len(sys.argv) > 2 and sys.argv[1] == "--relay":
+        relay(int(sys.argv[2]), sys.argv[3:])
+        return
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", type=Path, required=True, help="the shared /home")
     parser.add_argument("--to", action="append", required=True, help="NAME=ADDRESS of a node with its own /home")
     parser.add_argument("--users", nargs="+", required=True)
+    parser.add_argument("--exclude", action="append", default=[], help="the backup's exclude patterns")
     parser.add_argument("--key", required=True)
     parser.add_argument("--known-hosts", required=True)
     arguments = parser.parse_args()
@@ -59,14 +155,7 @@ def main() -> None:
     for item in arguments.to:
         name, address = item.split("=", 1)
         for user in arguments.users:
-            if not (arguments.source / user).is_dir():
-                print(f"nanohpc-home-copy: {arguments.source}/{user} is not a folder; not copied", file=sys.stderr)
-                failed.append(f"{name}:{user}")
-                continue
-            rsync = command(backup, arguments.source, user, address, arguments.key, arguments.known_hosts)
-            code = subprocess.run(rsync, stdin=subprocess.DEVNULL, check=False).returncode
-            if code not in (0, 24):
-                print(f"nanohpc-home-copy: the copy of {user} to {name} failed (rsync exit {code})", file=sys.stderr)
+            if not copy(arguments, backup, name, address, user):
                 failed.append(f"{name}:{user}")
     if failed:
         print(f"nanohpc-home-copy: failed for {', '.join(failed)}", file=sys.stderr)

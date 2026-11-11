@@ -256,6 +256,7 @@
       {{ hostvars[nanohpc.home.server].home_copy_public_key
          if inventory_hostname in nanohpc.home.own else '' }}
     home_address: "{{ nanohpc.home.server_address }}"
+    home_copy_device: "{{ nanohpc.home.disks[inventory_hostname] if inventory_hostname in nanohpc.home.own else none }}"
     front_address: "{{ nanohpc.metrics.front_address }}"
 
 - name: List the installed SSH key files

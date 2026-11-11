@@ -3,12 +3,15 @@
 authorized_keys, from the home machine's address only): receive one user's listed files into their own home folder.
 
 Allowed: the rsync server command line, as rsync 3.2 and 3.4 clients send it, writing only to ROOT/USER/ (ROOT:
-/home), where ROOT/USER is a folder (not a link) owned by a user other than root; short options from a fixed list and
+/home), where ROOT/USER is a folder (not a link) owned by the user USER (not root); short options from a fixed list and
 the long options --delete (and rsync's --delete-before/during/after/delay forms), --timeout=N and --max-size=N.
 Never links, device files, owners, or groups (no l, D, o, or g option), and never --delete-excluded, so the user's
 other files stay. Words may hold only letters, digits and `._/=-`. Anything else prints a message on stderr and exits
 1. An allowed command runs without a shell, as the folder's owner (setpriv), so it can only write what that user
 could. NANOHPC_HOME_COPY_ROOT is for tests.
+
+Argument (optional): DEVICE, the disk of this machine's own /home (home.device in cluster.yml). ROOT must then be a
+mount point of that disk, so a copy never goes into the root disk's folder that the disk should cover.
 """
 
 import os
@@ -55,11 +58,23 @@ def allowed(command: str) -> tuple[list[str], os.stat_result]:
     details = os.lstat(target)
     if not stat.S_ISDIR(details.st_mode) or details.st_uid == 0:
         refuse("not a user's own home folder: " + target)
+    if pwd.getpwuid(details.st_uid).pw_name != user:
+        refuse(f"{target} is not owned by {user}")
     return words, details
+
+
+def check_disk(device: str) -> None:
+    """Refuse unless ROOT is a mount point of the given disk."""
+    if not os.path.ismount(ROOT) or not os.path.exists(device) or os.stat(ROOT).st_dev != os.stat(device).st_rdev:
+        refuse(f"{ROOT} is not a mount point of {device} (home.device in cluster.yml)")
 
 
 def main() -> None:
     """Check the client's command, then run it as the home folder's owner, without a shell."""
+    if len(sys.argv) > 2:
+        refuse("usage: nanohpc-home-copy-receive [DEVICE]")
+    if len(sys.argv) == 2:
+        check_disk(sys.argv[1])
     words, details = allowed(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
     owner = pwd.getpwuid(details.st_uid)
     os.execvp("setpriv", ["setpriv", f"--reuid={owner.pw_uid}", f"--regid={owner.pw_gid}", "--init-groups",

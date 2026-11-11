@@ -140,6 +140,16 @@
         name: home_server
         tasks_from: users
 
+- name: The user list of the nightly copy into the own /home folders, on the home machine
+  hosts: role_home
+  become: true
+  tags: [users]
+  tasks:
+    - name: Copy units with the new user list
+      ansible.builtin.include_role:
+        name: home_own
+        tasks_from: send
+
 - name: The users' scratch folders and caches on the compute machines
   hosts: role_compute
   become: true

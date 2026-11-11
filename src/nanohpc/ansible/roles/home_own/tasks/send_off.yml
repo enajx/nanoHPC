@@ -1,0 +1,25 @@
+# No nightly copy into own /home folders on this machine: none keeps its own /home, or this is no longer the home
+# machine. Stop the timer and remove the units (the key stays).
+- name: Look for an earlier copy timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-home-copy.timer
+  register: home_copy_timer
+
+- name: Stop the copy timer
+  ansible.builtin.systemd_service:
+    name: nanohpc-home-copy.timer
+    enabled: false
+    state: stopped
+  when: home_copy_timer.stat.exists
+
+- name: Remove the copy units
+  ansible.builtin.file:
+    path: "/etc/systemd/system/nanohpc-home-copy.{{ item }}"
+    state: absent
+  loop: [service, timer]
+  register: home_copy_removed
+
+- name: Forget the removed copy units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: home_copy_removed is changed and not ansible_check_mode

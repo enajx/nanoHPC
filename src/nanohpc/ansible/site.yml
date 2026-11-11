@@ -314,6 +314,15 @@
         name: home_own
         tasks_from: send
 
+- name: No copy into own /home folders on the other machines (after /home moved)
+  hosts: all:!role_home
+  become: true
+  tasks:
+    - name: Stop and remove an earlier copy timer
+      ansible.builtin.include_role:
+        name: home_own
+        tasks_from: send_off
+
 # Nightly /home mirror: the key on the home machine, the receiving account on the backup machine (for a
 # backup machine in the cluster), then the timer and a check that the destination accepts the key.
 - name: Backup key on the home machine
