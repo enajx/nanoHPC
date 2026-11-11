@@ -14,6 +14,7 @@ import threading
 import unittest
 from pathlib import Path
 
+import yaml
 from textual.pilot import Pilot
 from textual.widgets import Button, Checkbox, DataTable, Input, Label, ListView, Select, Static, Switch, TextArea
 
@@ -274,6 +275,54 @@ class NewClusterTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(gpu1["cpu"], {"sockets": 1, "cores_per_socket": 16, "threads_per_core": 2})
             self.assertEqual(gpu1["scratch"], {"device": None, "image_gb": 200})
             self.assertEqual(config["machines"]["front"]["home"], {"device": None})
+
+
+class BmcAddressWizardTest(unittest.IsolatedAsyncioTestCase):
+    """The machine dialog asks for the optional BMC address; empty clears it."""
+
+    async def edit(self, pilot: Pilot, value: str) -> None:
+        await select_row(pilot, "#machine-table", "gpu4")
+        await pilot.press("enter")
+        await pilot.pause()
+        await fill(pilot, {"#bmc-address": value})
+        await pilot.click("#ok")
+        await pilot.pause()
+
+    async def test_set_and_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await select_row(pilot, "#machine-table", "gpu4")
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(app.screen.query_one("#bmc-address", Input).value, "")
+                await pilot.click("#cancel")
+                await pilot.pause()
+                await self.edit(pilot, "192.168.104.111")
+                self.assertEqual(app.state.file.machines()["gpu4"]["bmc_address"], "192.168.104.111")
+                await self.edit(pilot, "")
+                self.assertNotIn("bmc_address", app.state.file.machines()["gpu4"])
+
+    async def test_saved_file_has_it_and_reopens_with_it(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await self.edit(pilot, "gpu4-bmc.example.org")
+                app.state.file.save(path)
+            self.assertEqual(
+                yaml.safe_load(path.read_text())["machines"]["gpu4"]["bmc_address"], "gpu4-bmc.example.org"
+            )
+            reopened = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with reopened.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await select_row(pilot, "#machine-table", "gpu4")
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(reopened.screen.query_one("#bmc-address", Input).value, "gpu4-bmc.example.org")
 
 
 class MonitorWizardTest(unittest.IsolatedAsyncioTestCase):

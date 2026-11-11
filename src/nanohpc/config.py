@@ -19,7 +19,7 @@ import yaml
 ROLES = ("front", "login", "home", "backup", "compute", "shared")
 JOB_TYPES = ("batch", "interactive", "any")  # batch: sbatch only; interactive: only the documented shell
 COMPUTE_FIELDS = ("cpu", "memory_mb", "gpu", "partitions", "scratch")
-MACHINE_FIELDS = ("address", "aliases", "roles", "home", "backup", "shared", *COMPUTE_FIELDS)
+MACHINE_FIELDS = ("address", "bmc_address", "aliases", "roles", "home", "backup", "shared", *COMPUTE_FIELDS)
 TOP_FIELDS = (
     "cluster",
     "machines",
@@ -764,7 +764,31 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
         ]
         if not members:
             checker.fail(f"partitions.{partition}", "has no compute machines")
+    for name, machine in machines.items():
+        if "bmc_address" in machine:
+            check_bmc_address(checker, f"machines.{name}.bmc_address", machine["bmc_address"], addresses, hostnames)
     return machines
+
+
+def check_bmc_address(
+    checker: Checker, path: str, bmc: Any, addresses: dict[str, str], hostnames: dict[str, str]
+) -> None:
+    """Check a BMC address: an IPv4 address or host name that no machine already uses and that cannot be local."""
+    if not isinstance(bmc, str):
+        checker.fail(path, "must be an IPv4 address or a host name")
+    elif all(part.isdigit() for part in bmc.split(".")) and bmc.count(".") > 0:
+        if not is_ipv4(bmc):
+            checker.fail(path, "must be an IPv4 address or a host name (this is not a valid IPv4 address)")
+        elif bmc.startswith(("127.", "0.")) or bmc == "255.255.255.255":
+            checker.fail(path, "must be the BMC's network address, not a loopback or placeholder")
+        elif bmc in addresses:
+            checker.fail(path, f"{bmc} is the address of machines.{addresses[bmc]}, not of a BMC")
+    elif not HOST_NAME.fullmatch(bmc):
+        checker.fail(path, "must be an IPv4 address or a host name")
+    elif bmc.lower() in ("localhost", "localhost.localdomain"):
+        checker.fail(path, f"{bmc} is reserved")
+    elif bmc.lower() in hostnames:
+        checker.fail(path, f"{bmc} is a name of machines.{hostnames[bmc.lower()]}, not of a BMC")
 
 
 def is_ipv4(text: str) -> bool:

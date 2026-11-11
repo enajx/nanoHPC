@@ -238,6 +238,9 @@ def main() -> None:
     restart_command.add_argument("machine", help="one compute machine in cluster.yml")
     restart_command.add_argument("--confirm", required=True, help="repeat the machine name to authorize its restart")
     restart_command.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines")
+    restart_command.add_argument(
+        "--no-bmc-ok", action="store_true", help="restart even if the machine's BMC (bmc_address) does not answer"
+    )
     rules = commands.add_parser(
         "forwarding-rules", help="print rules for the lab's own web server to show the cluster website"
     )
@@ -286,7 +289,9 @@ def main() -> None:
             else check.run(arguments.path, arguments.ssh_config)
         )
     if arguments.command == "restart":
-        sys.exit(restart.run(arguments.path, arguments.machine, arguments.confirm, arguments.ssh_config))
+        sys.exit(
+            restart.run(arguments.path, arguments.machine, arguments.confirm, arguments.ssh_config, arguments.no_bmc_ok)
+        )
     if arguments.command == "update-report":
         sys.exit(update_report.run(arguments.path, arguments.ssh_config))
     if arguments.command == "update":

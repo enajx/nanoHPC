@@ -123,6 +123,10 @@ elif "sacct" in command:
         output = state["accounting_states"].pop(0)
     else:
         output = state["job_state"] + "|" + state["machine"] + "\\n"
+elif command.startswith("ping "):
+    code = state.get("ping_code", 1 if state.get("bmc_down") else 0)
+    if code > 1:
+        sys.stderr.write("ping: unknown host\\n")
 elif command.strip() == "true":
     if login == state.get("fail_login"):
         code = 255
@@ -217,8 +221,73 @@ class RestartFlowTest(unittest.TestCase):
             "PATH": f"{bin_folder}:{os.environ['PATH']}",
             "RESTART_STATE": str(self.state_path),
         }
+        self.cluster_file = ROOT / "examples/cluster.yml"
 
-    def restart(self, machine: str) -> subprocess.CompletedProcess[str]:
+    def with_bmc(self) -> None:
+        """Use a copy of the example where gpu4 has a BMC address."""
+        text = (
+            (ROOT / "examples/cluster.yml")
+            .read_text()
+            .replace(
+                "    address: 192.168.104.11\n", "    address: 192.168.104.11\n    bmc_address: 192.168.104.111\n", 1
+            )
+        )
+        self.cluster_file = self.folder / "cluster.yml"
+        self.cluster_file.write_text(text)
+
+    def test_bmc_that_does_not_answer_refuses_before_drain(self) -> None:
+        self.with_bmc()
+        self.state["bmc_down"] = True
+        self.state_path.write_text(json.dumps(self.state))
+        result = self.restart("gpu4")
+        state = json.loads(self.state_path.read_text())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("192.168.104.111", result.stderr)
+        self.assertIn("--no-bmc-ok", result.stderr)
+        self.assertEqual(state["node_state"], "IDLE")
+        self.assertEqual(state["boot_id"], "old-boot-id")
+        calls = [(target, command) for target, command in state["calls"]]
+        self.assertTrue(any(target == "front" and command.startswith("ping ") for target, command in calls))
+        self.assertFalse(any("state=drain" in command for _, command in calls))
+
+    def test_ping_that_fails_is_not_reported_as_a_bmc_down(self) -> None:
+        self.with_bmc()
+        self.state["ping_code"] = 127
+        self.state_path.write_text(json.dumps(self.state))
+        result = self.restart("gpu4")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ping failed on front (exit code 127)", result.stderr)
+        self.assertNotIn("does not answer", result.stderr)
+        self.assertEqual(json.loads(self.state_path.read_text())["node_state"], "IDLE")
+
+    def test_no_bmc_ok_restarts_anyway_and_says_so(self) -> None:
+        self.with_bmc()
+        self.state["bmc_down"] = True
+        self.state_path.write_text(json.dumps(self.state))
+        result = self.restart("gpu4", "--no-bmc-ok")
+        state = json.loads(self.state_path.read_text())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("192.168.104.111", result.stdout + result.stderr)
+        self.assertEqual(state["boot_id"], "new-boot-id")
+
+    def test_bmc_that_answers_restarts_after_the_ping(self) -> None:
+        self.with_bmc()
+        result = self.restart("gpu4")
+        state = json.loads(self.state_path.read_text())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [command for _, command in state["calls"]]
+        self.assertLess(
+            next(i for i, command in enumerate(calls) if command.startswith("ping ")),
+            next(i for i, command in enumerate(calls) if "state=drain" in command),
+        )
+
+    def test_without_bmc_address_there_is_no_ping(self) -> None:
+        result = self.restart("gpu4")
+        state = json.loads(self.state_path.read_text())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(any(command.startswith("ping ") for _, command in state["calls"]))
+
+    def restart(self, machine: str, *extra: str) -> subprocess.CompletedProcess[str]:
         """Run a confirmed restart through the installed CLI."""
         return subprocess.run(
             [
@@ -226,10 +295,11 @@ class RestartFlowTest(unittest.TestCase):
                 "-c",
                 "from nanohpc.cli import main; main()",
                 "restart",
-                str(ROOT / "examples/cluster.yml"),
+                str(self.cluster_file),
                 machine,
                 "--confirm",
                 machine,
+                *extra,
             ],
             capture_output=True,
             text=True,
