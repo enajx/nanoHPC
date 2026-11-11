@@ -349,6 +349,7 @@ class HeterogeneousClusterTest(unittest.TestCase):
     def test_home_on_storage_machine(self) -> None:
         raw = example()
         raw["machines"]["front"]["roles"] = ["front"]
+        raw["machines"]["front"]["home_mount"] = "shared"
         del raw["machines"]["front"]["home"]
         raw["machines"]["store"] = {"address": "192.168.104.20", "roles": ["home"]}
         del raw["backup"]

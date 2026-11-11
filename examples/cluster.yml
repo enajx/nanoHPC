@@ -62,11 +62,15 @@ machines:
     partitions: [interactive]
     scratch: {image_gb: 2}
 
-  # More front nodes for users: log in and submit jobs there as on the front node. With /home on the front node,
-  # each one keeps its own /home; with /home on its own machine, they share it.
+  # More front nodes for users: log in and submit jobs there as on the front node. Each one says whether it mounts
+  # the cluster's /home (home_mount: shared) or keeps its own (home_mount: own; jobs still use the shared /home, and
+  # each user's settings files are copied there every night). A front node without the home role says it too.
   # login2:
   #   address: 192.168.104.30
   #   roles: [login]
+  #   home_mount: own           # shared | own
+  #   home:
+  #     device: /dev/vdb        # optional, with home_mount: own: disk for its /home; without it, the root disk
 
   store:
     address: 192.168.104.20

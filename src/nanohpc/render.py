@@ -238,15 +238,19 @@ def home_server(config: dict[str, Any]) -> str:
 
 
 def home_clients(config: dict[str, Any]) -> list[str]:
-    """Return the machines that mount /home: all but the home machine and the backup machine. Login nodes mount it
-    only when /home is on its own machine; with /home on the front node, each login node keeps its own /home."""
+    """Return the machines that mount the shared /home: all but the home machine, the backup machine, and the front
+    and login nodes with their own /home (home_mount: own)."""
     server = home_server(config)
-    on_front = "front" in config["machines"][server]["roles"]
     return [
         name
         for name, m in config["machines"].items()
-        if name != server and "backup" not in m["roles"] and not ("login" in m["roles"] and on_front)
+        if name != server and "backup" not in m["roles"] and m.get("home_mount") != "own"
     ]
+
+
+def own_home_machines(config: dict[str, Any]) -> list[str]:
+    """Return the front and login nodes that keep their own /home (home_mount: own), in cluster.yml order."""
+    return [name for name, m in config["machines"].items() if m.get("home_mount") == "own"]
 
 
 def render_home_exports(config: dict[str, Any]) -> str:

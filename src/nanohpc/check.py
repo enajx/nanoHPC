@@ -218,8 +218,8 @@ def users_result(facts: dict[str, Any], users: list[tuple[str, int]], name: str,
 
 
 def mounts_result(facts: dict[str, Any], config: dict[str, Any], name: str, report: Report) -> None:
-    """Fill the mounts cell: /home as cluster.yml says (served here, or the NFS mount from the home machine; none
-    on the backup machine) and /scratch on compute machines."""
+    """Fill the mounts cell: /home as cluster.yml says (served here, the NFS mount from the home machine, or the
+    machine's own with home_mount: own; none on the backup machine) and /scratch on compute machines."""
     if facts["mounts"]["code"] != 0:
         report.problems.append(f"findmnt failed: {first_line(facts['mounts'])}")
         report.cells["mounts"] = "FAIL"
@@ -233,6 +233,7 @@ def mounts_result(facts: dict[str, Any], config: dict[str, Any], name: str, repo
     shared = f"{config['machines'][server]['address']}:/home"
     problems: list[str] = []
     home = mounts.get("/home")
+    own = config["machines"][name].get("home_mount") == "own"
     if "home" in roles:
         if home is None:
             problems.append("/home is not mounted (cluster.yml: this machine serves /home)")
@@ -243,10 +244,16 @@ def mounts_result(facts: dict[str, Any], config: dict[str, Any], name: str, repo
             problems.append(f"/home is not mounted (cluster.yml: the NFS mount {shared})")
         elif home != (shared, "nfs4"):
             problems.append(f"/home is {home[0]} ({home[1]}), but cluster.yml says the NFS mount {shared}")
+    elif own:
+        # Its own disk, or the root disk's /home mounted onto itself (nosuid,nodev).
+        if home is None:
+            problems.append("/home is not mounted (cluster.yml: home_mount: own, its own /home)")
+        elif home[1].startswith("nfs"):
+            problems.append(f"/home is the NFS mount {home[0]}, but cluster.yml says home_mount: own")
     if "compute" in roles and "/scratch" not in mounts:
         problems.append("/scratch is not mounted")
     report.problems.extend(problems)
-    checked = "home" in roles or name in home_clients(config) or "compute" in roles
+    checked = "home" in roles or name in home_clients(config) or own or "compute" in roles
     report.cells["mounts"] = "FAIL" if problems else "ok" if checked else "-"
 
 

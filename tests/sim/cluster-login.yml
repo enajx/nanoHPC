@@ -1,5 +1,5 @@
-# Three machines for SimLoginNodeTest: a front node with /home, a compute machine, and a login node (which keeps its
-# own /home, since /home is on the front node).
+# Three machines for SimLoginNodeTest: a front node with /home, a compute machine, and a login node that keeps its
+# own /home (home_mount: own).
 cluster:
   name: logintest
   admins: [alice]
@@ -24,6 +24,7 @@ machines:
   login1:
     address: 192.168.104.12
     roles: [login]
+    home_mount: own
 users:
   - name: alice
     uid: 2000

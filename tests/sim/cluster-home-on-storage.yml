@@ -18,6 +18,7 @@ machines:
     address: 192.168.104.10
     aliases: [cluster.example.org]   # optional extra names, written to /etc/hosts
     roles: [front]              # front: login, Slurm controller, monitoring, website
+    home_mount: shared          # mounts the storage machine's /home
 
   gpu4:
     address: 192.168.104.11
