@@ -48,6 +48,26 @@ class MachineGpuLimitTest(unittest.TestCase):
         self.assertTrue(any("policy.max_gpus_per_user 9 is more than the 8 GPUs" in error for error in errors), errors)
 
 
+class BmcAddressTest(unittest.TestCase):
+    """A machine can list the address of its BMC; it is optional and must be an address or host name."""
+
+    def test_valid_and_unset(self) -> None:
+        self.assertEqual(check_config(example())[1], [])
+        raw = example()
+        raw["machines"]["gpu4"]["bmc_address"] = "192.168.104.111"
+        raw["machines"]["gpu2"]["bmc_address"] = "gpu2-bmc.example.org"
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        self.assertEqual(config["machines"]["gpu4"]["bmc_address"], "192.168.104.111")
+
+    def test_invalid_values_are_rejected(self) -> None:
+        for value in ("not an address!", "", 7, "192.168.104.11"):
+            raw = example()
+            raw["machines"]["gpu4"]["bmc_address"] = value
+            _, errors = check_config(raw)
+            self.assertTrue(any("machines.gpu4.bmc_address" in error for error in errors), (value, errors))
+
+
 class MonitorConfigTest(unittest.TestCase):
     """Monitor configs describe machines and names, without Slurm or managed accounts."""
 

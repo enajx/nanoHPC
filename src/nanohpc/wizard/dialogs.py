@@ -192,6 +192,8 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
                         value=address if address in facts.addresses else Select.NULL,
                         id="probed-address",
                     )
+                yield Label("BMC address (IPMI, optional; an IP address or host name; empty: none):")
+                yield Input(field_text(machine.get("bmc_address")), id="bmc-address")
                 yield Label("Roles:")
                 with Horizontal(classes="roles"):
                     for role in ROLES:
@@ -247,6 +249,11 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
             return
         machine = with_roles(self.machine, roles)
         machine["address"] = self.value("#address")
+        bmc_address = self.value("#bmc-address")
+        if bmc_address:
+            machine["bmc_address"] = bmc_address
+        else:
+            machine.pop("bmc_address", None)
         if "compute" in roles:
             machine["cpu"] = {
                 "sockets": parse_field(self.value("#sockets"), "int"),

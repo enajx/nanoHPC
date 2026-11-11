@@ -276,6 +276,35 @@ class NewClusterTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(config["machines"]["front"]["home"], {"device": None})
 
 
+class BmcAddressWizardTest(unittest.IsolatedAsyncioTestCase):
+    """The machine dialog asks for the optional BMC address; empty clears it."""
+
+    async def edit(self, pilot: Pilot, value: str) -> None:
+        await select_row(pilot, "#machine-table", "gpu4")
+        await pilot.press("enter")
+        await pilot.pause()
+        await fill(pilot, {"#bmc-address": value})
+        await pilot.click("#ok")
+        await pilot.pause()
+
+    async def test_set_and_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await settle(pilot)
+                await select_row(pilot, "#machine-table", "gpu4")
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(app.screen.query_one("#bmc-address", Input).value, "")
+                await pilot.click("#cancel")
+                await pilot.pause()
+                await self.edit(pilot, "192.168.104.111")
+                self.assertEqual(app.state.file.machines()["gpu4"]["bmc_address"], "192.168.104.111")
+                await self.edit(pilot, "")
+                self.assertNotIn("bmc_address", app.state.file.machines()["gpu4"])
+
+
 class MonitorWizardTest(unittest.IsolatedAsyncioTestCase):
     """Monitor setup shows only machine, user, website, alert, and review steps."""
 

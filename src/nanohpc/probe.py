@@ -82,6 +82,17 @@ def ssh_failure(target: str, result: subprocess.CompletedProcess[str]) -> str | 
     return f"SSH failed: `ssh {target}`: {message}"
 
 
+def bmc_problem(front: str, ssh_config: Path | None, bmc_address: str) -> str | None:
+    """Ping a machine's BMC from the front node (read-only). Return why it does not answer, or None if it does."""
+    result = run_remote(front, ssh_config, f"ping -c 3 -W 2 {shlex.quote(bmc_address)}", False, 30)
+    failure = ssh_failure(front, result)
+    if failure is not None:
+        return f"cannot ping the BMC {bmc_address} from {front}: {failure}"
+    if result.returncode:
+        return f"the BMC {bmc_address} does not answer a ping from {front}"
+    return None
+
+
 def remote(
     target: str, ssh_config: Path | None, command: str, forward_agent: bool, timeout: int
 ) -> subprocess.CompletedProcess[str]:

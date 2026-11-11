@@ -19,7 +19,7 @@ import yaml
 ROLES = ("front", "login", "home", "backup", "compute", "shared")
 JOB_TYPES = ("batch", "interactive", "any")  # batch: sbatch only; interactive: only the documented shell
 COMPUTE_FIELDS = ("cpu", "memory_mb", "gpu", "partitions", "scratch")
-MACHINE_FIELDS = ("address", "aliases", "roles", "home", "backup", "shared", *COMPUTE_FIELDS)
+MACHINE_FIELDS = ("address", "bmc_address", "aliases", "roles", "home", "backup", "shared", *COMPUTE_FIELDS)
 TOP_FIELDS = (
     "cluster",
     "machines",
@@ -672,6 +672,12 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
                 checker.fail(f"{path}.address", f"{address} is already used by machines.{addresses[address]}")
             else:
                 addresses[address] = name
+        if "bmc_address" in machine:
+            bmc = machine["bmc_address"]
+            if not isinstance(bmc, str) or not (is_ipv4(bmc) or HOST_NAME.fullmatch(bmc)):
+                checker.fail(f"{path}.bmc_address", "must be an IPv4 address or a host name")
+            elif bmc == address:
+                checker.fail(f"{path}.bmc_address", "must differ from the machine's own address")
         machine.setdefault("aliases", [])
         aliases = checker.string_list(machine["aliases"], f"{path}.aliases") or []
         for hostname in [name, *aliases]:
