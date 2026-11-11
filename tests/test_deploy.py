@@ -256,7 +256,7 @@ class PrepareTest(unittest.TestCase):
                 "destination": "nanohpc-backup@192.168.104.20:/srv/nanohpc-backup/home/",
                 "folder": "/srv/nanohpc-backup/home",
                 "time": "03:00",
-                "exclude": [".cache/", ".venv/", "__pycache__/"],
+                "exclude": ["__pycache__/"],
             },
         )
         self.assertEqual(variables["alerts"], {"slack": True})

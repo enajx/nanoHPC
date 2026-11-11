@@ -664,7 +664,7 @@ class BackupTest(unittest.IsolatedAsyncioTestCase):
                 await go(pilot, 5)
                 await fill(pilot, {"#backup-to": ""})
                 backup = app.state.file.get(["backup"])
-                self.assertEqual(backup, {"time": "03:00", "exclude": [".cache/", ".venv/", "__pycache__/"]})
+                self.assertEqual(backup, {"time": "03:00", "exclude": ["__pycache__/"]})
                 await pilot.click("#no-backup")
                 await pilot.pause()
                 await answer(pilot, "yes")
