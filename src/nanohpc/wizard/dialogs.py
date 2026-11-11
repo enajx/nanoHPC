@@ -20,6 +20,7 @@ from nanohpc.wizard.state import (
     cpu_from_facts,
     field_text,
     gpu_from_facts,
+    needs_home_mount,
     ordered,
     parse_field,
     suggested_memory_mb,
@@ -198,7 +199,7 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
                         yield Checkbox(role, role in roles, id=f"role-{role}")
                 yield Static(
                     "front: login, Slurm controller, monitoring, website (one machine). compute: runs jobs. "
-                    "home: serves /home (the front node, or a storage machine). backup: receives the nightly backup. "
+                    "home: serves /home (the front node, or a storage machine). login: another front node for users. backup: receives the nightly backup. "
                     "shared: serves read-only datasets from /shared to compute machines; choose its disk in Storage.",
                     classes="hint",
                 )
@@ -212,6 +213,19 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
                     yield self.row("GPU count", "gpu-count", gpu.get("count"))
                     if facts is not None and facts.gpus:
                         yield plain(f"Probed GPUs: {', '.join(facts.gpus)}", "hint", None)
+                with Vertical(id="home-mount-fields"):
+                    yield Label("/home on this front or login node:")
+                    yield Select(
+                        [(Text("mounts the cluster's shared /home"), "shared"), (Text("keeps its own /home"), "own")],
+                        value=machine.get("home_mount") or "shared",
+                        allow_blank=False,
+                        id="home-mount",
+                    )
+                    yield Static(
+                        "Own /home: jobs still use the shared /home, and each user's settings files are copied there "
+                        "every night.",
+                        classes="hint",
+                    )
                 with Vertical(id="backup-fields"):
                     yield Label("Backup folder on this machine:")
                     yield Input((machine.get("backup") or {}).get("path") or DEFAULT_BACKUP_PATH, id="backup-path")
@@ -228,9 +242,15 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
 
     @on(Checkbox.Changed)
     def show_role_fields(self) -> None:
-        """Show the compute fields for a compute machine, the backup folder for a backup machine."""
+        """Show the compute fields for a compute machine, the backup folder for a backup machine, and the /home choice
+        for a front or login node that is not the home machine."""
         self.query_one("#compute-fields").display = self.query_one("#role-compute", Checkbox).value
         self.query_one("#backup-fields").display = self.query_one("#role-backup", Checkbox).value
+        self.query_one("#home-mount-fields").display = needs_home_mount(self.checked_roles())
+
+    def checked_roles(self) -> list[str]:
+        """Return the roles checked in the dialog."""
+        return [role for role in ROLES if self.query_one(f"#role-{role}", Checkbox).value]
 
     @on(Select.Changed, "#probed-address")
     def choose_address(self, event: Select.Changed) -> None:
@@ -241,11 +261,13 @@ class MachineScreen(Dialog[dict[str, Any] | None]):
     @on(Button.Pressed, "#ok")
     def accept(self) -> None:
         """Return the machine's new fields."""
-        roles = [role for role in ROLES if self.query_one(f"#role-{role}", Checkbox).value]
+        roles = self.checked_roles()
         if not roles:
             self.fail("Choose at least one role.")
             return
         machine = with_roles(self.machine, roles)
+        if needs_home_mount(roles):
+            machine["home_mount"] = str(self.query_one("#home-mount", Select).value)
         machine["address"] = self.value("#address")
         if "compute" in roles:
             machine["cpu"] = {

@@ -341,13 +341,24 @@ def fill_from_facts(machine: dict[str, Any], facts: MachineFacts, partition: str
     return ordered(result)
 
 
+def needs_home_mount(roles: list[str]) -> bool:
+    """Return whether a machine with these roles says how it gets /home (a front or login node that is not the
+    home machine)."""
+    return ("front" in roles or "login" in roles) and "home" not in roles
+
+
 def with_roles(machine: dict[str, Any], roles: list[str]) -> dict[str, Any]:
-    """Return the machine with new roles, without the fields its roles no longer use."""
+    """Return the machine with new roles, without the fields its roles no longer use. A front or login node that is
+    not the home machine gets home_mount: shared unless it has one."""
     result = {**machine, "roles": roles}
     if "compute" not in roles:
         for key in COMPUTE_ONLY:
             result.pop(key, None)
-    if "home" not in roles:
+    if needs_home_mount(roles):
+        result.setdefault("home_mount", "shared")
+    else:
+        result.pop("home_mount", None)
+    if "home" not in roles and result.get("home_mount") != "own":
         result.pop("home", None)
     if "backup" not in roles:
         result.pop("backup", None)
@@ -532,7 +543,8 @@ def checklist(state: WizardState, machine: str) -> list[CheckItem]:
             )
         )
     roles = values.get("roles") or []
-    home = (values.get("home") or {}).get("device") if "home" in roles else None
+    own = values.get("home_mount") == "own"
+    home = (values.get("home") or {}).get("device") if "home" in roles or own else None
     scratch = (values.get("scratch") or {}).get("device") if "compute" in roles else None
     shared = (values.get("shared") or {}).get("device") if "shared" in roles else None
     for key, device, purpose in (
