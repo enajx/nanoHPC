@@ -30,6 +30,7 @@ TOP_FIELDS = (
     "scratch",
     "backup",
     "alerts",
+    "login_limits",
     "user_check",
     "auto_deploy",
     "nanohpc_version",
@@ -55,6 +56,8 @@ SCRATCH_DEFAULTS: dict[str, Any] = {"cleanup_days": 14, "job_retention_days": 7}
 ALERTS_DEFAULTS: dict[str, Any] = {"slack": False}
 # Slurm mode only: BackupOld posts after this many days; HomeLinkSlow below this large-file /home read, two nights.
 SLURM_ALERTS_DEFAULTS: dict[str, Any] = {**ALERTS_DEFAULTS, "backup_old_days": 7, "slow_home_mb_per_second": 50}
+# Slurm mode: every user's login processes together on a front or login node (administrators and root are exempt).
+LOGIN_LIMITS_DEFAULTS: dict[str, Any] = {"cpu_cores": 4, "memory_gb": 8}
 USER_CHECK_DEFAULTS: dict[str, Any] = {"allowed_tunnels": []}
 USER_CHECK_PROGRAMS = frozenset(
     {
@@ -949,6 +952,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "scratch": with_defaults(checker, top.get("scratch"), "scratch", SCRATCH_DEFAULTS),
         "backup": check_backup(checker, top.get("backup"), machines),
         "alerts": with_defaults(checker, top.get("alerts"), "alerts", SLURM_ALERTS_DEFAULTS),
+        "login_limits": with_defaults(checker, top.get("login_limits"), "login_limits", LOGIN_LIMITS_DEFAULTS),
         "user_check": check_user_check(checker, top.get("user_check"), users, machines),
         "auto_deploy": with_defaults(checker, top.get("auto_deploy"), "auto_deploy", AUTO_DEPLOY_DEFAULTS),
         "nanohpc_version": top.get("nanohpc_version"),
@@ -967,6 +971,8 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         and home["quota_soft_gb"] > home["quota_hard_gb"]
     ):
         checker.fail("home.quota_soft_gb", "must not be larger than home.quota_hard_gb")
+    checker.positive(config["login_limits"]["cpu_cores"], "login_limits.cpu_cores")
+    checker.positive(config["login_limits"]["memory_gb"], "login_limits.memory_gb")
     checker.positive(config["scratch"]["cleanup_days"], "scratch.cleanup_days")
     checker.positive(config["scratch"]["job_retention_days"], "scratch.job_retention_days")
     checker.boolean(config["alerts"]["slack"], "alerts.slack")

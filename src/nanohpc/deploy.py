@@ -394,6 +394,7 @@ def variables(
             "automatic": automatic,
             "alerts": {"slack": config["alerts"]["slack"]},
             "user_check": config["user_check"],
+            "login_limits": login_limits_variables(config),
             "announcements": config["announcements"],
             # None: every machine keeps its own time zone.
             "time_zone": config["time_zone"],
@@ -407,6 +408,18 @@ def variables(
                 },
             },
         }
+    }
+
+
+def login_limits_variables(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the login limits as systemd values, and the UIDs that are exempt: root and the administrators."""
+    limits = config["login_limits"]
+    uids = {user["name"]: user["uid"] for user in config["users"]}
+    return {
+        "cpu_quota_percent": limits["cpu_cores"] * 100,
+        "memory_high_mb": limits["memory_gb"] * 768,  # 75% of the maximum
+        "memory_max_gb": limits["memory_gb"],
+        "exempt_uids": [0, *[uids[name] for name in config["cluster"]["admins"]]],
     }
 
 
