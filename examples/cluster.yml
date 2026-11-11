@@ -29,6 +29,7 @@ machines:
 
   gpu4:
     address: 192.168.104.11
+    # bmc_address: 192.168.104.111   # optional: the machine's BMC (IPMI); restart and check ping it from the front node
     roles: [compute]
     cpu: {sockets: 1, cores_per_socket: 4, threads_per_core: 2}
     memory_mb: 4096
