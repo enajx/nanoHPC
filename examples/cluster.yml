@@ -72,6 +72,8 @@ machines:
   #   home_mount: own           # shared | own
   #   home:
   #     device: /dev/vdb        # optional, with home_mount: own: disk for its /home; without it, the root disk
+  #   front_backup: true        # optional, one login node: the backup front node (nanohpc front-switch); needs
+  #                             # /home on its own home machine and a front node with only the front role
 
   store:
     address: 192.168.104.20
