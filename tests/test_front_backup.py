@@ -2,16 +2,38 @@
 installed but stopped, gets the front node's copies, and can be made the front node by `nanohpc front-switch`."""
 
 import copy
+import subprocess
 import unittest
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 from typing import Any
 
+import jinja2
 import yaml
 
 from nanohpc.config import check_config
 from nanohpc.deploy import inventory, variables
 
 ROOT = Path(__file__).resolve().parents[1]
+ROLE = ROOT / "src/nanohpc/ansible/roles/front_backup"
+
+
+def render(path: Path, values: dict[str, Any]) -> str:
+    """Render a role template as Ansible does (trim_blocks), failing on undefined values."""
+    environment = jinja2.Environment(trim_blocks=True, undefined=jinja2.StrictUndefined)
+    return environment.from_string(path.read_text()).render(**values)
+
+
+def switch_step() -> Any:
+    """The switch's step script, loaded as a module."""
+    path = str(ROOT / "src/nanohpc/files/nanohpc-front-switch-step")
+    loader = SourceFileLoader("front_switch_step", path)
+    spec = spec_from_loader("front_switch_step", loader)
+    assert spec is not None
+    module = module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def example() -> dict[str, Any]:
@@ -107,6 +129,74 @@ class FrontBackupDeployTest(unittest.TestCase):
         groups = inventory(config, None)["all"]["children"]
         self.assertEqual(groups["front_pair"]["hosts"], {})
         self.assertIsNone(variables(config, Path("/work"), False, [], False, [])["nanohpc"]["front_backup"])
+
+
+class FrontBackupRoleTest(unittest.TestCase):
+    def defaults(self, https: str) -> dict[str, Any]:
+        """The role's defaults, with the archive list worked out for a website using `https`."""
+        values = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        nanohpc = {"website": {"https": https}}
+        values["front_backup_archives"] = yaml.safe_load(
+            jinja2.Environment().from_string(values["front_backup_archives"]).render(nanohpc=nanohpc)
+        )
+        return values
+
+    def test_the_switch_restores_what_the_nightly_copy_sends(self) -> None:
+        step = switch_step()
+        defaults = self.defaults("letsencrypt")
+        self.assertEqual([[name, path] for name, path, _ in step.FOLDERS], defaults["front_backup_folders"])
+        self.assertEqual(
+            [[name, f"{parent}/{name}"] for name, parent in step.ARCHIVES], defaults["front_backup_archives"]
+        )
+        self.assertEqual(sorted({owner for _, _, owner in step.FOLDERS} - {"root"}),
+                         sorted(set(defaults["front_backup_accounts"]) - {"cluster-grafana"}))  # fmt: skip
+
+    def test_the_copy_command_sends_the_folders_and_archives(self) -> None:
+        defaults = self.defaults("own")
+        values = {
+            **defaults,
+            "front_backup_peer": "login2",
+            "nanohpc": {"machines": {"login2": {"address": "192.168.104.30"}}},
+        }
+        text = render(ROLE / "templates/nanohpc-front-copy-run.j2", values)
+        subprocess.run(["sh", "-n"], input=text, text=True, check=True)
+        self.assertIn("--to login2=192.168.104.30", text)
+        self.assertIn("--item /var/lib/nanohpc/prometheus=prometheus \\", text)
+        self.assertIn("--archive /etc/nanohpc/slurmdbd.env=slurmdbd.env \\", text)
+        self.assertNotIn("letsencrypt", text)  # own certificate: from the administrator's files
+
+    def test_the_fence_watches_the_other_machine(self) -> None:
+        values = {
+            "front_backup_peer": "login2",
+            "ansible_facts": {"hostname": "front"},
+            "nanohpc": {"machines": {"login2": {"address": "192.168.104.30"}}},
+        }
+        text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
+        subprocess.run(["sh", "-n"], input=text, text=True, check=True)
+        self.assertIn("--hostname front", text)
+        self.assertIn("--peer login2=192.168.104.30:6817", text)
+
+    def test_each_machine_of_the_pair_accepts_the_other_ones_copies(self) -> None:
+        template = ROOT / "src/nanohpc/ansible/roles/accounts/templates/root_authorized_keys.j2"
+        values = {
+            "users": [],
+            "admins": [],
+            "auto_deploy_key": "",
+            "front_address": "192.168.104.10",
+            "front_copy_key": "ssh-ed25519 AAAA nanohpc-front-copy@login2",
+            "front_copy_address": "192.168.104.30",
+        }
+        text = render(template, values)
+        self.assertIn(
+            'from="192.168.104.30",command="/usr/local/sbin/nanohpc-front-copy-receive",restrict'
+            " ssh-ed25519 AAAA nanohpc-front-copy@login2",
+            text,
+        )
+        self.assertNotIn("nanohpc-front-copy-receive", render(template, {**values, "front_copy_key": ""}))
+
+    def test_the_backup_front_node_gets_the_slurm_controller_packages(self) -> None:
+        tasks = (ROOT / "src/nanohpc/ansible/roles/slurm_packages/tasks/main.yml").read_text()
+        self.assertIn("groups['role_front'] + (groups['front_backup'] | default([]))", tasks)
 
 
 if __name__ == "__main__":

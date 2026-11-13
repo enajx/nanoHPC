@@ -1,0 +1,24 @@
+# On a front or login node outside the front pair (no backup front node now, or another one): no copies. The fence
+# stays installed where it was; it only acts while slurm.conf names this machine.
+- name: Look for earlier copy timers
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-front-copy-state.timer
+  register: front_backup_old_timers
+
+- name: Stop the copy timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop: [nanohpc-front-copy-state.timer, nanohpc-front-copy-nightly.timer]
+  when: front_backup_old_timers.stat.exists
+
+- name: Remove the copy units
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}"
+    state: absent
+  loop:
+    - nanohpc-front-copy-state.service
+    - nanohpc-front-copy-state.timer
+    - nanohpc-front-copy-nightly.service
+    - nanohpc-front-copy-nightly.timer

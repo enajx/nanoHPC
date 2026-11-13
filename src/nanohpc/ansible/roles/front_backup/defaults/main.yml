@@ -1,0 +1,39 @@
+# The front node and its backup front node (front_backup: true in cluster.yml): the front pair.
+# The front-node units the backup front node keeps installed but stopped and disabled; the switch
+# (nanohpc-front-switch-step stop) stops the same ones on the old front node (tests/test_front_switch_step.py).
+front_backup_units:
+  - slurmctld.service
+  - slurmdbd.service
+  - mariadb.service
+  - nanohpc-prometheus.service
+  - nanohpc-history.service
+  - nanohpc-alertmanager.service
+  - nanohpc-grafana.service
+  - nanohpc-monitor-snapshot.timer
+  - nanohpc-home-job-policy.timer
+  - nanohpc-job-end-notify.timer
+  - nanohpc-user-check-notify.timer
+  - nanohpc-backup-alert-weekly.timer
+  - nanohpc-website-certificate.timer
+  - nanohpc-login-copy.timer
+  - nginx.service
+  - nanohpc-auto-deploy.timer
+  - nanohpc-deploy-hook.service
+  - nanohpc-agent.service
+  - nanohpc-agent-runner.service
+# Every night, after the backup (backup.time) and the home copy: the nightly copy to the other machine of the pair.
+front_backup_nightly_time: "04:15"
+# The nightly copy: folders (name in the copy, folder on the front node) and archives (secrets, and folders with
+# links). nanohpc-front-switch-step take restores the same names (tests/test_front_switch_step.py).
+front_backup_folders:
+  - [prometheus, /var/lib/nanohpc/prometheus]
+  - [history, /var/lib/nanohpc/history]
+  - [alertmanager, /var/lib/nanohpc/alertmanager]
+  - [monitor, /var/lib/nanohpc/monitor]
+  - [home-policy, /var/lib/nanohpc/home-policy]
+  - [website-releases, /srv/nanohpc-web/releases]
+front_backup_archives: >-
+  {{ [['slurmdbd.env', '/etc/nanohpc/slurmdbd.env'], ['metrics-ca', '/etc/nanohpc/metrics-ca']]
+     + ([['letsencrypt', '/etc/nanohpc/website/letsencrypt']] if nanohpc.website.https == 'letsencrypt' else []) }}
+# The service accounts the restored monitoring data belongs to; the standby role makes them on the backup front node.
+front_backup_accounts: [cluster-prometheus, cluster-history, cluster-alertmanager, cluster-grafana, cluster-monitor]

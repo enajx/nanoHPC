@@ -124,7 +124,7 @@
   ansible.builtin.set_fact:
     slurm_wanted: >-
       {{ nanohpc.slurm.packages.common
-         + (nanohpc.slurm.packages.front if inventory_hostname in groups['role_front'] else [])
+         + (nanohpc.slurm.packages.front if inventory_hostname in groups['role_front'] + (groups['front_backup'] | default([])) else [])
          + (nanohpc.slurm.packages.compute if inventory_hostname in groups['role_compute'] else []) }}
 
 - name: Create the package folder

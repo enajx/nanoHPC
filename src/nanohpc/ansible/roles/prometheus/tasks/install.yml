@@ -1,0 +1,27 @@
+# Prometheus's pinned download, unpacked (the front node, and the backup front node's standby role).
+- name: Name the download for this machine's CPU type
+  ansible.builtin.set_fact:
+    metrics_arch: "{{ 'arm64' if ansible_facts.architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Name the Prometheus folder
+  ansible.builtin.set_fact:
+    prometheus_dir: "/opt/nanohpc-metrics/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}"
+
+- name: Download Prometheus, checking its SHA-256
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/prometheus/releases/download/v{{ nanohpc.metrics.prometheus.version }}/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}.tar.gz"
+    dest: "/var/tmp/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}.tar.gz"
+    checksum: "sha256:{{ nanohpc.metrics.prometheus.sha256[metrics_arch] }}"
+    mode: "0644"
+  register: prometheus_download
+
+- name: Unpack Prometheus (owned by root, whatever the archive says)
+  ansible.builtin.unarchive:
+    src: "/var/tmp/prometheus-{{ nanohpc.metrics.prometheus.version }}.linux-{{ metrics_arch }}.tar.gz"
+    dest: /opt/nanohpc-metrics
+    remote_src: true
+    extra_opts: [--no-same-owner]
+    owner: root
+    group: root
+    creates: "{{ prometheus_dir }}/prometheus"
+  when: not (ansible_check_mode and prometheus_download is changed)  # dry run: not downloaded yet

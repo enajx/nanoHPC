@@ -1,0 +1,50 @@
+# On the backup front node: the front node's services installed but stopped and disabled (the Slurm controller and
+# accounting, the accounting database, Prometheus, Alertmanager, Grafana, the website's nginx), with the accounts the
+# restored monitoring data belongs to, so `nanohpc front-switch` can start them from the copies. The Slurm
+# controller packages come from the slurm_packages role. On a former front node, the same units are stopped.
+- name: Install the accounting database, the Lua checker, and nginx (not started)
+  ansible.builtin.apt:
+    name: [mariadb-server, mariadb-client, lua5.3, nginx]
+    state: present
+    install_recommends: false
+    policy_rc_d: 101
+  register: front_backup_packages
+
+- name: Create the monitoring accounts
+  ansible.builtin.user:
+    name: "{{ item }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+  loop: "{{ front_backup_accounts }}"
+
+- name: Install Prometheus
+  ansible.builtin.include_role:
+    name: prometheus
+    tasks_from: install
+
+- name: Install Alertmanager
+  ansible.builtin.include_role:
+    name: alerts
+    tasks_from: install
+
+- name: Install Grafana
+  ansible.builtin.include_role:
+    name: grafana
+    tasks_from: install
+
+- name: Stop and disable the front node's services here
+  ansible.builtin.shell: |
+    set -eu
+    for unit in {{ front_backup_units | join(' ') }}; do
+      test "$(systemctl show -p LoadState --value "$unit")" = loaded || continue
+      if systemctl is-enabled --quiet "$unit" || systemctl is-active --quiet "$unit"; then
+        if [ "$DRY_RUN" != True ]; then systemctl disable --now "$unit"; fi
+        echo "changed $unit"
+      fi
+    done
+  environment:
+    DRY_RUN: "{{ ansible_check_mode }}"  # the dry run only reports
+  register: front_backup_stopped
+  changed_when: "'changed' in front_backup_stopped.stdout"
+  check_mode: false

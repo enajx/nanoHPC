@@ -170,6 +170,18 @@
         tasks_from: copy_key
       when: groups['role_login'] | default([]) | length > 0
 
+# The front node and its backup front node each have a key for their copies to the other one, made before the accounts
+# role so the other one's root key file can accept it.
+- name: Front copy keys on the front node and its backup front node
+  hosts: front_pair
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Make or read the front copy key
+      ansible.builtin.include_role:
+        name: front_backup
+        tasks_from: key
+
 # The home machine's key for the nightly copy into the own /home of the front and login nodes with home_mount: own,
 # made before the accounts role so their root key file can accept it.
 - name: Home copy key on the home machine
@@ -363,6 +375,32 @@
   hosts: role_front
   become: true
   roles: [website]
+
+- name: The backup front node keeps the front node's services installed and stopped
+  hosts: front_backup
+  become: true
+  tasks:
+    - name: Front services installed, stopped and disabled
+      ansible.builtin.include_role:
+        name: front_backup
+        tasks_from: standby
+
+- name: The fence and the copies on the front node and its backup front node
+  hosts: front_pair
+  become: true
+  tasks:
+    - name: Fence, copies, and the switch's steps
+      ansible.builtin.include_role:
+        name: front_backup
+
+- name: No copies on the other front and login nodes
+  hosts: role_front:role_login:!front_pair
+  become: true
+  tasks:
+    - name: Stop and remove earlier copy timers
+      ansible.builtin.include_role:
+        name: front_backup
+        tasks_from: "off"
 
 - name: Automatic deploys on the front node
   hosts: role_front

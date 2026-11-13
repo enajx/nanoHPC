@@ -94,6 +94,18 @@
         tasks_from: copy_key
       when: groups['role_login'] | default([]) | length > 0
 
+# The front pair's copy keys, for the root key files of the front node and its backup front node (--only users).
+- name: Front copy keys on the front node and its backup front node
+  hosts: front_pair
+  become: true
+  any_errors_fatal: true
+  tags: [always]
+  tasks:
+    - name: Make or read the front copy key
+      ansible.builtin.include_role:
+        name: front_backup
+        tasks_from: key
+
 # The home machine's key for the nightly copy into the own /home of the front and login nodes with home_mount: own,
 # made before the accounts role so their root key file can accept it.
 - name: Home copy key on the home machine
