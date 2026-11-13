@@ -161,7 +161,16 @@
   ansible.builtin.command: /usr/local/sbin/nanohpc-front-fence-run --check
   changed_when: false
   check_mode: false
-  when: inventory_hostname in groups['role_front'] and not (ansible_check_mode and front_backup_unit_files is changed)  # dry run: not installed yet
+  # Not in the dry run: a switch releases the fence of the machine it makes the front node only after its dry runs.
+  when: inventory_hostname in groups['role_front'] and not ansible_check_mode
+
+# The record that this machine took over (the fence's watch never fences it) is needed only while the other machine
+# may still name itself in its slurm.conf: not once both machines of the pair are deployed in this run.
+- name: Remove the record of an earlier takeover once the other machine of the pair is deployed
+  ansible.builtin.file:
+    path: /var/lib/nanohpc-front-fence/took-over
+    state: absent
+  when: inventory_hostname in groups['role_front'] and front_backup_peer not in nanohpc_left_out
 
 - name: Run the fence watch and the copy timers
   ansible.builtin.systemd_service:

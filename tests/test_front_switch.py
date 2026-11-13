@@ -28,7 +28,7 @@ command=$2
 echo "$target: $command" >> "$FAKE/calls"
 if [ -e "$FAKE/$target.down" ]; then echo "ssh: connect to host $target: No route to host" >&2; exit 255; fi
 case "$command" in
-  *state.done*) cat "$FAKE/$target.status" ;;
+  *state.done*) if [ -e "$FAKE/$target.nosudo" ]; then echo "sudo: a password is required" >&2; exit 1; fi; cat "$FAKE/$target.status" ;;
   *--dry-run*) if [ -e "$FAKE/$target.dryfail" ]; then echo "dry run failed here" >&2; exit 1; fi; echo "dry run ok" ;;
   *) echo "done" ;;
 esac
@@ -156,6 +156,13 @@ class SwitchTest(unittest.TestCase):
         self.assertEqual(self.switch(False), 1)
         self.assertEqual(self.steps(), ["front: stop --dry-run", "login2: take --dry-run"])
         self.assertEqual(self.path.read_text(), before)
+
+    def test_a_machine_that_answers_but_cannot_be_read_stops_the_switch(self) -> None:
+        """SSH works but sudo fails: the front node is not taken as down and left out; nothing changes."""
+        (self.folder / "front.nosudo").write_text("")
+        self.assertEqual(self.switch(False), 1)
+        self.assertEqual(self.steps(), [])
+        self.assertEqual(self.deploys, [])
 
     def test_moving_back_needs_the_current_front_node(self) -> None:
         (self.folder / "front.down").write_text("")

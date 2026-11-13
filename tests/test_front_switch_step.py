@@ -26,7 +26,9 @@ class StepTest(unittest.TestCase):
         self.bin.mkdir()
         self.fake("systemctl", 'case "$1" in is-active) exit 3;; show) echo loaded;; esac')
         self.fake("slurmctld", "")
-        self.fake("mariadb", 'case "$*" in *SCHEMATA*) echo "${DATABASE_COUNT:-0}";; esac')
+        self.fake(
+            "mariadb", f'case "$*" in *SCHEMATA*) echo "${{DATABASE_COUNT:-0}}";; "") cat >> "{self.calls}";; esac'
+        )
         self.fake("mysqldump", "echo 'old database'")
         self.fake("chown", "")
         self.fake("rsync", "")
@@ -147,6 +149,31 @@ class StepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Would restore", result.stdout)
         self.assertTrue(all(call.startswith("id ") for call in self.recorded()), self.recorded())
+
+    def test_take_dry_run_works_while_the_old_controller_still_runs(self) -> None:
+        """The switch runs the take dry run before the old front node stops: its controller still answers then."""
+        self.copies()
+        self.listener.listen()
+        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("still answers", result.stdout)
+
+    def test_take_gives_the_accounting_daemon_its_database_login(self) -> None:
+        """A dump of one database has no MariaDB accounts: take makes the slurm account with the restored password,
+        after the secrets are unpacked."""
+        self.copies()
+        self.fake(
+            "tar",
+            f"mkdir -p '{self.root}/etc/nanohpc'; printf 'SLURM_DB_PASSWORD=%s\\n' {'a' * 64} > '{self.root}/etc/nanohpc/slurmdbd.env'",
+        )
+        (self.root / "var/lib/nanohpc-front-copy/nightly/slurmdbd.env.tar").write_text("archive")
+        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.recorded()
+        unpack = next(index for index, call in enumerate(calls) if call.startswith("tar "))
+        login = next(index for index, call in enumerate(calls) if call.startswith("CREATE USER IF NOT EXISTS"))
+        self.assertLess(unpack, login)
+        self.assertIn("IDENTIFIED BY '" + "a" * 64 + "'", calls[login])
 
     def test_the_backup_keeps_the_same_front_services_stopped(self) -> None:
         """The standby role on the backup front node stops the same units the switch stops on the old front node."""

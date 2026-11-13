@@ -91,6 +91,14 @@
   no_log: true
   when: not ansible_check_mode  # changes the database user: real run only
 
+# A backup front node that was the front node before keeps the password file, with its database stopped.
+- name: Read whether the accounting database runs
+  ansible.builtin.command: systemctl is-active mariadb
+  register: database_running
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
 - name: Check that the accounting user can log in to the database
   ansible.builtin.command:
     argv: [mariadb, --user=slurm, --database=slurm_acct_db, "--execute=SELECT 1"]
@@ -99,7 +107,7 @@
   changed_when: false
   check_mode: false
   no_log: true
-  when: not (ansible_check_mode and (controller_packages is changed or not database_secret_file.stat.exists))  # dry run: no database or password yet
+  when: not (ansible_check_mode and (controller_packages is changed or not database_secret_file.stat.exists or database_running.stdout != 'active'))  # dry run: no database or password yet
 
 - name: Configure the Slurm accounting daemon
   ansible.builtin.copy:

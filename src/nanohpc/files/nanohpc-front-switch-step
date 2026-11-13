@@ -21,6 +21,7 @@ NANOHPC_FRONT_SWITCH_ROOT (tests) is put in front of every path.
 
 import argparse
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -136,6 +137,25 @@ def answers(address: str) -> bool:
         return connection.connect_ex((host, int(port))) == 0
 
 
+def database_login() -> None:
+    """Make the accounting daemon's MariaDB account with the restored password (a dump of one database holds no
+    accounts), so the deploy's dry run can log in with it."""
+    secret = Path(TEST_ROOT + "/etc/nanohpc/slurmdbd.env")
+    if not secret.is_file():
+        print("No database password in the nightly copy: the deploy makes a new one.")
+        return
+    password = secret.read_text().split("SLURM_DB_PASSWORD=", 1)[1].splitlines()[0]
+    if not re.fullmatch(r"[a-f0-9]{64}", password):
+        fail(f"{secret} does not hold a password made by nanoHPC")
+    sql = (
+        f"CREATE USER IF NOT EXISTS 'slurm'@'localhost' IDENTIFIED BY '{password}';\n"
+        f"ALTER USER 'slurm'@'localhost' IDENTIFIED BY '{password}';\n"
+        f"GRANT ALL PRIVILEGES ON {DATABASE}.* TO 'slurm'@'localhost';\n"
+    )
+    # On stdin, so the password is not in the process list.
+    subprocess.run(["mariadb"], input=sql, text=True, check=True)
+
+
 def take(source: str, peer: str, fence_run: str, dry_run: bool) -> None:
     """This machine becomes the front node from the copies `source` sent."""
     state = COPIES / "state"
@@ -145,7 +165,10 @@ def take(source: str, peer: str, fence_run: str, dry_run: bool) -> None:
     if not (nightly / "nightly.done").is_file():
         fail(f"this machine has no nightly copy from {source} in {nightly}")
     if answers(peer):
-        fail(f"the Slurm controller on {source} still answers ({peer}): stop it there first")
+        if not dry_run:
+            fail(f"the Slurm controller on {source} still answers ({peer}): stop it there first")
+        # The switch's dry runs come before the old front node's stop step.
+        print(f"The Slurm controller on {source} still answers ({peer}): the switch stops it first.")
     for program in ("mariadb", "slurmctld"):
         if shutil.which(program) is None:
             fail(f"{program} is not installed here: deploy this machine as the backup front node first")
@@ -159,7 +182,15 @@ def take(source: str, peer: str, fence_run: str, dry_run: bool) -> None:
     run([fence_run, "--release"])
     TOOK_OVER.parent.mkdir(parents=True, exist_ok=True)
     TOOK_OVER.write_text(f"took over from {source} at {time.strftime('%Y-%m-%d %H:%M')}\n")
+    for name, destination in ARCHIVES:
+        archive = nightly / f"{name}.tar"
+        if not archive.is_file():
+            print(f"Not in the nightly copy, left as it is: {destination}/{name}")
+            continue
+        Path(TEST_ROOT + destination).mkdir(parents=True, exist_ok=True)
+        run(["tar", "-C", TEST_ROOT + destination, "-xf", str(archive)])
     run(["systemctl", "start", "mariadb.service"])
+    database_login()
     count = subprocess.run(
         ["mariadb", "--batch", "--skip-column-names", "--execute",
          f"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='{DATABASE}'"],
@@ -185,13 +216,6 @@ def take(source: str, peer: str, fence_run: str, dry_run: bool) -> None:
         target.mkdir(parents=True, exist_ok=True)
         run(["rsync", "-a", f"{nightly}/{name}/", f"{target}/"])
         run(["chown", "-R", f"{owner}:{owner}", str(target)])
-    for name, destination in ARCHIVES:
-        archive = nightly / f"{name}.tar"
-        if not archive.is_file():
-            print(f"Not in the nightly copy, left as it is: {destination}/{name}")
-            continue
-        Path(TEST_ROOT + destination).mkdir(parents=True, exist_ok=True)
-        run(["tar", "-C", TEST_ROOT + destination, "-xf", str(archive)])
     print(f"Restored {source}'s copies: run nanohpc deploy to start the front-node services here.")
 
 

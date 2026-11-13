@@ -48,3 +48,9 @@
   register: front_backup_stopped
   changed_when: "'changed' in front_backup_stopped.stdout"
   check_mode: false
+
+# A former front node that took over once is not the front node now: its fence's watch must be able to fence it.
+- name: Remove the record of an earlier takeover
+  ansible.builtin.file:
+    path: /var/lib/nanohpc-front-fence/took-over
+    state: absent

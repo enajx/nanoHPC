@@ -69,9 +69,12 @@ def read(machine: str, ssh_config: Path | None) -> Found:
     """Read a machine's Slurm controller, fence, and copies (read-only)."""
     result = run_remote(machine, ssh_config, STATUS_COMMAND, True, 30)
     failure = ssh_failure(machine, result)
-    if failure is not None or result.returncode != 0:
-        detail = failure or result.stderr.strip() or f"exit code {result.returncode}"
-        return Found(False, detail, "", "", None, None)
+    if failure is not None:
+        return Found(False, failure, "", "", None, None)
+    if result.returncode != 0:
+        # It answers, but its state could not be read (for example sudo refused): never taken as down.
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        return Found(True, f"cannot read its state: {detail}", "", "", None, None)
     values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     now = int(values["now"])
 
@@ -96,6 +99,8 @@ def describe(name: str, what: str, address: str, found: Found) -> list[str]:
     """Lines about one machine."""
     if not found.answers:
         return [f"{name} ({what}, {address}): does not answer ({found.problem})"]
+    if found.problem:
+        return [f"{name} ({what}, {address}): answers, but {found.problem}"]
     lines = [f"{name} ({what}, {address}): answers; Slurm controller {found.slurmctld}"]
     if found.fenced:
         lines.append(f"  fenced: {found.fenced}")
@@ -222,6 +227,10 @@ def switch(
     front_found, backup_found = read(front, ssh_config), read(backup, ssh_config)
     print("\n".join(describe(front, "front node", config["machines"][front]["address"], front_found)
                     + describe(backup, "backup front node", config["machines"][backup]["address"], backup_found)))  # fmt: skip
+    unread = [name for name, found in ((front, front_found), (backup, backup_found)) if found.answers and found.problem]
+    if unread:
+        print(f"Nothing was changed: the state of {', '.join(unread)} could not be read (see above).", file=sys.stderr)
+        return 1
     if not backup_found.answers:
         print(f"Nothing was changed: {backup} does not answer.", file=sys.stderr)
         return 1
