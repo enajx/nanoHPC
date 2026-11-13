@@ -95,9 +95,96 @@ def job_frame() -> dict:
     }
 
 
+# The Security page: fictional attack numbers, countries, and networks (no single addresses).
+SECURITY_COUNTRIES = (
+    ("CN", 412),
+    ("US", 236),
+    ("RU", 188),
+    ("BR", 141),
+    ("IN", 117),
+    ("VN", 96),
+    ("NL", 74),
+    ("DE", 61),
+    ("KR", 52),
+    ("ID", 44),
+    ("SG", 31),
+    ("FR", 27),
+    ("GB", 19),
+    ("TR", 14),
+    ("AR", 9),
+)
+SECURITY_NETWORKS = (
+    ("Example Cloud Ltd", "CN", 188),
+    ("Sample Hosting Inc", "US", 121),
+    ("Demo Datacenter", "RU", 97),
+    ("Placeholder Telecom", "BR", 76),
+    ("Test Net Provider", "IN", 58),
+    ("Fictional VPS", "NL", 41),
+)
+DAYS = [int((END - timedelta(days=7 - day)).timestamp() * 1000) for day in range(1, 8)]
+SECURITY_NUMBERS = {
+    "SSH refused": {"24 hours": 1284, "7 days": 9317},
+    "CrowdSec blocks": {"24 hours": 57, "7 days": 402, "now": 21},
+    "CrowdSec dropped (packets)": {"24 hours": 3841, "7 days": 25106},
+    "Numbers updated": {"ago": 140},
+}
+
+
+def column(name: str, values: list) -> dict:
+    """One table column for a snapshot frame."""
+    kind = "number" if all(isinstance(value, int | float) for value in values) else "string"
+    return {"name": name, "type": kind, "values": values, "config": {}}
+
+
+def security_frames(panel: dict) -> list[dict]:
+    """Give one Security panel its fictional data, in the frame shape its live query returns."""
+    title = panel["title"]
+    if title in SECURITY_NUMBERS:
+        return [
+            {"refId": chr(65 + index), "fields": [column(name, [value])]}
+            for index, (name, value) in enumerate(SECURITY_NUMBERS[title].items())
+        ]
+    if panel["type"] in ("geomap", "table") and title.startswith(("Where", "Top countries")):
+        return [
+            {
+                "refId": "A",
+                "fields": [
+                    column("country", [c for c, _ in SECURITY_COUNTRIES]),
+                    column("Value", [n for _, n in SECURITY_COUNTRIES]),
+                ],
+            }
+        ]
+    if title.startswith("Networks"):
+        return [
+            {
+                "refId": "A",
+                "fields": [
+                    column("network", [row[0] for row in SECURITY_NETWORKS]),
+                    column("country", [row[1] for row in SECURITY_NETWORKS]),
+                    column("Value", [row[2] for row in SECURITY_NETWORKS]),
+                ],
+            }
+        ]
+    if panel["type"] == "timeseries":
+        refused = [1190, 1420, 1310, 1505, 1268, 1340, 1284]
+        blocks = [49, 66, 58, 71, 52, 49, 57]
+        return [
+            {
+                "refId": refid,
+                "name": name,
+                "fields": [
+                    {"name": "Time", "type": "time", "values": DAYS, "config": {}},
+                    {"name": name, "type": "number", "values": values, "config": {}},
+                ],
+            }
+            for refid, name, values in (("A", "Refused by SSH", refused), ("B", "CrowdSec blocks", blocks))
+        ]
+    return []
+
+
 def snapshot(kind: str) -> dict:
     """Copy the project's panel layout while removing live queries and links."""
-    dashboard = json.loads((SOURCE / f"{kind}.json").read_text())
+    dashboard = json.loads((SOURCE / f"{kind}.json").read_text().replace("[% nanohpc.cluster_name %]", "nanoHPC"))
     dashboard["id"] = None
     dashboard["uid"] = f"nanohpc-demo-{kind}"
     dashboard["editable"] = False
@@ -113,6 +200,10 @@ def snapshot(kind: str) -> dict:
         panel["datasource"] = None
         panel["targets"] = []
         panel["links"] = []
+        if kind == "security":
+            # The table columns keep their names and order (the transformations rename them).
+            panel["snapshotData"] = security_frames(panel)
+            continue
         panel.pop("transformations", None)
         if kind == "queue":
             panel["title"] = "Running and pending jobs"
@@ -137,9 +228,9 @@ def snapshot(kind: str) -> dict:
 
 
 def main(output: Path) -> None:
-    """Write the four payloads for review or publishing."""
+    """Write the five payloads for review or publishing."""
     output.mkdir(parents=True, exist_ok=True)
-    for kind in ("queue", "queue-history", "usage", "machines"):
+    for kind in ("queue", "queue-history", "usage", "machines", "security"):
         (output / f"{kind}.json").write_text(json.dumps(snapshot(kind), separators=(",", ":")))
 
 

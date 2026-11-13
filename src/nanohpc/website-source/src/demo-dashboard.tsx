@@ -2,13 +2,14 @@ import { useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { OverviewJob } from './overview-jobs'
 
-type DashboardName = 'queue' | 'queue-history' | 'usage' | 'machines' | 'history'
+type DashboardName = 'queue' | 'queue-history' | 'usage' | 'machines' | 'history' | 'security'
 type Range = '24h' | '7d' | '30d'
 const panels: Record<DashboardName, string[]> = {
   queue: [],
   'queue-history': ['Allocated GPUs', 'Running jobs', 'Queue size', 'Waiting time'],
   usage: ['Allocated GPU-hours', 'Fair-share factor'],
   machines: ['CPU in use', 'Available memory', 'Available filesystem space', 'GPU utilization', 'GPU memory used', 'GPU temperature', 'GPU power'],
+  security: ['SSH refused per day', 'CrowdSec blocks per day'],
   history: ['Allocated GPU-hours at daily sample', '24-hour mean CPU usage', '24-hour mean GPU utilization', 'Observed fraction of the 24-hour window'],
 }
 const snapshots: Partial<Record<DashboardName, string>> = {

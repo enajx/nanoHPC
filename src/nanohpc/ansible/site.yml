@@ -276,6 +276,15 @@
   become: true
   roles: [user_check]
 
+- name: CrowdSec on every machine, or its removal when crowdsec.enabled is off
+  hosts: all
+  become: true
+  tasks:
+    - name: Set up or remove CrowdSec's SSH detection and its numbers
+      ansible.builtin.include_role:
+        name: crowdsec
+        tasks_from: "{{ 'main' if nanohpc.crowdsec.enabled else 'off' }}"
+
 - name: Prometheus, alerts, and Grafana on the front node
   hosts: role_front
   become: true
@@ -381,6 +390,18 @@
       ansible.builtin.include_role:
         name: agent
         tasks_from: "{{ 'main' if nanohpc.agent.enabled else 'off' }}"
+
+# Each machine turns blocking on behind its own 15-minute undo and checks; a failure stops the run there.
+- name: CrowdSec's blocking, one machine at a time
+  hosts: all
+  become: true
+  serial: 1
+  tasks:
+    - name: Turn blocking on behind an automatic undo
+      ansible.builtin.include_role:
+        name: crowdsec
+        tasks_from: blocking
+      when: nanohpc.crowdsec.enabled
 
 - name: Health checks on every machine
   hosts: all

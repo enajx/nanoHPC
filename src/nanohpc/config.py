@@ -51,6 +51,7 @@ TOP_FIELDS = (
     "time_zone",
     "faq",
     "agent",
+    "crowdsec",
 )
 
 POLICY_DEFAULTS: dict[str, Any] = {
@@ -103,6 +104,8 @@ AGENT_DEFAULTS: dict[str, Any] = {
 }
 SLACK_CHANNEL = re.compile(r"C[A-Z0-9]{2,}")
 SLACK_MEMBER = re.compile(r"[UW][A-Z0-9]{2,}")
+# CrowdSec (both modes): off unless turned on; the cluster's machines and these networks are never blocked.
+CROWDSEC_DEFAULTS: dict[str, Any] = {"enabled": False, "never_block": []}
 AUTO_DEPLOY_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "repository": None,
@@ -464,7 +467,7 @@ def check_monitor_machines(checker: Checker, value: Any) -> dict[str, dict[str, 
 
 def check_monitor_config(checker: Checker, raw: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the monitoring-only configuration and fill shared website and alert defaults."""
-    top = checker.mapping(raw, "", ("cluster", "machines", "users"), ("alerts", "agent", "nanohpc_version"))
+    top = checker.mapping(raw, "", ("cluster", "machines", "users"), ("alerts", "agent", "nanohpc_version", "crowdsec"))
     if top is None:
         return {}
     users = check_monitor_users(checker, top.get("users"))
@@ -493,6 +496,7 @@ def check_monitor_config(checker: Checker, raw: Mapping[str, Any]) -> dict[str, 
         "alerts": alerts,
         "agent": agent,
         "nanohpc_version": version,
+        "crowdsec": check_crowdsec(checker, top.get("crowdsec")),
     }
 
 
@@ -1011,6 +1015,7 @@ def check_config(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "time_zone": check_time_zone(checker, top.get("time_zone")),
         "agent": check_agent(checker, top.get("agent"), "slurm"),
         "faq": check_faq(checker, top.get("faq")),
+        "crowdsec": check_crowdsec(checker, top.get("crowdsec")),
     }
     check_capacity(checker, machines, partitions, config["policy"])
     home = config["home"]
@@ -1141,6 +1146,20 @@ def check_faq(checker: Checker, value: Any) -> list[dict[str, Any]]:
                 checker.fail(f"{path}.{key}", "must be non-empty text")
         entries.append(entry)
     return entries
+
+
+def check_crowdsec(checker: Checker, value: Any) -> dict[str, Any]:
+    """Check the optional CrowdSec section: on or off, and the networks (or single addresses) never blocked."""
+    crowdsec = with_defaults(checker, value, "crowdsec", CROWDSEC_DEFAULTS)
+    checker.boolean(crowdsec["enabled"], "crowdsec.enabled")
+    networks = crowdsec["never_block"]
+    if not isinstance(networks, list):
+        checker.fail("crowdsec.never_block", "must be a list of networks, such as [192.0.2.0/24]")
+        return {**crowdsec, "never_block": []}
+    for index, network in enumerate(networks):
+        if not isinstance(network, str) or not is_network(network):
+            checker.fail(f"crowdsec.never_block[{index}]", "must be a network or address, such as 192.0.2.0/24")
+    return crowdsec
 
 
 def check_agent(checker: Checker, value: Any, mode: str) -> dict[str, Any]:

@@ -6,7 +6,7 @@ const target = fileURLToPath(new URL('../../website-demo/', import.meta.url))
 const gib = 1024 ** 3
 const site = {
   cluster_name: 'nanoHPC', logo: null, login_address: 'login.demo.example.org', login_note: '',
-  home_quota_soft_gb: 250, home_quota_hard_gb: 300, scratch_cleanup_days: 21, demo: true,
+  home_quota_soft_gb: 250, home_quota_hard_gb: 300, scratch_cleanup_days: 21, security: true, demo: true,
   priority_rule: 'Jobs with a shorter --time get a bonus of up to 5000 points that falls in a straight line to 0 at the training partition’s time limit (1-00:00:00); it shows in the SITE column of sprio. Waiting time does not add priority.',
   resubmit_rule: 'No. Priority comes from the GPU-hours you used over time (fair share) and the --time you ask for, and it is recomputed every minute. Cancelling and resubmitting does not change these, so it does not lower your priority.',
   faq: [{ question: 'Who do I ask for a larger home quota?', answer: 'Write to the cluster administrators. Say how much space you need and for how long.' }],

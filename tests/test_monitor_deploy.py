@@ -91,6 +91,7 @@ class MonitorDeployTest(unittest.TestCase):
             "alerts": {"slack": False},
             "agent": dict(AGENT_DEFAULTS),
             "nanohpc_version": None,
+            "crowdsec": {"enabled": False, "never_block": []},
             "secrets": {},
         }
         with tempfile.TemporaryDirectory() as directory:

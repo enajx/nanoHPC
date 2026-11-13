@@ -1,4 +1,5 @@
-"""Steps 4 to 6: partitions and policy, the website, and the extras (backup, alerts, automatic deploys, time zone)."""
+"""Steps 4 to 6: partitions and policy, the website, and the extras (backup, alerts, CrowdSec, automatic deploys, time
+zone)."""
 
 import importlib.metadata
 from typing import ClassVar
@@ -12,6 +13,7 @@ from textual.widgets import Button, DataTable, Input, Select, Static
 from nanohpc.config import POLICY_DEFAULTS
 from nanohpc.wizard.agent import agent_fields
 from nanohpc.wizard.common import BoundInput, BoundSwitch, Step, cell, field
+from nanohpc.wizard.crowdsec import crowdsec_fields
 from nanohpc.wizard.dialogs import ConfirmScreen, PartitionForm, PartitionScreen, plain
 from nanohpc.wizard.state import field_text, remove_value
 
@@ -247,6 +249,7 @@ class ExtrasStep(Step):
             None,
         )
         yield from agent_fields(state, False)
+        yield from crowdsec_fields(state)
         yield Static("Automatic deploys", classes="subheading")
         auto = ["auto_deploy"]
         yield field("enabled", BoundSwitch(state, [*auto, "enabled"], "auto-enabled"))

@@ -1,0 +1,207 @@
+#!/usr/bin/python3
+"""Turn CrowdSec's alerts into numbers for the website's Security page (nanoHPC, roles/crowdsec).
+
+Each alert is one attack CrowdSec saw (an address that tripped an SSH detection). Writes, in Prometheus's text
+format, for this machine's node exporter (Prometheus adds the machine label):
+- cluster_security_attacks_total{kind,country}: every attack counted once, kept across CrowdSec's own clean-ups
+  (the counted alert IDs and the totals are in --state);
+- cluster_security_attacks_24h: the last 24 hours (Prometheus cannot count a total's first rise);
+- cluster_security_attacks_7d{country}, cluster_security_networks_7d{network,country} (top 15): the last 7
+  days. Single addresses are never written (a cluster user whose key fails would show with their home address);
+- cluster_security_blocks_total, cluster_security_blocks_24h, cluster_security_blocks_7d: the blocks CrowdSec's
+  detections made (some detections only report; manual blocks are not counted);
+- cluster_security_refused_logins_total: failed SSH logins CrowdSec counted for its SSH rule (restarts at 0 when
+  CrowdSec restarts);
+- cluster_security_dropped_packets_total: packets from blocked addresses the firewall rule dropped (restarts at 0
+  when the bouncer restarts; 0 while there is no CrowdSec rule);
+- cluster_security_blocked: addresses blocked now; cluster_security_updated_seconds: when this ran.
+The cluster's machines and never-block networks never appear: CrowdSec makes no alert for them. The user names
+attackers try are never written."""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.request import urlopen
+
+UTC = timezone.utc  # noqa: UP017 (datetime.UTC needs Python 3.11; Ubuntu 22.04 has 3.10)
+WINDOW = timedelta(days=7)
+DAY = timedelta(days=1)
+# CrowdSec's own query reaches back 30 days; an alert counted once is remembered a little longer, so it is never
+# counted twice.
+SINCE = "720h"
+REMEMBER = timedelta(days=35)
+TOP_NETWORKS = 15
+
+
+def cscli(command: str, arguments: list[str]) -> list[dict]:
+    """Run cscli with JSON output; it prints null when there is nothing."""
+    output = subprocess.run([command, *arguments, "-o", "json"], capture_output=True, text=True, check=True).stdout
+    return json.loads(output) or []
+
+
+def when(created_at: str) -> datetime:
+    """An alert's creation time (CrowdSec writes UTC with a Z, which Python 3.10's fromisoformat cannot read)."""
+    return datetime.fromisoformat(created_at.replace("Z", "+00:00"))  # noqa: FURB162
+
+
+def attacks(alerts: list[dict]) -> list[dict]:
+    """The alerts made by a detection (only those carry a scenario hash), always about one address: not manual
+    blocks, whose reason is free text (the blocking test's reason has a slash)."""
+    return [
+        alert
+        for alert in alerts
+        if alert.get("scenario_hash") and "/" in alert["scenario"] and alert["source"].get("scope") == "Ip"
+    ]
+
+
+def label(value: str) -> str:
+    """A Prometheus label value with its quotes and backslashes escaped."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def country(alert: dict) -> str:
+    """The attacker's country code, or unknown."""
+    return alert["source"].get("cn") or "unknown"
+
+
+def network(alert: dict) -> str:
+    """The attacker's network (its AS name), or unknown."""
+    return alert["source"].get("as_name") or "unknown"
+
+
+def kind(alert: dict) -> str:
+    """The detection's name without its author, such as ssh-bf."""
+    return alert["scenario"].split("/", 1)[1]
+
+
+def banned(alert: dict) -> bool:
+    """Whether this attack led to a block."""
+    return any(decision.get("type") == "ban" for decision in alert.get("decisions") or [])
+
+
+def dropped(iptables: str) -> int:
+    """Packets CrowdSec's firewall rules dropped (0 while there is no CrowdSec chain, or no iptables yet: it comes
+    with the bouncer)."""
+    if shutil.which(iptables) is None:
+        return 0
+    result = subprocess.run(
+        [iptables, "-L", "CROWDSEC_CHAIN", "-v", "-x", "-n"], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        return 0
+    lines = result.stdout.splitlines()[2:]
+    return sum(int(line.split()[0]) for line in lines if line.split() and line.split()[0].isdigit())
+
+
+def refused(metrics_url: str) -> int:
+    """Failed SSH logins CrowdSec counted (its ssh-bf rule gets every one)."""
+    with urlopen(metrics_url, timeout=20) as response:
+        text = response.read().decode()
+    return sum(
+        int(float(line.rsplit(" ", 1)[1]))
+        for line in text.splitlines()
+        if line.startswith("cs_bucket_poured_total{") and 'name="crowdsecurity/ssh-bf"' in line
+    )
+
+
+def numbers(alerts: list[dict], blocked: int, packets: int, logins: int, state: dict, now: datetime) -> str:
+    """The metrics text, after counting the new alerts into STATE."""
+    counted, totals = state["counted"], state["totals"]
+    for alert in alerts:
+        if str(alert["id"]) not in counted:
+            counted[str(alert["id"])] = alert["created_at"]
+            key = f"{kind(alert)}\t{country(alert)}"
+            totals[key] = totals.get(key, 0) + 1
+            state["blocks"] = state.get("blocks", 0) + (1 if banned(alert) else 0)
+    for alert_id in [alert_id for alert_id, created in counted.items() if now - when(created) > REMEMBER]:
+        del counted[alert_id]
+    recent = [alert for alert in alerts if now - when(alert["created_at"]) <= WINDOW]
+    today = [alert for alert in recent if now - when(alert["created_at"]) <= DAY]
+    lines = [
+        "# HELP cluster_security_attacks_total Attacks CrowdSec saw, by kind and country of origin.",
+        "# TYPE cluster_security_attacks_total counter",
+    ]
+    for key, total in sorted(totals.items()):
+        name, origin = key.split("\t")
+        lines.append(f'cluster_security_attacks_total{{kind="{label(name)}",country="{label(origin)}"}} {total}')
+    lines += [
+        "# HELP cluster_security_attacks_24h Attacks in the last 24 hours.",
+        "# TYPE cluster_security_attacks_24h gauge",
+        f"cluster_security_attacks_24h {len(today)}",
+        "# HELP cluster_security_attacks_7d Attacks in the last 7 days, by country of origin.",
+        "# TYPE cluster_security_attacks_7d gauge",
+    ]
+    for origin, total in sorted(Counter(country(alert) for alert in recent).items()):
+        lines.append(f'cluster_security_attacks_7d{{country="{label(origin)}"}} {total}')
+    lines += [
+        "# HELP cluster_security_networks_7d The networks most attacks came from in the last 7 days.",
+        "# TYPE cluster_security_networks_7d gauge",
+    ]
+    by_network = Counter((network(alert), country(alert)) for alert in recent)
+    for (name, origin), total in by_network.most_common(TOP_NETWORKS):
+        lines.append(f'cluster_security_networks_7d{{network="{label(name)}",country="{label(origin)}"}} {total}')
+    lines += [
+        "# HELP cluster_security_blocks_total Blocks CrowdSec's detections made.",
+        "# TYPE cluster_security_blocks_total counter",
+        f"cluster_security_blocks_total {state.get('blocks', 0)}",
+        "# HELP cluster_security_blocks_24h Blocks made in the last 24 hours.",
+        "# TYPE cluster_security_blocks_24h gauge",
+        f"cluster_security_blocks_24h {sum(1 for alert in today if banned(alert))}",
+        "# HELP cluster_security_blocks_7d Blocks made in the last 7 days.",
+        "# TYPE cluster_security_blocks_7d gauge",
+        f"cluster_security_blocks_7d {sum(1 for alert in recent if banned(alert))}",
+        "# HELP cluster_security_dropped_packets_total Packets from blocked addresses the firewall dropped.",
+        "# TYPE cluster_security_dropped_packets_total counter",
+        f"cluster_security_dropped_packets_total {packets}",
+        "# HELP cluster_security_refused_logins_total Failed SSH logins CrowdSec counted.",
+        "# TYPE cluster_security_refused_logins_total counter",
+        f"cluster_security_refused_logins_total {logins}",
+        "# HELP cluster_security_blocked Addresses blocked now.",
+        "# TYPE cluster_security_blocked gauge",
+        f"cluster_security_blocked {blocked}",
+        "# HELP cluster_security_updated_seconds When these numbers were made.",
+        "# TYPE cluster_security_updated_seconds gauge",
+        f"cluster_security_updated_seconds {now.timestamp():.0f}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write(path: Path, text: str) -> None:
+    """Replace PATH in one step, readable by everyone (node_exporter reads it)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
+        stream.write(text)
+    os.chmod(stream.name, 0o644)
+    os.replace(stream.name, path)
+
+
+def main() -> None:
+    """Read CrowdSec's alerts, blocks, firewall counters, and metrics; write the numbers and the state."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--cscli", required=True)
+    parser.add_argument("--iptables", required=True)
+    parser.add_argument("--metrics", required=True, help="CrowdSec's own metrics address")
+    parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    state = json.loads(args.state.read_text()) if args.state.exists() else {"counted": {}, "totals": {}}
+    alerts = attacks(cscli(args.cscli, ["alerts", "list", "-l", "0", "--since", SINCE]))
+    blocked = sum(
+        1
+        for alert in cscli(args.cscli, ["decisions", "list"])
+        for decision in alert.get("decisions") or []
+        if decision.get("type") == "ban"
+    )
+    text = numbers(alerts, blocked, dropped(args.iptables), refused(args.metrics), state, datetime.now(UTC))
+    write(args.state, json.dumps(state))
+    write(args.output, text)
+
+
+if __name__ == "__main__":
+    main()

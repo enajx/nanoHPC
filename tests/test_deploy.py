@@ -206,6 +206,7 @@ class PrepareTest(unittest.TestCase):
                 "priority_rule": "Jobs with a shorter --time get a bonus of up to 5000 points that falls in a straight line to 0 at the main partition's time limit (24:00:00); it shows in the SITE column of sprio. Waiting time does not add priority.",
                 "resubmit_rule": "No. Priority comes from the GPU-hours you used over time (fair share) and the --time you ask for, and it is recomputed every minute. Cancelling and resubmitting does not change these, so it does not lower your priority.",
                 "faq": [],
+                "security": False,
             },
         )
 

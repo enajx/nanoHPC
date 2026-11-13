@@ -230,7 +230,8 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '24h' }).click()
   await expect(page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '24h' })).toHaveAttribute('aria-pressed', 'true')
   const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
-  for (const name of ['How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy', 'FAQ']) {
+  expect(await nav.getByRole('link').allInnerTexts()).toEqual(['Overview', 'How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy', 'Security', 'FAQ'])
+  for (const name of ['How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy', 'Security', 'FAQ']) {
     await nav.getByRole('link', { name, exact: true }).click()
     await expect(page.getByRole('heading', { name, exact: true }).first()).toBeVisible()
   }
@@ -259,6 +260,10 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await nav.getByRole('link', { name: 'Jobs', exact: true }).click()
   await expect(page.locator('iframe[title="Running Jobs and Queue"]')).toBeVisible()
   await expect(page.locator('iframe[title="Queue history"]')).toBeVisible()
+  await nav.getByRole('link', { name: 'Security', exact: true }).click()
+  // Sample charts until the Security snapshot is published (its key then goes in demo-dashboard.tsx).
+  await expect(page.getByRole('heading', { name: 'Attacks on the cluster', exact: true })).toBeVisible()
+  for (const name of ['SSH refused per day', 'CrowdSec blocks per day']) await expect(page.getByRole('img', { name: new RegExp(`^${name}, fictional sample data`) })).toBeVisible()
   await page.goto(`${origin}${prefix}#queue?state=PENDING`)
   await expect(page.getByRole('table', { name: 'Sample jobs' }).locator('tbody tr')).toHaveCount(2)
   await nav.getByRole('link', { name: 'Machines', exact: true }).click()

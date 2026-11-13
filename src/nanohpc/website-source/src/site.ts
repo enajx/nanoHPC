@@ -16,10 +16,11 @@
  *     "priority_rule": str          // the short-job bonus and waiting-time sentences of the Cluster policy page
  *     "resubmit_rule": str          // the FAQ answer on cancelling and resubmitting a job
  *     "faq": [{"question": str, "answer": str}] // optional; the administrator's own FAQ entries
+ *     "security": bool              // optional; true when CrowdSec is on: the Security page is in the menu
  *     "demo": bool                    // optional; generated sample site only
  *   }
  *
- * Monitor mode instead uses {"mode":"monitor", "cluster_name", "logo", "login_address", "users"}.
+ * Monitor mode instead uses {"mode":"monitor", "cluster_name", "logo", "login_address", "users", "security"?}.
  * Partitions, policies, and limits are not here: they come from data/status.json in Slurm mode.
  */
 export type SiteSettings = {
@@ -35,6 +36,7 @@ export type SiteSettings = {
   priority_rule: string
   resubmit_rule: string
   faq?: SiteFaqEntry[]
+  security?: boolean
   demo?: boolean
 }
 
@@ -47,21 +49,22 @@ export type MonitorSiteSettings = {
   logo: string | null
   login_address: string
   users: string[]
+  security?: boolean
 }
 
 export type LoadedSiteSettings = SiteSettings | MonitorSiteSettings
 
-const settingNames = ['cluster_name', 'logo', 'login_address', 'login_note', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'interactive_machine_rule', 'priority_rule', 'resubmit_rule', 'faq', 'demo']
-const requiredNames = settingNames.filter(name => name !== 'demo' && name !== 'interactive_machine_rule' && name !== 'faq' && name !== 'login_note')
+const settingNames = ['cluster_name', 'logo', 'login_address', 'login_note', 'home_quota_soft_gb', 'home_quota_hard_gb', 'scratch_cleanup_days', 'interactive_machine_rule', 'priority_rule', 'resubmit_rule', 'faq', 'security', 'demo']
+const requiredNames = settingNames.filter(name => name !== 'demo' && name !== 'interactive_machine_rule' && name !== 'faq' && name !== 'login_note' && name !== 'security')
 
 /** Check site.json's content against the contract above and name the first problem. */
 export function checkSiteSettings(value: unknown): LoadedSiteSettings {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('site.json must hold an object')
   const settings = value as Record<string, unknown>
   if (settings.mode === 'monitor') {
-    const allowed = ['mode', 'cluster_name', 'logo', 'login_address', 'users']
+    const allowed = ['mode', 'cluster_name', 'logo', 'login_address', 'users', 'security']
     const unknown = Object.keys(settings).filter(name => !allowed.includes(name))
-    const missing = allowed.filter(name => !(name in settings))
+    const missing = allowed.filter(name => name !== 'security' && !(name in settings))
     if (unknown.length || missing.length) throw new Error(`site.json: unknown settings [${unknown.join(', ')}], missing settings [${missing.join(', ')}]`)
     for (const name of ['cluster_name', 'login_address']) {
       if (typeof settings[name] !== 'string' || !settings[name]) throw new Error(`site.json: ${name} must be a non-empty string`)
@@ -69,6 +72,7 @@ export function checkSiteSettings(value: unknown): LoadedSiteSettings {
     if (!Array.isArray(settings.users) || !settings.users.every(user => typeof user === 'string' && user.length > 0)) {
       throw new Error('site.json: users must be a list of login names')
     }
+    if (settings.security !== undefined && typeof settings.security !== 'boolean') throw new Error('site.json: security must be a boolean')
     if (settings.logo !== null && (typeof settings.logo !== 'string' || !settings.logo || settings.logo.startsWith('/') || settings.logo.includes(':'))) {
       throw new Error('site.json: logo must be null or a relative URL such as "logo.png"')
     }
@@ -88,6 +92,7 @@ export function checkSiteSettings(value: unknown): LoadedSiteSettings {
   if (settings.login_note !== undefined && typeof settings.login_note !== 'string') throw new Error('site.json: login_note must be text')
   if (settings.faq !== undefined && !(Array.isArray(settings.faq) && settings.faq.every(isFaqEntry))) throw new Error('site.json: faq must be a list of {question, answer} texts')
   if (settings.demo !== undefined && typeof settings.demo !== 'boolean') throw new Error('site.json: demo must be a boolean')
+  if (settings.security !== undefined && typeof settings.security !== 'boolean') throw new Error('site.json: security must be a boolean')
   const logo = settings.logo
   // A relative URL keeps the logo under the site's own path.
   if (logo !== null && (typeof logo !== 'string' || !logo || logo.startsWith('/') || logo.includes(':'))) {

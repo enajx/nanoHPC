@@ -11,6 +11,7 @@ from textual.widgets import Button, DataTable, Input, Select, Static
 from nanohpc.config import MACHINE_NAME
 from nanohpc.wizard.agent import agent_fields
 from nanohpc.wizard.common import BoundSwitch, Step, cell, field
+from nanohpc.wizard.crowdsec import crowdsec_fields
 from nanohpc.wizard.dialogs import ConfirmScreen, plain
 from nanohpc.wizard.forms import WebsiteStep
 from nanohpc.wizard.review import ReviewStep
@@ -143,6 +144,7 @@ class MonitorAlertsStep(Step):
             None,
         )
         yield from agent_fields(self.state, True)
+        yield from crowdsec_fields(self.state)
 
 
 MONITOR_STEP_CLASSES: tuple[type[Step], ...] = (

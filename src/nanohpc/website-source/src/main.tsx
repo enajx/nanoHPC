@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Activity, BookOpen, ChartNoAxesColumnIncreasing, CircleHelp, ListOrdered, ScrollText, Server, UsersRound } from 'lucide-react'
+import { Activity, BookOpen, ChartNoAxesColumnIncreasing, CircleHelp, ListOrdered, ScrollText, Server, ShieldCheck, UsersRound } from 'lucide-react'
 import { HowToUse, type Partition } from './guide'
 import { Faq } from './faq'
 import { GpuAllocationChart } from './gpu-allocation-chart'
@@ -21,7 +21,7 @@ import { MonitorApp } from './monitor'
 import { PartitionBox } from './partition-box'
 import './style.css'
 
-type Page = 'overview' | 'queue' | 'machines' | 'users' | 'usage' | 'docs' | 'policy' | 'faq'
+type Page = 'overview' | 'queue' | 'machines' | 'users' | 'usage' | 'docs' | 'policy' | 'security' | 'faq'
 type Snapshot = {
   generated_at: string
   refresh_seconds: number
@@ -49,8 +49,14 @@ const pages = [
   { id: 'users', title: 'Users', icon: UsersRound },
   { id: 'usage', title: 'Cluster usage', icon: ChartNoAxesColumnIncreasing },
   { id: 'policy', title: 'Cluster policy', icon: ScrollText },
+  { id: 'security', title: 'Security', icon: ShieldCheck },
   { id: 'faq', title: 'FAQ', icon: CircleHelp },
 ] as const
+
+/** The menu's pages: Security only while CrowdSec is on (site.json's security). */
+function shownPages(site: SiteSettings): typeof pages[number][] {
+  return pages.filter((page) => page.id !== 'security' || site.security === true)
+}
 
 /** Show a short human-readable duration in the Overview card. */
 function waitingTime(seconds: number | null | undefined): string {
@@ -91,10 +97,10 @@ function policyCards(policies: { name: string; value: string }[], partitions: { 
 }
 
 /** Keep unknown hashes on the overview without requesting an untrusted URL. */
-function currentPage(): Page {
+function currentPage(site: SiteSettings): Page {
   const hash = window.location.hash.slice(1).split('?')[0]
   if (hash === 'docs-alt') return 'docs'
-  return pages.find((page) => page.id === hash)?.id ?? 'overview'
+  return shownPages(site).find((page) => page.id === hash)?.id ?? 'overview'
 }
 
 /** Load only the fixed, public snapshot; stale and missing data are explicit. */
@@ -198,7 +204,7 @@ function GenericMark() {
 }
 
 function App({ site }: { site: SiteSettings }) {
-  const [page, setPage] = useState<Page>(currentPage)
+  const [page, setPage] = useState<Page>(() => currentPage(site))
   const [mapShown, setMapShown] = useState(() => storedMapShown(machinesMapKey))
   const [queueState, setQueueState] = useState(window.location.hash.split('?')[1] ?? '')
   const demo = site.demo === true
@@ -210,10 +216,10 @@ function App({ site }: { site: SiteSettings }) {
     return () => window.clearInterval(timer)
   }, [demo])
   useEffect(() => {
-    const changed = () => { setPage(currentPage()); setQueueState(window.location.hash.split('?')[1] ?? '') }
+    const changed = () => { setPage(currentPage(site)); setQueueState(window.location.hash.split('?')[1] ?? '') }
     window.addEventListener('hashchange', changed)
     return () => window.removeEventListener('hashchange', changed)
-  }, [])
+  }, [site])
   useEffect(() => {
     if (window.matchMedia('(max-width: 720px)').matches) {
       document.querySelector('.sidebar nav a[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'center' })
@@ -222,7 +228,7 @@ function App({ site }: { site: SiteSettings }) {
   const selected = pages.find((item) => item.id === page) ?? pages[0]
   const refresh = data?.refresh_seconds ?? 30
   const graph = (uid: string, from: string) => `grafana/d/${uid}?orgId=1&kiosk&hideLogo=true&refresh=${refresh}s&from=${from}&to=now`
-  const dashboard = (name: string, kind: 'queue' | 'queue-history' | 'usage' | 'machines' | 'history', path: string) => demo
+  const dashboard = (name: string, kind: 'queue' | 'queue-history' | 'usage' | 'machines' | 'history' | 'security', path: string) => demo
     ? <DemoDashboard name={name} kind={kind} jobs={data?.jobs} queueFilter={queueFilter}/>
     : <Dashboard name={name} path={path}/>
   const requestedState = new URLSearchParams(queueState).get('state')
@@ -252,7 +258,7 @@ function App({ site }: { site: SiteSettings }) {
       <div className="header-buttons"><AboutButton/><FontButton/><AccentButton/></div>
     </header>
     <div className="layout"><aside className="sidebar">
-      <nav aria-label="Cluster navigation">{pages.map(({ id, title, icon: Icon }) => <a key={id} href={`#${id}`} aria-current={page === id ? 'page' : undefined}><Icon size={19}/><span>{title}</span></a>)}</nav>
+      <nav aria-label="Cluster navigation">{shownPages(site).map(({ id, title, icon: Icon }) => <a key={id} href={`#${id}`} aria-current={page === id ? 'page' : undefined}><Icon size={19}/><span>{title}</span></a>)}</nav>
       <SettingsButton/>
     </aside>
     <main id="main" tabIndex={-1} className={page === 'overview' ? 'compact' : undefined}>
@@ -284,6 +290,7 @@ function App({ site }: { site: SiteSettings }) {
           {data && <PartitionBox partitions={data.partitions ?? []} nodes={data.nodes} policies={data.policies}/>}
         </div>
       </>}
+      {page === 'security' && dashboard('Attacks on the cluster', 'security', graph('nanohpc-security', 'now-7d'))}
       {page === 'faq' && <Faq own={site.faq ?? []} values={values}/>}
       <footer>{!isStatic && freshness}<p>{demo ? 'This demo' : site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
     </main></div>

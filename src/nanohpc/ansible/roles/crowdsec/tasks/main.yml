@@ -1,0 +1,354 @@
+# CrowdSec's detection (cluster.yml crowdsec.enabled). It only reads the SSH log; the blocking is tasks/blocking.yml.
+# Nothing goes to CrowdSec's central service: the machine is never registered there and has no online client, so
+# it gets no community list either.
+
+- name: Require the SSH log CrowdSec reads
+  ansible.builtin.stat:
+    path: /var/log/auth.log
+  register: crowdsec_auth_log
+
+- name: Stop when there is no SSH log
+  ansible.builtin.assert:
+    that: crowdsec_auth_log.stat.exists
+    fail_msg: >-
+      /var/log/auth.log is missing on {{ inventory_hostname }}, so CrowdSec would see no SSH logins. Install and start
+      rsyslog (apt install rsyslog), or turn crowdsec.enabled off.
+
+- name: Name the packages for this machine's CPU type
+  ansible.builtin.set_fact:
+    crowdsec_arch: "{{ 'arm64' if ansible_facts.architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Create the package folder
+  ansible.builtin.file:
+    path: "{{ crowdsec_packages }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  register: crowdsec_folder
+
+# On a new machine a dry run creates nothing, so there is nothing to download into or install.
+- name: Note whether this is a dry run on a new machine
+  ansible.builtin.set_fact:
+    crowdsec_new_in_dry_run: "{{ ansible_check_mode and crowdsec_folder is changed }}"
+
+- name: Download the pinned CrowdSec package, checking its SHA-256
+  ansible.builtin.get_url:
+    url: "{{ crowdsec_package_url }}/crowdsec/crowdsec_{{ crowdsec_version }}_{{ crowdsec_arch }}.deb"
+    dest: "{{ crowdsec_packages }}/crowdsec_{{ crowdsec_version }}_{{ crowdsec_arch }}.deb"
+    checksum: "sha256:{{ crowdsec_sha256[crowdsec_arch] }}"
+    mode: "0644"
+    timeout: 120
+  register: crowdsec_download
+  until: crowdsec_download is succeeded
+  retries: 3
+  delay: 5
+  when: not crowdsec_new_in_dry_run
+
+- name: Never register with CrowdSec's central service when the package installs
+  ansible.builtin.debconf:
+    name: crowdsec
+    question: "{{ item.question }}"
+    value: "{{ item.value }}"
+    vtype: boolean
+  loop:
+    - {question: crowdsec/lapi, value: "true"}
+    - {question: crowdsec/capi, value: "false"}
+
+- name: Create CrowdSec's settings folder
+  ansible.builtin.file:
+    path: /etc/crowdsec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# CrowdSec reads each file with its .local beside it on top; the package never changes the .local files.
+- name: Set CrowdSec's local API and metrics ports before it installs
+  ansible.builtin.copy:
+    dest: "{{ item.dest }}"
+    content: "{{ item.content }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - dest: /etc/crowdsec/config.yaml.local
+      mode: "0644"
+      content: |
+        # Managed by nanoHPC (roles/crowdsec): local API and metrics ports.
+        api:
+          server:
+            listen_uri: 127.0.0.1:{{ crowdsec_lapi_port }}
+        prometheus:
+          listen_port: {{ crowdsec_metrics_port }}
+    - dest: /etc/crowdsec/local_api_credentials.yaml.local
+      mode: "0600"
+      content: |
+        # Managed by nanoHPC (roles/crowdsec): the local API's port.
+        url: http://127.0.0.1:{{ crowdsec_lapi_port }}/
+  loop_control:
+    label: "{{ item.dest }}"
+  register: crowdsec_ports
+  notify: Restart CrowdSec
+
+- name: Install CrowdSec
+  ansible.builtin.apt:
+    deb: "{{ crowdsec_packages }}/crowdsec_{{ crowdsec_version }}_{{ crowdsec_arch }}.deb"
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  # A dry run does not download, so a new package is not there yet.
+  when: not crowdsec_new_in_dry_run and not (ansible_check_mode and crowdsec_download is changed)
+  register: crowdsec_install
+
+# A dry run before CrowdSec (or this version of it) is installed cannot read or check its settings yet.
+- name: Note whether CrowdSec is still to be installed in this dry run
+  ansible.builtin.set_fact:
+    crowdsec_pending: "{{ ansible_check_mode and (crowdsec_new_in_dry_run or crowdsec_download is changed or crowdsec_install is changed or crowdsec_ports is changed) }}"
+
+- name: Turn the online client off
+  ansible.builtin.replace:
+    path: /etc/crowdsec/config.yaml
+    regexp: '^    online_client: # Central API credentials \(to push signals and receive bad IPs\)\n      credentials_path: /etc/crowdsec/online_api_credentials.yaml\n'
+    replace: "    # online_client: off (nanoHPC: nothing is sent to or fetched from CrowdSec's central service)\n"
+  notify: Restart CrowdSec
+  when: not crowdsec_pending
+
+# The setting's text could change in a new CrowdSec version; then the step above changes nothing, so check.
+- name: Read CrowdSec's settings
+  ansible.builtin.command: grep -nE '^\s+online_client:' /etc/crowdsec/config.yaml
+  register: crowdsec_online_client
+  changed_when: false
+  failed_when: crowdsec_online_client.rc > 1
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Require the online client off
+  ansible.builtin.assert:
+    that: crowdsec_online_client.rc == 1
+    fail_msg: "/etc/crowdsec/config.yaml still has an online client: {{ crowdsec_online_client.stdout }}"
+  when: not ansible_check_mode
+
+# Its detections stay as installed; no daily hub upgrade changes them by itself.
+- name: Stop the daily hub upgrade
+  ansible.builtin.systemd_service:
+    name: crowdsec-hubupdate.timer
+    state: stopped
+    enabled: false
+  when: not crowdsec_pending
+
+- name: Read the detections the package installed
+  ansible.builtin.command: cscli collections list -o json
+  register: crowdsec_first_list
+  changed_when: false
+  check_mode: false
+  when: not crowdsec_pending
+
+- name: Install the SSH and Linux detections that are missing
+  ansible.builtin.command:
+    argv: [cscli, collections, install, "{{ item }}"]
+  loop: "{{ [] if crowdsec_pending else crowdsec_collections | difference((crowdsec_first_list.stdout | from_json).collections | map(attribute='name') | list) }}"
+  notify: Restart CrowdSec
+
+# SSH only: the package's own setup also turns on whatever it finds (web server, database, mail); those are removed,
+# so no visitor of the website, Grafana or the monitoring can be blocked, and only the SSH log is read.
+- name: Read the installed detections
+  ansible.builtin.command: cscli collections list -o json
+  register: crowdsec_installed
+  changed_when: false
+  check_mode: false
+  when: not crowdsec_pending
+
+- name: Require the SSH and Linux detections
+  ansible.builtin.assert:
+    that: crowdsec_collections | difference(installed) | length == 0
+    fail_msg: "CrowdSec lacks the detections {{ crowdsec_collections | difference(installed) }}; installed: {{ installed }}"
+  vars:
+    installed: "{{ (crowdsec_installed.stdout | from_json).collections | map(attribute='name') | list }}"
+  when: not ansible_check_mode
+
+- name: Remove every other detection
+  ansible.builtin.command:
+    argv: [cscli, collections, remove, "{{ item }}"]
+  loop: "{{ [] if crowdsec_pending else ((crowdsec_installed.stdout | from_json).collections | map(attribute='name') | list) | difference(crowdsec_collections) }}"
+  notify: Restart CrowdSec
+
+- name: Find the log sources the package's setup made
+  ansible.builtin.find:
+    paths: /etc/crowdsec/acquis.d
+    patterns: setup.*.yaml
+  register: crowdsec_setup_sources
+
+- name: Remove them
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ crowdsec_setup_sources.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  notify: Restart CrowdSec
+
+- name: Read only the SSH log
+  ansible.builtin.copy:
+    content: |
+      # Managed by nanoHPC (roles/crowdsec): only the SSH log.
+      filenames:
+        - /var/log/auth.log
+      labels:
+        type: syslog
+      source: file
+    dest: /etc/crowdsec/acquis.d/nanohpc-ssh.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart CrowdSec
+  when: not crowdsec_pending
+
+- name: Never count the cluster's machines and the never-block networks
+  ansible.builtin.template:
+    src: never-block.yaml.j2
+    dest: /etc/crowdsec/parsers/s02-enrich/nanohpc-never-block.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart CrowdSec
+  when: not crowdsec_pending
+
+- name: Apply the changed settings now
+  ansible.builtin.meta: flush_handlers
+
+- name: Run CrowdSec
+  ansible.builtin.systemd_service:
+    name: crowdsec
+    state: started
+    enabled: true
+  when: not crowdsec_pending
+
+# Its local API may take a few seconds after a (re)start; the allowlist commands below go through it.
+- name: Wait until CrowdSec's local API answers
+  ansible.builtin.command: cscli lapi status
+  register: crowdsec_lapi
+  changed_when: false
+  until: crowdsec_lapi.rc == 0
+  retries: 12
+  delay: 5
+  check_mode: false
+  when: not crowdsec_pending
+
+- name: Read the local API's address
+  ansible.builtin.command: cscli config show -oraw --key Config.API.Server.ListenURI
+  register: crowdsec_listen
+  changed_when: false
+  check_mode: false
+  when: not crowdsec_pending
+
+- name: Require the local API on its port
+  ansible.builtin.assert:
+    that: crowdsec_listen.stdout | trim == '127.0.0.1:' ~ crowdsec_lapi_port
+    fail_msg: "CrowdSec's local API is set to {{ crowdsec_listen.stdout }}, not 127.0.0.1:{{ crowdsec_lapi_port }}"
+  when: not crowdsec_pending
+
+# The same list as an allowlist: no block, made by a detection or by hand, can hit these addresses.
+- name: Read the never-block allowlist
+  ansible.builtin.command: cscli allowlists inspect {{ crowdsec_allowlist }} -o json
+  register: crowdsec_allowlist_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: not crowdsec_pending
+
+- name: Create the never-block allowlist
+  ansible.builtin.command:
+    argv: [cscli, allowlists, create, "{{ crowdsec_allowlist }}", -d, "The cluster's machines and never-block networks (nanoHPC)"]
+  when: not ansible_check_mode and crowdsec_allowlist_read.rc != 0
+
+- name: Put the never-block list in it
+  ansible.builtin.command:
+    argv: [cscli, allowlists, add, "{{ crowdsec_allowlist }}", "{{ item }}", -d, nanoHPC]
+  loop: "{{ nanohpc.crowdsec.never_block }}"
+  register: crowdsec_allowlist_added
+  changed_when: "'no new values' not in crowdsec_allowlist_added.stdout + crowdsec_allowlist_added.stderr"
+  when: not ansible_check_mode
+
+- name: Take out what is no longer on the list
+  ansible.builtin.command:
+    argv: [cscli, allowlists, remove, "{{ crowdsec_allowlist }}", "{{ item }}"]
+  loop: "{{ ((crowdsec_allowlist_read.stdout | from_json)['items'] | default([], true) | map(attribute='value') | list) | difference(nanohpc.crowdsec.never_block) if not crowdsec_pending and crowdsec_allowlist_read.rc == 0 else [] }}"
+  when: not ansible_check_mode
+
+- name: Require every never-block address to be allowlisted
+  ansible.builtin.command:
+    argv: [cscli, allowlists, check, "{{ item }}"]
+  # Each address, and the first address of each network.
+  loop: "{{ nanohpc.crowdsec.never_block | map('split', '/') | map('first') | list }}"
+  register: crowdsec_allowlist_check
+  changed_when: false
+  failed_when: "'is allowlisted' not in crowdsec_allowlist_check.stdout"
+  when: not ansible_check_mode
+
+- name: Install the Security page's numbers command
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/cluster-security-metrics"
+    dest: /usr/local/bin/cluster-security-metrics
+    owner: root
+    group: root
+    mode: "0755"
+    validate: python3 -m py_compile %s
+
+- name: Install the numbers service and timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/nanohpc-security-metrics.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if item == 'service' %}
+      [Unit]
+      Description=CrowdSec's numbers for the Security page (nanoHPC)
+      After=crowdsec.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/cluster-security-metrics --cscli /usr/bin/cscli --iptables /usr/sbin/iptables --metrics http://127.0.0.1:{{ crowdsec_metrics_port }}/metrics --state /var/lib/nanohpc-security/state.json --output /var/lib/nanohpc/metrics-textfile/security.prom
+      StateDirectory=nanohpc-security
+      TimeoutStartSec=2min
+      Nice=10
+      {% else %}
+      [Unit]
+      Description=CrowdSec's numbers every 5 minutes (nanoHPC)
+
+      [Timer]
+      OnBootSec=2min
+      OnUnitActiveSec=5min
+
+      [Install]
+      WantedBy=timers.target
+      {% endif %}
+  loop: [service, timer]
+  register: crowdsec_metrics_units
+
+# Once now, so a broken command fails the deploy; CrowdSec's metrics address may take a few seconds after a restart.
+- name: Make the numbers once now
+  ansible.builtin.systemd_service:
+    name: nanohpc-security-metrics.service
+    state: started
+    daemon_reload: "{{ crowdsec_metrics_units is changed }}"
+  register: crowdsec_metrics_run
+  until: crowdsec_metrics_run is succeeded
+  retries: 6
+  delay: 5
+  changed_when: false  # a one-off run, not a change to the machine
+  when: not ansible_check_mode
+
+- name: Make the numbers every 5 minutes
+  ansible.builtin.systemd_service:
+    name: nanohpc-security-metrics.timer
+    state: started
+    enabled: true
+  when: not (ansible_check_mode and crowdsec_metrics_units is changed)
+
+- name: Check that the numbers were written
+  ansible.builtin.stat:
+    path: /var/lib/nanohpc/metrics-textfile/security.prom
+  register: crowdsec_metrics_output
+  failed_when: not crowdsec_metrics_output.stat.exists
+  when: not ansible_check_mode

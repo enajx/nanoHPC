@@ -1,0 +1,8 @@
+# Managed by nanoHPC (roles/crowdsec). Events from these addresses never count toward a block: the cluster's
+# machines and cluster.yml's crowdsec.never_block.
+name: nanohpc/never-block
+description: "The cluster's machines and the never-block networks never lead to a block"
+whitelist:
+  reason: "never blocked (nanoHPC)"
+  ip: [{% for item in nanohpc.crowdsec.never_block if '/' not in item %}"{{ item }}"{{ ', ' if not loop.last else '' }}{% endfor %}]
+  cidr: [{% for item in nanohpc.crowdsec.never_block if '/' in item %}"{{ item }}"{{ ', ' if not loop.last else '' }}{% endfor %}]

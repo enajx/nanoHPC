@@ -1,0 +1,10 @@
+#!/bin/bash
+# Undo CrowdSec's blocking (nanoHPC, roles/crowdsec tasks/blocking.yml): stop and disable its firewall bouncer and
+# remove its rule from the INPUT chain. The bouncer removes its own rules when it stops; this also covers a bouncer
+# that did not. CrowdSec's detection and every other firewall rule are left as they are. Run by the automatic undo
+# 15 minutes after blocking was turned on (unless the deploy's checks cancelled it), by a failed check, or by hand.
+systemctl stop crowdsec-firewall-bouncer
+systemctl disable crowdsec-firewall-bouncer
+while iptables -D INPUT -j CROWDSEC_CHAIN 2>/dev/null; do :; done
+while ip6tables -D INPUT -j CROWDSEC_CHAIN 2>/dev/null; do :; done
+iptables -S | grep -i crowdsec || echo "no CrowdSec rules left"

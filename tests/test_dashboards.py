@@ -10,7 +10,7 @@ import jinja2
 
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARDS = ROOT / "src" / "nanohpc" / "files" / "grafana"
-NAMES = ["history", "machines", "monitor-history", "overview", "queue-history", "queue", "usage"]
+NAMES = ["history", "machines", "monitor-history", "overview", "queue-history", "queue", "security", "usage"]
 
 
 def load(name: str) -> dict[str, Any]:

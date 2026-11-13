@@ -25,6 +25,11 @@ users: [alice, bob]             # existing login names shown on the website; [] 
 alerts:
   slack: false                  # true needs NANOHPC_SLACK_WEBHOOK in .env
 
+# Optional CrowdSec on every machine (see examples/cluster.yml): blocks addresses that attack SSH.
+# crowdsec:
+#   enabled: true
+#   never_block: [192.0.2.0/24]   # networks never blocked, besides these machines
+
 # Optional Slack agent (see examples/cluster.yml); repository: where it pushes edits of this file.
 # agent:
 #   enabled: true
