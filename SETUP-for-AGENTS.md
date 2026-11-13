@@ -72,6 +72,9 @@ For each machine the administrator names (a hostname, an address, or a host from
   front node to deploy from their configuration repository by itself.
 - `time_zone` (optional): one time zone for every machine, such as `Europe/Berlin` or `UTC`. Leave it empty to
   keep each machine's own zone.
+- `crowdsec` (optional, also in monitor mode): `enabled: true` blocks addresses that attack SSH on every machine,
+  and `never_block` lists the administrator's networks that are never blocked (the machines never are). Ask for
+  the networks they log in from.
 
 ## 7. Review and deploy
 
