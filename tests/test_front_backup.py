@@ -123,7 +123,7 @@ class FrontBackupConfigTest(unittest.TestCase):
         raw["machines"]["front"]["front_since"] = 1700000000
         config, errors = check_config(raw)
         self.assertEqual(errors, [])
-        nanohpc = variables(config, Path("/work"), False, [], False, [])["nanohpc"]
+        nanohpc = variables(config, None, Path("/work"), False, [], False, [])["nanohpc"]
         self.assertEqual(nanohpc["front"]["since"], 1700000000)
         raw["machines"]["login2"]["front_since"] = 5
         raw["machines"]["front"]["front_since"] = "soon"
@@ -146,7 +146,7 @@ class FrontBackupDeployTest(unittest.TestCase):
         groups = inventory(config, None)["all"]["children"]
         self.assertEqual(list(groups["front_pair"]["hosts"]), ["front", "login2"])
         self.assertEqual(list(groups["front_backup"]["hosts"]), ["login2"])
-        nanohpc = variables(config, Path("/work"), False, [], False, [])["nanohpc"]
+        nanohpc = variables(config, None, Path("/work"), False, [], False, [])["nanohpc"]
         self.assertEqual(nanohpc["front_backup"], {"name": "login2", "address": "192.168.104.30"})
         self.assertEqual(nanohpc["front"], {"name": "front", "address": "192.168.104.10", "since": 0})
 
@@ -155,7 +155,7 @@ class FrontBackupDeployTest(unittest.TestCase):
         self.assertEqual(errors, [])
         groups = inventory(config, None)["all"]["children"]
         self.assertEqual(groups["front_pair"]["hosts"], {})
-        self.assertIsNone(variables(config, Path("/work"), False, [], False, [])["nanohpc"]["front_backup"])
+        self.assertIsNone(variables(config, None, Path("/work"), False, [], False, [])["nanohpc"]["front_backup"])
 
 
 class FrontBackupRoleTest(unittest.TestCase):
@@ -317,7 +317,7 @@ class SwitchDeployTest(unittest.TestCase):
         front_switch.swapped(file, "front", "login2")
         self.config, errors = front_switch.deploy_config(file, folder, "front")
         self.assertEqual(errors, [])
-        self.nanohpc = variables(self.config, Path("/work"), False, [], False, [])["nanohpc"]
+        self.nanohpc = variables(self.config, None, Path("/work"), False, [], False, [])["nanohpc"]
         children = inventory(self.config, None)["all"]["children"]
         self.groups = {name: list(group.get("hosts", {})) for name, group in children.items()}
 
