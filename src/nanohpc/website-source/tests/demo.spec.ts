@@ -261,9 +261,8 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await expect(page.locator('iframe[title="Running Jobs and Queue"]')).toBeVisible()
   await expect(page.locator('iframe[title="Queue history"]')).toBeVisible()
   await nav.getByRole('link', { name: 'Security', exact: true }).click()
-  // Sample charts until the Security snapshot is published (its key then goes in demo-dashboard.tsx).
   await expect(page.getByRole('heading', { name: 'Attacks on the cluster', exact: true })).toBeVisible()
-  for (const name of ['SSH refused per day', 'CrowdSec blocks per day']) await expect(page.getByRole('img', { name: new RegExp(`^${name}, fictional sample data`) })).toBeVisible()
+  await expect(page.locator('iframe[src^="https://snapshots.raintank.io/dashboard/snapshot/nNQh8IttdlvGKhZ7RzuxLloL22WHmgZO"]')).toBeVisible()
   await page.goto(`${origin}${prefix}#queue?state=PENDING`)
   await expect(page.getByRole('table', { name: 'Sample jobs' }).locator('tbody tr')).toHaveCount(2)
   await nav.getByRole('link', { name: 'Machines', exact: true }).click()

@@ -17,6 +17,7 @@ const snapshots: Partial<Record<DashboardName, string>> = {
   'queue-history': 'e7FhWXDoUkD30m1yBBKxlDiASt9eBZs8',
   usage: 'vmtlXq8ieF4Yl4H9v4Revx2G9vyLw35Y',
   machines: 'Jo3H3Uma3eSFWtYglY9TTZXBpVlPpILZ',
+  security: 'nNQh8IttdlvGKhZ7RzuxLloL22WHmgZO',
 }
 
 /** Stable fictional points for the static demo, with a different span for each control. */
