@@ -31,12 +31,33 @@
   failed_when: false
   check_mode: false
 
+- name: Create the bouncer's settings folder
+  ansible.builtin.file:
+    path: /etc/crowdsec/bouncers
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# The bouncer reads its settings with the .local beside them on top; a changed port turns blocking on again.
+- name: Point the bouncer at the local API's port
+  ansible.builtin.copy:
+    dest: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
+    content: |
+      # Managed by nanoHPC (roles/crowdsec): the local API's port.
+      api_url: http://127.0.0.1:{{ crowdsec_lapi_port }}/
+    owner: root
+    group: root
+    mode: "0600"
+  register: crowdsec_bouncer_settings
+
 - name: Note whether blocking is on already
   ansible.builtin.set_fact:
     crowdsec_blocking_on: >-
       {{ crowdsec_bouncer_installed.stdout == crowdsec_bouncer_version
          and crowdsec_bouncer_active.stdout == 'active'
-         and '-j CROWDSEC_CHAIN' in crowdsec_input_now.stdout }}
+         and '-j CROWDSEC_CHAIN' in crowdsec_input_now.stdout
+         and crowdsec_bouncer_settings is not changed }}
 
 - name: Turn blocking on, or undo it
   when: not crowdsec_blocking_on
@@ -95,10 +116,10 @@
       # A dry run downloads nothing, so there is no package to install.
       when: not ansible_check_mode
 
-    - name: Run it
+    - name: Run it (again, so it reads its settings)
       ansible.builtin.systemd_service:
         name: crowdsec-firewall-bouncer
-        state: started
+        state: restarted
         enabled: true
       when: not ansible_check_mode
 

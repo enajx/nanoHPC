@@ -55,6 +55,42 @@
     - {question: crowdsec/lapi, value: "true"}
     - {question: crowdsec/capi, value: "false"}
 
+- name: Create CrowdSec's settings folder
+  ansible.builtin.file:
+    path: /etc/crowdsec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# CrowdSec reads each file with its .local beside it on top; the package never changes the .local files.
+- name: Set CrowdSec's local API and metrics ports before it installs
+  ansible.builtin.copy:
+    dest: "{{ item.dest }}"
+    content: "{{ item.content }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - dest: /etc/crowdsec/config.yaml.local
+      mode: "0644"
+      content: |
+        # Managed by nanoHPC (roles/crowdsec): local API and metrics ports.
+        api:
+          server:
+            listen_uri: 127.0.0.1:{{ crowdsec_lapi_port }}
+        prometheus:
+          listen_port: {{ crowdsec_metrics_port }}
+    - dest: /etc/crowdsec/local_api_credentials.yaml.local
+      mode: "0600"
+      content: |
+        # Managed by nanoHPC (roles/crowdsec): the local API's port.
+        url: http://127.0.0.1:{{ crowdsec_lapi_port }}/
+  loop_control:
+    label: "{{ item.dest }}"
+  register: crowdsec_ports
+  notify: Restart CrowdSec
+
 - name: Install CrowdSec
   ansible.builtin.apt:
     deb: "{{ crowdsec_packages }}/crowdsec_{{ crowdsec_version }}_{{ crowdsec_arch }}.deb"
@@ -67,7 +103,7 @@
 # A dry run before CrowdSec (or this version of it) is installed cannot read or check its settings yet.
 - name: Note whether CrowdSec is still to be installed in this dry run
   ansible.builtin.set_fact:
-    crowdsec_pending: "{{ ansible_check_mode and (crowdsec_new_in_dry_run or crowdsec_download is changed or crowdsec_install is changed) }}"
+    crowdsec_pending: "{{ ansible_check_mode and (crowdsec_new_in_dry_run or crowdsec_download is changed or crowdsec_install is changed or crowdsec_ports is changed) }}"
 
 - name: Turn the online client off
   ansible.builtin.replace:
@@ -198,6 +234,19 @@
   check_mode: false
   when: not crowdsec_pending
 
+- name: Read the local API's address
+  ansible.builtin.command: cscli config show -oraw --key Config.API.Server.ListenURI
+  register: crowdsec_listen
+  changed_when: false
+  check_mode: false
+  when: not crowdsec_pending
+
+- name: Require the local API on its port
+  ansible.builtin.assert:
+    that: crowdsec_listen.stdout | trim == '127.0.0.1:' ~ crowdsec_lapi_port
+    fail_msg: "CrowdSec's local API is set to {{ crowdsec_listen.stdout }}, not 127.0.0.1:{{ crowdsec_lapi_port }}"
+  when: not crowdsec_pending
+
 # The same list as an allowlist: no block, made by a detection or by hand, can hit these addresses.
 - name: Read the never-block allowlist
   ansible.builtin.command: cscli allowlists inspect {{ crowdsec_allowlist }} -o json
@@ -259,7 +308,7 @@
 
       [Service]
       Type=oneshot
-      ExecStart=/usr/local/bin/cluster-security-metrics --cscli /usr/bin/cscli --iptables /usr/sbin/iptables --metrics http://127.0.0.1:6060/metrics --state /var/lib/nanohpc-security/state.json --output /var/lib/nanohpc/metrics-textfile/security.prom
+      ExecStart=/usr/local/bin/cluster-security-metrics --cscli /usr/bin/cscli --iptables /usr/sbin/iptables --metrics http://127.0.0.1:{{ crowdsec_metrics_port }}/metrics --state /var/lib/nanohpc-security/state.json --output /var/lib/nanohpc/metrics-textfile/security.prom
       StateDirectory=nanohpc-security
       TimeoutStartSec=2min
       Nice=10

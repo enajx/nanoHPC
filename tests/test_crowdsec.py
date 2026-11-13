@@ -333,6 +333,50 @@ class DetectionRoleTest(unittest.TestCase):
                         self.assertIn("crowdsec_new_in_dry_run", str(inner.get("when")), (path, inner["name"]))
 
 
+class PortsTest(unittest.TestCase):
+    """CrowdSec's local API and metrics listen on unusual ports, so a user's job or session on 8080 or 6060 neither
+    stops CrowdSec nor is refused its port."""
+
+    def test_the_local_api_and_metrics_use_unusual_ports_everywhere(self) -> None:
+        defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        api, metrics = defaults["crowdsec_lapi_port"], defaults["crowdsec_metrics_port"]
+        self.assertNotIn(api, (8080, 6060, 3000, 9090, 9091, 9093, 9100, 14000))
+        self.assertNotIn(metrics, (8080, 6060, 3000, 9090, 9091, 9093, 9100, 14000, api))
+        main = tasks(ROLE / "tasks/main.yml")
+        names = [task["name"] for task in main]
+        named = dict(zip(names, main, strict=True))
+        # Written before the package installs, so its own start and its credentials already use the ports.
+        settings = named["Set CrowdSec's local API and metrics ports before it installs"]
+        self.assertLess(names.index(settings["name"]), names.index("Install CrowdSec"))
+        environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
+        rendered = {
+            item["dest"]: yaml.safe_load(environment.from_string(item["content"]).render(**defaults))
+            for item in settings["loop"]
+        }
+        self.assertEqual(
+            rendered["/etc/crowdsec/config.yaml.local"],
+            {"api": {"server": {"listen_uri": f"127.0.0.1:{api}"}}, "prometheus": {"listen_port": metrics}},
+        )
+        self.assertEqual(
+            rendered["/etc/crowdsec/local_api_credentials.yaml.local"], {"url": f"http://127.0.0.1:{api}/"}
+        )
+        self.assertIn("Require the local API on its port", names)
+        blocking = tasks(ROLE / "tasks/blocking.yml")
+        bouncer = next(task for task in blocking if task["name"] == "Point the bouncer at the local API's port")
+        # Before the block that installs the bouncer; a changed setting turns blocking on again.
+        self.assertLess(blocking.index(bouncer), len(blocking) - 1)
+        self.assertIn("crowdsec_bouncer_settings is not changed", str(blocking))
+        self.assertEqual(
+            yaml.safe_load(environment.from_string(bouncer["ansible.builtin.copy"]["content"]).render(**defaults)),
+            {"api_url": f"http://127.0.0.1:{api}/"},
+        )
+        self.assertIn(
+            "--metrics http://127.0.0.1:{{ crowdsec_metrics_port }}/metrics", (ROLE / "tasks/main.yml").read_text()
+        )
+        for path in ROLE.rglob("*.yml"):
+            self.assertNotRegex(path.read_text(), r":(8080|6060)\b", path)
+
+
 class OffTest(unittest.TestCase):
     """crowdsec.enabled false (the default) leaves a CrowdSec that nanoHPC did not set up alone."""
 

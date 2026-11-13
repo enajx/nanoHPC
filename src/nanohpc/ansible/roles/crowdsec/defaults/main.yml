@@ -15,5 +15,9 @@ crowdsec_packages: /opt/nanohpc-crowdsec
 # whitelist-good-actors, which only keeps known good services from being blocked.
 crowdsec_collections: [crowdsecurity/linux, crowdsecurity/sshd, crowdsecurity/whitelist-good-actors]
 crowdsec_allowlist: nanohpc-never-block
+# CrowdSec's local API and its metrics listen on 127.0.0.1 only, on unusual ports instead of its defaults (8080 and
+# 6060), which users' jobs and sessions often take on compute and login nodes.
+crowdsec_lapi_port: 28411
+crowdsec_metrics_port: 28412
 # A documentation address (RFC 5737), never a real one, for the blocking test.
 crowdsec_test_address: 203.0.113.77
