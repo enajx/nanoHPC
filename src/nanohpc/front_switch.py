@@ -284,23 +284,25 @@ def switch(
 
 
 def finish(config: dict[str, Any], backup: str, post: Post) -> int:
-    """Tell users on Slack, and print the login address and the DNS change."""
+    """Print the login address and the DNS change, then tell users on Slack."""
     address = config["machines"][backup]["address"]
     website = config["cluster"]["website"]
     text = (
         f"The cluster's front node is now {backup}. Log in with ssh USER@{address}. The website"
         f" https://{website['hostname']}{website['path']} works again once its address is changed."
     )
-    webhook = config["secrets"]["slack_webhook"]
-    if config["alerts"]["slack"] is True and webhook:
-        post(webhook, text)
-        print("Users were told on Slack.")
-    else:
-        print("No Slack (alerts.slack): tell users yourself.")
     print(
         f"\nDone. Users log in with: ssh USER@{address}\n"
         f"Change the DNS record of {website['hostname']} to {address}. Until then the website answers at"
         f" https://{address}{website['path']} (browsers warn: the certificate names {website['hostname']}).\n"
         f"The Slack agent is not set up by the switch: nanohpc deploy sets it up on {backup}."
     )
+    webhook = config["secrets"]["slack_webhook"]
+    if config["alerts"]["slack"] is not True or not webhook:
+        print("No Slack (alerts.slack): tell users yourself.")
+        return 0
+    # Last, so a refused post (it stops with Slack's answer) hides none of the above; the switch itself is done.
+    print("Telling users on Slack (if this fails, the switch is still done: tell them yourself)...", flush=True)
+    post(webhook, text)
+    print("Users were told on Slack.")
     return 0

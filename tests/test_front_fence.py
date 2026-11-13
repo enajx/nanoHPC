@@ -89,6 +89,14 @@ class FenceTest(unittest.TestCase):
         self.assertEqual(self.fence("--watch").returncode, 0)
         self.assertFalse(self.marker.exists())
 
+    def test_the_machine_that_took_over_starts_its_controller_whatever_the_other_one_does(self) -> None:
+        """Both machines restart after a switch: a stale old front node that came up first must not fence the
+        machine the switch made the front node."""
+        self.took_over.write_text("took over from login2\n")
+        self.peer_answers()
+        self.assertEqual(self.fence("--check").returncode, 0)
+        self.assertFalse(self.marker.exists())
+
     def test_hold_fences_without_stopping(self) -> None:
         self.assertEqual(self.fence("--hold", "switched to login2").returncode, 0)
         self.assertEqual(self.marker.read_text(), "switched to login2\n")

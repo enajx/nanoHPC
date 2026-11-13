@@ -9,8 +9,10 @@ stopped, and slurmctld runs only where slurm.conf names it).
 --check runs before slurmctld and slurmdbd start (ExecStartPre): it exits 1 while fenced, or when the other
 machine's controller answers (then it fences this machine), so they do not start.
 --watch runs every minute: when the other machine's controller answers, it fences this machine: it records the
-marker and stops the --stop units (the front-node services); while fenced, it keeps them stopped. A machine that took over by `nanohpc front-switch` (the --took-over file) never
-fences itself in the watch: the switch made it the front node while the other one did not answer.
+marker and stops the --stop units (the front-node services); while fenced, it keeps them stopped. A machine that took
+over by `nanohpc front-switch` (the --took-over file) is never fenced, neither by --check nor by the watch: the switch
+made it the front node while the other one did not answer. The deploy removes that record once both machines are
+deployed again.
 --is-front exits 0 only when slurm.conf names this machine and it is not fenced (the copies' ExecCondition).
 --hold REASON records the marker (the switch, on the old front node); --release removes it (the switch, on the
 machine it makes the front node). The fence is never lifted by itself.
@@ -88,7 +90,9 @@ def main() -> None:
     here = names_this_machine(arguments.slurm_conf, arguments.hostname)
     if arguments.is_front:
         sys.exit(0 if here else 1)
-    if not here or (arguments.watch and arguments.took_over.exists()):
+    # The machine a switch made the front node (the --took-over record) is never fenced by the other one: that one
+    # may be an old front node that came back first, with a slurm.conf that still names itself.
+    if not here or arguments.took_over.exists():
         return
     name, address = arguments.peer.split("=", 1)
     host, port = address.rsplit(":", 1)

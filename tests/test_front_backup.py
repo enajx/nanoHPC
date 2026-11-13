@@ -178,6 +178,19 @@ class FrontBackupRoleTest(unittest.TestCase):
         self.assertIn("--peer login2=192.168.104.30:6817", text)
         self.assertIn("--stop slurmctld.service --stop nginx.service", text)
 
+    def test_the_fence_leaves_the_accounting_database_running(self) -> None:
+        """The switch's stop step holds the fence and then dumps the accounting database for the last copy: the
+        minute watch of a fenced machine must not stop MariaDB under that dump (it runs no controller)."""
+        values = {
+            **self.defaults("own"),
+            "front_backup_peer": "login2",
+            "ansible_facts": {"hostname": "front"},
+            "nanohpc": {"machines": {"login2": {"address": "192.168.104.30"}}},
+        }
+        text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
+        self.assertIn("--stop slurmctld.service --stop slurmdbd.service", text)
+        self.assertNotIn("mariadb", text)
+
     def test_each_machine_of_the_pair_accepts_the_other_ones_copies(self) -> None:
         template = ROOT / "src/nanohpc/ansible/roles/accounts/templates/root_authorized_keys.j2"
         values = {

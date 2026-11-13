@@ -5,6 +5,8 @@ not answer, and change cluster.yml so later deploys follow the new front node.
 Mocked: SSH is a fake `ssh` first on PATH that records each machine's commands and answers from files; the deploy,
 the typed answer and the Slack post are passed in as stand-ins. No machine or Ansible run is involved."""
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -163,6 +165,19 @@ class SwitchTest(unittest.TestCase):
         self.assertEqual(self.switch(False), 1)
         self.assertEqual(self.steps(), [])
         self.assertEqual(self.deploys, [])
+
+    def test_a_failed_slack_post_still_prints_the_login_address_and_dns_change(self) -> None:
+        (self.folder / "front.down").write_text("")
+
+        def refused(webhook: str, text: str) -> None:
+            raise RuntimeError("Slack answered: invalid_payload")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaisesRegex(RuntimeError, "invalid_payload"):
+            front_switch.switch(self.path, "login2", None, False, lambda _: "login2", self.deploy, refused)
+        self.assertIn("Users log in with: ssh USER@192.168.104.30", output.getvalue())
+        self.assertIn("Change the DNS record of cluster.example.org to 192.168.104.30", output.getvalue())
+        self.assertIn("Telling users on Slack", output.getvalue())
 
     def test_moving_back_needs_the_current_front_node(self) -> None:
         (self.folder / "front.down").write_text("")
