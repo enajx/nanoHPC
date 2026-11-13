@@ -26,6 +26,7 @@ MACHINE_FIELDS = (
     "roles",
     "home_mount",
     "front_backup",
+    "front_since",
     "home",
     "backup",
     "shared",
@@ -818,6 +819,17 @@ def check_front_backup(checker: Checker, machines: dict[str, dict[str, Any]]) ->
         marked.append(name)
     if len(marked) > 1:
         checker.fail("machines:", f"at most one login node can have front_backup: true, found {len(marked)}")
+    for name, machine in machines.items():
+        if "front_since" not in machine:
+            continue
+        if "front" not in machine["roles"]:
+            checker.fail(f"machines.{name}.front_since", "is only for the front node (nanohpc front-switch writes it)")
+        elif (
+            not isinstance(machine["front_since"], int)
+            or isinstance(machine["front_since"], bool)
+            or machine["front_since"] < 0
+        ):
+            checker.fail(f"machines.{name}.front_since", "must be a whole number of seconds")
     fronts = [name for name, machine in machines.items() if "front" in machine["roles"]]
     if len(marked) != 1 or len(fronts) != 1:
         return

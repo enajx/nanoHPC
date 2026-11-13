@@ -112,6 +112,19 @@ class FrontBackupConfigTest(unittest.TestCase):
             errors,
         )
 
+    def test_front_since_is_a_time_on_the_front_node(self) -> None:
+        raw = with_backup(example())
+        raw["machines"]["front"]["front_since"] = 1700000000
+        config, errors = check_config(raw)
+        self.assertEqual(errors, [])
+        nanohpc = variables(config, Path("/work"), False, [], False, [])["nanohpc"]
+        self.assertEqual(nanohpc["front"]["since"], 1700000000)
+        raw["machines"]["login2"]["front_since"] = 5
+        raw["machines"]["front"]["front_since"] = "soon"
+        _, errors = check_config(raw)
+        self.assertIn("machines.login2.front_since is only for the front node (nanohpc front-switch writes it)", errors)
+        self.assertIn("machines.front.front_since must be a whole number of seconds", errors)
+
     def test_false_is_a_plain_login_node(self) -> None:
         raw = with_backup(example())
         raw["machines"]["login2"]["front_backup"] = False
@@ -129,7 +142,7 @@ class FrontBackupDeployTest(unittest.TestCase):
         self.assertEqual(list(groups["front_backup"]["hosts"]), ["login2"])
         nanohpc = variables(config, Path("/work"), False, [], False, [])["nanohpc"]
         self.assertEqual(nanohpc["front_backup"], {"name": "login2", "address": "192.168.104.30"})
-        self.assertEqual(nanohpc["front"], {"name": "front", "address": "192.168.104.10"})
+        self.assertEqual(nanohpc["front"], {"name": "front", "address": "192.168.104.10", "since": 0})
 
     def test_no_pair_without_a_backup_front_node(self) -> None:
         config, errors = check_config(example())

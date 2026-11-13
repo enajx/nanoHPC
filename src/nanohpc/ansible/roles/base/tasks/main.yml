@@ -18,12 +18,13 @@
     group: root
     mode: "0644"
 
-# With a backup front node: the front node this machine was deployed with. Before the front node or its backup
+# With a backup front node: the front node this machine was deployed with, and when a switch made it the front node
+# (front_since in cluster.yml, 0 before any switch). Before the front node or its backup
 # front node starts its Slurm controller, it asks the other machines for it (roles/front_backup, nanohpc-front-fence).
 - name: Record the front node this machine was deployed with (backup front node only)
   ansible.builtin.copy:
     dest: /etc/nanohpc/front-node
-    content: "{{ nanohpc.front.name }}\n"
+    content: "{{ nanohpc.front.name }} {{ nanohpc.front.since }}\n"
     owner: root
     group: root
     mode: "0644"

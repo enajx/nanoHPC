@@ -19,6 +19,7 @@ import copy
 import json
 import shlex
 import sys
+import time
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -158,8 +159,14 @@ def swapped(file: clusterfile.ClusterFile, front: str, backup: str) -> None:
     file.set_value(["machines", front, "roles"], ["login"])
     file.set_value(["machines", front, "front_backup"], True)
     file.set_value(["machines", backup, "roles"], ["front"])
+    # When this switch happened: every machine deployed after it records it, so a machine that missed it (and still
+    # names the old front node, with an older time) never outvotes the new front node in its fence.
+    file.set_value(["machines", backup, "front_since"], int(time.time()))
     with clusterfile.keep_end(file.data["machines"], backup):
         clusterfile.remove_item(file.data["machines"][backup], "front_backup")
+    if "front_since" in file.data["machines"][front]:
+        with clusterfile.keep_end(file.data["machines"], front):
+            clusterfile.remove_item(file.data["machines"][front], "front_since")
 
 
 def deploy_config(file: clusterfile.ClusterFile, folder: Path, away: str | None) -> tuple[dict[str, Any], list[str]]:

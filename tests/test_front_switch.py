@@ -133,6 +133,9 @@ class SwitchTest(unittest.TestCase):
         self.assertFalse(machines["login2"]["front_backup"])
         self.assertEqual(machines["front"]["roles"], ["login"])
         self.assertTrue(machines["front"]["front_backup"])
+        # The switch's time goes with the front node, so a machine that missed this switch is outvoted.
+        self.assertGreater(machines["login2"]["front_since"], 1700000000)
+        self.assertNotIn("front_since", machines["front"])
         self.assertEqual(len(self.posts), 1)
         self.assertIn("ssh USER@192.168.104.30", self.posts[0])
 

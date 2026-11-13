@@ -6,6 +6,6 @@ exec /usr/local/sbin/nanohpc-front-fence --hostname {{ ansible_facts.hostname }}
   --peer {{ front_backup_peer }}={{ nanohpc.machines[front_backup_peer].address }}:6817 \
   --name {{ inventory_hostname }}{% for name, machine in nanohpc.machines.items() if name not in groups['front_pair'] %} --ask {{ name }}={{ machine.address }}{% endfor %} \
   --ask-key /etc/nanohpc/front-copy/id_ed25519 --ask-known-hosts /etc/nanohpc/front-copy/ask_known_hosts \
-  --waiting /var/lib/nanohpc-front-fence/waiting --start slurmdbd.service --start slurmctld.service \
+  --record /etc/nanohpc/front-node --waiting /var/lib/nanohpc-front-fence/waiting --start slurmdbd.service --start slurmctld.service \
   --marker /var/lib/nanohpc-front-fence/fenced --took-over /var/lib/nanohpc-front-fence/took-over \
   --systemctl /usr/bin/systemctl{% for unit in front_backup_units if unit != 'mariadb.service' %} --stop {{ unit }}{% endfor %} "$@"

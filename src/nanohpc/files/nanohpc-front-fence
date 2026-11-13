@@ -14,8 +14,9 @@ over by `nanohpc front-switch` (the --took-over file) is never fenced, neither b
 made it the front node while the other one did not answer. The deploy removes that record once both machines are
 deployed again.
 Before that, with --ask machines (the other cluster machines), --check asks each which front node it was deployed
-with (/etc/nanohpc/front-node, through its forced command for this machine's front copy key): it fences this
-machine when one names another machine, and refuses to start while none answers (--waiting is written; the watch
+with (/etc/nanohpc/front-node, "NAME SINCE", through its forced command for this machine's front copy key). The
+newest records count (SINCE: when the last switch made NAME the front node), this machine's own --record included,
+so a machine that missed a switch never outvotes it. It fences this machine when they name another machine, and refuses to start while none answers (--waiting is written; the watch
 asks again every minute and starts the --start units once one names this machine). An old front node that boots
 while the new front node is off is so fenced by the machines the switch's deploy updated.
 --is-front exits 0 only when slurm.conf names this machine and it is not fenced (the copies' ExecCondition).
@@ -48,28 +49,43 @@ def names_this_machine(slurm_conf: Path, hostname: str) -> bool:
     return named is not None and named[1] == hostname
 
 
-def asked(machine: str, key: str, known_hosts: str) -> str | None:
-    """The front node a machine was deployed with (its forced command prints it), or None: no answer, or a machine
-    deployed before that record existed ("none")."""
+def parsed(text: str) -> tuple[str, int] | None:
+    """A front node record, "NAME SINCE" (SINCE: when a switch made NAME the front node, 0 before any switch; a
+    record without it counts as 0), or None for no record ("none" or nothing)."""
+    words = text.split()
+    if not words or words[0] == "none":
+        return None
+    return words[0], int(words[1]) if len(words) > 1 and words[1].isdigit() else 0
+
+
+def asked(machine: str, key: str, known_hosts: str) -> tuple[str, int] | None:
+    """The front node a machine was deployed with (its forced command prints its record), or None: no answer, or no
+    record."""
     name, address = machine.split("=", 1)
     command = [
         "ssh", "-i", key, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
         "-o", f"UserKnownHostsFile={known_hosts}", "-o", "ConnectTimeout=5", f"root@{address}", "front-node",
     ]  # fmt: skip
     result = subprocess.run(command, capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL, check=False)
-    answer = result.stdout.strip()
-    if result.returncode != 0 or answer in ("", "none"):
+    record = parsed(result.stdout) if result.returncode == 0 else None
+    if record is None:
         print(f"nanohpc-front-fence: no answer from {name}", file=sys.stderr)
         return None
-    print(f"nanohpc-front-fence: {name} names {answer}", file=sys.stderr)
-    return answer
+    print(f"nanohpc-front-fence: {name} names {record[0]} (since {record[1]})", file=sys.stderr)
+    return record
 
 
-def named_front(machines: list[str], key: str, known_hosts: str) -> list[str]:
-    """The front nodes the other cluster machines name, one per machine that answers."""
+def named_front(machines: list[str], key: str, known_hosts: str) -> list[tuple[str, int]]:
+    """The front node records of the other cluster machines that answer."""
     with ThreadPoolExecutor(max_workers=16) as pool:
         answers = pool.map(lambda machine: asked(machine, key, known_hosts), machines)
     return [answer for answer in answers if answer is not None]
+
+
+def newest(records: list[tuple[str, int]]) -> set[str]:
+    """The front nodes named by the newest records: a machine that missed a later switch never outvotes it."""
+    since = max(record[1] for record in records)
+    return {name for name, time_ in records if time_ == since}
 
 
 def fence(marker: Path, reason: str) -> None:
@@ -101,6 +117,7 @@ def main() -> None:
     parser.add_argument("--ask", action="append", default=[], help="NAME=ADDRESS of another cluster machine to ask")
     parser.add_argument("--ask-key", required=True)
     parser.add_argument("--ask-known-hosts", required=True)
+    parser.add_argument("--record", type=Path, required=True, help="this machine's own front node record")
     parser.add_argument("--waiting", type=Path, required=True, help="written while the controller waits for answers")
     parser.add_argument("--start", action="append", default=[], help="a unit the watch starts after waiting (repeat)")
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -133,9 +150,11 @@ def main() -> None:
     # watch while a start waits for them. An old front node that boots while the new one is off is named by none.
     if arguments.ask and (arguments.check or arguments.waiting.exists()):
         named = named_front(arguments.ask, arguments.ask_key, arguments.ask_known_hosts)
-        if any(answer != arguments.name for answer in named):
+        own = parsed(arguments.record.read_text()) if arguments.record.is_file() else None
+        chosen = newest(named + ([own] if own is not None else [])) if named else set()
+        if chosen - {arguments.name}:
             arguments.waiting.unlink(missing_ok=True)
-            others = ", ".join(sorted({answer for answer in named if answer != arguments.name}))
+            others = ", ".join(sorted(chosen - {arguments.name}))
             fence(arguments.marker, f"the other cluster machines name {others} as the front node")
             if arguments.check:
                 sys.exit(1)

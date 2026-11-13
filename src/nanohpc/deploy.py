@@ -385,7 +385,12 @@ def variables(
             "machines": {
                 name: {"address": m["address"], "roles": m["roles"]} for name, m in config["machines"].items()
             },
-            "front": {"name": front_name, "address": front_values["address"]},
+            # since: when a switch made it the front node (front_since, 0 before any switch).
+            "front": {
+                "name": front_name,
+                "address": front_values["address"],
+                "since": front_values.get("front_since", 0),
+            },
             # The backup front node (None without one): it gets the front node's copies and can become the front node.
             "front_backup": None
             if backup is None

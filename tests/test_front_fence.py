@@ -44,7 +44,8 @@ class FenceBase(unittest.TestCase):
             "--peer", f"login2=127.0.0.1:{self.port}", "--marker", str(self.marker),
             "--took-over", str(self.took_over), "--systemctl", str(self.folder / "systemctl"),
             "--stop", "slurmctld.service", "--stop", "slurmdbd.service", "--name", "front", "--ask-key", "/key",
-            "--ask-known-hosts", "/hosts", "--waiting", str(self.folder / "waiting"), *mode,
+            "--ask-known-hosts", "/hosts", "--waiting", str(self.folder / "waiting"),
+            "--record", str(self.folder / "no-record"), *mode,
         ]  # fmt: skip
         return subprocess.run(command, capture_output=True, text=True, check=False)
 
@@ -127,6 +128,9 @@ class AskTest(FenceBase):
         (self.folder / "bin/ssh").write_text(FAKE_SSH)
         (self.folder / "bin/ssh").chmod(0o755)
         self.waiting = self.folder / "waiting"
+        # This machine's own record: the front node it was deployed with, and when that front node took over.
+        self.record = self.folder / "front-node"
+        self.record.write_text("front 0\n")
 
     def answer(self, address: str, text: str) -> None:
         (self.folder / f"{address}.answer").write_text(text + "\n")
@@ -138,7 +142,7 @@ class AskTest(FenceBase):
             "--took-over", str(self.took_over), "--systemctl", str(self.folder / "systemctl"),
             "--stop", "slurmctld.service", "--start", "slurmdbd.service", "--start", "slurmctld.service",
             "--ask", "gpu1=10.0.0.21", "--ask", "gpu2=10.0.0.22", "--ask-key", "/key", "--ask-known-hosts", "/hosts",
-            "--waiting", str(self.waiting), *mode,
+            "--waiting", str(self.waiting), "--record", str(self.record), *mode,
         ]  # fmt: skip
         environment = {**os.environ, "PATH": f"{self.folder / 'bin'}{os.pathsep}{os.environ['PATH']}",
                        "FAKE": str(self.folder)}  # fmt: skip
@@ -173,6 +177,27 @@ class AskTest(FenceBase):
         self.assertEqual(self.ask("--watch").returncode, 0)
         self.assertIn("start slurmdbd.service slurmctld.service", self.calls.read_text().splitlines())
         self.assertFalse(self.waiting.exists())
+
+    def test_a_machine_that_missed_the_switch_does_not_fence_the_new_front_node(self) -> None:
+        """gpu1 was off during the switch that made this machine the front node: it still names the old one, with
+        an older switch time. The newest record counts."""
+        self.record.write_text("front 1700000000\n")
+        self.answer("10.0.0.21", "login2 0")
+        self.answer("10.0.0.22", "front 1700000000")
+        result = self.ask("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.marker.exists())
+        # Also when only the stale machine answers: this machine's own record is newer.
+        (self.folder / "10.0.0.22.answer").unlink()
+        self.assertEqual(self.ask("--check").returncode, 0)
+
+    def test_the_old_front_node_follows_the_newest_record(self) -> None:
+        """The old front node comes back: its own record and a stale machine name it, but a machine deployed by
+        the later switch names the other one with a newer time."""
+        self.answer("10.0.0.21", "front 0")
+        self.answer("10.0.0.22", "login2 1700000000")
+        self.assertEqual(self.ask("--check").returncode, 1)
+        self.assertIn("login2", self.marker.read_text())
 
     def test_the_watch_does_not_start_a_controller_stopped_by_hand(self) -> None:
         self.answer("10.0.0.21", "front")
