@@ -625,6 +625,44 @@ class SlackAgentTest(unittest.IsolatedAsyncioTestCase):
                 await settle(pilot)
 
 
+class CrowdsecWizardTest(unittest.IsolatedAsyncioTestCase):
+    """Extras (and monitor mode's Alerts) ask whether CrowdSec is on and which networks are never blocked."""
+
+    async def test_crowdsec_on_with_never_block_networks(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = example_copy(folder)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await go(pilot, 5)
+                app.screen.query_one("#crowdsec-enabled", Switch).value = True
+                await fill(pilot, {"#crowdsec-never-block": "192.0.2.0/24, nonsense"})
+                self.assertTrue(app.state.file.get(["crowdsec", "enabled"]))
+                self.assertEqual(app.state.file.get(["crowdsec", "never_block"]), ["192.0.2.0/24", "nonsense"])
+                await go(pilot, 6)
+                errors = [str(item.name) for item in app.screen.query_one("#errors", ListView).query("ListItem")]
+                self.assertTrue(any(error.startswith("crowdsec.never_block[1]") for error in errors), errors)
+                self.assertTrue(all(error_step(error) == EXTRAS for error in errors), errors)
+                await go(pilot, 5)
+                await fill(pilot, {"#crowdsec-never-block": "192.0.2.0/24"})
+                await go(pilot, 6)
+                self.assertEqual(len(app.screen.query_one("#errors", ListView).children), 0)
+
+    async def test_monitor_mode_asks_for_crowdsec(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "monitor.yml"
+            shutil.copy(ROOT / "examples" / "monitor.yml", path)
+            app = WizardApp(path, None, Fakes({}, {}).dependencies())
+            async with app.run_test(size=SIZE) as pilot:
+                await go(pilot, 3)
+                app.screen.query_one("#crowdsec-enabled", Switch).value = True
+                await fill(pilot, {"#crowdsec-never-block": "203.0.113.0/24"})
+                self.assertTrue(app.state.file.get(["crowdsec", "enabled"]))
+                self.assertEqual(app.state.file.get(["crowdsec", "never_block"]), ["203.0.113.0/24"])
+                self.assertEqual(error_step("crowdsec.never_block[0] must be a network", "monitor"), 3)
+                await pilot.press("q")
+                await settle(pilot)
+
+
 class UidTest(unittest.IsolatedAsyncioTestCase):
     """The UID check runs by itself on probed machines; Fix needs a saved, valid file and a confirmation."""
 
