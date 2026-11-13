@@ -1,6 +1,12 @@
-# CrowdSec off (cluster.yml crowdsec.enabled false): a machine where it was on stops blocking (the undo command
-# stops the bouncer and removes its rule), CrowdSec and its numbers stop, and the numbers go from the exporter. The
-# packages stay installed. A machine that never had it changes nothing.
+# CrowdSec off (cluster.yml crowdsec.enabled false, the default): a machine where nanoHPC set it up (its numbers
+# timer is the marker) stops blocking (the undo command stops the bouncer and removes its rule), CrowdSec and its
+# numbers stop, and the numbers go from the exporter. The packages stay installed. A machine where nanoHPC never set
+# it up changes nothing, even if the administrator runs CrowdSec there.
+
+- name: Look for nanoHPC's CrowdSec numbers timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-security-metrics.timer
+  register: crowdsec_off_marker
 
 - name: Look for CrowdSec's undo command
   ansible.builtin.stat:
@@ -10,22 +16,15 @@
 - name: Stop the blocking
   ansible.builtin.command: /usr/local/sbin/nanohpc-crowdsec-undo
   changed_when: true
-  when: crowdsec_off_undo.stat.exists and not ansible_check_mode
+  when: crowdsec_off_marker.stat.exists and crowdsec_off_undo.stat.exists and not ansible_check_mode
 
-- name: Look for CrowdSec and its numbers timer
-  ansible.builtin.stat:
-    path: "{{ item }}"
-  loop: [/lib/systemd/system/crowdsec.service, /etc/systemd/system/nanohpc-security-metrics.timer]
-  register: crowdsec_off_units
-
-- name: Stop them
+- name: Stop CrowdSec and its numbers
   ansible.builtin.systemd_service:
-    name: "{{ item.item | basename }}"
+    name: "{{ item }}"
     state: stopped
     enabled: false
-  loop: "{{ crowdsec_off_units.results | selectattr('stat.exists') | list }}"
-  loop_control:
-    label: "{{ item.item | basename }}"
+  loop: [nanohpc-security-metrics.timer, crowdsec.service]
+  when: crowdsec_off_marker.stat.exists
 
 - name: Remove the numbers, their units, and the undo command
   ansible.builtin.file:
@@ -33,6 +32,7 @@
     state: absent
   loop:
     - /var/lib/nanohpc/metrics-textfile/security.prom
-    - /etc/systemd/system/nanohpc-security-metrics.timer
     - /etc/systemd/system/nanohpc-security-metrics.service
     - /usr/local/sbin/nanohpc-crowdsec-undo
+    - /etc/systemd/system/nanohpc-security-metrics.timer
+  when: crowdsec_off_marker.stat.exists

@@ -274,6 +274,12 @@ class NumbersTest(unittest.TestCase):
         self.assertIn('cluster_security_attacks_total{kind="ssh-bf",country="CN"} 1\n', text)
         self.assertIn("cluster_security_blocked 0\n", text)
 
+    def test_no_iptables_is_zero_dropped(self) -> None:
+        self.iptables.unlink()
+        self.alerts.write_text("null")
+        self.decisions.write_text("null")
+        self.assertIn("cluster_security_dropped_packets_total 0\n", self.run_script())
+
     def test_no_crowdsec_chain_is_zero_dropped(self) -> None:
         self.iptables.write_text("#!/bin/sh\necho 'iptables: No chain/target/match by that name.' >&2\nexit 1\n")
         self.alerts.write_text("null")
@@ -325,6 +331,19 @@ class DetectionRoleTest(unittest.TestCase):
                 for inner in [task, *task.get("block", [])]:
                     if "ansible.builtin.get_url" in inner:
                         self.assertIn("crowdsec_new_in_dry_run", str(inner.get("when")), (path, inner["name"]))
+
+
+class OffTest(unittest.TestCase):
+    """crowdsec.enabled false (the default) leaves a CrowdSec that nanoHPC did not set up alone."""
+
+    def test_only_a_crowdsec_nanohpc_set_up_is_stopped(self) -> None:
+        named = {task["name"]: task for task in tasks(ROLE / "tasks/off.yml")}
+        self.assertEqual(
+            named["Look for nanoHPC's CrowdSec numbers timer"]["ansible.builtin.stat"]["path"],
+            "/etc/systemd/system/nanohpc-security-metrics.timer",
+        )
+        for name in ("Stop the blocking", "Stop CrowdSec and its numbers"):
+            self.assertIn("crowdsec_off_marker.stat.exists", str(named[name]["when"]), name)
 
 
 class BlockingTest(unittest.TestCase):

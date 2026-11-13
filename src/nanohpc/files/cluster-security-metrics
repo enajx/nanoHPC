@@ -21,6 +21,7 @@ attackers try are never written."""
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from collections import Counter
@@ -86,7 +87,10 @@ def banned(alert: dict) -> bool:
 
 
 def dropped(iptables: str) -> int:
-    """Packets CrowdSec's firewall rules dropped (0 while there is no CrowdSec chain)."""
+    """Packets CrowdSec's firewall rules dropped (0 while there is no CrowdSec chain, or no iptables yet: it comes
+    with the bouncer)."""
+    if shutil.which(iptables) is None:
+        return 0
     result = subprocess.run(
         [iptables, "-L", "CROWDSEC_CHAIN", "-v", "-x", "-n"], capture_output=True, text=True, check=False
     )

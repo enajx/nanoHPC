@@ -135,7 +135,7 @@
       when: not ansible_check_mode
 
     - name: Require the test address gone from the block list
-      ansible.builtin.shell: set -o pipefail; ! ipset list | grep -E "^{{ crowdsec_test_address | regex_escape }}( |$)"
+      ansible.builtin.shell: set -o pipefail; sets=$(ipset list) && ! grep -E "^{{ crowdsec_test_address | regex_escape }}( |$)" <<< "$sets"
       args:
         executable: /bin/bash
       register: crowdsec_test_gone
