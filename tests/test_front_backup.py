@@ -168,6 +168,7 @@ class FrontBackupRoleTest(unittest.TestCase):
     def test_the_fence_watches_the_other_machine(self) -> None:
         values = {
             "front_backup_peer": "login2",
+            "front_backup_units": ["slurmctld.service", "nginx.service"],
             "ansible_facts": {"hostname": "front"},
             "nanohpc": {"machines": {"login2": {"address": "192.168.104.30"}}},
         }
@@ -175,6 +176,7 @@ class FrontBackupRoleTest(unittest.TestCase):
         subprocess.run(["sh", "-n"], input=text, text=True, check=True)
         self.assertIn("--hostname front", text)
         self.assertIn("--peer login2=192.168.104.30:6817", text)
+        self.assertIn("--stop slurmctld.service --stop nginx.service", text)
 
     def test_each_machine_of_the_pair_accepts_the_other_ones_copies(self) -> None:
         template = ROOT / "src/nanohpc/ansible/roles/accounts/templates/root_authorized_keys.j2"

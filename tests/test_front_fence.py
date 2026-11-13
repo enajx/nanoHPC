@@ -20,6 +20,7 @@ class FenceTest(unittest.TestCase):
         self.slurm_conf.write_text("ClusterName=lab\nSlurmctldHost=front(192.168.104.10)\n")
         self.calls = self.folder / "calls"
         systemctl = self.folder / "systemctl"
+        # Every unit runs (is-active succeeds).
         systemctl.write_text(f"#!/bin/sh\necho \"$*\" >> '{self.calls}'\n")
         systemctl.chmod(0o755)
         self.marker = self.folder / "fenced"
@@ -50,8 +51,12 @@ class FenceTest(unittest.TestCase):
         result = self.fence("--watch")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("login2", self.marker.read_text())
-        self.assertEqual(self.calls.read_text(), "stop slurmctld.service slurmdbd.service\n")
+        self.assertIn("stop slurmctld.service slurmdbd.service", self.calls.read_text().splitlines())
         self.listener.close()
+        # While fenced, the watch keeps the front-node services stopped (also after a restart of the machine).
+        self.calls.unlink()
+        self.assertEqual(self.fence("--watch").returncode, 0)
+        self.assertIn("stop slurmctld.service slurmdbd.service", self.calls.read_text().splitlines())
         self.assertEqual(self.fence("--check").returncode, 1)
         self.assertEqual(self.fence("--is-front").returncode, 1)
         self.assertEqual(self.fence("--release").returncode, 0)

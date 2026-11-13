@@ -9,7 +9,7 @@ stopped, and slurmctld runs only where slurm.conf names it).
 --check runs before slurmctld and slurmdbd start (ExecStartPre): it exits 1 while fenced, or when the other
 machine's controller answers (then it fences this machine), so they do not start.
 --watch runs every minute: when the other machine's controller answers, it fences this machine: it records the
-marker and stops the --stop units. A machine that took over by `nanohpc front-switch` (the --took-over file) never
+marker and stops the --stop units (the front-node services); while fenced, it keeps them stopped. A machine that took over by `nanohpc front-switch` (the --took-over file) never
 fences itself in the watch: the switch made it the front node while the other one did not answer.
 --is-front exits 0 only when slurm.conf names this machine and it is not fenced (the copies' ExecCondition).
 --hold REASON records the marker (the switch, on the old front node); --release removes it (the switch, on the
@@ -47,6 +47,15 @@ def fence(marker: Path, reason: str) -> None:
     print(f"nanohpc-front-fence: fenced: {reason}", file=sys.stderr)
 
 
+def stop(systemctl: str, units: list[str]) -> None:
+    """Stop the units that run (a fenced machine keeps them stopped, also after a restart)."""
+    running = [
+        unit for unit in units if subprocess.run([systemctl, "is-active", "--quiet", unit], check=False).returncode == 0
+    ]
+    if running:
+        subprocess.run([systemctl, "stop", *running], check=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--hostname", required=True, help="this machine's hostname, as slurm.conf names it")
@@ -72,7 +81,10 @@ def main() -> None:
         return
     if arguments.marker.exists():
         print(f"nanohpc-front-fence: fenced: {arguments.marker.read_text().strip()}", file=sys.stderr)
-        sys.exit(0 if arguments.watch else 1)
+        if not arguments.watch:
+            sys.exit(1)
+        stop(arguments.systemctl, arguments.stop)
+        return
     here = names_this_machine(arguments.slurm_conf, arguments.hostname)
     if arguments.is_front:
         sys.exit(0 if here else 1)
@@ -85,7 +97,7 @@ def main() -> None:
     fence(arguments.marker, f"the Slurm controller on {name} answered at {time.strftime('%Y-%m-%d %H:%M')}")
     if arguments.check:
         sys.exit(1)
-    subprocess.run([arguments.systemctl, "stop", *arguments.stop], check=True)
+    stop(arguments.systemctl, arguments.stop)
 
 
 if __name__ == "__main__":

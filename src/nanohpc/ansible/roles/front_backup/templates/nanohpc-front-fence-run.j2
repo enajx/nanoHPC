@@ -1,8 +1,7 @@
 #!/bin/sh
 # Managed by nanoHPC (roles/front_backup): nanohpc-front-fence with this machine's settings. Its peer is the other
-# machine of the front pair.
+# machine of the front pair. While fenced, the front-node services (front_backup_units) are kept stopped.
 exec /usr/local/sbin/nanohpc-front-fence --hostname {{ ansible_facts.hostname }} --slurm-conf /etc/slurm/slurm.conf \
   --peer {{ front_backup_peer }}={{ nanohpc.machines[front_backup_peer].address }}:6817 \
   --marker /var/lib/nanohpc-front-fence/fenced --took-over /var/lib/nanohpc-front-fence/took-over \
-  --systemctl /usr/bin/systemctl --stop slurmctld.service --stop slurmdbd.service \
-  --stop nanohpc-auto-deploy.timer --stop nanohpc-agent.service --stop nanohpc-agent-runner.service "$@"
+  --systemctl /usr/bin/systemctl{% for unit in front_backup_units %} --stop {{ unit }}{% endfor %} "$@"
