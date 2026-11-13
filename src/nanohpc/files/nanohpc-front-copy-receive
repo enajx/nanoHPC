@@ -1,0 +1,75 @@
+#!/usr/bin/python3
+"""Forced command of the front copy key in root's key file on the other machine of the front pair (from that
+machine's address only): receive the front node's copies into /var/lib/nanohpc-front-copy/state/ or nightly/.
+
+Allowed: the rsync server command line, as rsync 3.2 and 3.4 clients send it, writing only under FOLDER/state/ or
+FOLDER/nightly/ (FOLDER: /var/lib/nanohpc-front-copy; no `..`), with short options from a fixed list (dry run
+included) and the long options --delete (and its forms) and --timeout=N; never links or device files (no l or D
+option). Words may hold only letters, digits and `._/=-`. Anything else prints a message on stderr and exits 1. An
+allowed command is run without a shell. Afterwards anything in the folder it wrote that is not a plain file or folder is
+removed and setuid and setgid bits are dropped. Exits with rsync's code. NANOHPC_FRONT_COPY_FOLDER is for tests.
+"""
+
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+FOLDER = os.environ.get("NANOHPC_FRONT_COPY_FOLDER", "/var/lib/nanohpc-front-copy")
+SAFE_COMMAND = re.compile(r"[A-Za-z0-9._/= -]+")
+# One short option group: flags without arguments, then rsync's "e." capability letters.
+SHORT_OPTIONS = re.compile(r"-[vqogtprcuWIxSdOJNUn]*e\.[A-Za-z]*")
+LONG_OPTIONS = re.compile(r"--(delete|delete-before|delete-during|delete-after|delete-delay|timeout=[0-9]+)")
+
+
+def refuse(reason: str) -> None:
+    """Print why the command was refused and exit 1."""
+    print("nanohpc-front-copy-receive: refused: " + reason, file=sys.stderr)
+    sys.exit(1)
+
+
+def allowed(command: str) -> list[str]:
+    """Return the words of an allowed rsync server command line; refuse anything else."""
+    if not SAFE_COMMAND.fullmatch(command):
+        refuse("only an rsync server command with plain characters is allowed")
+    words = command.split(" ")
+    if words[:2] != ["rsync", "--server"] or "--sender" in words:
+        refuse("only 'rsync --server' receiving is allowed")
+    options = words[2:-2]
+    if not options or not SHORT_OPTIONS.fullmatch(options[0]):
+        refuse("the short rsync options are missing or not allowed")
+    for option in options[1:]:
+        if not LONG_OPTIONS.fullmatch(option):
+            refuse("rsync option not allowed: " + option)
+    target = words[-1]
+    inside = target.startswith((FOLDER + "/state/", FOLDER + "/nightly/"))
+    if len(words) < 5 or words[-2] != "." or not inside or ".." in target.split("/"):
+        refuse(f"the command must end with '. {FOLDER}/state/...' or '. {FOLDER}/nightly/...'")
+    return words
+
+
+def clean(folder: Path) -> None:
+    """Remove anything that is not a plain file or folder, and drop setuid and setgid bits."""
+    for path in sorted(folder.rglob("*"), reverse=True):
+        details = path.lstat()
+        if stat.S_ISREG(details.st_mode) or stat.S_ISDIR(details.st_mode):
+            if details.st_mode & (stat.S_ISUID | stat.S_ISGID):
+                os.chmod(path, stat.S_IMODE(details.st_mode) & ~(stat.S_ISUID | stat.S_ISGID))
+        else:
+            path.unlink()
+
+
+def main() -> None:
+    """Check the client's command, run it without a shell, then clean what it wrote."""
+    words = allowed(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
+    code = subprocess.run(words, check=False).returncode
+    # Only what this command wrote: the folders hold the large monitoring data.
+    if Path(words[-1]).is_dir():
+        clean(Path(words[-1]))
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()
