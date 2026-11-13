@@ -2,6 +2,7 @@
 front node keeps its Slurm controller and accounting stopped. Run through the real script, with a real listening
 port standing in for the other machine's Slurm controller and a fake systemctl that records its arguments."""
 
+import os
 import socket
 import subprocess
 import sys
@@ -13,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 FENCE = ROOT / "src/nanohpc/files/nanohpc-front-fence"
 
 
-class FenceTest(unittest.TestCase):
+class FenceBase(unittest.TestCase):
+    """A fake machine for the fence: its slurm.conf, a fake systemctl, and a port standing in for the other one."""
+
     def setUp(self) -> None:
         self.folder = Path(tempfile.mkdtemp())
         self.slurm_conf = self.folder / "slurm.conf"
@@ -40,10 +43,13 @@ class FenceTest(unittest.TestCase):
             sys.executable, str(FENCE), "--hostname", "front", "--slurm-conf", str(self.slurm_conf),
             "--peer", f"login2=127.0.0.1:{self.port}", "--marker", str(self.marker),
             "--took-over", str(self.took_over), "--systemctl", str(self.folder / "systemctl"),
-            "--stop", "slurmctld.service", "--stop", "slurmdbd.service", *mode,
+            "--stop", "slurmctld.service", "--stop", "slurmdbd.service", "--name", "front", "--ask-key", "/key",
+            "--ask-known-hosts", "/hosts", "--waiting", str(self.folder / "waiting"), *mode,
         ]  # fmt: skip
         return subprocess.run(command, capture_output=True, text=True, check=False)
 
+
+class FenceTest(FenceBase):
     def test_a_front_node_that_comes_back_stays_quiet(self) -> None:
         """The other machine's controller answers: the watch fences this machine and stops its services, and from
         then on they do not start (the check fails) until the fence is released."""
@@ -102,6 +108,83 @@ class FenceTest(unittest.TestCase):
         self.assertEqual(self.marker.read_text(), "switched to login2\n")
         self.assertEqual(self.fence("--check").returncode, 1)
         self.assertFalse(self.calls.exists())
+
+
+FAKE_SSH = """#!/bin/sh
+for word in "$@"; do case "$word" in root@*) target=${word#root@} ;; esac; done
+echo "ssh $target" >> "$FAKE/asked"
+if [ -e "$FAKE/$target.answer" ]; then cat "$FAKE/$target.answer"; else echo "no route" >&2; exit 255; fi
+"""
+
+
+class AskTest(FenceBase):
+    """Before the controller starts, the fence asks the other cluster machines which front node they were deployed
+    with (mocked: a fake ssh first on PATH answers for each address from a file)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.folder / "bin").mkdir()
+        (self.folder / "bin/ssh").write_text(FAKE_SSH)
+        (self.folder / "bin/ssh").chmod(0o755)
+        self.waiting = self.folder / "waiting"
+
+    def answer(self, address: str, text: str) -> None:
+        (self.folder / f"{address}.answer").write_text(text + "\n")
+
+    def ask(self, *mode: str) -> subprocess.CompletedProcess[str]:
+        command = [
+            sys.executable, str(FENCE), "--hostname", "front", "--name", "front", "--slurm-conf", str(self.slurm_conf),
+            "--peer", f"login2=127.0.0.1:{self.port}", "--marker", str(self.marker),
+            "--took-over", str(self.took_over), "--systemctl", str(self.folder / "systemctl"),
+            "--stop", "slurmctld.service", "--start", "slurmdbd.service", "--start", "slurmctld.service",
+            "--ask", "gpu1=10.0.0.21", "--ask", "gpu2=10.0.0.22", "--ask-key", "/key", "--ask-known-hosts", "/hosts",
+            "--waiting", str(self.waiting), *mode,
+        ]  # fmt: skip
+        environment = {**os.environ, "PATH": f"{self.folder / 'bin'}{os.pathsep}{os.environ['PATH']}",
+                       "FAKE": str(self.folder)}  # fmt: skip
+        return subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+
+    def test_starts_when_the_machines_that_answer_name_it(self) -> None:
+        self.answer("10.0.0.21", "front")
+        result = self.ask("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gpu1 names front", result.stderr)
+        self.assertFalse(self.marker.exists())
+
+    def test_fences_itself_when_they_name_the_other_machine(self) -> None:
+        """The old front node boots while the new one is off: the compute machines name the new one."""
+        self.answer("10.0.0.21", "login2")
+        self.answer("10.0.0.22", "login2")
+        result = self.ask("--check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("login2", self.marker.read_text())
+
+    def test_waits_while_no_machine_answers_and_starts_once_one_does(self) -> None:
+        """A cold boot of the whole cluster: the controller waits, and the minute watch starts it later."""
+        self.answer("10.0.0.21", "none")
+        result = self.ask("--check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("waiting", result.stderr)
+        self.assertTrue(self.waiting.exists())
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.ask("--watch").returncode, 0)
+        self.assertFalse(self.calls.exists())
+        self.answer("10.0.0.22", "front")
+        self.assertEqual(self.ask("--watch").returncode, 0)
+        self.assertIn("start slurmdbd.service slurmctld.service", self.calls.read_text().splitlines())
+        self.assertFalse(self.waiting.exists())
+
+    def test_the_watch_does_not_start_a_controller_stopped_by_hand(self) -> None:
+        self.answer("10.0.0.21", "front")
+        self.assertEqual(self.ask("--watch").returncode, 0)
+        self.assertFalse(self.calls.exists())
+
+    def test_the_watch_fences_a_waiting_machine_the_others_do_not_name(self) -> None:
+        self.waiting.write_text("")
+        self.answer("10.0.0.21", "login2")
+        self.assertEqual(self.ask("--watch").returncode, 0)
+        self.assertTrue(self.marker.exists())
+        self.assertFalse(self.waiting.exists())
 
 
 if __name__ == "__main__":

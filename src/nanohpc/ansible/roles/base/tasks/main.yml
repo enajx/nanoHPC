@@ -18,6 +18,23 @@
     group: root
     mode: "0644"
 
+# With a backup front node: the front node this machine was deployed with. Before the front node or its backup
+# front node starts its Slurm controller, it asks the other machines for it (roles/front_backup, nanohpc-front-fence).
+- name: Record the front node this machine was deployed with (backup front node only)
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/front-node
+    content: "{{ nanohpc.front.name }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  when: nanohpc.front_backup | default(none) is not none
+
+- name: No front node record without a backup front node
+  ansible.builtin.file:
+    path: /etc/nanohpc/front-node
+    state: absent
+  when: nanohpc.front_backup | default(none) is none
+
 - name: Record the nanoHPC version of this deploy (read by nanohpc check)
   ansible.builtin.copy:
     dest: /etc/nanohpc/version

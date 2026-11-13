@@ -51,6 +51,19 @@
     content: |
       {{ nanohpc.machines[front_backup_peer].address }} ssh-ed25519 {{ hostvars[front_backup_peer].ansible_facts.ssh_host_key_ed25519_public }}
 
+# The other cluster machines, asked which front node they were deployed with (not those whose facts this deploy has
+# not read: left out, so they cannot answer anyway).
+- name: Pin the other cluster machines' SSH host keys for the fence's question
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/front-copy/ask_known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name, machine in nanohpc.machines.items() if name not in groups['front_pair'] and hostvars[name].ansible_facts.ssh_host_key_ed25519_public is defined %}
+      {{ machine.address }} ssh-ed25519 {{ hostvars[name].ansible_facts.ssh_host_key_ed25519_public }}
+      {% endfor %}
+
 - name: Create the drop-in folders for the Slurm controller and accounting
   ansible.builtin.file:
     path: "/etc/systemd/system/{{ item }}.service.d"

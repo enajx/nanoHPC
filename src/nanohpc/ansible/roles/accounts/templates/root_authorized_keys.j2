@@ -28,3 +28,10 @@ from="{{ home_address }}",command="/usr/local/sbin/nanohpc-home-copy-receive{{ (
 # command, from its address only.
 from="{{ front_copy_address }}",command="/usr/local/sbin/nanohpc-front-copy-receive",restrict {{ front_copy_key }}
 {% endif %}
+{% for asker in front_node_askers | default([]) %}
+{% if loop.first %}
+# The front node and its backup front node ask which front node this machine was deployed with, before their Slurm
+# controller starts: only that answer, from their addresses only.
+{% endif %}
+from="{{ asker.address }}",command="cat /etc/nanohpc/front-node",restrict {{ asker.key }}
+{% endfor %}

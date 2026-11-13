@@ -18,6 +18,14 @@ from nanohpc.deploy import inventory, variables
 ROOT = Path(__file__).resolve().parents[1]
 ROLE = ROOT / "src/nanohpc/ansible/roles/front_backup"
 
+# The machines the fence templates see: the front pair, a compute machine and the home machine.
+MACHINES = {
+    "front": {"address": "192.168.104.10"},
+    "login2": {"address": "192.168.104.30"},
+    "gpu2": {"address": "192.168.104.12"},
+    "homesrv": {"address": "192.168.104.60"},
+}
+
 
 def render(path: Path, values: dict[str, Any]) -> str:
     """Render a role template as Ansible does (trim_blocks), failing on undefined values."""
@@ -170,13 +178,57 @@ class FrontBackupRoleTest(unittest.TestCase):
             "front_backup_peer": "login2",
             "front_backup_units": ["slurmctld.service", "nginx.service"],
             "ansible_facts": {"hostname": "front"},
-            "nanohpc": {"machines": {"login2": {"address": "192.168.104.30"}}},
+            "inventory_hostname": "front",
+            "groups": {"front_pair": ["front", "login2"]},
+            "nanohpc": {"machines": MACHINES},
         }
         text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
         subprocess.run(["sh", "-n"], input=text, text=True, check=True)
         self.assertIn("--hostname front", text)
         self.assertIn("--peer login2=192.168.104.30:6817", text)
         self.assertIn("--stop slurmctld.service --stop nginx.service", text)
+
+    def test_the_fence_asks_the_other_cluster_machines(self) -> None:
+        values = {
+            "front_backup_peer": "login2",
+            "front_backup_units": ["slurmctld.service"],
+            "ansible_facts": {"hostname": "front"},
+            "inventory_hostname": "front",
+            "groups": {"front_pair": ["front", "login2"]},
+            "nanohpc": {"machines": MACHINES},
+        }
+        text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
+        subprocess.run(["sh", "-n"], input=text, text=True, check=True)
+        self.assertIn("--name front", text)
+        self.assertIn("--ask gpu2=192.168.104.12 --ask homesrv=192.168.104.60 ", text)
+        self.assertNotIn("--ask login2", text)
+        self.assertIn("--start slurmdbd.service --start slurmctld.service", text)
+
+    def test_the_other_machines_tell_the_pair_which_front_node_they_have(self) -> None:
+        """Each front pair machine's key may only read the front node this machine was deployed with."""
+        template = ROOT / "src/nanohpc/ansible/roles/accounts/templates/root_authorized_keys.j2"
+        values = {
+            "users": [],
+            "admins": [],
+            "auto_deploy_key": "",
+            "front_address": "192.168.104.10",
+            "front_node_askers": [
+                {"address": "192.168.104.10", "key": "ssh-ed25519 AAAA nanohpc-front-copy@front"},
+                {"address": "192.168.104.30", "key": "ssh-ed25519 BBBB nanohpc-front-copy@login2"},
+            ],
+        }
+        text = render(template, values)
+        self.assertIn(
+            'from="192.168.104.30",command="cat /etc/nanohpc/front-node",restrict ssh-ed25519 BBBB nanohpc-front-copy@login2',
+            text,
+        )
+        self.assertIn('from="192.168.104.10",command="cat /etc/nanohpc/front-node",restrict', text)
+
+    def test_every_machine_records_its_front_node_only_with_a_backup_front_node(self) -> None:
+        tasks = yaml.safe_load((ROOT / "src/nanohpc/ansible/roles/base/tasks/main.yml").read_text())
+        task = next(task for task in tasks if "front node" in task["name"] and "Record" in task["name"])
+        self.assertEqual(task["ansible.builtin.copy"]["dest"], "/etc/nanohpc/front-node")
+        self.assertIn("front_backup", str(task["when"]))
 
     def test_the_fence_leaves_the_accounting_database_running(self) -> None:
         """The switch's stop step holds the fence and then dumps the accounting database for the last copy: the
@@ -185,7 +237,9 @@ class FrontBackupRoleTest(unittest.TestCase):
             **self.defaults("own"),
             "front_backup_peer": "login2",
             "ansible_facts": {"hostname": "front"},
-            "nanohpc": {"machines": {"login2": {"address": "192.168.104.30"}}},
+            "inventory_hostname": "front",
+            "groups": {"front_pair": ["front", "login2"]},
+            "nanohpc": {"machines": MACHINES},
         }
         text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
         self.assertIn("--stop slurmctld.service --stop slurmdbd.service", text)
