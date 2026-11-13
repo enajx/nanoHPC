@@ -1,0 +1,19 @@
+# CrowdSec (cluster.yml crowdsec): it reads only the SSH log and blocks addresses it sees attacking SSH, so it never
+# blocks Slurm, the website, Grafana, or the monitoring. Pinned packages from their checksummed .deb files (no
+# package source, so nothing upgrades by itself); the same packages serve every Ubuntu release nanoHPC supports.
+crowdsec_version: 1.8.2
+crowdsec_sha256:
+  amd64: d534ad21e6eed3d82a8fd748fa19f34970e95bfccd99735c0ebebcbad1e6366e
+  arm64: 3e52ed0c072806da0b986a5f1bbee9d2b109bb847d72633de86193e602da21d8
+crowdsec_bouncer_version: 0.0.38
+crowdsec_bouncer_sha256:
+  amd64: 6f679cf9d322e48b0e5f364f8a244959afd010e4dbb4c20ea50f247c7df28ce4
+  arm64: de964948257f4e27ffeccd648b10865f3ced5c642c20755011211bcfb123ae49
+crowdsec_package_url: https://packagecloud.io/crowdsec/crowdsec/ubuntu/pool/jammy/main/c
+crowdsec_packages: /opt/nanohpc-crowdsec
+# The only detections: SSH, and the Linux basics they need (log reading, dates, countries); the Linux ones bring
+# whitelist-good-actors, which only keeps known good services from being blocked.
+crowdsec_collections: [crowdsecurity/linux, crowdsecurity/sshd, crowdsecurity/whitelist-good-actors]
+crowdsec_allowlist: nanohpc-never-block
+# A documentation address (RFC 5737), never a real one, for the blocking test.
+crowdsec_test_address: 203.0.113.77

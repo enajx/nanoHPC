@@ -230,7 +230,8 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '24h' }).click()
   await expect(page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '24h' })).toHaveAttribute('aria-pressed', 'true')
   const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
-  for (const name of ['How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy', 'FAQ']) {
+  expect(await nav.getByRole('link').allInnerTexts()).toEqual(['Overview', 'How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy', 'Security', 'FAQ'])
+  for (const name of ['How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy', 'Security', 'FAQ']) {
     await nav.getByRole('link', { name, exact: true }).click()
     await expect(page.getByRole('heading', { name, exact: true }).first()).toBeVisible()
   }
@@ -259,6 +260,10 @@ test('static demo lets visitors browse all pages and view Grafana snapshots', as
   await nav.getByRole('link', { name: 'Jobs', exact: true }).click()
   await expect(page.locator('iframe[title="Running Jobs and Queue"]')).toBeVisible()
   await expect(page.locator('iframe[title="Queue history"]')).toBeVisible()
+  await nav.getByRole('link', { name: 'Security', exact: true }).click()
+  const security = page.locator('iframe[title="Attacks on the cluster"]')
+  await expect(security).toBeVisible()
+  expect(await security.getAttribute('src')).toMatch(/^https:\/\/snapshots\.raintank\.io\/dashboard\/snapshot\/[A-Za-z0-9]+\?theme=dark&kiosk$/)
   await page.goto(`${origin}${prefix}#queue?state=PENDING`)
   await expect(page.getByRole('table', { name: 'Sample jobs' }).locator('tbody tr')).toHaveCount(2)
   await nav.getByRole('link', { name: 'Machines', exact: true }).click()
