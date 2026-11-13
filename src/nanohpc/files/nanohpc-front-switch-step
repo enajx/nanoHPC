@@ -1,0 +1,247 @@
+#!/usr/bin/python3
+"""The switch's steps on the front pair's machines, run as root by `nanohpc front-switch` and `nanohpc front-back`
+from the administrator's machine. Each step has a --dry-run that changes nothing.
+
+stop --to NAME (on the old front node, when it answers): hold its fence (its Slurm controller and accounting then
+do not start again), stop the Slurm controller, send the last Slurm state and accounting copy to NAME, stop the
+accounting, stop and disable the other front-node services (monitoring, website, alerts, automatic deploys, Slack
+agent), send the last nightly copy, and disable the Slurm controller and accounting. Rerun safely after a failure.
+The dry run lists the running front-node services and tries both copies with rsync --dry-run.
+
+take --from NAME --peer ADDRESS:PORT (on the machine that becomes the front node): refuse while NAME's Slurm
+controller still answers, or without copies; then release its fence, record that it took over (the fence's watch
+then never fences it), and restore the copies: the accounting database (an existing one is first kept in
+/var/lib/nanohpc-front-copy/before-switch/), the Slurm state, the monitoring data (added to what is there, nothing
+deleted), the built website, and the secrets (database password, metrics certificate authority, the website's
+Let's Encrypt certificate). `nanohpc deploy` then sets up and starts the front-node services from them.
+
+units prints the front-node units the backup front node keeps stopped (the standby role uses the same list).
+NANOHPC_FRONT_SWITCH_ROOT (tests) is put in front of every path.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+TEST_ROOT = os.environ.get("NANOHPC_FRONT_SWITCH_ROOT", "")
+COPIES = Path(TEST_ROOT + "/var/lib/nanohpc-front-copy")
+TOOK_OVER = Path(TEST_ROOT + "/var/lib/nanohpc-front-fence/took-over")
+SLURM_STATE = Path(TEST_ROOT + "/var/lib/slurm/slurmctld")
+SLURM_UNITS = ["slurmctld.service", "slurmdbd.service", "mariadb.service"]
+# The front node's other services and timers; the copy timers stay (they run only on the active front node).
+OTHER_UNITS = [
+    "nanohpc-prometheus.service",
+    "nanohpc-history.service",
+    "nanohpc-alertmanager.service",
+    "nanohpc-grafana.service",
+    "nanohpc-monitor-snapshot.timer",
+    "nanohpc-home-job-policy.timer",
+    "nanohpc-job-end-notify.timer",
+    "nanohpc-user-check-notify.timer",
+    "nanohpc-backup-alert-weekly.timer",
+    "nanohpc-website-certificate.timer",
+    "nanohpc-login-copy.timer",
+    "nginx.service",
+    "nanohpc-auto-deploy.timer",
+    "nanohpc-deploy-hook.service",
+    "nanohpc-agent.service",
+    "nanohpc-agent-runner.service",
+]
+# The nightly folders: name in the copy, where it goes, and its owner (the monitoring history is added to).
+FOLDERS = [
+    ("prometheus", "/var/lib/nanohpc/prometheus", "cluster-prometheus"),
+    ("history", "/var/lib/nanohpc/history", "cluster-history"),
+    ("alertmanager", "/var/lib/nanohpc/alertmanager", "cluster-alertmanager"),
+    ("monitor", "/var/lib/nanohpc/monitor", "cluster-monitor"),
+    ("home-policy", "/var/lib/nanohpc/home-policy", "cluster-monitor"),
+    ("website-releases", "/srv/nanohpc-web/releases", "root"),
+]
+# The nightly archives (secrets): name in the copy, and the folder they are unpacked into.
+ARCHIVES = [
+    ("slurmdbd.env", "/etc/nanohpc"),
+    ("metrics-ca", "/etc/nanohpc"),
+    ("letsencrypt", "/etc/nanohpc/website"),
+]
+DATABASE = "slurm_acct_db"
+
+
+def run(command: list[str]) -> None:
+    """Run a command; a failure stops the step."""
+    subprocess.run(command, check=True)
+
+
+def fail(message: str) -> None:
+    """Print why the step stopped and exit 1."""
+    print(f"nanohpc-front-switch-step: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def loaded(units: list[str]) -> list[str]:
+    """The units installed on this machine."""
+    return [
+        unit
+        for unit in units
+        if subprocess.run(
+            ["systemctl", "show", "-p", "LoadState", "--value", unit], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        == "loaded"
+    ]
+
+
+def active(units: list[str]) -> list[str]:
+    """The units running now."""
+    return [
+        unit
+        for unit in units
+        if subprocess.run(["systemctl", "is-active", "--quiet", unit], check=False).returncode == 0
+    ]
+
+
+def stop(to: str, copy_run: str, fence_run: str, dry_run: bool) -> None:
+    """The old front node stops acting as the front node, after its last copies to `to`."""
+    if dry_run:
+        print(f"Would stop and disable: {', '.join(active(SLURM_UNITS + OTHER_UNITS)) or 'nothing (none running)'}")
+        for kind in ("state", "nightly"):
+            if subprocess.run([copy_run, kind, "--dry-run"], check=False).returncode != 0:
+                fail(f"this machine cannot send its copies to {to} (the {kind} copy's dry run failed)")
+        print(f"The copies to {to} work (dry run).")
+        return
+    run([fence_run, "--hold", f"the front node was switched to {to} at {time.strftime('%Y-%m-%d %H:%M')}"])
+    TOOK_OVER.unlink(missing_ok=True)
+    run(["systemctl", "stop", "slurmctld.service"])
+    # A rerun after the accounting database stopped needs it for the dump.
+    run(["systemctl", "start", "mariadb.service"])
+    if subprocess.run([copy_run, "state"], check=False).returncode != 0:
+        fail(f"the last Slurm state copy to {to} failed")
+    run(["systemctl", "stop", "slurmdbd.service", "mariadb.service"])
+    others = loaded(OTHER_UNITS)
+    if others:
+        run(["systemctl", "disable", "--now", *others])
+    if subprocess.run([copy_run, "nightly"], check=False).returncode != 0:
+        fail(f"the last nightly copy to {to} failed")
+    run(["systemctl", "disable", *SLURM_UNITS])
+    print(f"Stopped: this machine is no longer the front node; its last copies are on {to}.")
+
+
+def answers(address: str) -> bool:
+    """True when ADDRESS:PORT accepts a connection within 3 seconds."""
+    host, port = address.rsplit(":", 1)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+        connection.settimeout(3)
+        return connection.connect_ex((host, int(port))) == 0
+
+
+def database_login() -> None:
+    """Make the accounting daemon's MariaDB account with the restored password (a dump of one database holds no
+    accounts), so the deploy's dry run can log in with it."""
+    secret = Path(TEST_ROOT + "/etc/nanohpc/slurmdbd.env")
+    if not secret.is_file():
+        print("No database password in the nightly copy: the deploy makes a new one.")
+        return
+    password = secret.read_text().split("SLURM_DB_PASSWORD=", 1)[1].splitlines()[0]
+    if not re.fullmatch(r"[a-f0-9]{64}", password):
+        fail(f"{secret} does not hold a password made by nanoHPC")
+    sql = (
+        f"CREATE USER IF NOT EXISTS 'slurm'@'localhost' IDENTIFIED BY '{password}';\n"
+        f"ALTER USER 'slurm'@'localhost' IDENTIFIED BY '{password}';\n"
+        f"GRANT ALL PRIVILEGES ON {DATABASE}.* TO 'slurm'@'localhost';\n"
+    )
+    # On stdin, so the password is not in the process list.
+    subprocess.run(["mariadb"], input=sql, text=True, check=True)
+
+
+def take(source: str, peer: str, since: str, fence_run: str, dry_run: bool) -> None:
+    """This machine becomes the front node from the copies `source` sent."""
+    state = COPIES / "state"
+    nightly = COPIES / "nightly"
+    if not (state / "state.done").is_file() or not (state / f"{DATABASE}.sql").is_file():
+        fail(f"this machine has no state copy from {source} in {state}")
+    if not (nightly / "nightly.done").is_file():
+        fail(f"this machine has no nightly copy from {source} in {nightly}")
+    if answers(peer):
+        if not dry_run:
+            fail(f"the Slurm controller on {source} still answers ({peer}): stop it there first")
+        # The switch's dry runs come before the old front node's stop step.
+        print(f"The Slurm controller on {source} still answers ({peer}): the switch stops it first.")
+    for program in ("mariadb", "slurmctld"):
+        if shutil.which(program) is None:
+            fail(f"{program} is not installed here: deploy this machine as the backup front node first")
+    for owner in sorted({owner for _, _, owner in FOLDERS}):
+        if subprocess.run(["id", owner], capture_output=True, check=False).returncode != 0:
+            fail(f"the account {owner} is missing here: deploy this machine as the backup front node first")
+    if dry_run:
+        present = [name for name, _, _ in FOLDERS if (nightly / name).is_dir()]
+        print(f"Would restore from {source}'s copies: the Slurm state, the accounting database, {', '.join(present)}.")
+        return
+    run([fence_run, "--release"])
+    TOOK_OVER.parent.mkdir(parents=True, exist_ok=True)
+    # SINCE: the switch's time (front_since), which the deploy then records on every machine.
+    TOOK_OVER.write_text(f"took over from {source} at {time.strftime('%Y-%m-%d %H:%M')} since {since}\n")
+    for name, destination in ARCHIVES:
+        archive = nightly / f"{name}.tar"
+        if not archive.is_file():
+            print(f"Not in the nightly copy, left as it is: {destination}/{name}")
+            continue
+        Path(TEST_ROOT + destination).mkdir(parents=True, exist_ok=True)
+        run(["tar", "-C", TEST_ROOT + destination, "-xf", str(archive)])
+    run(["systemctl", "start", "mariadb.service"])
+    database_login()
+    count = subprocess.run(
+        ["mariadb", "--batch", "--skip-column-names", "--execute",
+         f"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='{DATABASE}'"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()  # fmt: skip
+    if count == "1":
+        before = COPIES / "before-switch"
+        before.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with open(before / f"{DATABASE}.sql", "w") as output:
+            subprocess.run(["mysqldump", "--single-transaction", DATABASE], stdout=output, check=True)
+        run(["mariadb", "--execute", f"DROP DATABASE {DATABASE}"])
+    run(["mariadb", "--execute", f"CREATE DATABASE {DATABASE}"])
+    with open(state / f"{DATABASE}.sql") as dump:
+        subprocess.run(["mariadb", DATABASE], stdin=dump, check=True)
+    SLURM_STATE.mkdir(parents=True, exist_ok=True)
+    run(["rsync", "-a", "--delete", f"{state}/slurmctld/", f"{SLURM_STATE}/"])
+    run(["chown", "-R", "slurm:slurm", str(SLURM_STATE)])
+    for name, destination, owner in FOLDERS:
+        if not (nightly / name).is_dir():
+            print(f"Not in the nightly copy, left as it is: {destination}")
+            continue
+        target = Path(TEST_ROOT + destination)
+        target.mkdir(parents=True, exist_ok=True)
+        run(["rsync", "-a", f"{nightly}/{name}/", f"{target}/"])
+        run(["chown", "-R", f"{owner}:{owner}", str(target)])
+    print(f"Restored {source}'s copies: run nanohpc deploy to start the front-node services here.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    steps = parser.add_subparsers(dest="step", required=True)
+    stopping = steps.add_parser("stop")
+    stopping.add_argument("--to", required=True)
+    taking = steps.add_parser("take")
+    taking.add_argument("--from", dest="source", required=True)
+    taking.add_argument("--peer", required=True, help="ADDRESS:PORT of the old front node's Slurm controller")
+    taking.add_argument("--since", required=True, help="the switch's time (front_since in cluster.yml)")
+    for step in (stopping, taking):
+        step.add_argument("--copy-run", required=True)
+        step.add_argument("--fence-run", required=True)
+        step.add_argument("--dry-run", action="store_true")
+    steps.add_parser("units")
+    arguments = parser.parse_args()
+    if arguments.step == "units":
+        print("\n".join(SLURM_UNITS + OTHER_UNITS))
+    elif arguments.step == "stop":
+        stop(arguments.to, arguments.copy_run, arguments.fence_run, arguments.dry_run)
+    else:
+        take(arguments.source, arguments.peer, arguments.since, arguments.fence_run, arguments.dry_run)
+
+
+if __name__ == "__main__":
+    main()

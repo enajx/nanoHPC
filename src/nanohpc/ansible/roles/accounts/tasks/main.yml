@@ -255,6 +255,17 @@
     home_copy_key: >-
       {{ hostvars[nanohpc.home.server].home_copy_public_key
          if inventory_hostname in nanohpc.home.own else '' }}
+    # The front node and its backup front node take each other's copies, for that command only (none from a machine
+    # left out of this deploy, which made no key).
+    front_copy_peer: "{{ (groups['front_pair'] | default([])) | reject('equalto', inventory_hostname) | first | default('') }}"
+    front_copy_key: >-
+      {{ hostvars[front_copy_peer].front_copy_public_key | default('')
+         if inventory_hostname in (groups['front_pair'] | default([])) else '' }}
+    front_copy_address: "{{ nanohpc.machines[front_copy_peer].address if front_copy_peer else '' }}"
+    # The other machines answer the front pair which front node they were deployed with (none from a machine left
+    # out of this deploy, which made no key).
+    front_node_askers: >-
+      {% set askers = [] %}{% if inventory_hostname not in (groups['front_pair'] | default([])) %}{% for name in groups['front_pair'] | default([]) if hostvars[name].front_copy_public_key is defined %}{% set _ = askers.append({'address': nanohpc.machines[name].address, 'key': hostvars[name].front_copy_public_key}) %}{% endfor %}{% endif %}{{ askers }}
     home_address: "{{ nanohpc.home.server_address }}"
     home_copy_device: "{{ nanohpc.home.disks[inventory_hostname] if inventory_hostname in nanohpc.home.own else none }}"
     front_address: "{{ nanohpc.metrics.front_address }}"

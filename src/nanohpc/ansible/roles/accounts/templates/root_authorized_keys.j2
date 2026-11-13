@@ -23,3 +23,15 @@ from="{{ front_address }}",command="/usr/local/sbin/nanohpc-login-copy-receive",
 # command, which writes as the user into their own home folder (and checks that /home is its disk, if it has one).
 from="{{ home_address }}",command="/usr/local/sbin/nanohpc-home-copy-receive{{ (' ' ~ home_copy_device) if home_copy_device else '' }}",restrict {{ home_copy_key }}
 {% endif %}
+{% if front_copy_key | default('') %}
+# The other machine of the front pair (the front node and its backup front node): its copies, only that receiving
+# command, from its address only.
+from="{{ front_copy_address }}",command="/usr/local/sbin/nanohpc-front-copy-receive",restrict {{ front_copy_key }}
+{% endif %}
+{% for asker in front_node_askers | default([]) %}
+{% if loop.first %}
+# The front node and its backup front node ask which front node this machine was deployed with, before their Slurm
+# controller starts: only that answer, from their addresses only.
+{% endif %}
+from="{{ asker.address }}",command="cat /etc/nanohpc/front-node",restrict {{ asker.key }}
+{% endfor %}

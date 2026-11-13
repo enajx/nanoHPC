@@ -46,6 +46,11 @@ def front_machine(config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return next((name, machine) for name, machine in config["machines"].items() if "front" in machine["roles"])
 
 
+def front_backup_machine(config: dict[str, Any]) -> str | None:
+    """Return the name of the backup front node (the login node with front_backup: true), or None."""
+    return next((name for name, machine in config["machines"].items() if machine.get("front_backup")), None)
+
+
 def gpu_count(machine: dict[str, Any]) -> int:
     """Return fitted GPUs, 0 for CPU-only machines."""
     return machine["gpu"]["count"] if machine.get("gpu") else 0

@@ -30,6 +30,7 @@ import yaml
 from nanohpc import maintenance_lock
 from nanohpc.render import (
     compute_machines,
+    front_backup_machine,
     front_machine,
     home_clients,
     home_server,
@@ -291,6 +292,13 @@ def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
     # The machines that mount the shared /home (see home_clients), and the front and login nodes that keep their own.
     groups["home_client"] = {"hosts": {name: None for name in home_clients(config)}}
     groups["home_own"] = {"hosts": {name: None for name in own_home_machines(config)}}
+    # The front node and its backup front node (front_backup: true), which copy to each other and fence each other.
+    backup = front_backup_machine(config)
+    front = front_machine(config)[0]
+    # During a switch whose old front node is away (front_backup_away), the pair in this run is the front node alone.
+    pair = [front, backup] if backup is not None else [front] if config.get("front_backup_away") else []
+    groups["front_pair"] = {"hosts": {name: None for name in pair}}
+    groups["front_backup"] = {"hosts": {} if backup is None else {backup: None}}
     groups["only_node"] = {"hosts": {} if node is None else {node: None}}
     return {"all": {"children": groups}}
 
@@ -356,7 +364,8 @@ def variables(
     """Return the `nanohpc` variables the roles read."""
     policy_limit = config["policy"]["max_gpus_per_user"]
     gpus = {name: machine["gpu"]["count"] for name, machine in compute_machines(config).items() if machine.get("gpu")}
-    _, front_values = front_machine(config)
+    front_name, front_values = front_machine(config)
+    backup = front_backup_machine(config)
     return {
         "nanohpc": {
             "cluster_name": config["cluster"]["name"],
@@ -379,6 +388,18 @@ def variables(
             "machines": {
                 name: {"address": m["address"], "roles": m["roles"]} for name, m in config["machines"].items()
             },
+            # since: when a switch made it the front node (front_since, 0 before any switch).
+            "front": {
+                "name": front_name,
+                "address": front_values["address"],
+                "since": front_values.get("front_since", 0),
+            },
+            # The backup front node (None without one): it gets the front node's copies and can become the front node.
+            # During a switch whose old front node does not answer, that machine is left out of cluster.yml for the
+            # deploy but is still the backup front node (front_backup_away): the pair's fence and records follow it.
+            "front_backup": config.get("front_backup_away")
+            if backup is None
+            else {"name": backup, "address": config["machines"][backup]["address"]},
             "real_gpus": {name: count for name, count in gpus.items() if name not in fake_gpus},
             "fake_gpus": {name: count for name, count in gpus.items() if name in fake_gpus},
             "qos": qos,

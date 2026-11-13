@@ -8,7 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from nanohpc import check, deploy, fixuid, probe, restart, restart_check, sim, update, update_report
+from nanohpc import check, deploy, fixuid, front_switch, probe, restart, restart_check, sim, update, update_report
 from nanohpc.config import load_config
 from nanohpc.render import render_forwarding_rules
 
@@ -110,6 +110,15 @@ def run_deploy_monitor(
     return deploy.deploy_monitor(
         config, ssh_config, simulated, fake_gpus, automatic, dry_run_only, only, accept_hardware_change
     )
+
+
+def run_front_switch(path: Path, machine: str, ssh_config: Path | None, planned: bool) -> int:
+    """Make the backup front node the front node (`planned`: front-back), with the real deploy, prompt and Slack."""
+
+    def deploy_run(config: dict, dry_run: bool) -> int:
+        return deploy.deploy(config, ssh_config, False, [], False, dry_run, None)
+
+    return front_switch.switch(path, machine, ssh_config, planned, input, deploy_run, front_switch.post_to_slack)
 
 
 def forwarding_rules(path: Path) -> int:
@@ -241,6 +250,19 @@ def main() -> None:
     restart_command.add_argument(
         "--no-bmc-ok", action="store_true", help="restart even if the machine's BMC (bmc_address) does not answer"
     )
+    front_status = commands.add_parser(
+        "front-status", help="show the front node and the backup front node, and its copies, without changing anything"
+    )
+    front_status.add_argument("path", type=Path, help="path to cluster.yml")
+    front_status.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines")
+    for name, text in (
+        ("front-switch", "make the backup front node the front node (also when the front node does not answer)"),
+        ("front-back", "move back: make the backup front node the front node, while the current front node answers"),
+    ):
+        moving = commands.add_parser(name, help=text)
+        moving.add_argument("path", type=Path, help="path to cluster.yml")
+        moving.add_argument("machine", help="the backup front node (front_backup: true in cluster.yml)")
+        moving.add_argument("--ssh-config", type=Path, help="SSH config file to reach the machines")
     rules = commands.add_parser(
         "forwarding-rules", help="print rules for the lab's own web server to show the cluster website"
     )
@@ -305,6 +327,11 @@ def main() -> None:
                 arguments.ssh_config,
             )
         )
+    if arguments.command == "front-status":
+        sys.exit(front_switch.status(arguments.path, arguments.ssh_config))
+    if arguments.command in ("front-switch", "front-back"):
+        planned = arguments.command == "front-back"
+        sys.exit(run_front_switch(arguments.path, arguments.machine, arguments.ssh_config, planned))
     if arguments.command == "forwarding-rules":
         sys.exit(forwarding_rules(arguments.path))
     if arguments.command == "sim":

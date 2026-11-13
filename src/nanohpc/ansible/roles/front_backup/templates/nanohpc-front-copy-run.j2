@@ -1,0 +1,24 @@
+#!/bin/sh
+# Managed by nanoHPC (roles/front_backup): nanohpc-front-copy to the other machine of the front pair.
+# Usage: nanohpc-front-copy-run state|nightly [--dry-run]
+set -eu
+kind=$1
+shift
+common="--to {{ front_backup_peer }}={{ front_backup_peer_address }} --key /etc/nanohpc/front-copy/id_ed25519 --known-hosts /etc/nanohpc/front-copy/known_hosts --staging /var/lib/nanohpc-front-copy-out"
+case "$kind" in
+  state)
+    exec /usr/local/sbin/nanohpc-front-copy --kind state $common \
+      --item /var/lib/slurm/slurmctld=slurmctld --database slurm_acct_db "$@" ;;
+  nightly)
+    exec /usr/local/sbin/nanohpc-front-copy --kind nightly $common \
+{% for name, source in front_backup_folders %}
+      --item {{ source }}={{ name }} \
+{% endfor %}
+{% for name, source in front_backup_archives %}
+      --archive {{ source }}={{ name }} \
+{% endfor %}
+      --exclude /wal/ --exclude /chunks_head/ --exclude /lock --exclude /queries.active --exclude '*.tmp*' "$@" ;;
+  *)
+    echo "usage: nanohpc-front-copy-run state|nightly [--dry-run]" >&2
+    exit 2 ;;
+esac

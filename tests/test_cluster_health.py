@@ -238,6 +238,19 @@ class ClusterHealthMetricsTests(unittest.TestCase):
             self.assertIn("ok    own /home copy timer", lines)
             self.assertIn("WARN  the last copy of the listed files to the own /home folders worked", lines)
 
+    def test_front_pair_checks_the_copies_to_the_backup_front_node(self) -> None:
+        """On the front node and its backup front node, the copy timers run, and a failed last copy is a warning."""
+        with tempfile.TemporaryDirectory(prefix="cluster-health-") as directory:
+            folder = Path(directory)
+            environment = make_machine(folder, "front", "nanohpc-front-copy-nightly.service")
+            self.assertNotIn("backup front node", run([], environment).stdout)
+            (folder / "root/etc/systemd/system").mkdir(parents=True)
+            (folder / "root/etc/systemd/system/nanohpc-front-copy-state.timer").write_text("")
+            lines = run([], environment).stdout.splitlines()
+            self.assertIn("ok    copy timers for the backup front node", lines)
+            self.assertIn("ok    the last Slurm state copy to the backup front node worked", lines)
+            self.assertIn("WARN  the last nightly copy to the backup front node worked", lines)
+
     def test_backup_checks(self) -> None:
         """A recent good backup is ok; before the first night there is no age check; no backup configured: no check."""
         cases = [

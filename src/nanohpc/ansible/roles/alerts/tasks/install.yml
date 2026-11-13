@@ -1,0 +1,35 @@
+# Alertmanager's account and pinned download, unpacked (the front node, and the backup front node's standby role).
+- name: Name the download for this machine's CPU type
+  ansible.builtin.set_fact:
+    metrics_arch: "{{ 'arm64' if ansible_facts.architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Name the Alertmanager folder
+  ansible.builtin.set_fact:
+    alertmanager_dir: "/opt/nanohpc-metrics/alertmanager-{{ nanohpc.metrics.alertmanager.version }}.linux-{{ metrics_arch }}"
+
+- name: Create the Alertmanager service account
+  ansible.builtin.user:
+    name: cluster-alertmanager
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Download Alertmanager, checking its SHA-256
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/alertmanager/releases/download/v{{ nanohpc.metrics.alertmanager.version }}/alertmanager-{{ nanohpc.metrics.alertmanager.version }}.linux-{{ metrics_arch }}.tar.gz"
+    dest: "/var/tmp/alertmanager-{{ nanohpc.metrics.alertmanager.version }}.linux-{{ metrics_arch }}.tar.gz"
+    checksum: "sha256:{{ nanohpc.metrics.alertmanager.sha256[metrics_arch] }}"
+    mode: "0644"
+    timeout: 120
+  register: alertmanager_download
+
+- name: Unpack Alertmanager (owned by root, whatever the archive says)
+  ansible.builtin.unarchive:
+    src: "/var/tmp/alertmanager-{{ nanohpc.metrics.alertmanager.version }}.linux-{{ metrics_arch }}.tar.gz"
+    dest: /opt/nanohpc-metrics
+    remote_src: true
+    extra_opts: [--no-same-owner]
+    owner: root
+    group: root
+    creates: "{{ alertmanager_dir }}/alertmanager"
+  when: not (ansible_check_mode and alertmanager_download is changed)  # dry run: not downloaded yet

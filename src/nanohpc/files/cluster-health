@@ -312,6 +312,18 @@ if has home && test -f "$root/etc/systemd/system/nanohpc-home-copy.timer"; then
     sh -c '! systemctl is-failed --quiet nanohpc-home-copy.service'
 fi
 
+# On the front node and its backup front node: the active front node copies its Slurm state, accounting, monitoring
+# data, website and secrets to the other one (nanohpc-front-copy-*; on the other one the copies are skipped). A failed
+# copy is a warning: a backup front node that is off must not fail the front node.
+if test -f "$root/etc/systemd/system/nanohpc-front-copy-state.timer"; then
+  check "copy timers for the backup front node" sh -c \
+    'systemctl is-active --quiet nanohpc-front-copy-state.timer && systemctl is-active --quiet nanohpc-front-copy-nightly.timer'
+  note "the last Slurm state copy to the backup front node worked" \
+    sh -c '! systemctl is-failed --quiet nanohpc-front-copy-state.service'
+  note "the last nightly copy to the backup front node worked" \
+    sh -c '! systemctl is-failed --quiet nanohpc-front-copy-nightly.service'
+fi
+
 # With login nodes, the front node copies the login banner's data to them (nanohpc-login-copy).
 if has front && test -f "$root/etc/systemd/system/nanohpc-login-copy.timer"; then
   check "login node copy timer" systemctl is-active --quiet nanohpc-login-copy.timer

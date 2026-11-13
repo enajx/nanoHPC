@@ -1,0 +1,200 @@
+# On the front node and its backup front node (the front pair): the fence, the copies, and the switch's steps.
+# - The fence (nanohpc-front-fence): slurmctld and slurmdbd do not start while the other machine's Slurm controller
+#   answers or while this machine is fenced; a watch every minute fences a front node that comes back while the
+#   other one is the front node.
+# - The copies (nanohpc-front-copy): the machine that is the front node sends the other one its Slurm state and
+#   accounting every 5 minutes, and its monitoring data, built website and secrets every night; on the other
+#   machine the copy services are skipped (ExecCondition).
+# - nanohpc-front-switch-step: the steps `nanohpc front-switch` and `nanohpc front-back` run here.
+- name: Name the other machine of the front pair
+  ansible.builtin.set_fact:
+    # From the variables, not the inventory: during a switch the old front node is left out of the run but is still
+    # the other machine of the pair.
+    front_backup_peer: "{{ nanohpc.front_backup.name if inventory_hostname == nanohpc.front.name else nanohpc.front.name }}"
+    front_backup_peer_address: "{{ nanohpc.front_backup.address if inventory_hostname == nanohpc.front.name else nanohpc.front.address }}"
+
+- name: Install the fence, copy, and switch commands
+  ansible.builtin.copy:
+    src: "{{ nanohpc.package_files }}/{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [nanohpc-front-fence, nanohpc-front-copy, nanohpc-front-copy-receive, nanohpc-front-switch-step]
+
+- name: Install the fence and copy commands with this machine's settings
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [nanohpc-front-fence-run, nanohpc-front-copy-run]
+
+- name: Create the folders of the fence and the copies (root only)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - /var/lib/nanohpc-front-fence
+    - /var/lib/nanohpc-front-copy
+    - /var/lib/nanohpc-front-copy/state
+    - /var/lib/nanohpc-front-copy/nightly
+    - /var/lib/nanohpc-front-copy-out
+
+- name: Pin the other machine's SSH host key for the copies
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/front-copy/known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    # Empty while the other machine is left out of this run (no facts): the copies to it then fail and warn.
+    content: |
+      {% if hostvars[front_backup_peer].ansible_facts.ssh_host_key_ed25519_public is defined %}
+      {{ front_backup_peer_address }} ssh-ed25519 {{ hostvars[front_backup_peer].ansible_facts.ssh_host_key_ed25519_public }}
+      {% endif %}
+
+# The other cluster machines, asked which front node they were deployed with (not those whose facts this deploy has
+# not read: left out, so they cannot answer anyway).
+- name: Pin the other cluster machines' SSH host keys for the fence's question
+  ansible.builtin.copy:
+    dest: /etc/nanohpc/front-copy/ask_known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for name, machine in nanohpc.machines.items() if name not in [nanohpc.front.name, nanohpc.front_backup.name] and hostvars[name].ansible_facts.ssh_host_key_ed25519_public is defined %}
+      {{ machine.address }} ssh-ed25519 {{ hostvars[name].ansible_facts.ssh_host_key_ed25519_public }}
+      {% endfor %}
+
+- name: Create the drop-in folders for the Slurm controller and accounting
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [slurmctld, slurmdbd]
+
+- name: Check the fence before the Slurm controller and accounting start
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item }}.service.d/nanohpc-front-fence.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by nanoHPC (roles/front_backup): do not start while the other machine of the front pair is the
+      # front node, or while this machine is fenced.
+      [Service]
+      ExecStartPre=/usr/local/sbin/nanohpc-front-fence-run --check
+  loop: [slurmctld, slurmdbd]
+  register: front_fence_dropins
+
+- name: Install the fence watch and the copy services and timers
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ item.content }}"
+  loop:
+    - name: nanohpc-front-fence.service
+      content: |
+        [Unit]
+        Description=Keep this front node quiet while the other machine of the front pair is the front node (nanoHPC)
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/nanohpc-front-fence-run --watch
+        TimeoutStartSec=50s
+    - name: nanohpc-front-fence.timer
+      content: |
+        [Unit]
+        Description=Check the front pair's fence every minute (nanoHPC)
+
+        [Timer]
+        OnActiveSec=1min
+        OnUnitActiveSec=1min
+
+        [Install]
+        WantedBy=timers.target
+    - name: nanohpc-front-copy-state.service
+      content: |
+        [Unit]
+        Description=Send the Slurm state and accounting to the other machine of the front pair (nanoHPC)
+        After=network-online.target mariadb.service
+
+        [Service]
+        Type=oneshot
+        # Only on the machine that is the front node now; skipped elsewhere.
+        ExecCondition=/usr/local/sbin/nanohpc-front-fence-run --is-front
+        ExecStart=/usr/local/sbin/nanohpc-front-copy-run state
+        Nice=10
+        TimeoutStartSec=4min
+    - name: nanohpc-front-copy-state.timer
+      content: |
+        [Unit]
+        Description=Send the Slurm state to the other machine of the front pair every 5 minutes (nanoHPC)
+
+        [Timer]
+        OnCalendar=*:0/5
+
+        [Install]
+        WantedBy=timers.target
+    - name: nanohpc-front-copy-nightly.service
+      content: |
+        [Unit]
+        Description=Send the monitoring data, website and secrets to the other machine of the front pair (nanoHPC)
+        After=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecCondition=/usr/local/sbin/nanohpc-front-fence-run --is-front
+        ExecStart=/usr/local/sbin/nanohpc-front-copy-run nightly
+        Nice=10
+        IOSchedulingClass=idle
+        TimeoutStartSec=3h
+    - name: nanohpc-front-copy-nightly.timer
+      content: |
+        [Unit]
+        Description=Send the front node's nightly copy to the other machine of the front pair (nanoHPC)
+
+        [Timer]
+        OnCalendar=*-*-* {{ front_backup_nightly_time }}:00
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: front_backup_unit_files
+
+- name: Load the new units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: front_fence_dropins is changed or front_backup_unit_files is changed
+
+- name: Require the fence to let this machine's Slurm controller run, if it is the front node
+  ansible.builtin.command: /usr/local/sbin/nanohpc-front-fence-run --check
+  changed_when: false
+  check_mode: false
+  # Not in the dry run: a switch releases the fence of the machine it makes the front node only after its dry runs.
+  when: inventory_hostname in groups['role_front'] and not ansible_check_mode
+
+# The record that this machine took over (the fence's watch never fences it) is needed only while the other machine
+# may still name itself in its slurm.conf: not once both machines of the pair are deployed in this run.
+- name: Remove the record of an earlier takeover once the other machine of the pair is deployed
+  ansible.builtin.file:
+    path: /var/lib/nanohpc-front-fence/took-over
+    state: absent
+  when: inventory_hostname in groups['role_front'] and front_backup_peer in groups['front_pair'] and front_backup_peer not in nanohpc_left_out
+
+- name: Run the fence watch and the copy timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [nanohpc-front-fence.timer, nanohpc-front-copy-state.timer, nanohpc-front-copy-nightly.timer]
+  when: not (ansible_check_mode and front_backup_unit_files is changed)  # dry run: not installed yet

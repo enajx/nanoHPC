@@ -1,0 +1,199 @@
+#!/usr/bin/python3
+"""Keep a front node quiet when the other machine of the front pair (the front node and its backup front node) is
+the active front node, so that two Slurm controllers never run at once.
+
+A machine acts only when its own slurm.conf names it as the Slurm controller (SlurmctldHost). It then tests the
+other machine's Slurm controller port: only an active front node has it open (a backup front node keeps slurmctld
+stopped, and slurmctld runs only where slurm.conf names it).
+
+--check runs before slurmctld and slurmdbd start (ExecStartPre): it exits 1 while fenced, or when the other
+machine's controller answers (then it fences this machine), so they do not start.
+--watch runs every minute: when the other machine's controller answers, it fences this machine: it records the
+marker and stops the --stop units (the front-node services); while fenced, it keeps them stopped. A machine that took
+over by `nanohpc front-switch` (the --took-over file) is never fenced, neither by --check nor by the watch: the switch
+made it the front node while the other one did not answer. The deploy removes that record once both machines are
+deployed again.
+Before that, with --ask machines (the other cluster machines), --check asks each which front node it was deployed
+with (/etc/nanohpc/front-node, "NAME SINCE", through its forced command for this machine's front copy key). The
+newest records count (SINCE: when the last switch made NAME the front node), this machine's own --record included,
+so a machine that missed a switch never outvotes it. It fences this machine when they name another machine, and refuses to start while none answers (--waiting is written; the watch
+asks again every minute and starts the --start units once one names this machine). An old front node that boots
+while the new front node is off is so fenced by the machines the switch's deploy updated.
+--is-front exits 0 only when slurm.conf names this machine and it is not fenced (the copies' ExecCondition).
+--hold REASON records the marker (the switch, on the old front node); --release removes it (the switch, on the
+machine it makes the front node). The fence is never lifted by itself.
+"""
+
+import argparse
+import re
+import socket
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+
+def answers(address: str, port: int) -> bool:
+    """True when the port accepts a connection within 3 seconds."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+        connection.settimeout(3)
+        return connection.connect_ex((address, port)) == 0
+
+
+def names_this_machine(slurm_conf: Path, hostname: str) -> bool:
+    """True when slurm.conf names this machine as the Slurm controller."""
+    if not slurm_conf.is_file():
+        return False
+    named = re.search(r"^SlurmctldHost=([^(\s]+)", slurm_conf.read_text(), re.MULTILINE)
+    return named is not None and named[1] == hostname
+
+
+def parsed(text: str) -> tuple[str, int] | None:
+    """A front node record, "NAME SINCE" (SINCE: when a switch made NAME the front node, 0 before any switch; a
+    record without it counts as 0), or None for no record ("none" or nothing)."""
+    words = text.split()
+    if not words or words[0] == "none":
+        return None
+    return words[0], int(words[1]) if len(words) > 1 and words[1].isdigit() else 0
+
+
+def asked(machine: str, key: str, known_hosts: str) -> tuple[str, int] | None:
+    """The front node a machine was deployed with (its forced command prints its record), or None: no answer, or no
+    record."""
+    name, address = machine.split("=", 1)
+    command = [
+        "ssh", "-i", key, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+        "-o", f"UserKnownHostsFile={known_hosts}", "-o", "ConnectTimeout=5", f"root@{address}", "front-node",
+    ]  # fmt: skip
+    result = subprocess.run(command, capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL, check=False)
+    record = parsed(result.stdout) if result.returncode == 0 else None
+    if record is None:
+        print(f"nanohpc-front-fence: no answer from {name}", file=sys.stderr)
+        return None
+    print(f"nanohpc-front-fence: {name} names {record[0]} (since {record[1]})", file=sys.stderr)
+    return record
+
+
+def named_front(machines: list[str], key: str, known_hosts: str) -> list[tuple[str, int]]:
+    """The front node records of the other cluster machines that answer."""
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        answers = pool.map(lambda machine: asked(machine, key, known_hosts), machines)
+    return [answer for answer in answers if answer is not None]
+
+
+def newest(records: list[tuple[str, int]]) -> set[str]:
+    """The front nodes named by the newest records: a machine that missed a later switch never outvotes it."""
+    since = max(record[1] for record in records)
+    return {name for name, time_ in records if time_ == since}
+
+
+def fence(marker: Path, reason: str) -> None:
+    """Record the marker with its reason."""
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(reason + "\n")
+    print(f"nanohpc-front-fence: fenced: {reason}", file=sys.stderr)
+
+
+def stop(systemctl: str, units: list[str]) -> None:
+    """Stop the units that run (a fenced machine keeps them stopped, also after a restart)."""
+    running = [
+        unit for unit in units if subprocess.run([systemctl, "is-active", "--quiet", unit], check=False).returncode == 0
+    ]
+    if running:
+        subprocess.run([systemctl, "stop", *running], check=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--hostname", required=True, help="this machine's hostname, as slurm.conf names it")
+    parser.add_argument("--slurm-conf", type=Path, required=True)
+    parser.add_argument("--peer", required=True, help="NAME=ADDRESS:PORT of the other machine's Slurm controller")
+    parser.add_argument("--marker", type=Path, required=True)
+    parser.add_argument("--took-over", type=Path, required=True, help="written by the switch on the new front node")
+    parser.add_argument("--systemctl", required=True)
+    parser.add_argument("--stop", action="append", required=True, help="a unit to stop when fencing (repeat)")
+    parser.add_argument("--name", required=True, help="this machine's name in cluster.yml")
+    parser.add_argument("--ask", action="append", default=[], help="NAME=ADDRESS of another cluster machine to ask")
+    parser.add_argument("--ask-key", required=True)
+    parser.add_argument("--ask-known-hosts", required=True)
+    parser.add_argument("--record", type=Path, required=True, help="this machine's own front node record")
+    parser.add_argument("--waiting", type=Path, required=True, help="written while the controller waits for answers")
+    parser.add_argument("--start", action="append", default=[], help="a unit the watch starts after waiting (repeat)")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--check", action="store_true")
+    mode.add_argument("--watch", action="store_true")
+    mode.add_argument("--is-front", action="store_true")
+    mode.add_argument("--hold")
+    mode.add_argument("--release", action="store_true")
+    arguments = parser.parse_args()
+    if arguments.hold is not None:
+        fence(arguments.marker, arguments.hold)
+        return
+    if arguments.release:
+        arguments.marker.unlink(missing_ok=True)
+        print("nanohpc-front-fence: released")
+        return
+    if arguments.marker.exists():
+        print(f"nanohpc-front-fence: fenced: {arguments.marker.read_text().strip()}", file=sys.stderr)
+        if not arguments.watch:
+            sys.exit(1)
+        stop(arguments.systemctl, arguments.stop)
+        return
+    here = names_this_machine(arguments.slurm_conf, arguments.hostname)
+    if arguments.is_front:
+        sys.exit(0 if here else 1)
+    if not here:
+        return
+    name, address = arguments.peer.split("=", 1)
+    host, port = address.rsplit(":", 1)
+    took_over = arguments.took_over.read_text() if arguments.took_over.exists() else ""
+    # First the other machine of the pair: while its Slurm controller answers, this one never starts, whatever the
+    # other machines answer. The machine a switch made the front node (the took-over record) is never fenced by the
+    # other one: that one may be an old front node that came back first, with a slurm.conf that still names itself.
+    if not took_over and answers(host, int(port)):
+        arguments.waiting.unlink(missing_ok=True)
+        fence(arguments.marker, f"the Slurm controller on {name} answered at {time.strftime('%Y-%m-%d %H:%M')}")
+        if arguments.check:
+            sys.exit(1)
+        stop(arguments.systemctl, arguments.stop)
+        return
+    # Then the other cluster machines, which front node they were deployed with: at a start (--check), and in the
+    # watch while a start waits for them. An old front node that boots while the new one is off is named by none.
+    if not arguments.ask or not (arguments.check or arguments.waiting.exists()):
+        return
+    named = named_front(arguments.ask, arguments.ask_key, arguments.ask_known_hosts)
+    own = parsed(arguments.record.read_text()) if arguments.record.is_file() else None
+    chosen = newest(named + ([own] if own is not None else [])) if named else set()
+    if chosen - {arguments.name}:
+        arguments.waiting.unlink(missing_ok=True)
+        others = ", ".join(sorted(chosen - {arguments.name}))
+        fence(arguments.marker, f"the other cluster machines name {others} as the front node")
+        if arguments.check:
+            sys.exit(1)
+        stop(arguments.systemctl, arguments.stop)
+        return
+    # The machine the last switch made the front node (its took-over record holds the switch's time, which its own
+    # record names) does not wait for answers: the other machines may be the ones still off.
+    switched_here = own is not None and own[0] == arguments.name and took_over.split()[-1:] == [str(own[1])]
+    if not named and not switched_here:
+        arguments.waiting.parent.mkdir(parents=True, exist_ok=True)
+        arguments.waiting.write_text(time.strftime("%Y-%m-%d %H:%M") + "\n")
+        print(
+            "nanohpc-front-fence: waiting: no other cluster machine answers which front node it was deployed with;"
+            " the Slurm controller starts once one names this machine (checked every minute)",
+            file=sys.stderr,
+        )
+        if arguments.check:
+            sys.exit(1)
+        return
+    if arguments.watch:
+        arguments.waiting.unlink()
+        print(f"nanohpc-front-fence: named by the other machines: starting {' '.join(arguments.start)}")
+        subprocess.run([arguments.systemctl, "start", *arguments.start], check=True)
+        return
+    arguments.waiting.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()

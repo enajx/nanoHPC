@@ -1,0 +1,28 @@
+# Each machine of the front pair (the front node and its backup front node) has its own key for sending its copies
+# to the other one. Made before the accounts role runs, so the other machine's root key file can accept it (from
+# this machine's address only, for nanohpc-front-copy-receive).
+- name: Create the front copy folder
+  ansible.builtin.file:
+    path: /etc/nanohpc/front-copy
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Make the front copy key
+  ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C "nanohpc-front-copy@{{ inventory_hostname }}" -f /etc/nanohpc/front-copy/id_ed25519
+  args:
+    creates: /etc/nanohpc/front-copy/id_ed25519
+  register: front_copy_keygen
+
+- name: Read the front copy key's public half
+  ansible.builtin.slurp:
+    src: /etc/nanohpc/front-copy/id_ed25519.pub
+  register: front_copy_key_file
+  when: not (ansible_check_mode and front_copy_keygen is changed)  # dry run: the key is not made yet
+
+- name: Keep the public key for the other machine of the pair
+  ansible.builtin.set_fact:
+    front_copy_public_key: >-
+      {{ (front_copy_key_file.content | b64decode | trim) if front_copy_key_file.content is defined
+         else '(the key this deploy makes)' }}

@@ -1,0 +1,95 @@
+#!/usr/bin/python3
+"""Send the front node's copies to the other machine of the front pair, the backup front node (run as root on the
+active front node by nanohpc-front-copy-state.timer every 5 minutes and nanohpc-front-copy-nightly.timer every
+night, and by the switch for a last copy).
+
+Each --item SOURCE=NAME (a folder) goes with rsync --delete to root@ADDRESS:/var/lib/nanohpc-front-copy/KIND/NAME/,
+with the given key and pinned host keys; the other machine's root key file accepts this key only from this
+machine's address, for nanohpc-front-copy-receive. Each --archive SOURCE=NAME (a folder with links, such as Let's
+Encrypt's) is packed first into STAGING/NAME.tar and sent as that one file. --database NAME (kind state) is dumped
+with mysqldump into STAGING/NAME.sql and sent after the items. The time of the copy (KIND.done) is sent last, so
+it is there only when everything before it arrived. rsync's exit code 24 (files vanished during the copy, as
+Prometheus removes compacted blocks) repeats that copy, up to 3 times. --dry-run sends with rsync --dry-run and
+sends no time. Exits 1 when a copy failed; rsync's own messages go to stderr (the journal).
+"""
+
+import argparse
+import subprocess
+import sys
+import tarfile
+import time
+from pathlib import Path
+
+DESTINATION = "/var/lib/nanohpc-front-copy"
+VANISHED = 24
+TRIES = 3
+
+
+def send(common: list[str], source: str, target: str) -> bool:
+    """Copy one file or folder; True when it worked."""
+    for _ in range(TRIES):
+        code = subprocess.run([*common, source, target], stdin=subprocess.DEVNULL, check=False).returncode
+        if code != VANISHED:
+            return code == 0
+    return False
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--kind", required=True, choices=["state", "nightly"])
+    parser.add_argument("--to", required=True, help="NAME=ADDRESS of the other machine")
+    parser.add_argument("--key", required=True)
+    parser.add_argument("--known-hosts", required=True)
+    parser.add_argument("--staging", type=Path, required=True, help="a root-only folder for the dump and archives")
+    parser.add_argument("--item", action="append", default=[], help="SOURCE=NAME, a folder (repeat)")
+    parser.add_argument("--archive", action="append", default=[], help="SOURCE=NAME, a folder sent as one archive")
+    parser.add_argument("--exclude", action="append", default=[], help="an rsync exclude pattern (repeat)")
+    parser.add_argument("--database", help="a database to dump and send (kind state)")
+    parser.add_argument("--dry-run", action="store_true")
+    arguments = parser.parse_args()
+    name, address = arguments.to.split("=", 1)
+    ssh = (
+        f"ssh -i {arguments.key} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "
+        f"-o UserKnownHostsFile={arguments.known_hosts} -o ConnectTimeout=15"
+    )
+    # Plain files and folders only (no links or device files): the other machine refuses anything else.
+    common = ["rsync", "--recursive", "--times", "--perms", "--timeout=120", "--rsh=" + ssh]
+    common += [f"--exclude={pattern}" for pattern in arguments.exclude]
+    if arguments.dry_run:
+        common.append("--dry-run")
+    target = f"root@{address}:{DESTINATION}/{arguments.kind}"
+    arguments.staging.mkdir(mode=0o700, parents=True, exist_ok=True)
+    files = []
+    if arguments.database is not None:
+        dump = arguments.staging / f"{arguments.database}.sql"
+        with open(dump.with_suffix(".sql.new"), "w") as output:
+            subprocess.run(
+                ["mysqldump", "--single-transaction", "--routines", "--triggers", arguments.database],
+                stdout=output,
+                check=True,
+            )
+        dump.with_suffix(".sql.new").replace(dump)
+        files.append(dump)
+    for item in arguments.archive:
+        source, archive_name = item.split("=", 1)
+        archive = arguments.staging / f"{archive_name}.tar"
+        with tarfile.open(archive, "w") as packed:
+            packed.add(source, arcname=archive_name)
+        files.append(archive)
+    worked = True
+    for item in arguments.item:
+        source, item_name = item.split("=", 1)
+        worked = worked and send([*common, "--delete"], source.rstrip("/") + "/", f"{target}/{item_name}/")
+    for path in files:
+        worked = worked and send(common, str(path), f"{target}/{path.name}")
+    if worked and not arguments.dry_run:
+        done = arguments.staging / f"{arguments.kind}.done"
+        done.write_text(f"{int(time.time())}\n")
+        worked = send(common, str(done), f"{target}/{done.name}")
+    if not worked:
+        print(f"nanohpc-front-copy: the {arguments.kind} copy to {name} failed", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

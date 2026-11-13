@@ -1,0 +1,42 @@
+# On a front or login node outside the front pair (no backup front node now, or another one): no copies and no
+# fence, so its Slurm controller starts as on a cluster without a backup front node. Runs before the Slurm roles.
+- name: Look for an earlier fence or copies
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-front-fence.timer
+  register: front_backup_old_fence
+
+- name: Look for earlier copy timers
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nanohpc-front-copy-state.timer
+  register: front_backup_old_timers
+
+- name: Stop the fence watch and the copy timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop: >-
+    {{ (['nanohpc-front-fence.timer'] if front_backup_old_fence.stat.exists else [])
+       + (['nanohpc-front-copy-state.timer', 'nanohpc-front-copy-nightly.timer'] if front_backup_old_timers.stat.exists else []) }}
+
+- name: Remove the fence, its state, and the copy units
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/slurmctld.service.d/nanohpc-front-fence.conf
+    - /etc/systemd/system/slurmdbd.service.d/nanohpc-front-fence.conf
+    - /etc/systemd/system/nanohpc-front-fence.service
+    - /etc/systemd/system/nanohpc-front-fence.timer
+    - /usr/local/sbin/nanohpc-front-fence-run
+    - /var/lib/nanohpc-front-fence
+    - /etc/systemd/system/nanohpc-front-copy-state.service
+    - /etc/systemd/system/nanohpc-front-copy-state.timer
+    - /etc/systemd/system/nanohpc-front-copy-nightly.service
+    - /etc/systemd/system/nanohpc-front-copy-nightly.timer
+  register: front_backup_removed
+
+- name: Load the units without the fence
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: front_backup_removed is changed and not ansible_check_mode
