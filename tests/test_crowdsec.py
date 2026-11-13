@@ -208,7 +208,7 @@ class NumbersTest(unittest.TestCase):
         )
         return output.read_text()
 
-    def test_each_attack_is_counted_once_by_kind_country_network_and_address(self) -> None:
+    def test_each_attack_is_counted_once_by_kind_country_and_network(self) -> None:
         self.alerts.write_text(
             json.dumps(
                 [
@@ -247,9 +247,9 @@ class NumbersTest(unittest.TestCase):
         self.assertIn('cluster_security_attacks_7d{country="BG"} 1\n', text)
         self.assertNotIn('cluster_security_attacks_7d{country="NL"}', text)
         self.assertIn('cluster_security_networks_7d{network="Big \\"Cloud\\"",country="CN"} 2\n', text)
-        self.assertIn(
-            'cluster_security_addresses_7d{address="203.0.113.5",country="CN",network="Big \\"Cloud\\""} 2\n', text
-        )
+        # No single addresses (user, 2026-11-13: a cluster user whose key fails would show with their home address).
+        self.assertNotIn("address=", text)
+        self.assertNotIn("203.0.113.5", text)
         self.assertIn("cluster_security_blocked 2\n", text)
         self.assertIn("cluster_security_attacks_24h 2\n", text)
         self.assertIn("cluster_security_blocks_total 3\n", text)
@@ -470,9 +470,10 @@ class SecurityDashboardTest(unittest.TestCase):
             "cluster_security_dropped_packets_total",
             "cluster_security_attacks_7d",
             "cluster_security_networks_7d",
-            "cluster_security_addresses_7d",
         ):
             self.assertIn(metric, expressions)
+        # No panel lists single addresses.
+        self.assertNotIn("address", json.dumps(dashboard).lower())
         titles = [panel["title"] for panel in dashboard["panels"]]
         for title in ("SSH refused", "CrowdSec blocks", "Top countries, last 7 days"):
             self.assertIn(title, titles)

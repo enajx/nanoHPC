@@ -6,8 +6,8 @@ format, for this machine's node exporter (Prometheus adds the machine label):
 - cluster_security_attacks_total{kind,country}: every attack counted once, kept across CrowdSec's own clean-ups
   (the counted alert IDs and the totals are in --state);
 - cluster_security_attacks_24h: the last 24 hours (Prometheus cannot count a total's first rise);
-- cluster_security_attacks_7d{country}, cluster_security_networks_7d{network,country} (top 15) and
-  cluster_security_addresses_7d{address,country,network} (top 20): the last 7 days;
+- cluster_security_attacks_7d{country}, cluster_security_networks_7d{network,country} (top 15): the last 7
+  days. Single addresses are never written (a cluster user whose key fails would show with their home address);
 - cluster_security_blocks_total, cluster_security_blocks_24h, cluster_security_blocks_7d: the blocks CrowdSec's
   detections made (some detections only report; manual blocks are not counted);
 - cluster_security_refused_logins_total: failed SSH logins CrowdSec counted for its SSH rule (restarts at 0 when
@@ -37,7 +37,6 @@ DAY = timedelta(days=1)
 SINCE = "720h"
 REMEMBER = timedelta(days=35)
 TOP_NETWORKS = 15
-TOP_ADDRESSES = 20
 
 
 def cscli(command: str, arguments: list[str]) -> list[dict]:
@@ -147,18 +146,6 @@ def numbers(alerts: list[dict], blocked: int, packets: int, logins: int, state: 
     by_network = Counter((network(alert), country(alert)) for alert in recent)
     for (name, origin), total in by_network.most_common(TOP_NETWORKS):
         lines.append(f'cluster_security_networks_7d{{network="{label(name)}",country="{label(origin)}"}} {total}')
-    lines += [
-        "# HELP cluster_security_addresses_7d The addresses that attacked most in the last 7 days.",
-        "# TYPE cluster_security_addresses_7d gauge",
-    ]
-    by_address = Counter(alert["source"]["value"] for alert in recent)
-    first = {alert["source"]["value"]: alert for alert in recent}
-    for address, total in by_address.most_common(TOP_ADDRESSES):
-        alert = first[address]
-        lines.append(
-            f'cluster_security_addresses_7d{{address="{label(address)}",country="{label(country(alert))}",'
-            f'network="{label(network(alert))}"}} {total}'
-        )
     lines += [
         "# HELP cluster_security_blocks_total Blocks CrowdSec's detections made.",
         "# TYPE cluster_security_blocks_total counter",

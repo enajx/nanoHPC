@@ -95,7 +95,7 @@ def job_frame() -> dict:
     }
 
 
-# The Security page: fictional attack numbers, countries, networks, and documentation addresses (RFC 5737).
+# The Security page: fictional attack numbers, countries, and networks (no single addresses).
 SECURITY_COUNTRIES = (
     ("CN", 412),
     ("US", 236),
@@ -120,14 +120,6 @@ SECURITY_NETWORKS = (
     ("Placeholder Telecom", "BR", 76),
     ("Test Net Provider", "IN", 58),
     ("Fictional VPS", "NL", 41),
-)
-SECURITY_ADDRESSES = (
-    ("203.0.113.24", "CN", "Example Cloud Ltd", "front", 61),
-    ("198.51.100.73", "US", "Sample Hosting Inc", "front", 44),
-    ("203.0.113.191", "RU", "Demo Datacenter", "H100", 33),
-    ("192.0.2.140", "BR", "Placeholder Telecom", "front", 27),
-    ("198.51.100.8", "IN", "Test Net Provider", "DGX", 19),
-    ("203.0.113.66", "NL", "Fictional VPS", "B200", 12),
 )
 DAYS = [int((END - timedelta(days=7 - day)).timestamp() * 1000) for day in range(1, 8)]
 SECURITY_NUMBERS = {
@@ -170,16 +162,6 @@ def security_frames(panel: dict) -> list[dict]:
                     column("network", [row[0] for row in SECURITY_NETWORKS]),
                     column("country", [row[1] for row in SECURITY_NETWORKS]),
                     column("Value", [row[2] for row in SECURITY_NETWORKS]),
-                ],
-            }
-        ]
-    if title.startswith("Addresses"):
-        return [
-            {
-                "refId": "A",
-                "fields": [
-                    column(name, [row[index] for row in SECURITY_ADDRESSES])
-                    for index, name in enumerate(("address", "country", "network", "machine", "Value"))
                 ],
             }
         ]

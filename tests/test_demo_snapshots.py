@@ -30,7 +30,7 @@ class DemoSnapshotTest(unittest.TestCase):
 
     def test_security_snapshot_has_fictional_data_in_every_panel(self) -> None:
         """The Security page's demo snapshot: no live queries, a value for every number and chart, the world map
-        from Grafana's own files, and only documentation addresses (RFC 5737)."""
+        from Grafana's own files, and no single addresses."""
         builder = load_builder()
         payload = builder.snapshot("security")
         dashboard = payload["dashboard"]
@@ -43,10 +43,8 @@ class DemoSnapshotTest(unittest.TestCase):
                     self.assertTrue(panel["snapshotData"])
         geomap = next(panel for panel in dashboard["panels"] if panel["type"] == "geomap")
         self.assertEqual(geomap["options"]["layers"][0]["location"]["gazetteer"], "public/gazetteer/countries.json")
-        addresses = next(panel for panel in dashboard["panels"] if panel["title"].startswith("Addresses"))
-        values = addresses["snapshotData"][0]["fields"][0]["values"]
-        self.assertTrue(values)
-        self.assertTrue(all(value.startswith(("192.0.2.", "198.51.100.", "203.0.113.")) for value in values), values)
+        # No single addresses: countries and networks only.
+        self.assertNotIn("address", json.dumps(payload).lower())
 
 
 if __name__ == "__main__":

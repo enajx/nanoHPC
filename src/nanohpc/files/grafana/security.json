@@ -292,12 +292,12 @@
       "transparent": true,
       "options": {
         "mode": "markdown",
-        "content": "**SSH refused**: failed logins from outside that SSH itself turned down (no valid key, or a made-up user name). **CrowdSec blocks**: addresses CrowdSec blocked for 4 hours after repeated failures. **CrowdSec dropped**: their traffic the firewall then turned away, in packets. The cluster's machines and the networks listed in cluster.yml are never counted or blocked."
+        "content": "**SSH refused**: failed logins from outside that SSH itself turned down (no valid key, or a made-up user name). **CrowdSec blocks**: attackers CrowdSec blocked for 4 hours after repeated failures. **CrowdSec dropped**: their traffic the firewall then turned away, in packets. The cluster's machines and the networks listed in cluster.yml are never counted or blocked."
       }
     },
     {
       "id": 5,
-      "title": "Where flagged addresses came from, 7 days",
+      "title": "Where attacks came from, 7 days",
       "type": "geomap",
       "gridPos": {
         "x": 0,
@@ -500,7 +500,7 @@
       "gridPos": {
         "x": 0,
         "y": 17,
-        "w": 8,
+        "w": 12,
         "h": 8
       },
       "datasource": {
@@ -601,9 +601,9 @@
       "title": "Networks CrowdSec flagged, last 7 days",
       "type": "table",
       "gridPos": {
-        "x": 8,
+        "x": 12,
         "y": 17,
-        "w": 8,
+        "w": 12,
         "h": 8
       },
       "datasource": {
@@ -655,76 +655,6 @@
             },
             "renameByName": {
               "Value": "Attacks",
-              "address": "Address",
-              "country": "Country",
-              "network": "Network",
-              "machine": "Machine"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 9,
-      "title": "Addresses CrowdSec flagged, last 7 days",
-      "type": "table",
-      "gridPos": {
-        "x": 16,
-        "y": 17,
-        "w": 8,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "cluster-detail"
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false
-        },
-        "sortBy": [
-          {
-            "displayName": "Attacks",
-            "desc": true
-          }
-        ]
-      },
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "cluster_security_addresses_7d{machine=~\"$machine\"}",
-          "instant": true,
-          "format": "table"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "instance": true,
-              "job": true
-            },
-            "indexByName": {
-              "address": 0,
-              "country": 1,
-              "network": 2,
-              "machine": 3,
-              "Value": 4
-            },
-            "renameByName": {
-              "Value": "Attacks",
-              "address": "Address",
               "country": "Country",
               "network": "Network",
               "machine": "Machine"
