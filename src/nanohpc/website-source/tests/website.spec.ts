@@ -546,6 +546,50 @@ test('FAQ shows only the generic questions when cluster.yml has none', async ({ 
   await expect(page.locator('.faq details').filter({ hasText: 'larger home quota' })).toHaveCount(0)
 })
 
+test('Security sits just above FAQ when CrowdSec is on, with its Grafana dashboard for the last 7 days', async ({ page }) => {
+  await mockGrafana(page)
+  await page.route(`**${prefix}site.json`, route => route.fulfill({ json: { ...site, security: true } }))
+  const seen = watch(page)
+  await page.goto(`${origin}${prefix}`)
+  const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
+  expect(await nav.getByRole('link').allInnerTexts()).toEqual(['Overview', 'How to', 'Jobs', 'Machines', 'Users', 'Cluster usage', 'Cluster policy', 'Security', 'FAQ'])
+  await nav.getByRole('link', { name: 'Security', exact: true }).click()
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Security')
+  const frame = page.locator('iframe[title="Attacks on the cluster"]')
+  await expect(frame).toBeVisible()
+  const source = new URL(await frame.getAttribute('src') ?? '', page.url())
+  expect(source.pathname).toBe(`${prefix}grafana/d/nanohpc-security`)
+  expect(source.searchParams.get('from')).toBe('now-7d')
+  expectInsidePrefix(seen.requests)
+  expect(seen.errors).toEqual([])
+})
+
+test('Security is not in the menu when CrowdSec is off', async ({ page }) => {
+  await mockGrafana(page)
+  await page.route(`**${prefix}site.json`, route => route.fulfill({ json: { ...site, security: false } }))
+  await page.goto(`${origin}${prefix}#security`)
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Overview')
+  const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
+  await expect(nav.getByRole('link', { name: 'Security', exact: true })).toHaveCount(0)
+})
+
+test('monitor mode shows Security last when CrowdSec is on', async ({ page }) => {
+  await mockGrafana(page)
+  await page.route(`**${prefix}site.json`, route => route.fulfill({ json: {
+    mode: 'monitor', cluster_name: 'mylab', logo: null, login_address: 'login.mylab.example.org', users: [], security: true,
+  } }))
+  await page.route(`**${prefix}data/status.json`, route => route.fulfill({ json: {
+    mode: 'monitor', generated_at: new Date().toISOString(), refresh_seconds: 30, nodes: [], total_gpus: 0,
+  } }))
+  await page.goto(`${origin}${prefix}`)
+  const nav = page.getByRole('navigation', { name: 'Cluster navigation' })
+  expect(await nav.getByRole('link').allInnerTexts()).toEqual(['Overview', 'Machines', 'Usage', 'Users', 'Security'])
+  await nav.getByRole('link', { name: 'Security', exact: true }).click()
+  const frame = page.locator('iframe[title="Attacks on the cluster"]')
+  await expect(frame).toBeVisible()
+  expect(new URL(await frame.getAttribute('src') ?? '', page.url()).pathname).toBe(`${prefix}grafana/d/nanohpc-security`)
+})
+
 test('Overview waiting time switches between the three measured periods', async ({ page }) => {
   await mockGrafana(page)
   await page.goto(`${origin}${prefix}`)

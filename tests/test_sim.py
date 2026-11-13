@@ -391,7 +391,9 @@ class SimMonitorDeployTest(unittest.TestCase):
         grafana = self.ssh("host", "curl -fsS http://127.0.0.1:3000/cluster/grafana/api/search?type=dash-db")
         self.assertEqual(grafana.returncode, 0, grafana.stdout + grafana.stderr)
         dashboards = json.loads(grafana.stdout)
-        self.assertEqual({item["uid"] for item in dashboards}, {"nanohpc-machines", "nanohpc-history"})
+        self.assertEqual(
+            {item["uid"] for item in dashboards}, {"nanohpc-machines", "nanohpc-history", "nanohpc-security"}
+        )
         for dashboard in dashboards:
             self.assertTrue(dashboard["title"].startswith(f"{cluster_name}: "), dashboard)
             self.assertEqual(dashboard["folderTitle"], cluster_name)
@@ -491,7 +493,10 @@ class SimMonitorDeployTest(unittest.TestCase):
         )
         moved = self.ssh("host", "curl -fsS http://127.0.0.1:3000/cluster/grafana/api/search?type=dash-db")
         self.assertEqual(moved.returncode, 0, moved.stdout + moved.stderr)
-        self.assertEqual({item["uid"] for item in json.loads(moved.stdout)}, {"nanohpc-machines", "nanohpc-history"})
+        self.assertEqual(
+            {item["uid"] for item in json.loads(moved.stdout)},
+            {"nanohpc-machines", "nanohpc-history", "nanohpc-security"},
+        )
         self.assertTrue(all(item["folderUid"] == "nanohpc-cluster" for item in json.loads(moved.stdout)))
 
         # A temporary failed sensor read during a later deploy must leave its

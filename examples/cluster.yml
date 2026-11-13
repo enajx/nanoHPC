@@ -147,6 +147,10 @@ login_limits:                   # each user's login processes together (SSH sess
   cpu_cores: 4                  # front or login node; root and the administrators are not limited
   memory_gb: 8
 
+crowdsec:                       # blocks addresses that attack SSH, on every machine (SSH log and detections only)
+  enabled: false                # true: install CrowdSec; nothing is sent to CrowdSec's central service
+  never_block: []               # networks never blocked, besides the cluster's machines: [192.0.2.0/24, 198.51.100.7]
+
 user_check:
   allowed_tunnels: []           # exceptions: [{user: bob, program: cloudflared, machines: [gpu4]}]
                                 # known programs: tailscale, tailscaled, cloudflared, ngrok, frpc,

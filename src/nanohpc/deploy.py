@@ -346,6 +346,7 @@ def shared_variables(config: dict[str, Any]) -> dict[str, Any] | None:
 
 def variables(
     config: dict[str, Any],
+    ssh_config: Path | None,
     work: Path,
     simulated: bool,
     fake_gpus: list[str],
@@ -403,6 +404,7 @@ def variables(
             "alerts": {"slack": config["alerts"]["slack"]},
             "user_check": config["user_check"],
             "login_limits": login_limits_variables(config),
+            "crowdsec": crowdsec_variables(config, ssh_config),
             "announcements": config["announcements"],
             # None: every machine keeps its own time zone.
             "time_zone": config["time_zone"],
@@ -641,6 +643,7 @@ def site_data(config: dict[str, Any]) -> dict[str, Any]:
             "logo": None if website["logo"] is None else "logo" + Path(website["logo"]).suffix.lower(),
             "login_address": website["login_address"],
             "users": config["users"],
+            "security": config["crowdsec"]["enabled"],
         }
     rules = []
     for name, (wall, machines) in interactive_machine_limits(config).items():
@@ -662,6 +665,20 @@ def site_data(config: dict[str, Any]) -> dict[str, Any]:
         "priority_rule": priority_rule(config),
         "resubmit_rule": resubmit_rule(config),
         "faq": config["faq"],
+        "security": config["crowdsec"]["enabled"],
+    }
+
+
+def crowdsec_variables(config: dict[str, Any], ssh_config: Path | None) -> dict[str, Any]:
+    """Return what the crowdsec role needs: on or off, the addresses and networks never blocked (every machine's
+    address, then cluster.yml's list), whether a fresh root login is checked after blocking is turned on (Slurm
+    mode sets up root logins; monitor mode does not), and the SSH config those fresh logins use."""
+    addresses = sorted({machine["address"] for machine in config["machines"].values()})
+    return {
+        "enabled": config["crowdsec"]["enabled"],
+        "never_block": [*addresses, *config["crowdsec"]["never_block"]],
+        "root_login": config["cluster"].get("mode") != "monitor",
+        "ssh_config": None if ssh_config is None else str(ssh_config),
     }
 
 
@@ -856,7 +873,7 @@ def prepare(
     secrets.chmod(0o600)
     secrets.write_text(json.dumps({"nanohpc_secrets": config["secrets"]}))
     (work / "vars.json").write_text(
-        json.dumps(variables(config, work, simulated, fake_gpus, automatic, rendered.qos), indent=2)
+        json.dumps(variables(config, ssh_config, work, simulated, fake_gpus, automatic, rendered.qos), indent=2)
     )
     (work / "inventory.yml").write_text(yaml.safe_dump(inventory(config, node)))
     (work / "ansible.cfg").write_text(ansible_cfg(ssh_config))
@@ -907,6 +924,7 @@ def prepare_monitor(
             "fake_gpus": fake_gpus,
         },
         "time_zone": None,
+        "crowdsec": crowdsec_variables(config, ssh_config),
         "gpu_baseline": gpus,
         "metrics": {
             **METRICS,

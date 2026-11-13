@@ -189,7 +189,8 @@
     variable_start_string: "[%"
     variable_end_string: "%]"
     validate: "/usr/bin/python3 -m json.tool %s"
-  loop: "{{ ['machines.json', 'history.json'] if nanohpc.mode | default('slurm') == 'monitor' else ['overview.json', 'machines.json', 'queue.json', 'queue-history.json'] }}"
+  # security.json: the Security page's dashboard, in both modes (empty while CrowdSec is off).
+  loop: "{{ ['machines.json', 'history.json', 'security.json'] if nanohpc.mode | default('slurm') == 'monitor' else ['overview.json', 'machines.json', 'queue.json', 'queue-history.json', 'security.json'] }}"
 
 - name: Install per-user dashboards with the test accounts excluded
   ansible.builtin.template:
@@ -270,10 +271,10 @@
   register: grafana_dashboards
   until: >-
     (grafana_dashboards.json | map(attribute='uid') | select('match', '^nanohpc-') | list | length) ==
-    (2 if nanohpc.mode | default('slurm') == 'monitor' else 6)
+    (3 if nanohpc.mode | default('slurm') == 'monitor' else 7)
     and
     (grafana_dashboards.json | selectattr('folderUid', 'equalto', 'nanohpc-cluster') | list | length) ==
-    (2 if nanohpc.mode | default('slurm') == 'monitor' else 6)
+    (3 if nanohpc.mode | default('slurm') == 'monitor' else 7)
   retries: 15
   delay: 2
   when: not ansible_check_mode  # checks this deploy's result

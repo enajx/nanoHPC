@@ -1,0 +1,737 @@
+{
+  "uid": "nanohpc-security",
+  "title": "[% nanohpc.cluster_name %]: Security",
+  "schemaVersion": 39,
+  "editable": false,
+  "refresh": "5m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "machine",
+        "label": "Machine",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cluster-detail"
+        },
+        "query": {
+          "query": "label_values(cluster_security_updated_seconds, machine)",
+          "refId": "machine"
+        },
+        "definition": "label_values(cluster_security_updated_seconds, machine)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "SSH refused",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "center",
+        "orientation": "vertical",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(cluster_security_refused_logins_total{machine=~\"$machine\"}[24h]))",
+          "instant": true,
+          "legendFormat": "24 hours"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(increase(cluster_security_refused_logins_total{machine=~\"$machine\"}[7d]))",
+          "instant": true,
+          "legendFormat": "7 days"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "CrowdSec blocks",
+      "type": "stat",
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "center",
+        "orientation": "vertical",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(cluster_security_blocks_24h{machine=~\"$machine\"})",
+          "instant": true,
+          "legendFormat": "24 hours"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(cluster_security_blocks_7d{machine=~\"$machine\"})",
+          "instant": true,
+          "legendFormat": "7 days"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(cluster_security_blocked{machine=~\"$machine\"})",
+          "instant": true,
+          "legendFormat": "now"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "CrowdSec dropped (packets)",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "center",
+        "orientation": "vertical",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(cluster_security_dropped_packets_total{machine=~\"$machine\"}[24h]))",
+          "instant": true,
+          "legendFormat": "24 hours"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(increase(cluster_security_dropped_packets_total{machine=~\"$machine\"}[7d]))",
+          "instant": true,
+          "legendFormat": "7 days"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Numbers updated",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "center",
+        "orientation": "vertical",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0",
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(time() - cluster_security_updated_seconds{machine=~\"$machine\"})",
+          "instant": true,
+          "legendFormat": "ago"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 24,
+        "h": 2
+      },
+      "transparent": true,
+      "options": {
+        "mode": "markdown",
+        "content": "**SSH refused**: failed logins from outside that SSH itself turned down (no valid key, or a made-up user name). **CrowdSec blocks**: addresses CrowdSec blocked for 4 hours after repeated failures. **CrowdSec dropped**: their traffic the firewall then turned away, in packets. The cluster's machines and the networks listed in cluster.yml are never counted or blocked."
+      }
+    },
+    {
+      "id": 5,
+      "title": "Where flagged addresses came from, 7 days",
+      "type": "geomap",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 12
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (country) (cluster_security_attacks_7d{machine=~\"$machine\"})",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "view": {
+          "id": "coords",
+          "lat": 18,
+          "lon": 12,
+          "zoom": 0.5,
+          "minZoom": 0,
+          "allLayers": true
+        },
+        "controls": {
+          "showZoom": true,
+          "mouseWheelZoom": false,
+          "showAttribution": false,
+          "showScale": false,
+          "showMeasure": false,
+          "showDebug": false
+        },
+        "basemap": {
+          "type": "geojson",
+          "name": "Countries",
+          "config": {
+            "src": "public/maps/countries.geojson",
+            "rules": [],
+            "style": {
+              "color": {
+                "fixed": "#6e7a8a"
+              },
+              "opacity": 0.35
+            }
+          }
+        },
+        "layers": [
+          {
+            "type": "markers",
+            "name": "Attacks",
+            "tooltip": true,
+            "location": {
+              "mode": "lookup",
+              "lookup": "country",
+              "gazetteer": "public/gazetteer/countries.json"
+            },
+            "config": {
+              "showLegend": false,
+              "style": {
+                "size": {
+                  "field": "Value",
+                  "min": 4,
+                  "max": 30,
+                  "fixed": 5
+                },
+                "color": {
+                  "fixed": "red"
+                },
+                "opacity": 0.65,
+                "symbol": {
+                  "mode": "fixed",
+                  "fixed": "img/icons/marker/circle.svg"
+                },
+                "text": {
+                  "mode": "field",
+                  "field": "Value",
+                  "fixed": ""
+                },
+                "textConfig": {
+                  "fontSize": 10,
+                  "offsetX": 0,
+                  "offsetY": 0,
+                  "textAlign": "center",
+                  "textBaseline": "middle"
+                }
+              }
+            }
+          }
+        ],
+        "tooltip": {
+          "mode": "details"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Top countries, last 7 days",
+      "type": "table",
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 12
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Attacks",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Attacks"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(15, sum by (country) (cluster_security_attacks_7d{machine=~\"$machine\"}))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "country": 0,
+              "Value": 1
+            },
+            "renameByName": {
+              "country": "Country",
+              "Value": "Attacks"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Per day: SSH refused, CrowdSec blocks",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "interval": "1d",
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 1
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CrowdSec blocks"
+            },
+            "properties": [
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.showPoints",
+                "value": "always"
+              },
+              {
+                "id": "custom.pointSize",
+                "value": 6
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Refused by SSH"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8ab8ff"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(cluster_security_refused_logins_total{machine=~\"$machine\"}[1d]))",
+          "legendFormat": "Refused by SSH",
+          "interval": "1d"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(increase(cluster_security_blocks_total{machine=~\"$machine\"}[1d]))",
+          "legendFormat": "CrowdSec blocks",
+          "interval": "1d"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Networks CrowdSec flagged, last 7 days",
+      "type": "table",
+      "gridPos": {
+        "x": 8,
+        "y": 17,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Attacks",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster_security_networks_7d{machine=~\"$machine\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "indexByName": {
+              "network": 0,
+              "country": 1,
+              "machine": 2,
+              "Value": 3
+            },
+            "renameByName": {
+              "Value": "Attacks",
+              "address": "Address",
+              "country": "Country",
+              "network": "Network",
+              "machine": "Machine"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Addresses CrowdSec flagged, last 7 days",
+      "type": "table",
+      "gridPos": {
+        "x": 16,
+        "y": 17,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cluster-detail"
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Attacks",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster_security_addresses_7d{machine=~\"$machine\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "indexByName": {
+              "address": 0,
+              "country": 1,
+              "network": 2,
+              "machine": 3,
+              "Value": 4
+            },
+            "renameByName": {
+              "Value": "Attacks",
+              "address": "Address",
+              "country": "Country",
+              "network": "Network",
+              "machine": "Machine"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

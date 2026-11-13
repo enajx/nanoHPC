@@ -25,6 +25,7 @@ class GrafanaNameTest(unittest.TestCase):
             "usage.json": "nanohpc-usage",
             "history.json": "nanohpc-history",
             "monitor-history.json": "nanohpc-history",
+            "security.json": "nanohpc-security",
         }
         for cluster_name in ("labcluster", "new-cluster"):
             for filename, uid in dashboards.items():

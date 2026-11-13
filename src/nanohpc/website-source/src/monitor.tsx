@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Activity, ChartNoAxesColumnIncreasing, Server, UsersRound } from 'lucide-react'
+import { Activity, ChartNoAxesColumnIncreasing, Server, ShieldCheck, UsersRound } from 'lucide-react'
 import { AccentButton } from './accent-button'
 import { FontButton } from './font-button'
 import { ClusterMap, MapToggle, machinesMapKey, storedMapShown } from './cluster-map'
@@ -16,13 +16,19 @@ type MonitorSnapshot = {
 }
 type GpuReading = { machine: string; gpu: string; utilization: number | null; memoryUsed: number | null }
 type MetricFrame = { schema: { fields: { labels?: Record<string, string> }[] }; data: { values: number[][] } }
-type MonitorPage = 'overview' | 'machines' | 'usage' | 'users'
+type MonitorPage = 'overview' | 'machines' | 'usage' | 'users' | 'security'
 const pages = [
   { id: 'overview', title: 'Overview', icon: Activity },
   { id: 'machines', title: 'Machines', icon: Server },
   { id: 'usage', title: 'Usage', icon: ChartNoAxesColumnIncreasing },
   { id: 'users', title: 'Users', icon: UsersRound },
+  { id: 'security', title: 'Security', icon: ShieldCheck },
 ] as const
+
+/** The menu's pages: Security only while CrowdSec is on (site.json's security). */
+function shownPages(site: MonitorSiteSettings): typeof pages[number][] {
+  return pages.filter(page => page.id !== 'security' || site.security === true)
+}
 
 /** Reject Slurm snapshots and broken monitor snapshots before displaying them. */
 function checkSnapshot(value: unknown): MonitorSnapshot {
@@ -103,10 +109,10 @@ function useGpuMetrics(refreshSeconds: number): GpuReading[] | null {
   return readings
 }
 
-/** Keep hashes inside the four monitor pages. */
-function currentPage(): MonitorPage {
+/** Keep hashes inside the monitor pages. */
+function currentPage(site: MonitorSiteSettings): MonitorPage {
   const hash = window.location.hash.slice(1).split('?')[0]
-  return pages.find(page => page.id === hash)?.id ?? 'overview'
+  return shownPages(site).find(page => page.id === hash)?.id ?? 'overview'
 }
 
 /** Display a measured reading without suggesting that low activity means availability. */
@@ -141,17 +147,17 @@ function Dashboard({ name, path }: { name: string; path: string }) {
 
 /** Render the monitor-specific navigation and content without scheduler concepts. */
 export function MonitorApp({ site }: { site: MonitorSiteSettings }) {
-  const [page, setPage] = useState<MonitorPage>(currentPage)
+  const [page, setPage] = useState<MonitorPage>(() => currentPage(site))
   const [usageState, setUsageState] = useState(() => window.location.hash.split('?')[1] ?? '')
   const [mapShown, setMapShown] = useState(() => storedMapShown(machinesMapKey))
   const { data, failed, stale } = useMonitorSnapshot()
   const refresh = data?.refresh_seconds ?? 30
   const readings = useGpuMetrics(refresh)
   useEffect(() => {
-    const changed = () => { setPage(currentPage()); setUsageState(window.location.hash.split('?')[1] ?? '') }
+    const changed = () => { setPage(currentPage(site)); setUsageState(window.location.hash.split('?')[1] ?? '') }
     window.addEventListener('hashchange', changed)
     return () => window.removeEventListener('hashchange', changed)
-  }, [])
+  }, [site])
   const selected = pages.find(item => item.id === page) ?? pages[0]
   const old = failed || stale
   const nodes = data?.nodes ?? []
@@ -164,7 +170,7 @@ export function MonitorApp({ site }: { site: MonitorSiteSettings }) {
   return <>
     <a className="skip" href="#main" onClick={event => { event.preventDefault(); document.getElementById('main')?.focus() }}>Skip to content</a>
     <header className="topbar"><a href="#overview" className="brand">{site.logo ? <img className="brand-mark" src={site.logo} alt={`${site.cluster_name} logo`}/> : <svg className="brand-mark generic-mark" viewBox="0 0 48 48" role="img" aria-label="Cluster mark"><rect x="10" y="9" width="28" height="8"/><rect x="10" y="20" width="28" height="8"/><rect x="10" y="31" width="28" height="8"/></svg>}<span className="brand-text"><span className="brand-title">{site.cluster_name}</span><span className="brand-sub">Machine monitor</span></span></a><div className="header-buttons"><FontButton/><AccentButton/></div></header>
-    <div className="layout"><aside className="sidebar"><nav aria-label="Cluster navigation">{pages.map(({ id, title, icon: Icon }) => <a key={id} href={`#${id}`} aria-current={page === id ? 'page' : undefined}><Icon size={19}/><span>{title}</span></a>)}</nav></aside>
+    <div className="layout"><aside className="sidebar"><nav aria-label="Cluster navigation">{shownPages(site).map(({ id, title, icon: Icon }) => <a key={id} href={`#${id}`} aria-current={page === id ? 'page' : undefined}><Icon size={19}/><span>{title}</span></a>)}</nav></aside>
       <main id="main" tabIndex={-1} className={page === 'overview' ? 'compact' : undefined}><div className="page-heading"><h1>{selected.title}</h1><div className="page-heading-actions">{page === 'machines' && <MapToggle shown={mapShown} onChange={setMapShown}/>}</div></div>
         {old && <div role="alert" className="notice">{data ? 'Showing stale data.' : 'Monitoring data unavailable.'}</div>}
         {page === 'overview' && <><section aria-label="Cluster summary" className="stat-grid monitor-stats">
@@ -174,6 +180,7 @@ export function MonitorApp({ site }: { site: MonitorSiteSettings }) {
         </section><MachineTable nodes={data?.nodes ?? null} stale={old}/></>}
         {page === 'machines' && <>{mapShown && <ClusterMap nodes={nodes} jobs={[]} pendingJobs={0} stale={old} refreshSeconds={refresh} mode="monitor"/>}<MachineTable nodes={data?.nodes ?? null} stale={old}/><ReadingTable nodes={nodes} readings={readings} stale={old}/><MachineCards nodes={nodes} stale={old} roles={['Monitor', 'Machine']}/></>}
         {page === 'usage' && <><Dashboard name="Machine and GPU metrics" path={`${graph('nanohpc-machines', 'now-6h')}&var-gpu_group=0${metricsMachineParams}`}/><Dashboard name="Long-term history" path={graph('nanohpc-history', 'now-1y')}/></>}
+        {page === 'security' && <Dashboard name="Attacks on the cluster" path={graph('nanohpc-security', 'now-7d')}/>}
         {page === 'users' && <section className="panel table-panel"><h2>Login names</h2>{site.users.length ? <ul aria-label="Login names" className="monitor-users">{site.users.map(user => <li key={user}>{user}</li>)}</ul> : <p>No login names configured.</p>}</section>}
         <footer>{freshness}<p>{site.cluster_name} runs on <a href="https://github.com/enajx/nanoHPC">nanoHPC</a></p></footer>
       </main></div>
