@@ -253,6 +253,15 @@
   become: true
   roles: [slurm_packages]
 
+- name: No fence and no copies on the front and login nodes outside the front pair (before Slurm starts)
+  hosts: role_front:role_login:!front_pair
+  become: true
+  tasks:
+    - name: Stop and remove an earlier fence and copy timers
+      ansible.builtin.include_role:
+        name: front_backup
+        tasks_from: "off"
+
 - name: Slurm controller and accounting on the front node
   hosts: role_front
   become: true
@@ -392,15 +401,6 @@
     - name: Fence, copies, and the switch's steps
       ansible.builtin.include_role:
         name: front_backup
-
-- name: No copies on the other front and login nodes
-  hosts: role_front:role_login:!front_pair
-  become: true
-  tasks:
-    - name: Stop and remove earlier copy timers
-      ansible.builtin.include_role:
-        name: front_backup
-        tasks_from: "off"
 
 - name: Automatic deploys on the front node
   hosts: role_front

@@ -199,6 +199,22 @@ class AskTest(FenceBase):
         self.assertEqual(self.ask("--check").returncode, 1)
         self.assertIn("login2", self.marker.read_text())
 
+    def test_a_waiting_machine_is_fenced_when_the_other_controller_answers(self) -> None:
+        self.peer_answers()
+        self.assertEqual(self.ask("--check").returncode, 1)
+        self.assertTrue(self.marker.exists())
+
+    def test_the_machine_the_last_switch_made_front_node_does_not_wait(self) -> None:
+        """No other machine answers, but this machine took over in the switch its record names."""
+        self.record.write_text("front 1700000000\n")
+        self.took_over.write_text("took over from login2 at 2026-11-13 18:00 since 1700000000\n")
+        result = self.ask("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.waiting.exists())
+        # A record from an older switch does not count.
+        self.took_over.write_text("took over from login2 at 2026-11-01 18:00 since 1690000000\n")
+        self.assertEqual(self.ask("--check").returncode, 1)
+
     def test_the_watch_does_not_start_a_controller_stopped_by_hand(self) -> None:
         self.answer("10.0.0.21", "front")
         self.assertEqual(self.ask("--watch").returncode, 0)

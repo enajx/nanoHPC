@@ -4,7 +4,7 @@
 set -eu
 kind=$1
 shift
-common="--to {{ front_backup_peer }}={{ nanohpc.machines[front_backup_peer].address }} --key /etc/nanohpc/front-copy/id_ed25519 --known-hosts /etc/nanohpc/front-copy/known_hosts --staging /var/lib/nanohpc-front-copy-out"
+common="--to {{ front_backup_peer }}={{ front_backup_peer_address }} --key /etc/nanohpc/front-copy/id_ed25519 --known-hosts /etc/nanohpc/front-copy/known_hosts --staging /var/lib/nanohpc-front-copy-out"
 case "$kind" in
   state)
     exec /usr/local/sbin/nanohpc-front-copy --kind state $common \

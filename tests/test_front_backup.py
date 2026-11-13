@@ -2,7 +2,12 @@
 installed but stopped, gets the front node's copies, and can be made the front node by `nanohpc front-switch`."""
 
 import copy
+import os
+import shlex
+import socket
 import subprocess
+import sys
+import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
@@ -12,6 +17,7 @@ from typing import Any
 import jinja2
 import yaml
 
+from nanohpc import clusterfile, front_switch
 from nanohpc.config import check_config
 from nanohpc.deploy import inventory, variables
 
@@ -177,7 +183,7 @@ class FrontBackupRoleTest(unittest.TestCase):
         values = {
             **defaults,
             "front_backup_peer": "login2",
-            "nanohpc": {"machines": {"login2": {"address": "192.168.104.30"}}},
+            "front_backup_peer_address": "192.168.104.30",
         }
         text = render(ROLE / "templates/nanohpc-front-copy-run.j2", values)
         subprocess.run(["sh", "-n"], input=text, text=True, check=True)
@@ -193,7 +199,8 @@ class FrontBackupRoleTest(unittest.TestCase):
             "ansible_facts": {"hostname": "front"},
             "inventory_hostname": "front",
             "groups": {"front_pair": ["front", "login2"]},
-            "nanohpc": {"machines": MACHINES},
+            "front_backup_peer_address": "192.168.104.30",
+            "nanohpc": {"machines": MACHINES, "front": {"name": "front"}, "front_backup": {"name": "login2"}},
         }
         text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
         subprocess.run(["sh", "-n"], input=text, text=True, check=True)
@@ -208,7 +215,8 @@ class FrontBackupRoleTest(unittest.TestCase):
             "ansible_facts": {"hostname": "front"},
             "inventory_hostname": "front",
             "groups": {"front_pair": ["front", "login2"]},
-            "nanohpc": {"machines": MACHINES},
+            "front_backup_peer_address": "192.168.104.30",
+            "nanohpc": {"machines": MACHINES, "front": {"name": "front"}, "front_backup": {"name": "login2"}},
         }
         text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
         subprocess.run(["sh", "-n"], input=text, text=True, check=True)
@@ -252,7 +260,8 @@ class FrontBackupRoleTest(unittest.TestCase):
             "ansible_facts": {"hostname": "front"},
             "inventory_hostname": "front",
             "groups": {"front_pair": ["front", "login2"]},
-            "nanohpc": {"machines": MACHINES},
+            "front_backup_peer_address": "192.168.104.30",
+            "nanohpc": {"machines": MACHINES, "front": {"name": "front"}, "front_backup": {"name": "login2"}},
         }
         text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
         self.assertIn("--stop slurmctld.service --stop slurmdbd.service", text)
@@ -276,9 +285,130 @@ class FrontBackupRoleTest(unittest.TestCase):
         )
         self.assertNotIn("nanohpc-front-copy-receive", render(template, {**values, "front_copy_key": ""}))
 
+    def test_without_a_backup_front_node_the_fence_is_removed_before_slurm_starts(self) -> None:
+        """Removing front_backup: the old front node's controller starts as without the feature."""
+        text = (ROLE / "tasks/off.yml").read_text()
+        for path in (
+            "/etc/systemd/system/slurmctld.service.d/nanohpc-front-fence.conf",
+            "/etc/systemd/system/slurmdbd.service.d/nanohpc-front-fence.conf",
+            "/usr/local/sbin/nanohpc-front-fence-run",
+            "/var/lib/nanohpc-front-fence",
+            "nanohpc-front-fence.timer",
+        ):
+            self.assertIn(path, text)
+        plays = yaml.safe_load((ROOT / "src/nanohpc/ansible/site.yml").read_text())
+        names = [play["name"] for play in plays]
+        off = next(index for index, play in enumerate(plays) if "!front_pair" in play["hosts"])
+        self.assertLess(off, names.index("Slurm controller and accounting on the front node"))
+
     def test_the_backup_front_node_gets_the_slurm_controller_packages(self) -> None:
         tasks = (ROOT / "src/nanohpc/ansible/roles/slurm_packages/tasks/main.yml").read_text()
         self.assertIn("groups['role_front'] + (groups['front_backup'] | default([]))", tasks)
+
+
+class SwitchDeployTest(unittest.TestCase):
+    """The deploy a switch runs, with the old front node away: its variables, groups and the fence they render."""
+
+    def setUp(self) -> None:
+        folder = Path(tempfile.mkdtemp())
+        path = folder / "cluster.yml"
+        path.write_text(yaml.safe_dump(with_backup(example()), sort_keys=False))
+        file = clusterfile.load(path)
+        front_switch.swapped(file, "front", "login2")
+        self.config, errors = front_switch.deploy_config(file, folder, "front")
+        self.assertEqual(errors, [])
+        self.nanohpc = variables(self.config, Path("/work"), False, [], False, [])["nanohpc"]
+        children = inventory(self.config, None)["all"]["children"]
+        self.groups = {name: list(group.get("hosts", {})) for name, group in children.items()}
+
+    def role_facts(self, host: str) -> dict[str, Any]:
+        """The values the front_backup role's first task sets on `host`, worked out as Ansible would."""
+        task = yaml.safe_load((ROLE / "tasks/main.yml").read_text())[0]["ansible.builtin.set_fact"]
+        values = {"nanohpc": self.nanohpc, "groups": self.groups, "inventory_hostname": host}
+        environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
+        return {key: environment.from_string(value).render(**values) for key, value in task.items()}
+
+    def test_the_old_front_node_stays_the_backup_front_node_while_away(self) -> None:
+        self.assertEqual(self.nanohpc["front_backup"], {"name": "front", "address": "192.168.104.10"})
+        self.assertEqual(self.nanohpc["front"]["name"], "login2")
+        self.assertGreater(self.nanohpc["front"]["since"], 1700000000)
+        self.assertEqual(self.groups["front_pair"], ["login2"])
+
+    def test_every_machine_records_the_new_front_node(self) -> None:
+        tasks = yaml.safe_load((ROOT / "src/nanohpc/ansible/roles/base/tasks/main.yml").read_text())
+        task = next(task for task in tasks if task["name"].startswith("Record the front node"))
+        environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
+        self.assertTrue(environment.from_string("{{ " + task["when"] + " }}").render(nanohpc=self.nanohpc) == "True")
+        content = environment.from_string(task["ansible.builtin.copy"]["content"]).render(nanohpc=self.nanohpc)
+        self.assertEqual(content.strip(), f"login2 {self.nanohpc['front']['since']}")
+
+    def test_the_new_front_nodes_fence_knows_its_peer(self) -> None:
+        facts = self.role_facts("login2")
+        self.assertEqual(facts["front_backup_peer"], "front")
+        values = {
+            **facts,
+            "front_backup_units": ["slurmctld.service"],
+            "ansible_facts": {"hostname": "login2"},
+            "inventory_hostname": "login2",
+            "groups": self.groups,
+            "nanohpc": self.nanohpc,
+        }
+        text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
+        self.assertIn("--peer front=192.168.104.10:6817", text)
+        self.assertIn("--ask gpu4=192.168.104.11", text)
+        self.assertNotIn("--ask front=", text)
+        self.assertNotIn("--ask login2=", text)
+
+    def test_the_new_front_node_starts_while_a_machine_that_missed_the_switch_names_the_old_one(self) -> None:
+        """The rendered fence command, run as the new front node: gpu4 was off during the switch and still names the
+        old front node; the other machines do not answer. Mocked: a fake ssh and systemctl, a closed local port for
+        the old front node's Slurm controller."""
+        folder = Path(tempfile.mkdtemp())
+        values = {
+            **self.role_facts("login2"),
+            "front_backup_units": ["slurmctld.service"],
+            "ansible_facts": {"hostname": "login2"},
+            "inventory_hostname": "login2",
+            "groups": self.groups,
+            "nanohpc": self.nanohpc,
+        }
+        tasks = yaml.safe_load((ROOT / "src/nanohpc/ansible/roles/base/tasks/main.yml").read_text())
+        record = next(task for task in tasks if task["name"].startswith("Record the front node"))
+        (folder / "front-node").write_text(
+            jinja2.Environment().from_string(record["ansible.builtin.copy"]["content"]).render(nanohpc=self.nanohpc)
+        )
+        (folder / "took-over").write_text(
+            f"took over from front at 2026-11-13 18:00 since {self.nanohpc['front']['since']}\n"
+        )
+        (folder / "slurm.conf").write_text("SlurmctldHost=login2(192.168.104.30)\n")
+        bin_folder = folder / "bin"
+        bin_folder.mkdir()
+        (bin_folder / "ssh").write_text(
+            '#!/bin/sh\nfor word in "$@"; do case "$word" in root@192.168.104.11) echo "front 0"; exit 0 ;; esac; done\nexit 255\n'
+        )
+        (bin_folder / "systemctl").write_text(f"#!/bin/sh\necho \"$*\" >> '{folder / 'calls'}'\n")
+        for program in ("ssh", "systemctl"):
+            (bin_folder / program).chmod(0o755)
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        self.addCleanup(closed.close)
+        text = render(ROLE / "templates/nanohpc-front-fence-run.j2", values)
+        line = text.split("exec ", 1)[1].replace("\\\n", " ").replace('"$@"', "")
+        line = line.replace("192.168.104.10:6817", f"127.0.0.1:{closed.getsockname()[1]}")
+        for path, local in (
+            ("/usr/local/sbin/nanohpc-front-fence", str(ROOT / "src/nanohpc/files/nanohpc-front-fence")),
+            ("/etc/slurm/slurm.conf", str(folder / "slurm.conf")),
+            ("/etc/nanohpc/front-node", str(folder / "front-node")),
+            ("/var/lib/nanohpc-front-fence/", f"{folder}/"),
+            ("/usr/bin/systemctl", str(bin_folder / "systemctl")),
+        ):
+            line = line.replace(path, local)
+        environment = {**os.environ, "PATH": f"{bin_folder}{os.pathsep}{os.environ['PATH']}"}
+        result = subprocess.run([sys.executable, *shlex.split(line), "--check"], env=environment, capture_output=True,
+                                text=True, check=False)  # fmt: skip
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gpu4 names front (since 0)", result.stderr)
+        self.assertFalse((folder / "fenced").exists())
 
 
 if __name__ == "__main__":

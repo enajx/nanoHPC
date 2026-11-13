@@ -3,8 +3,8 @@
 # machine of the front pair; before its Slurm controller starts it asks the other cluster machines (--ask). While fenced, the front-node services (front_backup_units) are kept stopped, except MariaDB: the switch's stop
 # step dumps it for the last copy after holding the fence, and it runs no controller.
 exec /usr/local/sbin/nanohpc-front-fence --hostname {{ ansible_facts.hostname }} --slurm-conf /etc/slurm/slurm.conf \
-  --peer {{ front_backup_peer }}={{ nanohpc.machines[front_backup_peer].address }}:6817 \
-  --name {{ inventory_hostname }}{% for name, machine in nanohpc.machines.items() if name not in groups['front_pair'] %} --ask {{ name }}={{ machine.address }}{% endfor %} \
+  --peer {{ front_backup_peer }}={{ front_backup_peer_address }}:6817 \
+  --name {{ inventory_hostname }}{% for name, machine in nanohpc.machines.items() if name not in [nanohpc.front.name, nanohpc.front_backup.name] %} --ask {{ name }}={{ machine.address }}{% endfor %} \
   --ask-key /etc/nanohpc/front-copy/id_ed25519 --ask-known-hosts /etc/nanohpc/front-copy/ask_known_hosts \
   --record /etc/nanohpc/front-node --waiting /var/lib/nanohpc-front-fence/waiting --start slurmdbd.service --start slurmctld.service \
   --marker /var/lib/nanohpc-front-fence/fenced --took-over /var/lib/nanohpc-front-fence/took-over \

@@ -156,7 +156,7 @@ def database_login() -> None:
     subprocess.run(["mariadb"], input=sql, text=True, check=True)
 
 
-def take(source: str, peer: str, fence_run: str, dry_run: bool) -> None:
+def take(source: str, peer: str, since: str, fence_run: str, dry_run: bool) -> None:
     """This machine becomes the front node from the copies `source` sent."""
     state = COPIES / "state"
     nightly = COPIES / "nightly"
@@ -181,7 +181,8 @@ def take(source: str, peer: str, fence_run: str, dry_run: bool) -> None:
         return
     run([fence_run, "--release"])
     TOOK_OVER.parent.mkdir(parents=True, exist_ok=True)
-    TOOK_OVER.write_text(f"took over from {source} at {time.strftime('%Y-%m-%d %H:%M')}\n")
+    # SINCE: the switch's time (front_since), which the deploy then records on every machine.
+    TOOK_OVER.write_text(f"took over from {source} at {time.strftime('%Y-%m-%d %H:%M')} since {since}\n")
     for name, destination in ARCHIVES:
         archive = nightly / f"{name}.tar"
         if not archive.is_file():
@@ -227,6 +228,7 @@ def main() -> None:
     taking = steps.add_parser("take")
     taking.add_argument("--from", dest="source", required=True)
     taking.add_argument("--peer", required=True, help="ADDRESS:PORT of the old front node's Slurm controller")
+    taking.add_argument("--since", required=True, help="the switch's time (front_since in cluster.yml)")
     for step in (stopping, taking):
         step.add_argument("--copy-run", required=True)
         step.add_argument("--fence-run", required=True)
@@ -238,7 +240,7 @@ def main() -> None:
     elif arguments.step == "stop":
         stop(arguments.to, arguments.copy_run, arguments.fence_run, arguments.dry_run)
     else:
-        take(arguments.source, arguments.peer, arguments.fence_run, arguments.dry_run)
+        take(arguments.source, arguments.peer, arguments.since, arguments.fence_run, arguments.dry_run)
 
 
 if __name__ == "__main__":

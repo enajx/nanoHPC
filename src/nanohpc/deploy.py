@@ -295,7 +295,9 @@ def inventory(config: dict[str, Any], node: str | None) -> dict[str, Any]:
     # The front node and its backup front node (front_backup: true), which copy to each other and fence each other.
     backup = front_backup_machine(config)
     front = front_machine(config)[0]
-    groups["front_pair"] = {"hosts": {} if backup is None else {front: None, backup: None}}
+    # During a switch whose old front node is away (front_backup_away), the pair in this run is the front node alone.
+    pair = [front, backup] if backup is not None else [front] if config.get("front_backup_away") else []
+    groups["front_pair"] = {"hosts": {name: None for name in pair}}
     groups["front_backup"] = {"hosts": {} if backup is None else {backup: None}}
     groups["only_node"] = {"hosts": {} if node is None else {node: None}}
     return {"all": {"children": groups}}
@@ -392,7 +394,9 @@ def variables(
                 "since": front_values.get("front_since", 0),
             },
             # The backup front node (None without one): it gets the front node's copies and can become the front node.
-            "front_backup": None
+            # During a switch whose old front node does not answer, that machine is left out of cluster.yml for the
+            # deploy but is still the backup front node (front_backup_away): the pair's fence and records follow it.
+            "front_backup": config.get("front_backup_away")
             if backup is None
             else {"name": backup, "address": config["machines"][backup]["address"]},
             "real_gpus": {name: count for name, count in gpus.items() if name not in fake_gpus},

@@ -161,7 +161,9 @@ def swapped(file: clusterfile.ClusterFile, front: str, backup: str) -> None:
     file.set_value(["machines", backup, "roles"], ["front"])
     # When this switch happened: every machine deployed after it records it, so a machine that missed it (and still
     # names the old front node, with an older time) never outvotes the new front node in its fence.
-    file.set_value(["machines", backup, "front_since"], int(time.time()))
+    # Always newer than the last switch, whatever this machine's clock says.
+    since = max(int(time.time()), (file.get(["machines", front, "front_since"]) or 0) + 1)
+    file.set_value(["machines", backup, "front_since"], since)
     with clusterfile.keep_end(file.data["machines"], backup):
         clusterfile.remove_item(file.data["machines"][backup], "front_backup")
     if "front_since" in file.data["machines"][front]:
@@ -174,11 +176,15 @@ def deploy_config(file: clusterfile.ClusterFile, folder: Path, away: str | None)
     node that does not answer), and without the Slack agent (the switch does not move it)."""
     text = copy.deepcopy(file)
     if away is not None:
+        address = text.machines()[away]["address"]
         text.remove_machine(away)
     errors = text.validate_in(folder)
     config, _ = text.checked()
     if errors:
         return config, errors
+    if away is not None:
+        # Still the backup front node: the new front node's fence, copies and records follow it.
+        config["front_backup_away"] = {"name": away, "address": address}
     secrets(config, folder)
     website_files(config["cluster"]["website"], folder)
     agent_files(config["agent"], folder)
@@ -265,7 +271,8 @@ def switch(
     if front_found.answers and not step(front, ssh_config, ["stop", "--to", backup, "--dry-run"]):
         print("Nothing was changed: the dry run failed.", file=sys.stderr)
         return 1
-    if not step(backup, ssh_config, ["take", "--from", front, "--peer", peer, "--dry-run"]):
+    since = str(file.get(["machines", backup, "front_since"]))
+    if not step(backup, ssh_config, ["take", "--from", front, "--peer", peer, "--since", since, "--dry-run"]):
         print("Nothing was changed: the dry run failed.", file=sys.stderr)
         return 1
     if deploy_run(new_config, True) != 0:
@@ -275,7 +282,7 @@ def switch(
     if front_found.answers and not step(front, ssh_config, ["stop", "--to", backup]):
         print(f"The switch stopped on {front} (see above); run it again once that is fixed.", file=sys.stderr)
         return 1
-    if not step(backup, ssh_config, ["take", "--from", front, "--peer", peer]):
+    if not step(backup, ssh_config, ["take", "--from", front, "--peer", peer, "--since", since]):
         print(f"The switch stopped on {backup} (see above); run it again once that is fixed.", file=sys.stderr)
         return 1
     file.save(path)

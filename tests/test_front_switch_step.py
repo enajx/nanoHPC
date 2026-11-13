@@ -101,11 +101,13 @@ class StepTest(unittest.TestCase):
 
     def test_take_restores_the_copies(self) -> None:
         self.copies()
-        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}")
+        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--since", "1700000000")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [call for call in self.recorded() if not call.startswith("id ")]
         self.assertEqual(calls[0], "fence-run --release")
-        self.assertIn("front", (self.root / "var/lib/nanohpc-front-fence/took-over").read_text())
+        took_over = (self.root / "var/lib/nanohpc-front-fence/took-over").read_text()
+        self.assertIn("front", took_over)
+        self.assertTrue(took_over.strip().endswith("since 1700000000"), took_over)
         self.assertIn("systemctl start mariadb.service", calls)
         self.assertTrue(any(call.startswith("mariadb slurm_acct_db") for call in calls), calls)
         state = f"{self.root}/var/lib/nanohpc-front-copy/state/slurmctld/ {self.root}/var/lib/slurm/slurmctld/"
@@ -122,7 +124,7 @@ class StepTest(unittest.TestCase):
         self.copies()
         os.environ["DATABASE_COUNT"] = "1"
         self.addCleanup(os.environ.pop, "DATABASE_COUNT")
-        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}")
+        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--since", "1")
         self.assertEqual(result.returncode, 0, result.stderr)
         before = self.root / "var/lib/nanohpc-front-copy/before-switch/slurm_acct_db.sql"
         self.assertEqual(before.read_text(), "old database\n")
@@ -130,7 +132,7 @@ class StepTest(unittest.TestCase):
         self.assertTrue(any("DROP DATABASE slurm_acct_db" in call for call in calls), calls)
 
     def test_take_refuses_without_copies(self) -> None:
-        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--dry-run")
+        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--since", "1", "--dry-run")
         self.assertEqual(result.returncode, 1)
         self.assertIn("has no state copy", result.stderr)
         self.assertEqual(self.recorded(), [])
@@ -138,14 +140,14 @@ class StepTest(unittest.TestCase):
     def test_take_refuses_while_the_old_controller_answers(self) -> None:
         self.copies()
         self.listener.listen()
-        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}")
+        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--since", "1")
         self.assertEqual(result.returncode, 1)
         self.assertIn("the Slurm controller on front still answers", result.stderr)
         self.assertEqual(self.recorded(), [])
 
     def test_take_dry_run_changes_nothing(self) -> None:
         self.copies()
-        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--dry-run")
+        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--since", "1", "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Would restore", result.stdout)
         self.assertTrue(all(call.startswith("id ") for call in self.recorded()), self.recorded())
@@ -154,7 +156,7 @@ class StepTest(unittest.TestCase):
         """The switch runs the take dry run before the old front node stops: its controller still answers then."""
         self.copies()
         self.listener.listen()
-        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--dry-run")
+        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--since", "1", "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("still answers", result.stdout)
 
@@ -167,7 +169,7 @@ class StepTest(unittest.TestCase):
             f"mkdir -p '{self.root}/etc/nanohpc'; printf 'SLURM_DB_PASSWORD=%s\\n' {'a' * 64} > '{self.root}/etc/nanohpc/slurmdbd.env'",
         )
         (self.root / "var/lib/nanohpc-front-copy/nightly/slurmdbd.env.tar").write_text("archive")
-        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}")
+        result = self.step("take", "--from", "front", "--peer", f"127.0.0.1:{self.port}", "--since", "1")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.recorded()
         unpack = next(index for index, call in enumerate(calls) if call.startswith("tar "))

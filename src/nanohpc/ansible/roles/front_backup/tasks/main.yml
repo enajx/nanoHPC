@@ -8,7 +8,10 @@
 # - nanohpc-front-switch-step: the steps `nanohpc front-switch` and `nanohpc front-back` run here.
 - name: Name the other machine of the front pair
   ansible.builtin.set_fact:
-    front_backup_peer: "{{ (groups['front_pair'] | default([])) | reject('equalto', inventory_hostname) | first }}"
+    # From the variables, not the inventory: during a switch the old front node is left out of the run but is still
+    # the other machine of the pair.
+    front_backup_peer: "{{ nanohpc.front_backup.name if inventory_hostname == nanohpc.front.name else nanohpc.front.name }}"
+    front_backup_peer_address: "{{ nanohpc.front_backup.address if inventory_hostname == nanohpc.front.name else nanohpc.front.address }}"
 
 - name: Install the fence, copy, and switch commands
   ansible.builtin.copy:
@@ -48,8 +51,11 @@
     owner: root
     group: root
     mode: "0644"
+    # Empty while the other machine is left out of this run (no facts): the copies to it then fail and warn.
     content: |
-      {{ nanohpc.machines[front_backup_peer].address }} ssh-ed25519 {{ hostvars[front_backup_peer].ansible_facts.ssh_host_key_ed25519_public }}
+      {% if hostvars[front_backup_peer].ansible_facts.ssh_host_key_ed25519_public is defined %}
+      {{ front_backup_peer_address }} ssh-ed25519 {{ hostvars[front_backup_peer].ansible_facts.ssh_host_key_ed25519_public }}
+      {% endif %}
 
 # The other cluster machines, asked which front node they were deployed with (not those whose facts this deploy has
 # not read: left out, so they cannot answer anyway).
@@ -60,7 +66,7 @@
     group: root
     mode: "0644"
     content: |
-      {% for name, machine in nanohpc.machines.items() if name not in groups['front_pair'] and hostvars[name].ansible_facts.ssh_host_key_ed25519_public is defined %}
+      {% for name, machine in nanohpc.machines.items() if name not in [nanohpc.front.name, nanohpc.front_backup.name] and hostvars[name].ansible_facts.ssh_host_key_ed25519_public is defined %}
       {{ machine.address }} ssh-ed25519 {{ hostvars[name].ansible_facts.ssh_host_key_ed25519_public }}
       {% endfor %}
 
@@ -183,7 +189,7 @@
   ansible.builtin.file:
     path: /var/lib/nanohpc-front-fence/took-over
     state: absent
-  when: inventory_hostname in groups['role_front'] and front_backup_peer not in nanohpc_left_out
+  when: inventory_hostname in groups['role_front'] and front_backup_peer in groups['front_pair'] and front_backup_peer not in nanohpc_left_out
 
 - name: Run the fence watch and the copy timers
   ansible.builtin.systemd_service:

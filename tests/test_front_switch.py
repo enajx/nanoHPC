@@ -182,6 +182,16 @@ class SwitchTest(unittest.TestCase):
         self.assertIn("Change the DNS record of cluster.example.org to 192.168.104.30", output.getvalue())
         self.assertIn("Telling users on Slack", output.getvalue())
 
+    def test_each_switch_has_a_newer_time_than_the_last_one(self) -> None:
+        """Whatever this machine's clock says: a later switch must outvote the records of the earlier one."""
+        raw = yaml.safe_load(self.path.read_text())
+        raw["machines"]["front"]["front_since"] = 4000000000
+        self.path.write_text(yaml.safe_dump(raw, sort_keys=False))
+        self.assertEqual(self.switch(False), 0)
+        machines = load_config(self.path, False, False)[0]["machines"]
+        self.assertEqual(machines["login2"]["front_since"], 4000000001)
+        self.assertTrue(any("--since 4000000001" in call for call in self.calls() if " take " in call))
+
     def test_moving_back_needs_the_current_front_node(self) -> None:
         (self.folder / "front.down").write_text("")
         self.assertEqual(self.switch(True), 1)
