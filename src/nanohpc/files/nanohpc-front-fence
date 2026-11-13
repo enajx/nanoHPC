@@ -1,0 +1,92 @@
+#!/usr/bin/python3
+"""Keep a front node quiet when the other machine of the front pair (the front node and its backup front node) is
+the active front node, so that two Slurm controllers never run at once.
+
+A machine acts only when its own slurm.conf names it as the Slurm controller (SlurmctldHost). It then tests the
+other machine's Slurm controller port: only an active front node has it open (a backup front node keeps slurmctld
+stopped, and slurmctld runs only where slurm.conf names it).
+
+--check runs before slurmctld and slurmdbd start (ExecStartPre): it exits 1 while fenced, or when the other
+machine's controller answers (then it fences this machine), so they do not start.
+--watch runs every minute: when the other machine's controller answers, it fences this machine: it records the
+marker and stops the --stop units. A machine that took over by `nanohpc front-switch` (the --took-over file) never
+fences itself in the watch: the switch made it the front node while the other one did not answer.
+--is-front exits 0 only when slurm.conf names this machine and it is not fenced (the copies' ExecCondition).
+--hold REASON records the marker (the switch, on the old front node); --release removes it (the switch, on the
+machine it makes the front node). The fence is never lifted by itself.
+"""
+
+import argparse
+import re
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def answers(address: str, port: int) -> bool:
+    """True when the port accepts a connection within 3 seconds."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+        connection.settimeout(3)
+        return connection.connect_ex((address, port)) == 0
+
+
+def names_this_machine(slurm_conf: Path, hostname: str) -> bool:
+    """True when slurm.conf names this machine as the Slurm controller."""
+    if not slurm_conf.is_file():
+        return False
+    named = re.search(r"^SlurmctldHost=([^(\s]+)", slurm_conf.read_text(), re.MULTILINE)
+    return named is not None and named[1] == hostname
+
+
+def fence(marker: Path, reason: str) -> None:
+    """Record the marker with its reason."""
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(reason + "\n")
+    print(f"nanohpc-front-fence: fenced: {reason}", file=sys.stderr)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--hostname", required=True, help="this machine's hostname, as slurm.conf names it")
+    parser.add_argument("--slurm-conf", type=Path, required=True)
+    parser.add_argument("--peer", required=True, help="NAME=ADDRESS:PORT of the other machine's Slurm controller")
+    parser.add_argument("--marker", type=Path, required=True)
+    parser.add_argument("--took-over", type=Path, required=True, help="written by the switch on the new front node")
+    parser.add_argument("--systemctl", required=True)
+    parser.add_argument("--stop", action="append", required=True, help="a unit to stop when fencing (repeat)")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--check", action="store_true")
+    mode.add_argument("--watch", action="store_true")
+    mode.add_argument("--is-front", action="store_true")
+    mode.add_argument("--hold")
+    mode.add_argument("--release", action="store_true")
+    arguments = parser.parse_args()
+    if arguments.hold is not None:
+        fence(arguments.marker, arguments.hold)
+        return
+    if arguments.release:
+        arguments.marker.unlink(missing_ok=True)
+        print("nanohpc-front-fence: released")
+        return
+    if arguments.marker.exists():
+        print(f"nanohpc-front-fence: fenced: {arguments.marker.read_text().strip()}", file=sys.stderr)
+        sys.exit(0 if arguments.watch else 1)
+    here = names_this_machine(arguments.slurm_conf, arguments.hostname)
+    if arguments.is_front:
+        sys.exit(0 if here else 1)
+    if not here or (arguments.watch and arguments.took_over.exists()):
+        return
+    name, address = arguments.peer.split("=", 1)
+    host, port = address.rsplit(":", 1)
+    if not answers(host, int(port)):
+        return
+    fence(arguments.marker, f"the Slurm controller on {name} answered at {time.strftime('%Y-%m-%d %H:%M')}")
+    if arguments.check:
+        sys.exit(1)
+    subprocess.run([arguments.systemctl, "stop", *arguments.stop], check=True)
+
+
+if __name__ == "__main__":
+    main()

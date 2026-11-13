@@ -25,6 +25,7 @@ MACHINE_FIELDS = (
     "aliases",
     "roles",
     "home_mount",
+    "front_backup",
     "home",
     "backup",
     "shared",
@@ -791,10 +792,41 @@ def check_machines(checker: Checker, value: Any, partitions: dict[str, dict[str,
         ]
         if not members:
             checker.fail(f"partitions.{partition}", "has no compute machines")
+    check_front_backup(checker, machines)
     for name, machine in machines.items():
         if "bmc_address" in machine:
             check_bmc_address(checker, f"machines.{name}.bmc_address", machine["bmc_address"], addresses, hostnames)
     return machines
+
+
+def check_front_backup(checker: Checker, machines: dict[str, dict[str, Any]]) -> None:
+    """Check `front_backup` (a login node that can become the front node): only on a login node, at most one, and
+    only when /home is on its own home machine and the front node has only the front role, so that a switch swaps
+    the two machines' roles and /home never moves."""
+    marked = []
+    for name, machine in machines.items():
+        path = f"machines.{name}.front_backup"
+        machine.setdefault("front_backup", False)
+        if not isinstance(machine["front_backup"], bool):
+            checker.fail(path, "must be true or false")
+            continue
+        if not machine["front_backup"]:
+            continue
+        if machine["roles"] != ["login"]:
+            checker.fail(path, "is only for a login node")
+            continue
+        marked.append(name)
+    if len(marked) > 1:
+        checker.fail("machines:", f"at most one login node can have front_backup: true, found {len(marked)}")
+    fronts = [name for name, machine in machines.items() if "front" in machine["roles"]]
+    if len(marked) != 1 or len(fronts) != 1:
+        return
+    path = f"machines.{marked[0]}.front_backup"
+    front_roles = machines[fronts[0]]["roles"]
+    if "home" in front_roles:
+        checker.fail(path, f"needs /home on its own home machine, not on the front node {fronts[0]}")
+    elif front_roles != ["front"]:
+        checker.fail(path, f"needs a front node with only the front role ({fronts[0]} has {', '.join(front_roles)})")
 
 
 def check_bmc_address(
